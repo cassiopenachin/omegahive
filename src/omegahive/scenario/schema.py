@@ -23,7 +23,7 @@ class Plan(BaseModel):
     priorities: dict[str, Literal["low", "normal", "high"]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _check_task_refs(self) -> "Plan":
+    def _check_task_refs(self) -> Plan:
         ids = {t.id for t in self.tasks}
         for dependent, depends_on in self.dependencies:
             for ref in (dependent, depends_on):

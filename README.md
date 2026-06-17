@@ -53,6 +53,16 @@ uv run pytest
 
 Override the test DB with `OMEGAHIVE_TEST_DATABASE_URL`.
 
+Lint and type-check:
+
+```bash
+uv run ruff check .
+uv run mypy
+```
+
+CI (`.github/workflows/ci.yml`) runs ruff, mypy, and pytest against a Postgres 16
+service on every push and PR.
+
 ## Layout
 
 ```

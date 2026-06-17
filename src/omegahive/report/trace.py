@@ -25,7 +25,10 @@ def render_table(events: list[Event], console: Console | None = None) -> None:
     seq_by_id = {ev.event_id: ev.seq for ev in events}
 
     table = Table(title=f"run trace ({events[0].run_id if events else '—'})")
-    for col in ("seq", "logical_ts", "actor", "event_type", "task_id", "caused_by", "corr", "payload"):
+    columns = (
+        "seq", "logical_ts", "actor", "event_type", "task_id", "caused_by", "corr", "payload",
+    )
+    for col in columns:
         table.add_column(col, overflow="fold")
 
     for ev in events:

@@ -21,6 +21,14 @@ class EmitDenied(Exception):
     """Raised when a role attempts to emit an event_type it has no authority for."""
 
 
+class UnknownEventType(Exception):
+    """Raised when an authorized event_type has no registered payload model.
+
+    Signals an EMIT_AUTHORITY / PAYLOADS drift (a config bug), not an emit-policy
+    denial — kept distinct from EmitDenied so callers can tell them apart.
+    """
+
+
 _INSERT = """
 INSERT INTO events (
     event_id, run_id, logical_ts, wall_ts, actor_role, actor_id,
@@ -84,8 +92,15 @@ class EventLog:
         if event_type not in EMIT_AUTHORITY.get(actor.role, set()):
             raise EmitDenied(f"{actor.role} may not emit {event_type}")
 
-        # 2. payload validation against the per-type model
-        PAYLOADS[event_type](**payload)
+        # 2. payload validation. The registry must cover every authorized type;
+        # a gap (an authorized type with no payload model — possible once M1 adds
+        # coordinator/worker/instrument types) is a config error, surfaced cleanly
+        # rather than as a raw KeyError. The validated model's dump is what gets
+        # stored, so defaults are persisted and the stored payload is canonical.
+        model_cls = PAYLOADS.get(event_type)
+        if model_cls is None:
+            raise UnknownEventType(f"no payload model registered for {event_type!r}")
+        canonical = model_cls(**payload).model_dump(mode="json")
 
         # 3. deterministic id + clock
         event_id = uuid5(NAMESPACE, f"{self.run_id}:{self._i}")
@@ -102,7 +117,7 @@ class EventLog:
             "actor_id": actor.id,
             "event_type": event_type,
             "task_id": task_id,
-            "payload": Jsonb(payload),
+            "payload": Jsonb(canonical),
             "causation_id": causation_id,
             "recipient_role": recipient.role if recipient else None,
             "recipient_id": recipient.id if recipient else None,
@@ -119,7 +134,7 @@ class EventLog:
             actor=actor,
             event_type=event_type,
             task_id=task_id,
-            payload=payload,
+            payload=canonical,
             causation_id=causation_id,
             correlation_id=correlation_id,
             recipient=recipient,

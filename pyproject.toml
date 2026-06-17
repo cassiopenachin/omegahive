@@ -19,6 +19,9 @@ omegahive = "omegahive.cli:app"
 [dependency-groups]
 dev = [
     "pytest>=8.2",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "types-pyyaml>=6.0",
 ]
 
 [build-system]
@@ -30,3 +33,17 @@ packages = ["src/omegahive"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src", "tests"]
+plugins = ["pydantic.mypy"]
+ignore_missing_imports = true

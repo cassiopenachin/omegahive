@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from omegahive.events.envelope import Actor
-from omegahive.events.log import EmitDenied
+from omegahive.events.log import EmitDenied, UnknownEventType
 
 PLANNER = Actor(role="planner", id="planner")
 
@@ -67,3 +67,27 @@ def test_payload_validation_rejects_malformed_task_created(make_log):
             actor=PLANNER, event_type="task.created", task_id="t1",
             payload={"title": "missing task_type"},
         )
+
+
+def test_stored_payload_is_canonical_with_defaults(make_log):
+    """A minimal valid payload gets the model's defaults persisted, not dropped."""
+    log = make_log(run_id="canonical-test")
+    ev = log.append(
+        actor=PLANNER, event_type="task.created", task_id="t1",
+        payload={"title": "x", "task_type": "research"},
+    )
+    # returned + stored payload carry the model defaults
+    assert ev.payload == {
+        "title": "x", "task_type": "research",
+        "acceptance": None, "required_artifacts": [],
+    }
+    (stored,) = log.read_run()
+    assert stored.payload == ev.payload
+
+
+def test_authorized_type_without_payload_model_raises_cleanly(make_log):
+    """note.posted is authorized for coordinator but has no payload model yet (M1)."""
+    log = make_log()
+    coordinator = Actor(role="coordinator", id="c1")
+    with pytest.raises(UnknownEventType):
+        log.append(actor=coordinator, event_type="note.posted", payload={})
