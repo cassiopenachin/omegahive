@@ -1,0 +1,9 @@
+scenario_id: m0_smoke
+seed: 123
+plan:
+  goal: "Draft a short technical note from research"
+  tasks:
+    - {id: t1, title: "Research the topic",      task_type: research}
+    - {id: t2, title: "Write the note",          task_type: writing, acceptance: "<= 1 page, cites sources"}
+  dependencies: [[t2, t1]]          # t2 depends on t1
+  priorities:   {t1: high}
