@@ -1,4 +1,4 @@
-"""Load a scenario YAML and emit its planner events through EventLog.append.
+"""Load a scenario YAML and emit its planner events through the gateway.
 
 Emits, in order, a causal tree rooted at the goal:
   1. goal.received   — origin (no causation => correlation = its own id).
@@ -6,7 +6,8 @@ Emits, in order, a causal tree rooted at the goal:
   3. dependency.added — causation = the dependent task's task.created.
   4. priority.set    — causation = that task's task.created.
 
-All plan events therefore share the goal's correlation_id.
+All plan events therefore share the goal's correlation_id. The planner reaches
+the log only through its gateway handle (no ungoverned route, even at bootstrap).
 """
 
 from __future__ import annotations
@@ -15,11 +16,9 @@ from pathlib import Path
 
 import yaml
 
-from ..events.envelope import Actor, Event
-from ..events.log import EventLog
+from ..events.envelope import Event
+from ..gateway.gateway import GatewayHandle
 from .schema import Scenario
-
-PLANNER = Actor(role="planner", id="planner")
 
 
 def load_scenario(path: str | Path) -> Scenario:
@@ -27,22 +26,17 @@ def load_scenario(path: str | Path) -> Scenario:
     return Scenario.model_validate(data)
 
 
-def emit_plan(log: EventLog, scenario: Scenario) -> list[Event]:
-    """Emit the scenario's plan as planner events. Returns them in emit order."""
+def emit_plan(planner: GatewayHandle, scenario: Scenario) -> list[Event]:
+    """Emit the scenario's plan as planner events via the planner's handle."""
     plan = scenario.plan
     emitted: list[Event] = []
 
-    goal = log.append(
-        actor=PLANNER,
-        event_type="goal.received",
-        payload={"text": plan.goal},
-    )
+    goal = planner.emit(event_type="goal.received", payload={"text": plan.goal})
     emitted.append(goal)
 
     task_events: dict[str, Event] = {}
     for task in plan.tasks:
-        ev = log.append(
-            actor=PLANNER,
+        ev = planner.emit(
             event_type="task.created",
             task_id=task.id,
             causation_id=goal.event_id,
@@ -57,8 +51,7 @@ def emit_plan(log: EventLog, scenario: Scenario) -> list[Event]:
         emitted.append(ev)
 
     for dependent, depends_on in plan.dependencies:
-        ev = log.append(
-            actor=PLANNER,
+        ev = planner.emit(
             event_type="dependency.added",
             task_id=dependent,
             causation_id=task_events[dependent].event_id,
@@ -67,8 +60,7 @@ def emit_plan(log: EventLog, scenario: Scenario) -> list[Event]:
         emitted.append(ev)
 
     for task_id, priority in plan.priorities.items():
-        ev = log.append(
-            actor=PLANNER,
+        ev = planner.emit(
             event_type="priority.set",
             task_id=task_id,
             causation_id=task_events[task_id].event_id,

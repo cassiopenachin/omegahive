@@ -4,16 +4,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from omegahive.events.envelope import Actor
 from omegahive.scenario.loader import emit_plan, load_scenario
 
 SCENARIO = Path(__file__).resolve().parents[1] / "scenarios" / "m0_smoke.yaml"
+PLANNER = Actor(role="planner", id="planner")
 
 
-def test_m0_smoke_event_sequence(make_log):
+def _emit(make_gateway):
     scenario = load_scenario(SCENARIO)
-    log = make_log(run_id="loader-test")
-    events = emit_plan(log, scenario)
+    gateway, _ = make_gateway(run_id="loader-test")
+    return emit_plan(gateway.handle(PLANNER), scenario)
 
+
+def test_m0_smoke_event_sequence(make_gateway):
+    events = _emit(make_gateway)
     assert [e.event_type for e in events] == [
         "goal.received",
         "task.created",
@@ -23,12 +28,8 @@ def test_m0_smoke_event_sequence(make_log):
     ]
 
 
-def test_m0_smoke_causal_links(make_log):
-    scenario = load_scenario(SCENARIO)
-    log = make_log(run_id="loader-test")
-    events = emit_plan(log, scenario)
-    goal, t1, t2, dep, prio = events
-
+def test_m0_smoke_causal_links(make_gateway):
+    goal, t1, t2, dep, prio = _emit(make_gateway)
     # tasks caused by the goal
     assert t1.causation_id == goal.event_id
     assert t2.causation_id == goal.event_id
@@ -41,10 +42,8 @@ def test_m0_smoke_causal_links(make_log):
     assert prio.causation_id == t1.event_id
 
 
-def test_all_plan_events_share_one_correlation(make_log):
-    scenario = load_scenario(SCENARIO)
-    log = make_log(run_id="loader-test")
-    events = emit_plan(log, scenario)
+def test_all_plan_events_share_one_correlation(make_gateway):
+    events = _emit(make_gateway)
     corrs = {e.correlation_id for e in events}
     assert len(corrs) == 1
     assert events[0].correlation_id == events[0].event_id  # the goal is the thread root

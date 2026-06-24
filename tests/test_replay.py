@@ -5,12 +5,20 @@ from __future__ import annotations
 from pathlib import Path
 
 from omegahive.clock import LogicalClock
+from omegahive.events.envelope import Actor
 from omegahive.events.log import EventLog
+from omegahive.gateway import Gateway, Policy
 from omegahive.scenario.loader import emit_plan, load_scenario
 
 SCENARIO = Path(__file__).resolve().parents[1] / "scenarios" / "m0_smoke.yaml"
 
 RUN_ID = "canonical-replay"
+PLANNER = Actor(role="planner", id="planner")
+
+
+def _planner(conn):
+    store = EventLog(conn, LogicalClock(0), RUN_ID)
+    return Gateway(store, Policy()).handle(PLANNER), store
 
 
 def _fingerprint(events):
@@ -38,9 +46,9 @@ def test_replay_produces_identical_rows(conn):
     with conn.cursor() as cur:
         cur.execute("TRUNCATE events RESTART IDENTITY")
 
-    log1 = EventLog(conn, LogicalClock(0), RUN_ID)
-    emit_plan(log1, scenario)
-    first = _fingerprint(log1.read_run())
+    planner1, store1 = _planner(conn)
+    emit_plan(planner1, scenario)
+    first = _fingerprint(store1.read_run())
 
     # Postgres sequences are non-transactional, so a plain rollback would not
     # rewind seq. RESTART IDENTITY resets it inside this transaction so the
@@ -48,9 +56,9 @@ def test_replay_produces_identical_rows(conn):
     with conn.cursor() as cur:
         cur.execute("TRUNCATE events RESTART IDENTITY")
 
-    log2 = EventLog(conn, LogicalClock(0), RUN_ID)
-    emit_plan(log2, scenario)
-    second = _fingerprint(log2.read_run())
+    planner2, store2 = _planner(conn)
+    emit_plan(planner2, scenario)
+    second = _fingerprint(store2.read_run())
 
     assert first == second
     assert [row[0] for row in second] == [1, 2, 3, 4, 5]  # seq starts fresh at 1
