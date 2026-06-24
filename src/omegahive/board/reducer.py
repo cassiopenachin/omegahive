@@ -1,7 +1,7 @@
 """The board reducer — a pure projection folding a run's events into task state.
 
 Recomputed by folding events in seq order whenever a reactor (or the gateway)
-needs board_state. No materialization in M1 (cheap at this scale). Pure: takes a
+needs board_state. No materialization (cheap at this scale). Pure: takes a
 list[Event], touches no DB.
 """
 
@@ -12,7 +12,7 @@ from uuid import UUID
 
 from ..events.envelope import Event
 
-# Valid task statuses (M1 subset of the v0 lifecycle).
+# Valid task statuses (v0 lifecycle subset).
 # created|ready|assigned|in_progress|blocked|in_review|done|failed|cancelled|reopened
 
 
@@ -26,6 +26,9 @@ class TaskState:
     last_result_ref: str | None = None     # provenance: ref of the latest posted result
     last_causing_seq: int | None = None    # provenance: seq of the last event that moved this task
     last_causing_event_id: UUID | None = None  # the event a reactor should cite as causation
+    last_status_change_ts: int = 0         # logical_ts of the event that last changed status
+    escalated: bool = False                # set by task.escalated (escalate-once)
+    tried_by: set[str] = field(default_factory=set)  # workers ever given this task
 
 
 @dataclass
@@ -50,59 +53,89 @@ def _stamp(ts: TaskState, ev: Event) -> None:
     ts.last_causing_event_id = ev.event_id
 
 
+def _change(ts: TaskState, ev: Event) -> None:
+    """Record a status change: provenance + the staleness clock the coordinator reads."""
+    _stamp(ts, ev)
+    ts.last_status_change_ts = ev.logical_ts
+
+
 def fold(events: list[Event]) -> Board:
-    """Fold events (in seq order) into a Board, then derive created->ready."""
+    """Fold events (in seq order) into a Board, then derive ready transitions."""
     tasks: dict[str, TaskState] = {}
 
     for ev in sorted(events, key=lambda e: (e.seq if e.seq is not None else 0)):
         et = ev.event_type
         tid = ev.task_id
         p = ev.payload
+        here = tasks.get(tid) if tid is not None else None
 
         if et == "task.created" and tid is not None:
             tasks[tid] = TaskState(task_id=tid, status="created")
-            _stamp(tasks[tid], ev)
-        elif et == "dependency.added" and tid is not None and tid in tasks:
-            tasks[tid].depends_on.add(p["depends_on"])
-            _stamp(tasks[tid], ev)
-        elif et == "task.assigned" and tid is not None and tid in tasks:
-            ts = tasks[tid]
-            ts.status = "assigned"
-            ts.owner = p["worker"]
-            _stamp(ts, ev)
-        elif et == "task.accepted" and tid is not None and tid in tasks:
-            tasks[tid].status = "in_progress"
-            _stamp(tasks[tid], ev)
-        elif et == "task.result_posted" and tid is not None and tid in tasks:
-            ts = tasks[tid]
-            ts.status = "in_review"
-            ts.latest_review = None  # a fresh result awaits a fresh verdict
+            _change(tasks[tid], ev)
+        elif et == "dependency.added" and here is not None:
+            here.depends_on.add(p["depends_on"])
+            _stamp(here, ev)
+        elif et == "task.assigned" and here is not None:
+            here.status = "assigned"
+            here.owner = p["worker"]
+            here.tried_by.add(p["worker"])
+            _change(here, ev)
+        elif et == "task.reassigned" and here is not None and here.status in (
+            "assigned", "blocked", "in_progress"
+        ):
+            here.status = "assigned"
+            here.owner = p["to"]
+            here.tried_by.add(p["to"])
+            _change(here, ev)
+        elif et == "task.rejected" and here is not None and here.status == "assigned":
+            here.status = "ready"
+            here.owner = None  # re-enters the pool; tried_by preserved
+            _change(here, ev)
+        elif et == "task.accepted" and here is not None and here.status == "assigned":
+            here.status = "in_progress"
+            _change(here, ev)
+        elif et == "task.blocked" and here is not None and here.status == "in_progress":
+            here.status = "blocked"
+            _change(here, ev)
+        elif et == "task.unblocked" and here is not None and here.status == "blocked":
+            here.status = "in_progress"
+            _change(here, ev)
+        elif et == "task.result_posted" and here is not None:
+            here.status = "in_review"
+            here.latest_review = None  # a fresh result awaits a fresh verdict
             refs = p.get("artifact_refs") or []
-            ts.last_result_ref = refs[0]["ref"] if refs else None
-            _stamp(ts, ev)
-        elif et == "review.passed" and tid is not None and tid in tasks:
-            tasks[tid].latest_review = "passed"
-            _stamp(tasks[tid], ev)
-        elif et == "review.failed" and tid is not None and tid in tasks:
-            tasks[tid].latest_review = "failed"
-            _stamp(tasks[tid], ev)
-        elif et == "task.status_override" and tid is not None and tid in tasks:
-            if p.get("status") == "done":
-                tasks[tid].status = "done"
-                _stamp(tasks[tid], ev)
-            # other override statuses (reopened, ...) are M2
-        elif et == "task.failed" and tid is not None and tid in tasks:
-            tasks[tid].status = "failed"
-            _stamp(tasks[tid], ev)
+            here.last_result_ref = refs[0]["ref"] if refs else None
+            _change(here, ev)
+        elif et == "review.passed" and here is not None:
+            here.latest_review = "passed"
+            _stamp(here, ev)
+        elif et == "review.failed" and here is not None:
+            here.latest_review = "failed"
+            _stamp(here, ev)
+        elif et == "task.status_override" and here is not None:
+            status = p.get("status")
+            if status == "done":
+                here.status = "done"
+                _change(here, ev)
+            elif status == "reopened" and here.status == "in_review":
+                here.status = "reopened"
+                here.owner = None
+                here.latest_review = None  # last_result_ref preserved (partial work kept)
+                _change(here, ev)
+        elif et == "task.failed" and here is not None and here.status in ("in_progress", "blocked"):
+            here.status = "failed"
+            _change(here, ev)
+        elif et == "task.escalated" and here is not None:
+            here.escalated = True  # a flag, not a status change
+            _stamp(here, ev)
         elif et == "plan.revised" and p.get("action") == "cancel":
             for ts in tasks.values():
                 ts.status = "cancelled"
-                _stamp(ts, ev)
-        # M2: task.reassigned, status_override(reopened), task.blocked/unblocked, task.rejected
+                _change(ts, ev)
 
-    # derived predicate: a created task whose every dependency is done becomes ready
+    # derived: a created/reopened task whose every dependency is done becomes ready
     for ts in tasks.values():
-        if ts.status == "created" and all(
+        if ts.status in ("created", "reopened") and ts.owner is None and all(
             dep in tasks and tasks[dep].status == "done" for dep in ts.depends_on
         ):
             ts.status = "ready"
