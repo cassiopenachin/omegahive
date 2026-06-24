@@ -8,11 +8,13 @@ commits — commit lives in the CLI — so this isolation is automatic.)
 from __future__ import annotations
 
 import os
+from uuid import uuid4
 
 import pytest
 
 from omegahive.clock import LogicalClock
 from omegahive.db import connect, migrate
+from omegahive.events.envelope import Actor, Event
 from omegahive.events.log import EventLog
 from omegahive.gateway import Gateway, Policy
 
@@ -45,6 +47,21 @@ def conn():
 def make_log(conn):
     def _make(run_id: str = "test-run", t: int = 0) -> EventLog:
         return EventLog(conn, LogicalClock(t), run_id)
+
+    return _make
+
+
+@pytest.fixture
+def make_event():
+    """Build an in-memory Event for pure reactor/projection unit tests (no DB)."""
+
+    def _make(event_type, payload=None, *, task_id=None, role="worker", agent="w1",
+              seq=1, logical_ts=0, recipient=None):
+        return Event(
+            event_id=uuid4(), run_id="t", logical_ts=logical_ts,
+            actor=Actor(role=role, id=agent), event_type=event_type, task_id=task_id,
+            payload=payload or {}, seq=seq, recipient=recipient,
+        )
 
     return _make
 

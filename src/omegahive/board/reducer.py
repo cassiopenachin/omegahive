@@ -8,6 +8,7 @@ list[Event], touches no DB.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from uuid import UUID
 
 from ..events.envelope import Event
 
@@ -21,9 +22,10 @@ class TaskState:
     status: str
     owner: str | None = None
     depends_on: set[str] = field(default_factory=set)
-    latest_review: str | None = None      # "passed" | "failed" | None (sub-status while in_review)
-    last_result_ref: str | None = None    # provenance: ref of the latest posted result
+    latest_review: str | None = None       # "passed" | "failed" | None (sub-status while in_review)
+    last_result_ref: str | None = None     # provenance: ref of the latest posted result
     last_causing_seq: int | None = None    # provenance: seq of the last event that moved this task
+    last_causing_event_id: UUID | None = None  # the event a reactor should cite as causation
 
 
 @dataclass
@@ -42,6 +44,12 @@ class Board:
         )
 
 
+def _stamp(ts: TaskState, ev: Event) -> None:
+    """Record the event that last moved this task (provenance + causation source)."""
+    ts.last_causing_seq = ev.seq
+    ts.last_causing_event_id = ev.event_id
+
+
 def fold(events: list[Event]) -> Board:
     """Fold events (in seq order) into a Board, then derive created->ready."""
     tasks: dict[str, TaskState] = {}
@@ -52,42 +60,44 @@ def fold(events: list[Event]) -> Board:
         p = ev.payload
 
         if et == "task.created" and tid is not None:
-            tasks[tid] = TaskState(task_id=tid, status="created", last_causing_seq=ev.seq)
+            tasks[tid] = TaskState(task_id=tid, status="created")
+            _stamp(tasks[tid], ev)
         elif et == "dependency.added" and tid is not None and tid in tasks:
             tasks[tid].depends_on.add(p["depends_on"])
-            tasks[tid].last_causing_seq = ev.seq
+            _stamp(tasks[tid], ev)
         elif et == "task.assigned" and tid is not None and tid in tasks:
             ts = tasks[tid]
             ts.status = "assigned"
             ts.owner = p["worker"]
-            ts.last_causing_seq = ev.seq
+            _stamp(ts, ev)
         elif et == "task.accepted" and tid is not None and tid in tasks:
             tasks[tid].status = "in_progress"
-            tasks[tid].last_causing_seq = ev.seq
+            _stamp(tasks[tid], ev)
         elif et == "task.result_posted" and tid is not None and tid in tasks:
             ts = tasks[tid]
             ts.status = "in_review"
             ts.latest_review = None  # a fresh result awaits a fresh verdict
             refs = p.get("artifact_refs") or []
             ts.last_result_ref = refs[0]["ref"] if refs else None
-            ts.last_causing_seq = ev.seq
+            _stamp(ts, ev)
         elif et == "review.passed" and tid is not None and tid in tasks:
             tasks[tid].latest_review = "passed"
-            tasks[tid].last_causing_seq = ev.seq
+            _stamp(tasks[tid], ev)
         elif et == "review.failed" and tid is not None and tid in tasks:
             tasks[tid].latest_review = "failed"
-            tasks[tid].last_causing_seq = ev.seq
+            _stamp(tasks[tid], ev)
         elif et == "task.status_override" and tid is not None and tid in tasks:
             if p.get("status") == "done":
                 tasks[tid].status = "done"
-                tasks[tid].last_causing_seq = ev.seq
+                _stamp(tasks[tid], ev)
             # other override statuses (reopened, ...) are M2
         elif et == "task.failed" and tid is not None and tid in tasks:
             tasks[tid].status = "failed"
-            tasks[tid].last_causing_seq = ev.seq
+            _stamp(tasks[tid], ev)
         elif et == "plan.revised" and p.get("action") == "cancel":
             for ts in tasks.values():
                 ts.status = "cancelled"
+                _stamp(ts, ev)
         # M2: task.reassigned, status_override(reopened), task.blocked/unblocked, task.rejected
 
     # derived predicate: a created task whose every dependency is done becomes ready
