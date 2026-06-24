@@ -1,7 +1,10 @@
-"""event_type -> payload model registry, emit-authority map, and the uuid5 namespace.
+"""event_type -> payload model registry (the structural schema) + the uuid5 namespace.
 
-The EMIT_AUTHORITY map is the full taxonomy; M0 only exercises the planner row.
-The other roles' rows exist but are unexercised until M1+.
+This is the *store-facing* schema: the shape of each event's payload. Emit-authority
+(who may emit what) is policy, not schema — it lives in the gateway
+(`gateway/policy.py`), per the "structure in the store, policy in the gateway"
+split. PAYLOADS must cover every event_type any role is authorized to emit;
+`tests/test_append.py::test_payloads_cover_all_emit_authority` guards that invariant.
 """
 
 from __future__ import annotations
@@ -9,14 +12,14 @@ from __future__ import annotations
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 # Fixed project namespace for deterministic uuid5 event ids. Do not change:
 # changing it would alter every event_id and break replay identity.
 NAMESPACE = UUID("a3f1c2d4-5e6f-4a8b-9c0d-1e2f3a4b5c6d")
 
 
-# --- Per-type payloads (M0 = planner only), validated on emit. ---
+# --- Planner payloads ---
 
 class GoalReceived(BaseModel):
     text: str
@@ -42,28 +45,132 @@ class PlanRevised(BaseModel):
     reason: str | None = None
 
 
+# --- Shared nested ---
+
+class ArtifactRef(BaseModel):
+    ref: str
+    quality: Literal["ok", "missing_sources", "wrong_content"]
+
+
+# --- Coordinator payloads ---
+
+class TaskAssigned(BaseModel):
+    worker: str
+
+
+class TaskReassigned(BaseModel):
+    # `from` is a Python keyword; expose the field as `from_` but accept either name.
+    model_config = ConfigDict(populate_by_name=True)
+    from_: str = Field(alias="from")
+    to: str
+    reason: str | None = None
+
+
+class TaskEscalated(BaseModel):
+    reason: str
+
+
+class TaskStatusOverride(BaseModel):
+    # status stays a free str; the done-gate (gateway), not the model, constrains "done".
+    status: str
+    reason: str | None = None
+
+
+class NotePosted(BaseModel):
+    text: str
+
+
+# --- Worker payloads ---
+
+class TaskAccepted(BaseModel):
+    pass
+
+
+class TaskRejected(BaseModel):
+    reason: str
+
+
+class TaskProgress(BaseModel):
+    note: str | None = None
+    pct: int | None = None
+    cost: int | None = None
+
+
+class TaskBlocked(BaseModel):
+    reason: str
+    needs: str | None = None
+
+
+class TaskUnblocked(BaseModel):
+    pass
+
+
+class TaskResultPosted(BaseModel):
+    artifact_refs: list[ArtifactRef]
+    cost: int | None = None
+
+
+class TaskFailed(BaseModel):
+    reason: str
+
+
+class QuestionAsked(BaseModel):
+    text: str  # recipient travels in the envelope, not the payload
+
+
+# --- Instrument payloads ---
+
+class ReviewPassed(BaseModel):
+    ref_result: str
+
+
+class ReviewFailed(BaseModel):
+    ref_result: str
+    reason: str | None = None
+
+
+class MetricThresholdCrossed(BaseModel):
+    metric: str
+    value: float
+    threshold: float
+
+
+class PromotionCreated(BaseModel):  # defined for registry completeness; not emitted until M2
+    ref_event: str
+    rule_id: str
+
+
+class PromotionSuppressed(BaseModel):  # defined for registry completeness; not emitted until M2
+    ref_event: str
+    reason: str | None = None
+
+
 PAYLOADS: dict[str, type[BaseModel]] = {
+    # planner
     "goal.received": GoalReceived,
     "task.created": TaskCreated,
     "dependency.added": DependencyAdded,
     "priority.set": PrioritySet,
     "plan.revised": PlanRevised,
-}
-
-
-EMIT_AUTHORITY: dict[str, set[str]] = {
-    "planner": {
-        "goal.received", "task.created", "dependency.added", "priority.set", "plan.revised",
-    },
-    "coordinator": {
-        "task.assigned", "task.reassigned", "task.escalated", "task.status_override", "note.posted",
-    },
-    "worker": {
-        "task.accepted", "task.rejected", "task.progress", "task.blocked", "task.unblocked",
-        "task.result_posted", "task.failed", "question.asked",
-    },
-    "instrument": {
-        "promotion.created", "promotion.suppressed", "metric.threshold_crossed",
-        "review.passed", "review.failed",
-    },
+    # coordinator
+    "task.assigned": TaskAssigned,
+    "task.reassigned": TaskReassigned,
+    "task.escalated": TaskEscalated,
+    "task.status_override": TaskStatusOverride,
+    "note.posted": NotePosted,
+    # worker
+    "task.accepted": TaskAccepted,
+    "task.rejected": TaskRejected,
+    "task.progress": TaskProgress,
+    "task.blocked": TaskBlocked,
+    "task.unblocked": TaskUnblocked,
+    "task.result_posted": TaskResultPosted,
+    "task.failed": TaskFailed,
+    "question.asked": QuestionAsked,
+    # instrument
+    "review.passed": ReviewPassed,
+    "review.failed": ReviewFailed,
+    "metric.threshold_crossed": MetricThresholdCrossed,
+    "promotion.created": PromotionCreated,
+    "promotion.suppressed": PromotionSuppressed,
 }

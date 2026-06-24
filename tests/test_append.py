@@ -1,4 +1,9 @@
-"""The append chokepoint: ordering, correlation inheritance, FK + membrane checks."""
+"""The dumb store's append path: ordering, correlation, FK + structural checks only.
+
+Authority is the gateway's job now (see test_gateway.py); the store judges nothing
+about who may emit what. It does structural validation: payload shape and the
+causation FK.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +14,9 @@ import pytest
 from pydantic import ValidationError
 
 from omegahive.events.envelope import Actor
-from omegahive.events.log import EmitDenied, UnknownEventType
+from omegahive.events.log import UnknownEventType
+from omegahive.events.types import PAYLOADS
+from omegahive.gateway.policy import EMIT_AUTHORITY
 
 PLANNER = Actor(role="planner", id="planner")
 
@@ -50,14 +57,15 @@ def test_fk_rejects_dangling_causation(make_log):
         )
 
 
-def test_emit_authority_rejects_worker_creating_task(make_log):
-    log = make_log()
+def test_store_does_not_enforce_authority(make_log):
+    """The dumb store appends regardless of role — authority lives in the gateway."""
     worker = Actor(role="worker", id="w1")
-    with pytest.raises(EmitDenied):
-        log.append(
-            actor=worker, event_type="task.created", task_id="t1",
-            payload={"title": "x", "task_type": "research"},
-        )
+    log = make_log()
+    ev = log.append(
+        actor=worker, event_type="task.created", task_id="t1",
+        payload={"title": "x", "task_type": "research"},
+    )
+    assert ev.seq is not None  # accepted by the store; the gateway would have refused
 
 
 def test_payload_validation_rejects_malformed_task_created(make_log):
@@ -85,9 +93,15 @@ def test_stored_payload_is_canonical_with_defaults(make_log):
     assert stored.payload == ev.payload
 
 
-def test_authorized_type_without_payload_model_raises_cleanly(make_log):
-    """note.posted is authorized for coordinator but has no payload model yet (M1)."""
+def test_unregistered_event_type_raises_cleanly(make_log):
+    """An event_type with no payload model is a config error, surfaced clearly."""
     log = make_log()
-    coordinator = Actor(role="coordinator", id="c1")
     with pytest.raises(UnknownEventType):
-        log.append(actor=coordinator, event_type="note.posted", payload={})
+        log.append(actor=PLANNER, event_type="not.a.real.type", payload={})
+
+
+def test_payloads_cover_all_emit_authority():
+    """Registry-completeness invariant: every authorized event_type has a payload model."""
+    authorized = {et for types in EMIT_AUTHORITY.values() for et in types}
+    missing = authorized - set(PAYLOADS)
+    assert not missing, f"event_types authorized but unregistered in PAYLOADS: {sorted(missing)}"

@@ -14,6 +14,7 @@ import pytest
 from omegahive.clock import LogicalClock
 from omegahive.db import connect, migrate
 from omegahive.events.log import EventLog
+from omegahive.gateway import Gateway, Policy
 
 TEST_DATABASE_URL = os.environ.get(
     "OMEGAHIVE_TEST_DATABASE_URL",
@@ -44,5 +45,16 @@ def conn():
 def make_log(conn):
     def _make(run_id: str = "test-run", t: int = 0) -> EventLog:
         return EventLog(conn, LogicalClock(t), run_id)
+
+    return _make
+
+
+@pytest.fixture
+def make_gateway(conn):
+    """A Gateway over a fresh EventLog + a default Policy (returns (gateway, store))."""
+
+    def _make(run_id: str = "test-run", t: int = 0) -> tuple[Gateway, EventLog]:
+        store = EventLog(conn, LogicalClock(t), run_id)
+        return Gateway(store, Policy()), store
 
     return _make

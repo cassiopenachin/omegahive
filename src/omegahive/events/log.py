@@ -1,8 +1,13 @@
-"""EventLog — the single append() chokepoint and the read queries over the log.
+"""EventLog — the dumb store: the append() write path and the read queries.
 
-Every write goes through append(). Emit-authority + payload validation here
-*are* the membrane in M0. When Regime B arrives, the per-agent adapter wraps
-this same call.
+The store does *structural* validation only — payload shape (against PAYLOADS),
+the causation FK, and the correlation trigger — plus deterministic event_id and
+DB-assigned seq. It judges nothing about authority or transition legality: that
+is policy, enforced by the gateway above it (`gateway/`). "Structure in the store,
+policy in the gateway"; the store imports neither the policy nor the board.
+
+Every write still funnels through append(), but agents reach append() only via the
+gateway — never directly.
 """
 
 from __future__ import annotations
@@ -14,18 +19,14 @@ from psycopg.types.json import Jsonb
 
 from ..clock import LogicalClock
 from .envelope import Actor, Event
-from .types import EMIT_AUTHORITY, NAMESPACE, PAYLOADS
-
-
-class EmitDenied(Exception):
-    """Raised when a role attempts to emit an event_type it has no authority for."""
+from .types import NAMESPACE, PAYLOADS
 
 
 class UnknownEventType(Exception):
-    """Raised when an authorized event_type has no registered payload model.
+    """Raised when an event_type has no registered payload model in PAYLOADS.
 
-    Signals an EMIT_AUTHORITY / PAYLOADS drift (a config bug), not an emit-policy
-    denial — kept distinct from EmitDenied so callers can tell them apart.
+    A structural/config error (the registry has a gap), distinct from the
+    gateway's policy denials (EmitDenied / TransitionRejected).
     """
 
 
@@ -88,26 +89,22 @@ class EventLog:
         recipient: Actor | None = None,
         logical_ts: int | None = None,
     ) -> Event:
-        # 1. authority: role must be allowed to emit this type
-        if event_type not in EMIT_AUTHORITY.get(actor.role, set()):
-            raise EmitDenied(f"{actor.role} may not emit {event_type}")
-
-        # 2. payload validation. The registry must cover every authorized type;
-        # a gap (an authorized type with no payload model — possible once M1 adds
-        # coordinator/worker/instrument types) is a config error, surfaced cleanly
-        # rather than as a raw KeyError. The validated model's dump is what gets
-        # stored, so defaults are persisted and the stored payload is canonical.
+        # 1. structural payload validation. PAYLOADS must cover every event_type
+        # any role is authorized to emit; a missing model is a config error,
+        # surfaced cleanly rather than as a raw KeyError. The validated model's
+        # dump is what gets stored, so defaults are persisted and the stored
+        # payload is canonical.
         model_cls = PAYLOADS.get(event_type)
         if model_cls is None:
             raise UnknownEventType(f"no payload model registered for {event_type!r}")
         canonical = model_cls(**payload).model_dump(mode="json")
 
-        # 3. deterministic id + clock
+        # 2. deterministic id + clock
         event_id = uuid5(NAMESPACE, f"{self.run_id}:{self._i}")
         self._i += 1
         ts = self.clock.now() if logical_ts is None else logical_ts
 
-        # 4. INSERT (correlation_id left NULL -> trigger fills); read back seq + correlation_id
+        # 3. INSERT (correlation_id left NULL -> trigger fills); read back seq + correlation_id
         params = {
             "event_id": event_id,
             "run_id": self.run_id,

@@ -18,3 +18,10 @@ class LogicalClock:
     def advance(self, n: int = 1) -> int:
         self._t += n
         return self._t
+
+    def advance_to(self, ts: int) -> int:
+        """Set absolute sim time (used by the DES engine when a scheduled event fires)."""
+        if ts < self._t:
+            raise ValueError(f"cannot move clock backward: {ts} < {self._t}")
+        self._t = ts
+        return self._t
