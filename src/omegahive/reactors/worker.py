@@ -110,7 +110,9 @@ class WorkerStub:
                         Scheduled(Emit("task.unblocked", {}, task_id=tid, causation_id=cause),
                                   delay=after_unblock)
                     )
-                    res.scheduled.append(self._result(tid, cause, delay=after_unblock + self.result))
+                    res.scheduled.append(
+                        self._result(tid, cause, delay=after_unblock + self.result)
+                    )
                 continue  # blocked path posts no result unless it unblocks
 
             res.scheduled.append(self._result(tid, cause, delay=self.result))
