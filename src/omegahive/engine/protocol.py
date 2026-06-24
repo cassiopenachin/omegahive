@@ -35,6 +35,7 @@ class Scheduled:
 class ReactResult:
     immediate: list[Emit] = field(default_factory=list)
     scheduled: list[Scheduled] = field(default_factory=list)
+    wakes: list[int] = field(default_factory=list)  # delays at which to get a bare turn (no event)
 
 
 class Reactor(Protocol):

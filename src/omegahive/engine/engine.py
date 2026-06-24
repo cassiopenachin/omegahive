@@ -19,6 +19,7 @@ from ..board.reducer import fold
 from ..clock import LogicalClock
 from ..events.envelope import Actor
 from ..gateway.gateway import Gateway
+from ..gateway.policy import TransitionRejected
 from .protocol import Emit, Reactor
 
 
@@ -26,8 +27,10 @@ from .protocol import Emit, Reactor
 class _HeapItem:
     logical_ts: int
     schedule_seq: int  # monotonic tiebreak -> total order among same-tick events
-    actor: Actor = field(compare=False)
-    emit: Emit = field(compare=False)
+    # actor/emit are None for a "wake": a bare turn that advances the clock and
+    # settles but appends nothing (the coordinator's stateless timer affordance).
+    actor: Actor | None = field(compare=False, default=None)
+    emit: Emit | None = field(compare=False, default=None)
 
 
 class Engine:
@@ -49,6 +52,9 @@ class Engine:
         self._future: list[_HeapItem] = []
         self._schedule_seq = 0
         self._cursors: dict[str, int] = {r.agent_id: 0 for r in self.reactors}
+        # last `now` at which each reactor ran — lets board+time-driven reactors
+        # (the coordinator) get a turn on a bare wake, when there are no new events.
+        self._last_now: dict[str, int] = {r.agent_id: -1 for r in self.reactors}
 
     @staticmethod
     def _actor(reactor: Reactor) -> Actor:
@@ -56,6 +62,10 @@ class Engine:
 
     def _push(self, at_ts: int, actor: Actor, emit: Emit) -> None:
         heapq.heappush(self._future, _HeapItem(at_ts, self._schedule_seq, actor, emit))
+        self._schedule_seq += 1
+
+    def _push_wake(self, at_ts: int) -> None:
+        heapq.heappush(self._future, _HeapItem(at_ts, self._schedule_seq))  # emit=None
         self._schedule_seq += 1
 
     def _emit(self, actor: Actor, emit: Emit, now: int) -> None:
@@ -76,7 +86,16 @@ class Engine:
             if top.logical_ts > self.max_logical_ts:
                 break
             self.clock.advance_to(top.logical_ts)
-            self._emit(top.actor, top.emit, top.logical_ts)  # the scheduled event "happens"
+            if top.emit is None:  # a wake: advance time, settle, append nothing
+                self._settle(top.logical_ts)
+                continue
+            assert top.actor is not None
+            try:
+                self._emit(top.actor, top.emit, top.logical_ts)  # the scheduled event "happens"
+            except TransitionRejected:
+                # The emitter no longer owns the task (it was reassigned/cancelled);
+                # the scheduled event is stale. Drop it — lazy invalidation, no settle.
+                continue
             self._settle(top.logical_ts)
 
     def _settle(self, now: int) -> None:
@@ -87,17 +106,23 @@ class Engine:
                 cursor = self._cursors[reactor.agent_id]
                 fresh = [e for e in self.store.read_run() if e.seq is not None and e.seq > cursor]
                 new = self.gateway.project(reactor.role, reactor.agent_id, fresh, board)
-                if not new:
+                # Run if there are new events, or if the clock advanced since this
+                # reactor last ran (so the coordinator re-scans the board on a wake).
+                if not new and self._last_now[reactor.agent_id] >= now:
                     continue
+                self._last_now[reactor.agent_id] = now
                 result = reactor.react(new, board, now)
                 for emit in result.immediate:
                     self._emit(self._actor(reactor), emit, now)
                 for sch in result.scheduled:
                     self._push(now + sch.delay, self._actor(reactor), sch.emit)
-                self._cursors[reactor.agent_id] = max(
-                    e.seq for e in new if e.seq is not None
+                for delay in result.wakes:
+                    self._push_wake(now + delay)
+                if new:
+                    self._cursors[reactor.agent_id] = max(e.seq for e in new if e.seq is not None)
+                progressed = progressed or bool(
+                    result.immediate or result.scheduled or result.wakes
                 )
-                progressed = progressed or bool(result.immediate or result.scheduled)
             if not progressed:
                 return
         raise RuntimeError(
