@@ -45,7 +45,7 @@ class Gateway:
 
         # 2. transition gate (stateful: fold the board and check legality)
         board = fold(self._store.read_run())
-        reason = validate_transition(board, event_type, task_id, payload)
+        reason = validate_transition(board, actor, event_type, task_id, payload)
         if reason is not None:
             raise TransitionRejected(reason)
 
