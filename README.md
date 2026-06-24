@@ -1,15 +1,22 @@
-# OmegaHive — M0 (spine)
+# OmegaHive — M1 (vertical slice)
 
-A runnable spine: append events to a real Postgres log, load a scenario that emits
-planner events, and render the trace back — with deterministic replay. No reducer,
-workers, coordinator, or instruments yet (those begin at M1).
+A runnable spine plus the first end-to-end run: a planner emits a plan, a greedy
+coordinator assigns ready tasks, a worker stub does the work, a review instrument
+auto-passes, and the coordinator closes — driving every task to `done` in
+dependency order, deterministically.
 
-See `docs/omegahive_m0_spec.md` for the full build spec.
+Agents never touch the log directly. Every emit goes through the **gateway** — the
+policy layer that enforces emit-authority and transition-gates (the done-gate,
+folding the board), then calls the dumb store. *Structure in the store, policy in
+the gateway*; dependencies flow one way (`gateway → {events, board}`).
+
+See `docs/omegahive_m1_spec.md` (and `docs/omegahive_v0_spec.md` §7) for the spec.
 
 ## Stack
 
 Python 3.12 (synchronous, single-process) · Postgres 16 · psycopg 3 + hand-written
-SQL · Pydantic v2 · typer + rich · uv for envs and locking.
+SQL · Pydantic v2 · typer + rich · uv for envs and locking. The run engine is a
+discrete-event simulation over a logical clock (no wall-clock; seed-reproducible).
 
 ## Quickstart
 
@@ -23,16 +30,18 @@ uv sync
 # 3. apply migrations
 uv run omegahive db-migrate
 
-# 4. load a scenario and emit its planner events (prints the run_id)
-uv run omegahive run scenarios/m0_smoke.yaml
+# 4. load a scenario, emit the plan, and run the engine to quiescence
+uv run omegahive run scenarios/m1_smoke.yaml         # m0_smoke.yaml works too
+#   -> run_id: ... · N events · final tick T · 2/2 tasks done
 
-# 5. render the trace
-uv run omegahive report <run_id>
+# 5. render the trace, the final board, and the metric set
+uv run omegahive report <run_id> --board --metrics
 uv run omegahive report <run_id> --json
 ```
 
 Determinism: pass an explicit `--run-id` to `run` for a canonical, reproducible run.
-Same `(scenario, seed, run_id)` into a fresh log produces byte-identical rows.
+Same `(scenario, seed, run_id)` into a fresh log produces a byte-identical log
+across the whole engine run.
 
 ## Configuration
 
@@ -67,7 +76,16 @@ service on every push and PR.
 
 ```
 migrations/      numbered .sql files (events table + correlation trigger)
-scenarios/       scenario YAML (m0_smoke.yaml)
-src/omegahive/   config, db, clock, events/, scenario/, report/, cli
-tests/           append / loader / replay
+scenarios/       scenario YAML (m0_smoke.yaml, m1_smoke.yaml)
+src/omegahive/
+  events/        the dumb store: envelope, payload schema (PAYLOADS), EventLog.append
+  gateway/       policy (emit-authority + access projection) + the Gateway (sole route)
+  board/         reducer (fold -> Board) + transition rules (the done-gate)
+  engine/        DES engine, reactor protocol, assembly, seeded rng
+  reactors/      coordinator, worker, review, metrics
+  metrics/       the core metric set
+  report/        trace / board / metrics rendering
+  clock, config, db, scenario/, cli
+tests/           append / gateway / reducer / gate / reactors / visibility /
+                 engine happy-path / metrics / determinism / loader / replay
 ```

@@ -1,0 +1,19 @@
+scenario_id: m1_smoke
+seed: 123
+plan:
+  goal: "Draft a short technical note from research"
+  tasks:
+    - {id: t1, title: "Research the topic",      task_type: research}
+    - {id: t2, title: "Write the note",          task_type: writing, acceptance: "<= 1 page, cites sources"}
+  dependencies: [[t2, t1]]          # t2 depends on t1
+  priorities:   {t1: high}
+workers:
+  w1:
+    latency: { accept: 0, progress: 2, result: 4 }
+    quality: ok               # ok | missing_sources | wrong_content
+    cost: 5
+run:
+  max_logical_ts: 1000        # budget / safety net
+expected:
+  board: { t1: done, t2: done }
+  metrics: { tasks_completed: 2 }
