@@ -29,10 +29,10 @@ v0 also lays the rails for the later (Regime B) hypotheses: **H2** — does Omeg
 
 ## 2. Regimes and the A→B path
 
-- **Regime A (v0):** simulated clock, all stubs, both open- and closed-loop scenarios (defined in the harness, Part II). Validates the substrate, projections, promotion, metrics, and the membrane/policy enforcement. Fast and seed-reproducible.
-- **Regime B (later):** the stub coordinator is replaced by a real OmegaClaw agent (BossyTron) via a `hive` *channel* binding of the same membrane; workers may become cheap-LLM agents. Runs in scaled wall-clock.
+- **Regime A (v0):** simulated clock, all stubs, both open- and closed-loop scenarios (defined in the harness, Part II). Validates the substrate, projections, promotion, metrics, and the gateway/policy enforcement. Fast and seed-reproducible.
+- **Regime B (later):** the stub coordinator is replaced by a real OmegaClaw agent (BossyTron) via a `hive` *channel* binding of the same gateway; workers may become cheap-LLM agents. Runs in scaled wall-clock.
 
-A→B is a **swap behind stable interfaces**, not a rebuild — so v0's interfaces must already expose what B needs: a compact `board-state` read, idempotent coordinator emits, and transition-rejection feedback. Those interfaces are specified in the board and membrane sections below.
+A→B is a **swap behind stable interfaces**, not a rebuild — so v0's interfaces must already expose what B needs: a compact `board-state` read, idempotent coordinator emits, and transition-rejection feedback. Those interfaces are specified in the board and gateway sections below.
 
 ## 3. Substrate: the event log of record
 
@@ -64,9 +64,9 @@ Visibility and importance are **derived, never stamped on the event**. There is 
 
 `seq` vs `logical_ts`: `seq` is the storage/order key (monotonic, gap-tolerant); `logical_ts` is the simulation clock (multiple events may share a tick). Time-based rules like "blocked longer than N" read `logical_ts`; replay cursors use `seq`.
 
-## 5. Event taxonomy — organized by membrane
+## 5. Event taxonomy — organized by gateway
 
-Types are grouped by **emitter authority**, not lifecycle. This *is* the schema's organizing principle: each role's membrane (Section 7) defines what it may emit. A worker emitting a `coordinator.*` or `review.*` event is an authority violation, rejected at the worker's adapter — which is exactly what H4/H5 will later test.
+Types are grouped by **emitter authority**, not lifecycle. This *is* the schema's organizing principle: each role's gateway (Section 7) defines what it may emit. A worker emitting a `coordinator.*` or `review.*` event is an authority violation, rejected at the worker's adapter — which is exactly what H4/H5 will later test.
 
 **Planner — intentional layer** (v0: emitted by the scenario loader)
 
@@ -136,9 +136,9 @@ The **board** is a reduction of the event log to current task state. It is the c
 - `task.result_posted` alone never yields `done`. The reducer **rejects** `status_override(done)` unless the task's latest review is `review.passed` (with rejection feedback to the coordinator) — so "failed review prevents completion" is *enforced* in v0, not advisory. (A later phase makes review content-inspecting and adds a provenance pass.)
 - Every `promotion.created` references the source event it promoted.
 
-## 7. Membrane and policy
+## 7. Gateway and policy
 
-No agent touches the raw log. Every agent reaches it through a **membrane** — a thin adapter that projects on read and enforces authority on emit. The same construct has two bindings: a *library handle* for stubs (v0) and a *channel* for OmegaClaw agents (Regime B).
+No agent touches the raw log. Every agent reaches it through a **gateway** — a policy layer that sits *above* both the store and the board: it projects on read and enforces policy on emit (emit-authority, plus transition-gates that fold the board), then calls the dumb append. **Structure lives in the store; policy lives in the gateway** (`gateway → {events, board}`, never the reverse). The same construct has two bindings: a *library handle* for stubs (v0) and a *channel* for OmegaClaw agents (Regime B). It is the trust boundary precisely because it is the agent's *only* route to the log.
 
 **Two invariants** (what we commit to; packaging is deferred):
 
@@ -152,7 +152,7 @@ No agent touches the raw log. Every agent reaches it through a **membrane** — 
 1. *Access projection* (security): which events this role may see, by `event_type` / task-membership / `recipient`.
 2. *Rendering / attention* (cognition): how the visible stream is batched and summarized into a bounded window. Coordinator-only in practice; it is the coordinator's "attention," and itself an experimental variable.
 
-**Emit authority:** role → allowed `event_type`s (the Section 5 grouping). A disallowed emit is rejected at the membrane and surfaced back to the emitter as feedback (so the Regime-B coordinator learns its op was refused).
+**Emit authority:** role → allowed `event_type`s (the Section 5 grouping). A disallowed emit is rejected at the gateway and surfaced back to the emitter as feedback (so the Regime-B coordinator learns its op was refused).
 
 **v0 per-role contract:**
 
@@ -169,7 +169,7 @@ No agent touches the raw log. Every agent reaches it through a **membrane** — 
 
 | Real in v0 (the test instruments) | Stubbed in v0 | Deferred (later phase / Regime B) |
 |---|---|---|
-| Postgres event log; board reducer; promotion evaluator; metrics runner; review instrument (verdict-reading, no inspection); scenario runner; per-role membrane + central policy; fast clock driver | planner (= scenario loader); coordinator (greedy baseline policy); workers (policies); artifacts (verdict stubs); human (deferred) | real OmegaClaw coordinator (B); real artifacts + content-inspecting review + provenance checker (H4); permission gateway (H5); provenance/permission instruments; Atomspace/PLN advisor; Slack renderer; per-agent policy; capability adapters beyond `log` |
+| Postgres event log; board reducer; promotion evaluator; metrics runner; review instrument (verdict-reading, no inspection); scenario runner; per-role gateway + central policy; fast clock driver | planner (= scenario loader); coordinator (greedy baseline policy); workers (policies); artifacts (verdict stubs); human (deferred) | real OmegaClaw coordinator (B); real artifacts + content-inspecting review + provenance checker (H4); permission gateway (H5); provenance/permission instruments; Atomspace/PLN advisor; Slack renderer; per-agent policy; capability adapters beyond `log` |
 
 If the instruments are too fake, the tests only validate assumptions baked into the fakes — so the left column is where rigor must live.
 
@@ -197,7 +197,7 @@ next_events(task, incoming_events_since_last_tick, rng) -> [Event]
 
 **Coordinator policy.** The coordinator is itself a pluggable policy behind one interface — `decide(board_state, new_events, rng) -> [coordinator_events]`. v0 ships a **greedy** body: assign ready → free worker (round-robin); reassign on reject; escalate on blocked-past-threshold; reopen/reassign on `review.failed`; intervene on `metric.threshold_crossed`; respect the review gate. Coordinator richness is a *ladder* (greedy → track-record heuristic → …), not a v0 decision — richer baselines are added when H2 runs, and the real OmegaClaw coordinator (Regime B) implements the *same* `decide` interface, so A→B is one swap. Crucially, **coordinator richness and worker fidelity are independent axes**: a greedy coordinator can run over LLM workers to study agent dynamics under minimal coordination, then swap back — the interface makes any cell of that matrix free.
 
-**Fault injection is separate.** Malformed / illegal events test the membrane's authority checks and the reducer's rejection — i.e. the *substrate*, not the coordinator. Hold until the schema and invariants are stable.
+**Fault injection is separate.** Malformed / illegal events test the gateway's authority checks and the reducer's rejection — i.e. the *substrate*, not the coordinator. Hold until the schema and invariants are stable.
 
 **Scenario file** (sketch):
 
@@ -219,7 +219,7 @@ expected:
 
 **Artifacts in v0 are verdict stubs** (a `quality` flag in `result_posted`, which the review instrument reads). Real inspectable artifacts + content-inspecting checkers are a later phase — that is the fidelity line between testing the coordinator's *reaction* and testing the *instrument*.
 
-**Simulated human:** deferred for v0. H3 is scored by labeled scenarios (below), and v0 escalations are terminal "flagged" events; a scripted operator is added only when a scenario needs a human *reply* in the loop (likely with the permission track). The seam stays — a human is just another participant behind the membrane.
+**Simulated human:** deferred for v0. H3 is scored by labeled scenarios (below), and v0 escalations are terminal "flagged" events; a scripted operator is added only when a scenario needs a human *reply* in the loop (likely with the permission track). The seam stays — a human is just another participant behind the gateway.
 
 ## 10. Promotion (v0 instrument)
 

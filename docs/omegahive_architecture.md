@@ -8,9 +8,9 @@
 
 ## 1. Thesis
 
-A cooperative hive of real OmegaClaw and OpenClaw agents doing research-grade work — formalization, proof, software, writing — coordinated through a single **event-sourced spine**. Every operational view (task board, human channel, metrics, knowledge) is a *projection* of that one log. Every agent's powers are mediated by a **capability membrane** over one central policy. The coordination plane is deliberately lightweight; the heavy compute — Lean, proof search, inference — lives off the spine, where the real scaling happens.
+A cooperative hive of real OmegaClaw and OpenClaw agents doing research-grade work — formalization, proof, software, writing — coordinated through a single **event-sourced spine**. Every operational view (task board, human channel, metrics, knowledge) is a *projection* of that one log. Every agent's powers are mediated by a **capability gateway** over one central policy. The coordination plane is deliberately lightweight; the heavy compute — Lean, proof search, inference — lives off the spine, where the real scaling happens.
 
-The shape is the bet: one log, everything else a projection or a consumer, every power gated by a membrane. That shape is what has to scale, and it does — new roles are new emitters, new views are new projections, new powers are new capabilities. None of them reshape the substrate.
+The shape is the bet: one log, everything else a projection or a consumer, every power gated by a gateway. That shape is what has to scale, and it does — new roles are new emitters, new views are new projections, new powers are new capabilities. None of them reshape the substrate.
 
 ## 2. How this evolved from OmegaHive1
 
@@ -22,7 +22,7 @@ The spine of Ben's design is sound, and most of it is kept. The changes below ar
 
 - *Two-tier comms (a fast bus + Slack)* → **one event log with derived views.** Ben already says the fast tier is "curated out of Slack — editorial, not visibility," which *is* an event-log-with-views model. So there is one log of record; "bus" and "human channel" are filters over it. The two-tier question becomes a promotion config we can test, not two transports to build and keep in sync.
 - *A shared Atomspace as the coordination substrate (stigmergy)* → **the event log is the source of truth; the Atomspace is an optional advisor and projection,** measured against a non-Atomspace baseline. This lets us actually test whether Hyperon cognition pays for itself rather than assuming it carries the hive's semantic traffic.
-- *Permission tiers in config and prompts* → **a capability membrane.** Every agent reaches every power — log, artifacts, tools, memory, outbound actions, credentials — only through a governed adapter on one central policy. Tiers become capability grants; the conscience pauses an agent by flipping its tier live.
+- *Permission tiers in config and prompts* → **a capability gateway.** Every agent reaches every power — log, artifacts, tools, memory, outbound actions, credentials — only through a governed adapter on one central policy. Tiers become capability grants; the conscience pauses an agent by flipping its tier live.
 - *Added a Planner, separated from the Coordinator.* Ben's roster has a chief-of-staff but no planner. Fusing "what work should exist and why" with "who does it right now" tends to either under-plan or stall the control loop. They are peers that coordinate through the log, never directly.
 
 **Replaced / deferred:** the assumption of one OpenClaw instance per agent; and the premise that every cognitive module is its own standing coordination role. Several of the OmegaClaw "mind modules" — the philosopher, the practical thinker, the communicator — are better modeled as *workers behind the event interface* than as standing parts of the coordination core. The motivated core is **planner + coordinator**, with the conscience as an observer; the rest are workers, brought in as the work demands them.
@@ -33,7 +33,7 @@ The spine of Ben's design is sound, and most of it is kept. The changes below ar
 
 **Projections & consumers.** The board (current task state), the human view (promoted events, rendered to Slack), metrics, audit/replay, and the knowledge layer are all read-only projections or consumers of the one log. Adding a view never touches the spine.
 
-**The membrane & capability gateway.** Every agent's sole route to every capability — log, artifact store, tools, memory, outbound actions, credentials — is a governed adapter, all under one central versioned policy. Two invariants hold forever: *no ungoverned route*, and *one central policy*. Permission tiers are simply capability grants; the conscience enforces by changing tiers live, and gateways respect the change immediately.
+**The gateway.** Every agent's sole route to every capability — log, artifact store, tools, memory, outbound actions, credentials — is a governed **gateway**: a policy layer that sits *above* the resources it fronts (for the log, above both the store and the board reducer). It enforces policy on the way in — who may emit what, and whether a stateful transition is legal — and projects on the way out, while the resources themselves stay dumb. The principle is *structure in the store, policy in the gateway*; dependencies flow one way (`gateway → resources`, never the reverse). All gateways run under one central versioned policy. Two invariants hold forever: *no ungoverned route*, and *one central policy*. Permission tiers are simply capability grants; the conscience enforces by changing tiers live, and the gateways respect the change immediately.
 
 **Roles, by emitter authority.** *planner* (the plan); *coordinator(s)* (assignment and board control); *workers* (the cognitive and tool agents that do the work); *instruments* (promotion, metrics, review, provenance, permission — deterministic derived events); *governance* (the conscience: observes the full log, flags drift, holds the live tier control). The full roster maps onto these classes; a new role is a new row, not new architecture.
 
@@ -46,7 +46,7 @@ The spine of Ben's design is sound, and most of it is kept. The changes below ar
 ## 4. Scaling invariants (must stay true along the whole path)
 
 - **The spine carries references, not bulk.** Artifacts, proofs, and tool outputs live in their own stores; the log carries refs. This is what keeps a single log viable at full scale.
-- **Every capability through the membrane, on one policy.** The gateway is universal; an ungoverned route is a hole in the whole governance story.
+- **Every capability through the gateway, on one policy.** The gateway is universal; an ungoverned route is a hole in the whole governance story.
 - **Global log ≠ global capabilities.** The coordination *history* is auditable to everyone — nothing secret in the record — while *powers* are restricted by tier. Secrets and credentials never land in the log.
 - **One clock for rules.** Rules and metrics read `logical_ts` (a sim clock in Regime A, wall-derived in Regime B) — never a mode-dependent field.
 
@@ -62,7 +62,7 @@ Each stage adds fidelity or capability *behind an existing seam*; none reshapes 
 |---|---|---|
 | **0** (M0) | spine + envelope + planner events + trace render | the substrate exists and replays |
 | **1** (M1–M3, Regime A) | board reducer; stub workers/coordinator/review/promotion/metrics; open- and closed-loop scenarios | coordination mechanics, promotion legibility, metrics (H1/H3/H6) |
-| **2 — gateway de-risk** | a **simulated artifact store** as the *second* capability behind the membrane | the capability gateway holds for more than one capability, and refs-not-bulk — the one bet we should not leave untested |
+| **2 — gateway de-risk** | a **simulated artifact store** as the *second* capability behind the gateway | the capability gateway holds for more than one capability, and refs-not-bulk — the one bet we should not leave untested |
 | **3** (Regime B begins) | swap the greedy coordinator → a real OmegaClaw BossyTron via the channel binding; multi-process; wall clock | the OmegaClaw-coordinator path; the substrate under independent writers |
 | **4 — real agents, one role at a time** | replace a stub worker with a real cheap-LLM / OpenClaw agent, then more; real artifacts + content-inspecting review and provenance (H4) | the worker ladder; content-dependent coordination; the editorial gates |
 | **5 — capabilities & governance** | real tool / outbound capabilities + permission tiers as grants; conscience as live tier control; Slack renderer for the human view | the permission and governance story end to end (H5) |

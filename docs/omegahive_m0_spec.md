@@ -16,7 +16,7 @@ This seeds the new `omegahive` repo. It records the concrete engineering decisio
 - Render a run's trace (console + JSON).
 - Be deterministic: same `(scenario, seed, run_id)` into a fresh log ⇒ byte-identical rows.
 
-**M0 does not:** board reducer (M1), workers/coordinator/review/promotion/metrics (M1+), the rendering/attention read stage, multi-process clients (Regime B). The membrane exists only as the `append()` chokepoint's emit-authority check.
+**M0 does not:** board reducer (M1), workers/coordinator/review/promotion/metrics (M1+), the rendering/attention read stage, multi-process clients (Regime B). The gateway exists only as the `append()` chokepoint's emit-authority check.
 
 ## 2. Locked stack
 
@@ -194,7 +194,7 @@ class EventLog:
         return Event(...)   # fully populated, incl. seq + correlation_id read back
 ```
 
-Emit-authority + payload validation here *are* the membrane in M0. When Regime B arrives, the per-agent adapter wraps this same call.
+Emit-authority + payload validation here *are* the gateway in M0. When Regime B arrives, the per-agent adapter wraps this same call.
 
 ## 8. Scenario + loader — `scenario/schema.py`, `scenario/loader.py`
 
