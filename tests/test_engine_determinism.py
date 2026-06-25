@@ -38,8 +38,12 @@ def _run(conn, scenario_path):
     return _fingerprint(store.read_run())
 
 
-# m0_smoke (happy path) and f1 (failure recovery, exercises wakes/reopen/reassign)
-@pytest.mark.parametrize("scenario_path", [M0_SMOKE, SCEN / "f1_review_failed_reopen.yaml"])
+# m0_smoke (happy path), f1 (failure recovery), f6 (promotion + detectors + wakes)
+@pytest.mark.parametrize("scenario_path", [
+    M0_SMOKE,
+    SCEN / "f1_review_failed_reopen.yaml",
+    SCEN / "f6_noisy_failure.yaml",
+])
 def test_engine_run_is_byte_identical(conn, scenario_path):
     with conn.cursor() as cur:
         cur.execute("TRUNCATE events RESTART IDENTITY")

@@ -25,11 +25,24 @@ def _match(events: list[Event], entry: str) -> list[Event]:
 
 
 def resolve_situations(events: list[Event], entries: list[str]) -> list[Event]:
-    """Each event matching any label entry is a distinct situation."""
+    """Every event matching any label entry (used by reconstructability)."""
     out: list[Event] = []
     for entry in entries:
         out.extend(_match(events, entry))
     return out
+
+
+def group_situations(events: list[Event], entries: list[str]) -> dict[tuple, set[str]]:
+    """Group matching events into situations keyed (task_id, label) -> {event_id str}.
+
+    Grouping aligns recall/suppression with the evaluator's per-(task, rule) dedup:
+    two review.failure events on one task are one situation, covered by one promotion.
+    """
+    groups: dict[tuple, set[str]] = {}
+    for entry in entries:
+        for e in _match(events, entry):
+            groups.setdefault((e.task_id, entry), set()).add(str(e.event_id))
+    return groups
 
 
 @dataclass(frozen=True)
@@ -62,13 +75,13 @@ def score(
     promotions = [e for e in events if e.event_type == "promotion.created"]
     promoted_refs = {p.payload["ref_event"] for p in promotions}
 
-    critical = resolve_situations(events, labels.critical)
-    routine = resolve_situations(events, labels.routine)
-    critical_ids = {str(e.event_id) for e in critical}
+    critical = group_situations(events, labels.critical)
+    routine = group_situations(events, labels.routine)
+    critical_ids = {eid for ids in critical.values() for eid in ids}
 
     promoted_critical = sum(1 for p in promotions if p.payload["ref_event"] in critical_ids)
-    recalled = sum(1 for e in critical if str(e.event_id) in promoted_refs)
-    suppressed = sum(1 for e in routine if str(e.event_id) not in promoted_refs)
+    recalled = sum(1 for ids in critical.values() if ids & promoted_refs)
+    suppressed = sum(1 for ids in routine.values() if not (ids & promoted_refs))
 
     tasks_total = sum(1 for e in events if e.event_type == "task.created")
     span = max((e.logical_ts for e in events), default=0)
@@ -81,7 +94,7 @@ def score(
 
     return PromotionScore(
         precision=_ratio(promoted_critical, len(promotions)),
-        recall_critical=_ratio(recalled, len(critical)),
+        recall_critical=_ratio(recalled, len(critical)),  # over critical situations (grouped)
         promotions_per_task=_ratio(len(promotions), tasks_total, empty=0.0),
         promotions_per_hour=_ratio(len(promotions), span, empty=0.0),
         routine_suppression_rate=_ratio(suppressed, len(routine)),

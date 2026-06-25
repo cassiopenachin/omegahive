@@ -1,0 +1,24 @@
+scenario_id: f6_noisy_failure
+seed: 123
+plan:
+  goal: "Produce a cited technical note"
+  tasks:
+    - {id: t1, title: "Research the topic", task_type: research}
+# both workers produce bad results: t1 fails review twice, all workers get tried,
+# the coordinator escalates, and the task is then stuck (stalls + ages).
+workers:
+  w1: { latency: {accept: 0, progress: 2, result: 4}, quality: missing_sources, cost: 5 }
+  w2: { latency: {accept: 0, progress: 2, result: 4}, quality: missing_sources, cost: 5 }
+run:
+  max_logical_ts: 1000
+config:
+  tiers: 2
+  detectors: { k_retry: 2, t_stall: 6, t_age: 10 }
+labels:
+  critical: [review.failed, task.escalated, "metric:retry_loop", "metric:stall", "metric:aging"]
+  routine:  [task.progress, task.accepted, task.assigned]
+expected:
+  board: { t1: ready }          # stuck: reopened -> ready, all workers tried, escalated
+  promotions:  { recall_critical: 0.9, suppression_routine: 0.7 }
+  h6_detected: [retry_loop, stall, aging]
+  reconstructable: true

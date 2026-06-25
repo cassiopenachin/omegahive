@@ -1,22 +1,27 @@
-# OmegaHive — M2 (coordination failures)
+# OmegaHive — M3 (promotion & legibility)
 
-A runnable spine, a deterministic run engine, and a coordinator that keeps the
-board coherent through *messy* conditions. The happy path (M1): planner → assign →
-work → review-pass → close, every task to `done` in dependency order. The failure
-recovery (M2): a bad result fails review → the coordinator reopens and re-gives the
-task to an *untried* worker → rework passes → done; rejects get re-given; hard
-failures, blocks, and silent/stale workers get escalated; double-assigns are
-mechanically refused — all deterministically.
+A runnable spine, a deterministic run engine, a coordinator that recovers from
+failures, and now a **legibility layer**: deterministic rules promote the
+human-relevant subset of the trace, H6 detectors flag unproductive dynamics
+(stalls, loops, retries, cost spikes, aging), and a tunable two-tier human view
+surfaces every critical situation while suppressing routine noise — measurably
+(precision/recall), and deterministically.
+
+- **M1 (happy path):** planner → assign → work → review-pass → close.
+- **M2 (failures):** bad result → reopen → re-give to an untried worker → rework
+  passes → done; rejects re-given; hard failures / blocks / silent workers escalated.
+- **M3 (legibility):** a promotion evaluator emits `promotion.created` by a
+  deterministic ruleset (severity *derived*, never self-reported); H6 detectors emit
+  `metric.threshold_crossed`; the human view is a projection of the promoted subset
+  (`tiers: 1` = all, `tiers: 2` = promoted only — that flag *is* the H3 experiment).
 
 Agents never touch the log directly. Every emit goes through the **gateway** — the
-policy layer that enforces emit-authority and transition-gates (the done-gate, the
-no-double-assign rule, and worker-owns-its-emits), folding the board, then calls
-the dumb store. *Structure in the store, policy in the gateway*; dependencies flow
-one way (`gateway → {events, board}`). Timeouts are a stateless coordinator policy
-over board timestamps plus a bare **wake** in the engine — no scheduler, no
-watchdog.
+policy layer that enforces emit-authority and transition-gates, folding the board,
+then calls the dumb store. *Structure in the store, policy in the gateway.*
+Timeouts and time-based detectors are stateless policies over board timestamps plus
+a bare **wake** in the engine — no scheduler, no watchdog.
 
-See `docs/omegahive_m2_spec.md` (and `docs/omegahive_v0_spec.md` §7) for the spec.
+See `docs/omegahive_m3_spec.md` (and `docs/omegahive_v0_spec.md` §7) for the spec.
 
 ## Stack
 
@@ -88,13 +93,33 @@ src/omegahive/
   gateway/       policy (emit-authority + access projection) + the Gateway (sole route)
   board/         reducer (fold -> Board) + transition rules (done-gate, no-double-assign, worker-owns)
   engine/        DES engine (+ bare wake), reactor protocol, assembly, seeded rng
-  reactors/      coordinator (failure reactions), worker (failure scripting), review, metrics
-  metrics/       the core + failure metric set
-  report/        trace / board / metrics rendering
+  reactors/      coordinator, worker, review, metrics, detectors (H6), promotion (H3)
+  metrics/       core + failure metrics, H6 detectors (pure), promotion scoring
+  promotion/     rules (ruleset + derived severity), config, human view, tuning + reconstructability
+  report/        trace / board / metrics / human / promotions rendering
   clock, config, db, scenario/, cli
-tests/           append / gateway / reducer(+failures) / gate / ownership / timer-wake /
-                 reactors / coordinator-failures / metrics / failure-scenarios / determinism
+tests/           append / gateway / reducer / gate / ownership / timer-wake / reactors /
+                 coordinator-failures / metrics / failure-scenarios / determinism /
+                 promotion-rules / h6-detectors / detectors-runner / human-view /
+                 two-tier / promotion-tuning / schema
 ```
+
+## Promotion & legibility (M3)
+
+`scenarios/f6_noisy_failure.yaml` is the H3/H6 driver: a task two bad workers can't
+satisfy → it fails review twice, exhausts the roster, escalates, then stalls and ages.
+
+```bash
+uv run omegahive run scenarios/f6_noisy_failure.yaml --run-id f6
+uv run omegahive report f6 --human --tiers 2     # the promoted subset (5 items from 23 events)
+uv run omegahive report f6 --human --tiers 1     # the full stream (no curation)
+uv run omegahive report f6 --promotions --scenario scenarios/f6_noisy_failure.yaml
+#   -> precision/recall_critical/routine_suppression + H6 detector firings vs the labels
+```
+
+Promotion thresholds are tuning *outputs* (`promotion/config.py`), fitted by
+`promotion/tuning.py::sweep_thresholds` against labeled scenarios to hit
+critical-recall ≥ 0.90 / routine-suppression ≥ 0.70.
 
 ## Failure scenario pack (M2)
 
