@@ -56,11 +56,12 @@ def make_event():
     """Build an in-memory Event for pure reactor/projection unit tests (no DB)."""
 
     def _make(event_type, payload=None, *, task_id=None, role="worker", agent="w1",
-              seq=1, logical_ts=0, recipient=None):
+              seq=1, logical_ts=0, recipient=None, correlation_id=None, causation_id=None):
         return Event(
             event_id=uuid4(), run_id="t", logical_ts=logical_ts,
             actor=Actor(role=role, id=agent), event_type=event_type, task_id=task_id,
             payload=payload or {}, seq=seq, recipient=recipient,
+            correlation_id=correlation_id, causation_id=causation_id,
         )
 
     return _make
