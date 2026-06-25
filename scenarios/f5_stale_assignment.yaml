@@ -1,0 +1,14 @@
+scenario_id: f5_stale_assignment
+seed: 123
+plan:
+  goal: "Produce a cited technical note"
+  tasks:
+    - {id: t1, title: "Research the topic", task_type: research}
+workers:
+  w1: { silent: true }
+coordinator:
+  thresholds: { stale_assigned: 8 }
+expected:
+  board: { t1: assigned }
+  events_required: ["task.escalated"]
+  metrics: { escalation_count: 1 }

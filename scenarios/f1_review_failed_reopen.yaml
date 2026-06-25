@@ -1,0 +1,13 @@
+scenario_id: f1_review_failed_reopen
+seed: 123
+plan:
+  goal: "Produce a cited technical note"
+  tasks:
+    - {id: t1, title: "Research the topic", task_type: research}
+workers:
+  w1: { latency: {accept: 0, progress: 2, result: 4}, quality: missing_sources, cost: 5 }
+  w2: { latency: {accept: 0, progress: 2, result: 4}, quality: ok,              cost: 5 }
+expected:
+  board: { t1: done }
+  events_required: ["review.failed", "task.status_override:reopened", "review.passed"]
+  metrics: { tasks_reopened: 1, reassignment_count: 1, false_completion_rate: 0 }

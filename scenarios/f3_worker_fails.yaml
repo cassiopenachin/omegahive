@@ -1,0 +1,12 @@
+scenario_id: f3_worker_fails
+seed: 123
+plan:
+  goal: "Produce a cited technical note"
+  tasks:
+    - {id: t1, title: "Research the topic", task_type: research}
+workers:
+  w1: { latency: {accept: 0, progress: 2, result: 4}, fails_at: 3 }
+expected:
+  board: { t1: failed }
+  events_required: ["task.failed", "task.escalated"]
+  metrics: { tasks_failed: 1, escalation_count: 1 }

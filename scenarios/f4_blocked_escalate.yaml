@@ -1,0 +1,14 @@
+scenario_id: f4_blocked_escalate
+seed: 123
+plan:
+  goal: "Produce a cited technical note"
+  tasks:
+    - {id: t1, title: "Research the topic", task_type: research}
+workers:
+  w1: { latency: {accept: 0, progress: 2, result: 4}, blocks: {at: 2, until: never} }
+coordinator:
+  thresholds: { blocked: 4 }
+expected:
+  board: { t1: blocked }
+  events_required: ["task.blocked", "task.escalated"]
+  metrics: { escalation_count: 1 }

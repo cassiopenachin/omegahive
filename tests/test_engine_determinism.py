@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from omegahive.clock import LogicalClock
 from omegahive.engine.assembly import build_engine
 from omegahive.events.envelope import Actor
@@ -11,7 +13,8 @@ from omegahive.events.log import EventLog
 from omegahive.gateway import Gateway, Policy
 from omegahive.scenario.loader import emit_plan, load_scenario
 
-M0_SMOKE = Path(__file__).resolve().parents[1] / "scenarios" / "m0_smoke.yaml"
+SCEN = Path(__file__).resolve().parents[1] / "scenarios"
+M0_SMOKE = SCEN / "m0_smoke.yaml"
 RUN_ID = "determinism"
 PLANNER = Actor(role="planner", id="planner")
 
@@ -26,23 +29,25 @@ def _fingerprint(events):
     ]
 
 
-def _run(conn):
+def _run(conn, scenario_path):
     store = EventLog(conn, LogicalClock(0), RUN_ID)
     gateway = Gateway(store, Policy())
-    scenario = load_scenario(M0_SMOKE)
+    scenario = load_scenario(scenario_path)
     emit_plan(gateway.handle(PLANNER), scenario)
     build_engine(gateway, store.clock, scenario).run()
     return _fingerprint(store.read_run())
 
 
-def test_engine_run_is_byte_identical(conn):
+# m0_smoke (happy path) and f1 (failure recovery, exercises wakes/reopen/reassign)
+@pytest.mark.parametrize("scenario_path", [M0_SMOKE, SCEN / "f1_review_failed_reopen.yaml"])
+def test_engine_run_is_byte_identical(conn, scenario_path):
     with conn.cursor() as cur:
         cur.execute("TRUNCATE events RESTART IDENTITY")
-    first = _run(conn)
+    first = _run(conn, scenario_path)
 
     with conn.cursor() as cur:
         cur.execute("TRUNCATE events RESTART IDENTITY")
-    second = _run(conn)
+    second = _run(conn, scenario_path)
 
     assert first == second
     assert len(first) > 5  # a real engine run, not just the plan

@@ -1,0 +1,13 @@
+scenario_id: f2_worker_rejects
+seed: 123
+plan:
+  goal: "Produce a cited technical note"
+  tasks:
+    - {id: t1, title: "Research the topic", task_type: research}
+workers:
+  w1: { rejects: true }
+  w2: { latency: {accept: 0, progress: 2, result: 4}, quality: ok, cost: 5 }
+expected:
+  board: { t1: done }
+  events_required: ["task.rejected", "review.passed"]
+  metrics: { reassignment_count: 1, false_completion_rate: 0 }

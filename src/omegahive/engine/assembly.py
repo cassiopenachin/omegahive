@@ -1,8 +1,8 @@
 """Assemble the engine from a scenario — the seam shared by the CLI and tests.
 
 Builds the fixed-order reactor list [coordinator, review, metrics, *workers] from
-the scenario's worker roster (defaulting to one worker if none is given), so M0
-scenarios run through M1 unchanged.
+the scenario's worker roster (defaulting to one worker if none is given), wiring
+the M2 worker failure scripting and the coordinator's staleness thresholds.
 """
 
 from __future__ import annotations
@@ -10,9 +10,26 @@ from __future__ import annotations
 from ..clock import LogicalClock
 from ..gateway.gateway import Gateway
 from ..reactors import Coordinator, MetricsRunner, ReviewInstrument, WorkerStub
+from ..reactors.worker import BlockSpec
 from ..scenario.schema import Scenario, WorkerPolicy
 from .engine import Engine
 from .protocol import Reactor
+
+
+def _worker(wid: str, pol: WorkerPolicy) -> WorkerStub:
+    blocks = BlockSpec(at=pol.blocks.at, until=pol.blocks.until) if pol.blocks else None
+    return WorkerStub(
+        wid,
+        accept=pol.latency.accept,
+        progress=pol.latency.progress,
+        result=pol.latency.result,
+        quality=pol.quality,
+        cost=pol.cost,
+        silent=pol.silent,
+        rejects=pol.rejects,
+        fails_at=pol.fails_at,
+        blocks=blocks,
+    )
 
 
 def build_engine(
@@ -23,20 +40,10 @@ def build_engine(
     max_logical_ts: int | None = None,
 ) -> Engine:
     roster = scenario.workers or {"w1": WorkerPolicy()}
+    workers = [_worker(wid, pol) for wid, pol in roster.items()]
 
-    workers: list[WorkerStub] = [
-        WorkerStub(
-            wid,
-            accept=pol.latency.accept,
-            progress=pol.latency.progress,
-            result=pol.latency.result,
-            quality=pol.quality,
-            cost=pol.cost,
-        )
-        for wid, pol in roster.items()
-    ]
-
-    coordinator = Coordinator(workers=list(roster.keys()))
+    thresholds = scenario.coordinator.thresholds if scenario.coordinator else {}
+    coordinator = Coordinator(workers=list(roster.keys()), thresholds=thresholds)
     review = ReviewInstrument()
     metrics = MetricsRunner()
 
