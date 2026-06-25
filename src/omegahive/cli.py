@@ -15,8 +15,11 @@ from .events.envelope import Actor
 from .events.log import EventLog
 from .gateway import Gateway, Policy
 from .metrics import compute
+from .metrics.promotion import score
 from .report.board import render_board
+from .report.human import render_human
 from .report.metrics import render_metrics
+from .report.promotions import render_promotions
 from .report.trace import render_table, to_json
 from .scenario.loader import emit_plan, load_scenario
 
@@ -74,8 +77,16 @@ def report(
     as_json: bool = typer.Option(False, "--json", help="dump raw rows as JSON"),
     show_board: bool = typer.Option(False, "--board", help="also render the final board"),
     show_metrics: bool = typer.Option(False, "--metrics", help="also render the metric set"),
+    show_human: bool = typer.Option(False, "--human", help="render the human view"),
+    tiers: int = typer.Option(2, "--tiers", help="human view: 1 = full stream, 2 = promoted"),
+    show_promotions: bool = typer.Option(
+        False, "--promotions", help="render the promotion scoreboard (needs --scenario)"
+    ),
+    scenario_path: str | None = typer.Option(
+        None, "--scenario", help="scenario YAML for labels (scoreboard)"
+    ),
 ) -> None:
-    """Render a run's trace, optionally with the final board and metrics."""
+    """Render a run's trace, optionally with the final board, metrics, human view, scoreboard."""
     with connect() as conn:
         store = EventLog(conn, LogicalClock(0), run_id)
         events = store.read_run(run_id)
@@ -88,11 +99,21 @@ def report(
         print(to_json(events))
         return
 
-    render_table(events, console)
+    if show_human:
+        render_human(events, tiers=tiers, console=console)
+    else:
+        render_table(events, console)
     if show_board:
         render_board(fold(events), console)
     if show_metrics:
         render_metrics(compute(events, fold(events)), console)
+    if show_promotions:
+        if scenario_path is None:
+            console.print("no labels available (pass --scenario <path> for the scoreboard)")
+        else:
+            scenario = load_scenario(scenario_path)
+            exp = scenario.expected.h6_detected if scenario.expected else []
+            render_promotions(score(events, scenario.labels, expected_detectors=exp), console)
 
 
 if __name__ == "__main__":
