@@ -19,7 +19,7 @@ class DetectorConfig:
     a_thresh: float = 8.0       # activity_vs_progress: events-per-completed (or churn) ceiling
     t_stall: int = 12           # stall: no status change anywhere for this long
     t_age: int = 30             # aging: a task open this long
-    loop_repeat: int = 2        # loop: repeats of (event_type, task) on one thread
+    loop_repeat: int = 3        # loop: repeats of (event_type, task) on one thread
 
 
 @dataclass(frozen=True)
