@@ -25,7 +25,7 @@ class DetectorConfig:
 @dataclass(frozen=True)
 class PromotionConfig:
     t_block: int = 6                                  # blocked_too_long
-    n_thread: int = 12                                # thread_too_long (correlation length)
+    n_thread: int = 20                                # thread_too_long (correlation length)
     detector: DetectorConfig = field(default_factory=DetectorConfig)
 
     @classmethod

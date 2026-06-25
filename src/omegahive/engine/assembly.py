@@ -9,7 +9,15 @@ from __future__ import annotations
 
 from ..clock import LogicalClock
 from ..gateway.gateway import Gateway
-from ..reactors import Coordinator, MetricsRunner, ReviewInstrument, WorkerStub
+from ..promotion.config import PromotionConfig
+from ..reactors import (
+    Coordinator,
+    DetectorsRunner,
+    MetricsRunner,
+    PromotionEvaluator,
+    ReviewInstrument,
+    WorkerStub,
+)
 from ..reactors.worker import BlockSpec
 from ..scenario.schema import Scenario, WorkerPolicy
 from .engine import Engine
@@ -47,6 +55,10 @@ def build_engine(
     review = ReviewInstrument()
     metrics = MetricsRunner()
 
-    reactors: list[Reactor] = [coordinator, review, metrics, *workers]
+    promo_config = PromotionConfig.from_scenario(scenario.config)
+    detectors = DetectorsRunner(config=promo_config.detector)
+    promotion = PromotionEvaluator(config=promo_config)
+
+    reactors: list[Reactor] = [coordinator, review, metrics, detectors, promotion, *workers]
     budget = max_logical_ts if max_logical_ts is not None else scenario.run.max_logical_ts
     return Engine(gateway, clock, reactors, max_logical_ts=budget)

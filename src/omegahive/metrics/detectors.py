@@ -86,19 +86,23 @@ def cost_spike(events, board: Board, now: int, cfg: DetectorConfig) -> list[Dete
     return []
 
 
+_CHURN = {"task.assigned", "task.reassigned", "task.accepted", "task.progress"}
+
+
 def activity_vs_progress(
     events, board: Board, now: int, cfg: DetectorConfig
 ) -> list[DetectorFiring]:
-    """Busy but not progressing: events-per-completed (or progress-without-result) too high."""
+    """Busy but not progressing: work-churn per completion (or churn with nothing done) too high.
+
+    Counts only *work* events (assign/reassign/accept/progress), not instrument noise,
+    so a healthy run sits well under the threshold and only churning (rework-heavy or
+    stuck) runs trip it.
+    """
+    churn = sum(1 for e in events if e.event_type in _CHURN)
     completed = sum(1 for s in board.tasks.values() if s.status == "done")
-    if completed:
-        ratio = len(events) / completed
-        if ratio > cfg.a_thresh:
-            return [DetectorFiring("activity_vs_progress", ratio, cfg.a_thresh, None)]
-        return []
-    progress = sum(1 for e in events if e.event_type == "task.progress")
-    if progress > cfg.a_thresh:
-        return [DetectorFiring("activity_vs_progress", float(progress), cfg.a_thresh, None)]
+    value = churn / completed if completed else float(churn)
+    if value > cfg.a_thresh:
+        return [DetectorFiring("activity_vs_progress", value, cfg.a_thresh, None)]
     return []
 
 
