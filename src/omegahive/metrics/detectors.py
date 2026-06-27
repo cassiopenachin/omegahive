@@ -97,6 +97,10 @@ def activity_vs_progress(
     Counts only *work* events (assign/reassign/accept/progress), not instrument noise,
     so a healthy run sits well under the threshold and only churning (rework-heavy or
     stuck) runs trip it.
+
+    Observation (M4): on a fully-stalled 0-completion run the churn can stay under the
+    threshold and this stays silent — revisit `a_thresh` against the observed churn
+    distribution from the first sweep, not before.
     """
     churn = sum(1 for e in events if e.event_type in _CHURN)
     completed = sum(1 for s in board.tasks.values() if s.status == "done")

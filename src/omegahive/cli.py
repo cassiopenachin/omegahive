@@ -11,12 +11,15 @@ from .board import fold
 from .clock import LogicalClock
 from .db import connect, migrate
 from .engine.assembly import build_engine
+from .engine.simulate import simulate
 from .events.envelope import Actor
-from .events.log import EventLog
+from .events.log import EventLog, read_run_ids
 from .gateway import Gateway, Policy
 from .metrics import compute
+from .metrics.distribution import aggregate
 from .metrics.promotion import score
 from .report.board import render_board
+from .report.distribution import render_distribution, render_promotion_distribution
 from .report.human import render_human
 from .report.metrics import render_metrics
 from .report.promotions import render_promotions
@@ -85,8 +88,24 @@ def report(
     scenario_path: str | None = typer.Option(
         None, "--scenario", help="scenario YAML for labels (scoreboard)"
     ),
+    show_distribution: bool = typer.Option(
+        False, "--distribution", help="treat run_id as a sweep prefix; render the aggregate"
+    ),
 ) -> None:
     """Render a run's trace, optionally with the final board, metrics, human view, scoreboard."""
+    if show_distribution:
+        with connect() as conn:
+            run_ids = read_run_ids(conn, run_id)
+            if not run_ids:
+                console.print(f"no runs with prefix: {run_id}")
+                raise typer.Exit(code=1)
+            runs = []
+            for rid in run_ids:
+                evs = EventLog(conn, LogicalClock(0), rid).read_run(rid)
+                runs.append(compute(evs, fold(evs)))
+        render_distribution(aggregate(runs), console)
+        return
+
     with connect() as conn:
         store = EventLog(conn, LogicalClock(0), run_id)
         events = store.read_run(run_id)
@@ -114,6 +133,32 @@ def report(
             scenario = load_scenario(scenario_path)
             exp = scenario.expected.h6_detected if scenario.expected else []
             render_promotions(score(events, scenario.labels, expected_detectors=exp), console)
+
+
+@app.command("simulate")
+def simulate_cmd(
+    scenario_path: str = typer.Argument(..., help="path to a scenario YAML"),
+    replications: int | None = typer.Option(
+        None, "--replications", help="seed count; uses seeds 0..N-1 (default: run.replications)"
+    ),
+    seeds: str | None = typer.Option(None, "--seeds", help="explicit comma list, e.g. 0,1,2"),
+) -> None:
+    """Run a scenario once per seed and print the aggregate distribution."""
+    scenario = load_scenario(scenario_path)
+    if seeds is not None:
+        seed_list = [int(x) for x in seeds.split(",")]
+    else:
+        n = replications if replications is not None else scenario.run.replications
+        seed_list = list(range(n))
+
+    with connect() as conn:
+        result = simulate(scenario, seed_list, conn)
+        conn.commit()
+
+    console.print(f"swept {len(seed_list)} seeds of {scenario.scenario_id}")
+    render_distribution(result.metrics, console)
+    if result.promotion is not None:
+        render_promotion_distribution(result.promotion, console)
 
 
 if __name__ == "__main__":

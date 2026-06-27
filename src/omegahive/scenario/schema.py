@@ -93,6 +93,8 @@ class ScenarioConfig(BaseModel):
 
 class Labels(BaseModel):
     # ground-truth human-relevance for tuning: event types or "metric:<detector>" forms.
+    # Note: label-critical (should-surface) and derived severity (how-loud) are
+    # orthogonal — e.g. `aging` is label-critical yet renders at severity `warning`.
     critical: list[str] = Field(default_factory=list)
     routine: list[str] = Field(default_factory=list)
 

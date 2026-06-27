@@ -51,7 +51,7 @@ class PromotionScore:
     precision: float
     recall_critical: float
     promotions_per_task: float
-    promotions_per_hour: float          # promotions per logical tick of the run's span
+    promotions_per_tick: float          # promotions per logical tick of the run's span
     routine_suppression_rate: float
     reconstructable: bool
     # H6
@@ -96,7 +96,7 @@ def score(
         precision=_ratio(promoted_critical, len(promotions)),
         recall_critical=_ratio(recalled, len(critical)),  # over critical situations (grouped)
         promotions_per_task=_ratio(len(promotions), tasks_total, empty=0.0),
-        promotions_per_hour=_ratio(len(promotions), span, empty=0.0),
+        promotions_per_tick=_ratio(len(promotions), span, empty=0.0),
         routine_suppression_rate=_ratio(suppressed, len(routine)),
         reconstructable=reconstructable(events, labels),
         detector_firings=dict(sorted((str(k), v) for k, v in firings.items())),

@@ -1,11 +1,11 @@
-# OmegaHive — M3 (promotion & legibility)
+# OmegaHive — M4 (closed-loop / stochastic stubs)
 
 A runnable spine, a deterministic run engine, a coordinator that recovers from
-failures, and now a **legibility layer**: deterministic rules promote the
-human-relevant subset of the trace, H6 detectors flag unproductive dynamics
-(stalls, loops, retries, cost spikes, aging), and a tunable two-tier human view
-surfaces every critical situation while suppressing routine noise — measurably
-(precision/recall), and deterministically.
+failures, a legibility layer, and now **stochastic workers**: a flat per-attempt
+`p_success` turns a scenario into a *distribution over seeds*, so the M1–M3
+instruments (H1/H3/H6 + cost) read as distributions under a fixed greedy-coordinator
+control. Stochastic is opt-in — a worker with no `outcome` block is byte-identical
+to M3.
 
 - **M1 (happy path):** planner → assign → work → review-pass → close.
 - **M2 (failures):** bad result → reopen → re-give to an untried worker → rework
@@ -14,6 +14,10 @@ surfaces every critical situation while suppressing routine noise — measurably
   deterministic ruleset (severity *derived*, never self-reported); H6 detectors emit
   `metric.threshold_crossed`; the human view is a projection of the promoted subset
   (`tiers: 1` = all, `tiers: 2` = promoted only — that flag *is* the H3 experiment).
+- **M4 (stochastic):** `worker.outcome.p_success` draws each result's quality from a
+  seeded RNG (keyed by seed/agent/task/attempt); `simulate` sweeps N seeds into a
+  deterministic distribution (completion-rate, escalation-incidence, per-metric
+  mean/sd/quantiles). Determinism is per-`(scenario, seed)`.
 
 Agents never touch the log directly. Every emit goes through the **gateway** — the
 policy layer that enforces emit-authority and transition-gates, folding the board,
@@ -21,7 +25,7 @@ then calls the dumb store. *Structure in the store, policy in the gateway.*
 Timeouts and time-based detectors are stateless policies over board timestamps plus
 a bare **wake** in the engine — no scheduler, no watchdog.
 
-See `docs/omegahive_m3_spec.md` (and `docs/omegahive_v0_spec.md` §7) for the spec.
+See `docs/omegahive_m4_spec.md` (and `docs/omegahive_v0_spec.md` §7) for the spec.
 
 ## Stack
 
@@ -87,16 +91,16 @@ service on every push and PR.
 
 ```
 migrations/      numbered .sql files (events table + correlation trigger)
-scenarios/       m0_smoke, m1_smoke, and the F-pack (f1..f5) failure scenarios
+scenarios/       m0_smoke, m1_smoke, the F-pack (f1..f6), and s1_flaky_worker (stochastic)
 src/omegahive/
   events/        the dumb store: envelope, payload schema (PAYLOADS), EventLog.append
   gateway/       policy (emit-authority + access projection) + the Gateway (sole route)
   board/         reducer (fold -> Board) + transition rules (done-gate, no-double-assign, worker-owns)
-  engine/        DES engine (+ bare wake), reactor protocol, assembly, seeded rng
-  reactors/      coordinator, worker, review, metrics, detectors (H6), promotion (H3)
-  metrics/       core + failure metrics, H6 detectors (pure), promotion scoring
+  engine/        DES engine (+ bare wake), reactor protocol, assembly, seeded rng, simulate (sweep)
+  reactors/      coordinator, worker (det. + stochastic), review, metrics, detectors (H6), promotion (H3)
+  metrics/       core + failure metrics, H6 detectors, promotion scoring, distribution aggregation
   promotion/     rules (ruleset + derived severity), config, human view, tuning + reconstructability
-  report/        trace / board / metrics / human / promotions rendering
+  report/        trace / board / metrics / human / promotions / distribution rendering
   clock, config, db, scenario/, cli
 tests/           append / gateway / reducer / gate / ownership / timer-wake / reactors /
                  coordinator-failures / metrics / failure-scenarios / determinism /
@@ -120,6 +124,23 @@ uv run omegahive report f6 --promotions --scenario scenarios/f6_noisy_failure.ya
 Promotion thresholds are tuning *outputs* (`promotion/config.py`), fitted by
 `promotion/tuning.py::sweep_thresholds` against labeled scenarios to hit
 critical-recall ≥ 0.90 / routine-suppression ≥ 0.70.
+
+## Stochastic sweeps (M4)
+
+`scenarios/s1_flaky_worker.yaml` has two flaky workers at `p_success: 0.4`: `w1` may
+succeed, else the task reopens and `w2` gets a try, else it escalates — so across seeds
+some runs recover via retry and others escalate.
+
+```bash
+uv run omegahive simulate scenarios/s1_flaky_worker.yaml --replications 50
+#   -> completion_rate ~0.70, escalation_incidence ~0.30, false_completion_rate 0.0
+#      + per-metric mean/sd/p50/min/max over the 50 seeds
+uv run omegahive report s1_flaky_worker --distribution    # re-render the persisted sweep
+```
+
+Determinism is per-`(scenario, seed)`: a fixed seed re-run into a clean table is
+byte-identical (event_id included); the multi-seed aggregate is deterministic given the
+fixed seed set. A worker with no `outcome` block stays exactly its M0–M3 deterministic self.
 
 ## Failure scenario pack (M2)
 
