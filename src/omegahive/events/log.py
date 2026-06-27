@@ -50,6 +50,15 @@ WHERE run_id = %(run_id)s
 ORDER BY seq
 """
 
+_SELECT_RUN_IDS = "SELECT DISTINCT run_id FROM events WHERE run_id LIKE %(prefix)s ORDER BY run_id"
+
+
+def read_run_ids(conn, prefix: str) -> list[str]:
+    """All distinct run_ids beginning with `prefix` (for re-rendering a seed sweep)."""
+    with conn.cursor() as cur:
+        cur.execute(_SELECT_RUN_IDS, {"prefix": prefix + "%"})
+        return [r[0] for r in cur.fetchall()]
+
 
 def _row_to_event(row: dict) -> Event:
     recipient = None
