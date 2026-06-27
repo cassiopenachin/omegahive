@@ -24,7 +24,7 @@ from .engine import Engine
 from .protocol import Reactor
 
 
-def _worker(wid: str, pol: WorkerPolicy) -> WorkerStub:
+def _worker(wid: str, pol: WorkerPolicy, seed: int) -> WorkerStub:
     blocks = BlockSpec(at=pol.blocks.at, until=pol.blocks.until) if pol.blocks else None
     return WorkerStub(
         wid,
@@ -37,6 +37,9 @@ def _worker(wid: str, pol: WorkerPolicy) -> WorkerStub:
         rejects=pol.rejects,
         fails_at=pol.fails_at,
         blocks=blocks,
+        seed=seed,
+        p_success=pol.outcome.p_success if pol.outcome else None,
+        quality_on_fail=pol.outcome.quality_on_fail if pol.outcome else "missing_sources",
     )
 
 
@@ -46,9 +49,11 @@ def build_engine(
     scenario: Scenario,
     *,
     max_logical_ts: int | None = None,
+    seed: int | None = None,
 ) -> Engine:
+    eff_seed = seed if seed is not None else scenario.seed
     roster = scenario.workers or {"w1": WorkerPolicy()}
-    workers = [_worker(wid, pol) for wid, pol in roster.items()]
+    workers = [_worker(wid, pol, eff_seed) for wid, pol in roster.items()]
 
     thresholds = scenario.coordinator.thresholds if scenario.coordinator else {}
     coordinator = Coordinator(workers=list(roster.keys()), thresholds=thresholds)

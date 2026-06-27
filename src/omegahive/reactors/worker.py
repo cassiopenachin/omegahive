@@ -1,9 +1,14 @@
-"""WorkerStub — a scheduling reactor with deterministic, scriptable failure modes.
+"""WorkerStub — a scheduling reactor with deterministic and stochastic outcomes.
 
 On an assignment-like event addressed to it (`task.assigned` or `task.reassigned`),
 the worker acts per its policy: accept then schedule progress + result (quality
-drives review), or one of the scripted failures — silent / rejects / blocks /
-fails_at. M2 failure modes are deterministic (stochastic is M4).
+drives review), or one of the scripted M2 failures — silent / rejects / blocks /
+fails_at (all deterministic).
+
+M4 adds one stochastic primitive: with `p_success` set, each assignment draws its
+result quality (`ok` with probability `p_success`, else `quality_on_fail`) from a
+seeded RNG keyed by (seed, agent, task, attempt). With `p_success is None` the worker
+is exactly its M0–M3 deterministic self — zero RNG draws, byte-identical output.
 
 No bookkeeping for stale scheduled events: if the task is later pulled, this
 worker's already-scheduled emits fire, the gateway rejects them (worker-owns-its-
@@ -16,6 +21,7 @@ from dataclasses import dataclass
 
 from ..board.reducer import Board
 from ..engine.protocol import Emit, ReactResult, Scheduled
+from ..engine.rng import rng_for
 from ..events.envelope import Event
 
 
@@ -41,6 +47,9 @@ class WorkerStub:
         rejects: bool = False,
         fails_at: int | None = None,
         blocks: BlockSpec | None = None,
+        seed: int = 0,
+        p_success: float | None = None,
+        quality_on_fail: str = "missing_sources",
     ) -> None:
         self.agent_id = agent_id
         self.accept = accept
@@ -52,6 +61,10 @@ class WorkerStub:
         self.rejects = rejects
         self.fails_at = fails_at
         self.blocks = blocks
+        self.seed = seed
+        self.p_success = p_success
+        self.quality_on_fail = quality_on_fail
+        self._attempts: dict[str | None, int] = {}
 
     def _targets_me(self, ev: Event) -> bool:
         if ev.event_type == "task.assigned":
@@ -67,6 +80,15 @@ class WorkerStub:
                 continue
             tid = ev.task_id
             cause = ev.event_id
+
+            # One draw per assignment (stable order). p_success None => deterministic,
+            # zero draws, quality == self.quality (byte-identical to M0-M3).
+            attempt = self._attempts[tid] = self._attempts.get(tid, 0) + 1
+            if self.p_success is None:
+                quality = self.quality
+            else:
+                rng = rng_for(self.seed, self.agent_id, tid, attempt)
+                quality = "ok" if rng.random() < self.p_success else self.quality_on_fail
 
             if self.silent:
                 continue  # never even accepts -> stays assigned -> coordinator's stale wake
@@ -111,17 +133,18 @@ class WorkerStub:
                                   delay=after_unblock)
                     )
                     res.scheduled.append(
-                        self._result(tid, cause, delay=after_unblock + self.result)
+                        self._result(tid, cause, delay=after_unblock + self.result, quality=quality)
                     )
                 continue  # blocked path posts no result unless it unblocks
 
-            res.scheduled.append(self._result(tid, cause, delay=self.result))
+            res.scheduled.append(self._result(tid, cause, delay=self.result, quality=quality))
         return res
 
-    def _result(self, tid: str | None, cause, delay: int) -> Scheduled:
+    def _result(self, tid: str | None, cause, delay: int, quality: str | None = None) -> Scheduled:
+        q = self.quality if quality is None else quality
         return Scheduled(
             Emit("task.result_posted",
-                 {"artifact_refs": [{"ref": f"{tid}-artifact", "quality": self.quality}],
+                 {"artifact_refs": [{"ref": f"{tid}-artifact", "quality": q}],
                   "cost": self.cost},
                  task_id=tid, causation_id=cause),
             delay=delay,

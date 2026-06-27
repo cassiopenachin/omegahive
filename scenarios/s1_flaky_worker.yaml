@@ -1,0 +1,20 @@
+scenario_id: s1_flaky_worker
+seed: 0
+plan:
+  goal: "Produce a cited technical note"
+  tasks:
+    - {id: t1, title: "Research the topic", task_type: research}
+run:
+  max_logical_ts: 1000
+  replications: 50            # seed count for `simulate` (uses seeds 0..N-1)
+# two flaky workers at one p_success: w1 ok -> done; else reopen -> w2 ok ->
+# recovered-done; else escalate. Seeds split across recovery and escalation.
+workers:
+  w1: { latency: {accept: 0, progress: 2, result: 4}, cost: 5, outcome: {p_success: 0.4} }
+  w2: { latency: {accept: 0, progress: 2, result: 4}, cost: 5, outcome: {p_success: 0.4} }
+expected:
+  invariants:
+    false_completion_rate: 0
+    completion_rate_monotonic_in_p: true
+    completion_rate_nondecreasing_in_workers: true
+    escalation_falls_as_p_rises: true

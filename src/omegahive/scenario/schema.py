@@ -52,6 +52,13 @@ class BlockSpec(BaseModel):
     until: int | Literal["never"] = "never"  # tick to unblock at, or never
 
 
+class WorkerOutcome(BaseModel):
+    # M4 stochastic knob (opt-in): result quality is `ok` with prob p_success per
+    # attempt, else quality_on_fail. No block => today's deterministic point value.
+    p_success: float
+    quality_on_fail: Literal["ok", "missing_sources", "wrong_content"] = "missing_sources"
+
+
 class WorkerPolicy(BaseModel):
     latency: LatencyPolicy = LatencyPolicy()
     quality: Literal["ok", "missing_sources", "wrong_content"] = "ok"
@@ -61,10 +68,13 @@ class WorkerPolicy(BaseModel):
     rejects: bool = False
     fails_at: int | None = None
     blocks: BlockSpec | None = None
+    # M4 opt-in stochastic outcome (None => deterministic, byte-identical to M0–M3)
+    outcome: WorkerOutcome | None = None
 
 
 class RunConfig(BaseModel):
     max_logical_ts: int = 1000  # budget / safety net
+    replications: int = 1       # M4: seed count for `simulate` (uses seeds 0..N-1)
 
 
 class CoordinatorConfig(BaseModel):
@@ -112,6 +122,15 @@ class PromotionExpectation(BaseModel):
     )
 
 
+class Invariants(BaseModel):
+    # M4 declarative: what must hold across a seed sweep. The cross-sweep checks are
+    # implemented in test_distribution_invariants — this block documents intent.
+    false_completion_rate: int = 0
+    completion_rate_monotonic_in_p: bool = False
+    completion_rate_nondecreasing_in_workers: bool = False
+    escalation_falls_as_p_rises: bool = False
+
+
 class Expected(BaseModel):
     board: dict[str, str] = Field(default_factory=dict)        # task_id -> expected status
     metrics: dict[str, float] = Field(default_factory=dict)    # metric name -> expected value
@@ -120,6 +139,8 @@ class Expected(BaseModel):
     promotions: PromotionExpectation | None = None
     h6_detected: list[str] = Field(default_factory=list)       # detector names that should fire
     reconstructable: bool | None = None
+    # M4
+    invariants: Invariants | None = None
 
 
 class Scenario(BaseModel):
