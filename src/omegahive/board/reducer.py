@@ -29,6 +29,7 @@ class TaskState:
     last_status_change_ts: int = 0         # logical_ts of the event that last changed status
     escalated: bool = False                # set by task.escalated (escalate-once)
     tried_by: set[str] = field(default_factory=set)  # workers ever given this task
+    task_type: str | None = None           # surfaced from task.created (M5 per-type difficulty)
 
 
 @dataclass
@@ -70,7 +71,7 @@ def fold(events: list[Event]) -> Board:
         here = tasks.get(tid) if tid is not None else None
 
         if et == "task.created" and tid is not None:
-            tasks[tid] = TaskState(task_id=tid, status="created")
+            tasks[tid] = TaskState(task_id=tid, status="created", task_type=p.get("task_type"))
             _change(tasks[tid], ev)
         elif et == "dependency.added" and here is not None:
             here.depends_on.add(p["depends_on"])

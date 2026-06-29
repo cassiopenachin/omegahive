@@ -50,6 +50,7 @@ class WorkerStub:
         seed: int = 0,
         p_success: float | None = None,
         quality_on_fail: str = "missing_sources",
+        success_by_type: dict[str, float] | None = None,
     ) -> None:
         self.agent_id = agent_id
         self.accept = accept
@@ -64,6 +65,7 @@ class WorkerStub:
         self.seed = seed
         self.p_success = p_success
         self.quality_on_fail = quality_on_fail
+        self.success_by_type = success_by_type
         self._attempts: dict[str | None, int] = {}
 
     def _targets_me(self, ev: Event) -> bool:
@@ -82,13 +84,20 @@ class WorkerStub:
             cause = ev.event_id
 
             # One draw per assignment (stable order). p_success None => deterministic,
-            # zero draws, quality == self.quality (byte-identical to M0-M3).
+            # zero draws, quality == self.quality (byte-identical to M0-M3). The per-type
+            # board lookup (M5) is gated strictly behind success_by_type is not None, so
+            # the M4 scalar path is byte-identical (no board read).
             attempt = self._attempts[tid] = self._attempts.get(tid, 0) + 1
             if self.p_success is None:
                 quality = self.quality
             else:
+                if self.success_by_type is None:
+                    p = self.p_success
+                else:
+                    ttype = board.tasks[tid].task_type if tid is not None else None
+                    p = self.success_by_type.get(ttype, self.p_success) if ttype else self.p_success
                 rng = rng_for(self.seed, self.agent_id, tid, attempt)
-                quality = "ok" if rng.random() < self.p_success else self.quality_on_fail
+                quality = "ok" if rng.random() < p else self.quality_on_fail
 
             if self.silent:
                 continue  # never even accepts -> stays assigned -> coordinator's stale wake

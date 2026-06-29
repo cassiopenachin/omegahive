@@ -57,6 +57,8 @@ class WorkerOutcome(BaseModel):
     # attempt, else quality_on_fail. No block => today's deterministic point value.
     p_success: float
     quality_on_fail: Literal["ok", "missing_sources", "wrong_content"] = "missing_sources"
+    # M5 per-type difficulty (opt-in): effective success = success_by_type.get(type, p_success).
+    success_by_type: dict[str, float] | None = None
 
 
 class WorkerPolicy(BaseModel):

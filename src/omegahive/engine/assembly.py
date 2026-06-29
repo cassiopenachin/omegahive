@@ -40,6 +40,7 @@ def _worker(wid: str, pol: WorkerPolicy, seed: int) -> WorkerStub:
         seed=seed,
         p_success=pol.outcome.p_success if pol.outcome else None,
         quality_on_fail=pol.outcome.quality_on_fail if pol.outcome else "missing_sources",
+        success_by_type=pol.outcome.success_by_type if pol.outcome else None,
     )
 
 
