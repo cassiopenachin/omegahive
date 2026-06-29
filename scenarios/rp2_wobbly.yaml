@@ -1,7 +1,8 @@
 scenario_id: rp2_wobbly
 seed: 0
-# RP2 reproduction DAG — "wobbly": capable-but-unreliable workers (coin-flip per attempt).
-# Now the experiment fork can fail on >1 branch at once (simultaneous execution failure).
+# RP2 reproduction DAG — "wobbly": setup reliable (0.9), experiments coin-flip (0.5).
+# The middle of the happiness gradient; the experiment fork can fail on >1 branch at
+# once (simultaneous execution failure) now that the pipeline reliably reaches it.
 plan:
   goal: "Reproduce a paper's results"
   tasks:
@@ -28,12 +29,18 @@ plan:
     - [writeup, synthesize]
 run: {max_logical_ts: 1000, replications: 50}
 workers:
-  w1: {latency: {accept: 0, progress: 2, result: 4}, cost: 5, outcome: {p_success: 0.5}}
-  w2: {latency: {accept: 0, progress: 2, result: 4}, cost: 5, outcome: {p_success: 0.5}}
+  w1: {latency: {accept: 0, progress: 2, result: 4}, cost: 5,
+       outcome: {p_success: 0.9,
+                 success_by_type: {research: 0.9, data: 0.9, coding: 0.9,
+                                   experiment: 0.5, analysis: 0.9, writing: 0.9}}}
+  w2: {latency: {accept: 0, progress: 2, result: 4}, cost: 5,
+       outcome: {p_success: 0.9,
+                 success_by_type: {research: 0.9, data: 0.9, coding: 0.9,
+                                   experiment: 0.5, analysis: 0.9, writing: 0.9}}}
 config: {tiers: 2}
 labels:
   critical: [review.failed, task.escalated, "metric:retry_loop", "metric:stall", "metric:aging"]
   routine:  [task.progress, task.accepted, task.assigned]
 expected:
-  h6_detected: [retry_loop, stall, aging]
+  h6_detected: [retry_loop]
   invariants: {false_completion_rate: 0}

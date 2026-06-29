@@ -1,9 +1,10 @@
 scenario_id: rp2_messy
 seed: 0
-# RP2 reproduction DAG — "messy": p_success 0.3 + a worker that blocks mid-run + a
-# silent worker. The two diamonds give genuinely concurrent failures (method∥data,
-# exp_1∥exp_2∥exp_3) before the AND-joins stall — the H3 simultaneity the linear chain
-# couldn't produce.
+# RP2 reproduction DAG — "messy": setup reliable (0.9), experiments hard (0.3). Per-type
+# *substantive* difficulty concentrates failure at the three-way experiment fork — the
+# RCBench-faithful "messy" (substantive failure dominates). Setup reliably completes, so
+# the pipeline reaches the fork and >1 experiment can escalate at once.
+# (The prior block+silent operational-chaos workers are dropped — that texture lives in f6.)
 plan:
   goal: "Reproduce a paper's results"
   tasks:
@@ -30,15 +31,19 @@ plan:
     - [writeup, synthesize]
 run: {max_logical_ts: 1000, replications: 50}
 workers:
-  w1: {latency: {accept: 0, progress: 2, result: 4}, cost: 5, outcome: {p_success: 0.3}}
-  w2: {latency: {accept: 0, progress: 2, result: 4}, cost: 5, outcome: {p_success: 0.3},
-       blocks: {at: 6, until: never}}
-  w3: {silent: true}
+  w1: {latency: {accept: 0, progress: 2, result: 4}, cost: 5,
+       outcome: {p_success: 0.9,
+                 success_by_type: {research: 0.9, data: 0.9, coding: 0.9,
+                                   experiment: 0.3, analysis: 0.9, writing: 0.9}}}
+  w2: {latency: {accept: 0, progress: 2, result: 4}, cost: 5,
+       outcome: {p_success: 0.9,
+                 success_by_type: {research: 0.9, data: 0.9, coding: 0.9,
+                                   experiment: 0.3, analysis: 0.9, writing: 0.9}}}
 coordinator: {thresholds: {stale_assigned: 8, blocked: 6}}
 config: {tiers: 2}
 labels:
-  critical: [review.failed, task.escalated, "metric:retry_loop", "metric:stall", "metric:aging"]
+  critical: [review.failed, task.escalated, "metric:stall", "metric:aging"]
   routine:  [task.progress, task.accepted, task.assigned]
 expected:
-  h6_detected: [retry_loop, stall, aging]
+  h6_detected: [stall, aging]
   invariants: {false_completion_rate: 0}

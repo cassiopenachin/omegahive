@@ -38,11 +38,13 @@ def _run(conn, scenario_path):
     return _fingerprint(store.read_run())
 
 
-# m0_smoke (happy path), f1 (failure recovery), f6 (promotion + detectors + wakes)
+# m0_smoke (happy), f1 (failure recovery), f6 (promotion + detectors + wakes),
+# rp2_messy (M5 per-type stochastic draws)
 @pytest.mark.parametrize("scenario_path", [
     M0_SMOKE,
     SCEN / "f1_review_failed_reopen.yaml",
     SCEN / "f6_noisy_failure.yaml",
+    SCEN / "rp2_messy.yaml",
 ])
 def test_engine_run_is_byte_identical(conn, scenario_path):
     with conn.cursor() as cur:

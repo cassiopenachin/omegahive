@@ -2,7 +2,8 @@ scenario_id: rp2_clean
 seed: 0
 # RP2 — reproduction-shaped DAG (two diamonds, 3 parallel experiments). The forks are
 # parallelization, not decisions: every branch is a required output, joins are AND,
-# failure is execution failure. "clean" setting: reliable workers, no injected failure.
+# failure is execution failure. "clean": difficulty concentrated per task type, but the
+# experiment type is reliable here (0.9) — the top of the happiness gradient.
 plan:
   goal: "Reproduce a paper's results"
   tasks:
@@ -28,8 +29,15 @@ plan:
     - [synthesize, exp_3]
     - [writeup, synthesize]
 run: {max_logical_ts: 1000, replications: 50}
+# homogeneous roster: every worker carries the same per-type difficulty map.
 workers:
-  w1: {latency: {accept: 0, progress: 2, result: 4}, cost: 5, outcome: {p_success: 0.9}}
-  w2: {latency: {accept: 0, progress: 2, result: 4}, cost: 5, outcome: {p_success: 0.9}}
+  w1: {latency: {accept: 0, progress: 2, result: 4}, cost: 5,
+       outcome: {p_success: 0.9,
+                 success_by_type: {research: 0.9, data: 0.9, coding: 0.9,
+                                   experiment: 0.9, analysis: 0.9, writing: 0.9}}}
+  w2: {latency: {accept: 0, progress: 2, result: 4}, cost: 5,
+       outcome: {p_success: 0.9,
+                 success_by_type: {research: 0.9, data: 0.9, coding: 0.9,
+                                   experiment: 0.9, analysis: 0.9, writing: 0.9}}}
 expected:
   invariants: {false_completion_rate: 0}

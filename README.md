@@ -1,11 +1,11 @@
-# OmegaHive — M4 (closed-loop / stochastic stubs)
+# OmegaHive — M5 (per-task-type difficulty)
 
 A runnable spine, a deterministic run engine, a coordinator that recovers from
-failures, a legibility layer, and now **stochastic workers**: a flat per-attempt
-`p_success` turns a scenario into a *distribution over seeds*, so the M1–M3
-instruments (H1/H3/H6 + cost) read as distributions under a fixed greedy-coordinator
-control. Stochastic is opt-in — a worker with no `outcome` block is byte-identical
-to M3.
+failures, a legibility layer, stochastic workers, and now **per-task-type difficulty**:
+one knob (`outcome.success_by_type`) concentrates flakiness on the substantive task
+types, so a reproduction pipeline's setup stays reliable and the difficulty lands where
+the science is. Opt-in and byte-identical — a worker with no `outcome` (or no
+`success_by_type`) is exactly its M4 self.
 
 - **M1 (happy path):** planner → assign → work → review-pass → close.
 - **M2 (failures):** bad result → reopen → re-give to an untried worker → rework
@@ -18,6 +18,10 @@ to M3.
   seeded RNG (keyed by seed/agent/task/attempt); `simulate` sweeps N seeds into a
   deterministic distribution (completion-rate, escalation-incidence, per-metric
   mean/sd/quantiles). Determinism is per-`(scenario, seed)`.
+- **M5 (per-type difficulty):** `worker.outcome.success_by_type: {task_type: p}` overrides
+  `p_success` per task type (the reducer surfaces `task_type` on the board). A homogeneous
+  roster sharing one map makes difficulty a property of the *task type* — reliable setup,
+  flaky experiments — so the RP2 reproduction DAG reaches and stresses its experiment fork.
 
 Agents never touch the log directly. Every emit goes through the **gateway** — the
 policy layer that enforces emit-authority and transition-gates, folding the board,
@@ -25,7 +29,7 @@ then calls the dumb store. *Structure in the store, policy in the gateway.*
 Timeouts and time-based detectors are stateless policies over board timestamps plus
 a bare **wake** in the engine — no scheduler, no watchdog.
 
-See `docs/omegahive_m4_spec.md` (and `docs/omegahive_v0_spec.md` §7) for the spec.
+See `docs/omegahive_m5_spec.md` (and `docs/omegahive_v0_spec.md` §7) for the spec.
 
 ## Stack
 
@@ -141,6 +145,21 @@ uv run omegahive report s1_flaky_worker --distribution    # re-render the persis
 Determinism is per-`(scenario, seed)`: a fixed seed re-run into a clean table is
 byte-identical (event_id included); the multi-seed aggregate is deterministic given the
 fixed seed set. A worker with no `outcome` block stays exactly its M0–M3 deterministic self.
+
+## Per-task-type difficulty (M5)
+
+`scenarios/rp2_{clean,wobbly,messy}.yaml` are a reproduction-shaped DAG (two diamonds →
+a 3-way experiment fork) with a homogeneous roster sharing one `success_by_type` map:
+setup types reliable (0.9), the `experiment` type at 0.9 / 0.5 / 0.3. Setup completes
+reliably, so the pipeline reaches the fork and ≥1 experiment can escalate at once.
+
+```bash
+uv run omegahive simulate scenarios/rp2_messy.yaml --replications 50    # fork stressed; false_completion 0
+uv run omegahive simulate scenarios/rp2_clean.yaml --replications 20    # top of the difficulty gradient
+```
+
+Difficulty is a property of the task type, not the worker — per-worker competence,
+capacity, and a capability-aware coordinator stay deferred to Track B / RP3.
 
 ## Failure scenario pack (M2)
 
