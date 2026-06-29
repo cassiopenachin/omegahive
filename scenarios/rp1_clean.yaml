@@ -1,0 +1,18 @@
+scenario_id: rp1_clean
+seed: 0
+# RP1 baseline — the "clean" setting: reliable workers, no injected failures.
+# Purpose: the cost/cycle floor, dependency coherence (H1), a quiet two-tier view (H3).
+plan:
+  goal: "Reproduce and report a small empirical result"
+  tasks:
+    - {id: survey,     title: "Survey the method",   task_type: research}
+    - {id: implement,  title: "Implement it",         task_type: coding}
+    - {id: experiment, title: "Run the experiment",   task_type: experiment}
+    - {id: writeup,    title: "Write the report",     task_type: writing}
+  dependencies: [[implement, survey], [experiment, implement], [writeup, experiment]]
+run: {max_logical_ts: 1000, replications: 50}
+workers:
+  w1: {latency: {accept: 0, progress: 2, result: 4}, cost: 5, outcome: {p_success: 0.9}}
+  w2: {latency: {accept: 0, progress: 2, result: 4}, cost: 5, outcome: {p_success: 0.9}}
+expected:
+  invariants: {false_completion_rate: 0}

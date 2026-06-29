@@ -1,0 +1,35 @@
+scenario_id: rp2_clean
+seed: 0
+# RP2 — reproduction-shaped DAG (two diamonds, 3 parallel experiments). The forks are
+# parallelization, not decisions: every branch is a required output, joins are AND,
+# failure is execution failure. "clean" setting: reliable workers, no injected failure.
+plan:
+  goal: "Reproduce a paper's results"
+  tasks:
+    - {id: understand, title: "Understand the paper and its claims", task_type: research}
+    - {id: method,     title: "Study the method",                    task_type: research}
+    - {id: data,       title: "Acquire and sanity-check the data",   task_type: data}
+    - {id: implement,  title: "Implement the method",                task_type: coding}
+    - {id: exp_1,      title: "Run result 1",                        task_type: experiment}
+    - {id: exp_2,      title: "Run result 2 (ablation)",             task_type: experiment}
+    - {id: exp_3,      title: "Run result 3",                        task_type: experiment}
+    - {id: synthesize, title: "Compare reproduced results to paper", task_type: analysis}
+    - {id: writeup,    title: "Write the report",                    task_type: writing}
+  dependencies:
+    - [method, understand]
+    - [data, understand]
+    - [implement, method]
+    - [implement, data]
+    - [exp_1, implement]
+    - [exp_2, implement]
+    - [exp_3, implement]
+    - [synthesize, exp_1]
+    - [synthesize, exp_2]
+    - [synthesize, exp_3]
+    - [writeup, synthesize]
+run: {max_logical_ts: 1000, replications: 50}
+workers:
+  w1: {latency: {accept: 0, progress: 2, result: 4}, cost: 5, outcome: {p_success: 0.9}}
+  w2: {latency: {accept: 0, progress: 2, result: 4}, cost: 5, outcome: {p_success: 0.9}}
+expected:
+  invariants: {false_completion_rate: 0}
