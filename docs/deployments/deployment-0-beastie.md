@@ -5,8 +5,8 @@ profile on hive hardware nobody hand-built, before any agent lands on it. Substr
 only: Postgres + migrations + the omegahive gateway-library image. **No agent
 container, no outbound capability, no credentials beyond the DB role** (§7 non-goals).
 
-**Status:** acceptance + deployment checks 1–5 green (Jul 7 2026). Backup drilled;
-scheduled timer pending operator enable (see §Backup).
+**Status:** acceptance + deployment checks 1–5 green (Jul 7 2026). Backup drilled and
+the daily timer is enabled and active.
 
 ## Host-facts table
 
@@ -50,13 +50,12 @@ and the deployment-#0 substrate slice needs far less.
 ## Backup
 
 - Containerized `pg_dump` from the pinned postgres image (`compose --profile ops run --rm backup` → `scripts/pg_backup.sh` → timestamped SQL in the `omegahive-backups` volume). **Drilled once** (Jul 7 2026: `omegahive-20260707T194853Z.sql`).
-- Scheduled via a **systemd user timer** (`deploy/systemd/omegahive-backup.{service,timer}`, daily 03:00, `Persistent=true`). Install (operator, one-time):
+- Scheduled via a **systemd user timer** (`deploy/systemd/omegahive-backup.{service,timer}`, daily 03:00, `Persistent=true`) — **enabled and active** on Beastie (linger on, so it runs without a login session). To reinstall on another host:
   ```sh
   cp deploy/systemd/omegahive-backup.* ~/.config/systemd/user/
   systemctl --user daemon-reload
   systemctl --user enable --now omegahive-backup.timer
   ```
-  Linger is already enabled, so the timer runs without an active login session.
 
 ## Restore drill
 
@@ -70,3 +69,4 @@ runbook. Interim cursor rule until the generation-token bump is wired into a liv
 - **Stage 2** adds the pinned OmegaClaw fork image; re-run the deployment checks. Verify the runtime's seccomp default permits the `landlock_*` syscalls (the agent sandboxes itself in-process) — a one-time container check, recorded here when done.
 - **Stage 4** adds the two-role DB split (reader vs gateway INSERT — T1 check 6) and the network-route layer of the tier-routing check (real outbound capability). Deployment #0 has no outbound at all, so only the gateway layer of check 4 is asserted here.
 - The omegahive image is a local build; before any second host, push it and pin the RepoDigest in this lockfile.
+- **Out-of-band recovery drill** (test plan E2.5) is deferred to **stage 2**: it verifies that no self-managing component can lock humans out, and #0 has no resident agent, adapters, or outbound — plain SSH is currently the *only* control path, not a fallback, so there is nothing to drill against. It becomes meaningful once the agent container lands.
