@@ -35,11 +35,16 @@ def _migrated() -> None:
 
 @pytest.fixture
 def conn():
+    # An outer transaction that always rolls back at teardown. The gateway write path
+    # wraps each emit in conn.transaction(); with this outer transaction open, those
+    # nest as savepoints (no real commit), so per-test isolation holds even though the
+    # write path now commits per emit against a connection with no ambient transaction
+    # (the CLI / the port).
     c = connect(TEST_DATABASE_URL)
     try:
-        yield c
+        with c.transaction(force_rollback=True):
+            yield c
     finally:
-        c.rollback()
         c.close()
 
 

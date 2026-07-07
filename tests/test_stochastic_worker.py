@@ -47,8 +47,8 @@ def test_deterministic_worker_draws_nothing(make_event):
 
 
 def _fingerprint(events):
-    return [(e.seq, str(e.event_id), e.logical_ts, e.event_type, e.task_id, e.payload)
-            for e in events]
+    from _canonical import canonical_log  # event_id is DB-random; compare canonical form
+    return canonical_log(events)
 
 
 def _run_seed(conn, seed, run_id, *, scenario_path=S1, truncate=False):

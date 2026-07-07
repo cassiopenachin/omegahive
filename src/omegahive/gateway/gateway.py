@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from psycopg.errors import UniqueViolation
+
 from ..board.legality import NON_BOARD_WHITELIST, Rejection, lookup, worker_ownership_violation
 from ..board.reducer import Board, fold
 from ..events.envelope import Actor, Event
@@ -82,31 +84,64 @@ class Gateway:
         causation_id: UUID | None = None,
         recipient: Actor | None = None,
         logical_ts: int | None = None,
+        idempotency_key: str | None = None,
     ) -> EmitResult:
-        board = fold(self._store.read_run())
-        rej = self._gate(board, actor, event_type, payload, task_id)
-        if rej is not None:
-            now_ts = logical_ts if logical_ts is not None else self._store.clock.now()
-            rid = self._record_rejection(actor, event_type, task_id, payload, rej, now_ts)
-            return Rejected(rej.code, rej.reason, rid)
+        """The write path (§3): one atomic, per-run-serialized unit. conn.transaction()
+        commits per emit when the connection has no open transaction (the port / CLI),
+        and nests as a savepoint when one does (unit tests roll the outer one back)."""
+        conn = self._store.conn
+        try:
+            with conn.transaction():
+                # 1. idempotency lookup FIRST — a replay returns the existing event
+                # before any fold or gate, so a committed op is never re-gated.
+                if idempotency_key is not None:
+                    existing = self._store.find_by_key(actor.id, idempotency_key)
+                    if existing is not None:
+                        return Accepted(existing)
+                # 2. serialize per run: advisory lock keyed in Postgres (never Python hash()).
+                conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (self._store.run_id,))
+                # 3. fold + gate against the run prefix under the lock.
+                board = fold(self._store.read_run())
+                rej = self._gate(board, actor, event_type, payload, task_id)
+                if rej is not None:
+                    rid = self._record_rejection(actor, event_type, task_id, payload, rej,
+                                                 logical_ts)
+                    return Rejected(rej.code, rej.reason, rid)
+                # 4. accept: append the op (with its key).
+                ev = self._store.append(
+                    actor=actor, event_type=event_type, payload=payload, task_id=task_id,
+                    causation_id=causation_id, recipient=recipient, logical_ts=logical_ts,
+                    idempotency_key=idempotency_key,
+                )
+                return Accepted(ev)
+        except UniqueViolation:
+            # Ack-loss race: a concurrent writer committed this key between our lookup
+            # and insert. Re-select in a fresh transaction and return it (§3).
+            if idempotency_key is not None:
+                existing = self._store.find_by_key(actor.id, idempotency_key)
+                if existing is not None:
+                    return Accepted(existing)
+            raise
 
-        ev = self._store.append(
-            actor=actor,
-            event_type=event_type,
-            payload=payload,
-            task_id=task_id,
-            causation_id=causation_id,
-            recipient=recipient,
-            logical_ts=logical_ts,
-        )
-        return Accepted(ev)
+    def _now_ts(self, logical_ts: int | None) -> int:
+        """The current logical time for the coalescing window: the caller's tick, else
+        the run's max logical_ts (server_time) or the sim clock."""
+        if logical_ts is not None:
+            return logical_ts
+        if self._store.server_time:
+            with self._store.conn.cursor() as cur:
+                cur.execute("SELECT COALESCE(max(logical_ts), 0) FROM events WHERE run_id = %s",
+                            (self._store.run_id,))
+                return cur.fetchone()[0]
+        return self._store.clock.now()
 
     def _record_rejection(
         self, actor: Actor, event_type: str, task_id: str | None, payload: dict,
-        rej: Rejection, now_ts: int,
+        rej: Rejection, logical_ts: int | None,
     ) -> UUID:
         """Persist (or coalesce onto) a gateway.rejected event; return its id. The op
         event itself is never appended — only this feedback record."""
+        now_ts = self._now_ts(logical_ts)
         hit = self._store.find_recent_rejection(
             original_actor_id=actor.id, refused_event_type=event_type,
             refused_task_id=task_id, code=rej.code, since_ts=now_ts - self._coalesce_window,
@@ -128,7 +163,7 @@ class Gateway:
                 "original_actor_role": actor.role,
                 "original_actor_id": actor.id,
             },
-            logical_ts=now_ts,
+            logical_ts=None if self._store.server_time else now_ts,
         )
         return ev.event_id
 
@@ -158,6 +193,7 @@ class GatewayHandle:
         causation_id: UUID | None = None,
         recipient: Actor | None = None,
         logical_ts: int | None = None,
+        idempotency_key: str | None = None,
     ) -> EmitResult:
         return self._gateway.emit(
             actor=self.actor,
@@ -167,4 +203,5 @@ class GatewayHandle:
             causation_id=causation_id,
             recipient=recipient,
             logical_ts=logical_ts,
+            idempotency_key=idempotency_key,
         )

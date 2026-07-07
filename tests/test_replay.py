@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from _canonical import canonical_log
 from omegahive.clock import LogicalClock
 from omegahive.events.envelope import Actor
 from omegahive.events.log import EventLog
@@ -21,21 +22,9 @@ def _planner(conn):
     return Gateway(store, Policy()).handle(PLANNER), store
 
 
-def _fingerprint(events):
-    return [
-        (
-            e.seq,
-            str(e.event_id),
-            e.logical_ts,
-            (e.actor.role, e.actor.id),
-            e.event_type,
-            e.task_id,
-            e.payload,
-            str(e.causation_id) if e.causation_id else None,
-            str(e.correlation_id) if e.correlation_id else None,
-        )
-        for e in events
-    ]
+# event_id is DB-random (gen_random_uuid); replay determinism is equality after
+# canonicalization (event_id -> seq-ordinal, causation/correlation rewritten).
+_fingerprint = canonical_log
 
 
 def test_replay_produces_identical_rows(conn):
