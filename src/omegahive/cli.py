@@ -8,6 +8,7 @@ import typer
 from rich.console import Console
 
 from .acceptance import run_actor, seed_demo
+from .acceptance.checks import run_structural_checks
 from .board import fold
 from .clock import LogicalClock
 from .db import connect, migrate
@@ -192,6 +193,12 @@ def act_cmd(
     done = 0 if board is None else sum(1 for s in board.tasks.values() if s.status == "done")
     total = 0 if board is None else len(board.tasks)
     console.print(f"{role} exited · {done}/{total} tasks done")
+
+
+@app.command("deploy-checks")
+def deploy_checks_cmd() -> None:
+    """Structural deployment checks 4 & 5 (tier-routing, credential scope). Hard-fail."""
+    raise typer.Exit(code=run_structural_checks())
 
 
 @app.command("board-view")

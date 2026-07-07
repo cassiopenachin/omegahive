@@ -78,6 +78,26 @@ services:
     entrypoint: ["sh", "-c"]
     command: ["ruff check . && mypy"]
 
+  deploy-checks:
+    <<: *omega
+    command: ["deploy-checks"]
+
+  # Containerized backup: pg_dump of the log store from the pinned postgres image
+  # (deployment spec §4/§5). `profiles: [ops]` keeps it out of a plain `up`; the
+  # host systemd timer runs `compose run --rm backup`.
+  backup:
+    image: postgres:16@sha256:1570e4013933875bf54995e9010e31420b5e21dd5f2524e5395089d480cc2df1
+    profiles: ["ops"]
+    env_file: [.env]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - omegahive-backups:/backups
+      - ./scripts:/scripts:ro,Z
+    entrypoint: ["sh", "/scripts/pg_backup.sh"]
+
 volumes:
   omegahive-pgdata:
   omegahive-basis:
+  omegahive-backups:
