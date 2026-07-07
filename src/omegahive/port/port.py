@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable
 
 from psycopg import OperationalError
+from psycopg.pq import TransactionStatus
 
 from ..board import reducer  # module (not fold) so a fold-invocation counter can patch it
 from ..clock import LogicalClock
@@ -58,9 +59,11 @@ class HiveCoordinatorPort:
         self._backoff_base = backoff_base
         self._policy = Policy()
         # basis_seq is tracked in memory (advances on this client's reads and accepted
-        # emits) and, when a workdir is given, persisted durably for crash-redispatch.
-        # Without the in-memory track a workdir-less port would freeze basis at 0 and
-        # silently dedupe legitimate later re-emits of identical content.
+        # emits) and, when a workdir is given, persisted durably. A binding client MUST
+        # pass a workdir: the durable basis is what makes crash-redispatch dedupe work
+        # (a re-created client re-derives the decision's key). workdir=None is licensed
+        # for the sim harness / single-process tests only — its basis lives only in memory
+        # and does not survive process exit.
         self._basis_store = BasisStore(workdir, run_id, actor.id) if workdir is not None else None
         self._basis_seq = self._basis_store.get() if self._basis_store is not None else 0
         # last-seen generation; a crash-resumed client seeds it (with its persisted cursor)
@@ -97,19 +100,34 @@ class HiveCoordinatorPort:
         would strand a following emit()'s savepoint against an uncommitted outer txn."""
         # gen/head/prefix are fetched inside the transaction; the fold is pure and runs
         # after, so the fold-invocation counter (property 9) sees zero calls on no-change.
+        # REPEATABLE READ anchors the three read statements to one snapshot (the spec
+        # licenses single-statement OR repeatable-read); it also neutralises the one real
+        # residual — rejection-coalescing mutating a past event's counter in place. It can
+        # only be set when we open a top-level transaction, not when nesting as a savepoint
+        # inside a caller's transaction (the sim binding), so guard on the connection state.
+        top_level = self._conn.info.transaction_status == TransactionStatus.IDLE
         with self._conn.transaction():
+            if top_level:
+                self._conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             gen = self._store.generation()
             # a cursor under a stale generation gets a distinguishable signal, never a
-            # silent skipping read (restore-invalidates-cursors, §2).
+            # silent skipping read (restore-invalidates-cursors, §2). The signal is NOT
+            # one-shot: we do NOT adopt the new generation here, so re-presenting the same
+            # stale cursor keeps signalling. Adoption happens only on a full-snapshot read
+            # (cursor=None) — the client's way of acknowledging the restore and rebasing.
             if cursor is not None and self._generation is not None and gen != self._generation:
-                self._generation = gen
                 return PortView(cursor=cursor, generation=gen, events=[], board=None,
                                 changed=False, generation_mismatch=True)
-            self._generation = gen
+            if cursor is None:
+                self._generation = gen
 
             head = self._store.head_seq()
             # no-change short-circuit: O(1) head check, no prefix read / fold on a quiet board.
             if cursor is not None and (head is None or head <= cursor):
+                # even a no-change read confirms the board was observed up to head, so it
+                # must advance basis_seq — else a client resumed with a stale basis keeps it
+                # and a later emit of content identical to an old op wrongly dedupes.
+                self._advance_basis(head)
                 return PortView(cursor=cursor, generation=gen, events=[], board=None,
                                 changed=False)
             if head is None:

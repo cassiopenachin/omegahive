@@ -45,12 +45,17 @@ class GreedyPortClient:
     def __init__(self, port: HiveCoordinatorPort, coordinator: Coordinator) -> None:
         self.port = port
         self.coord = coordinator
-        self.cursor = 0
+        self.cursor: int | None = 0
 
     def decide_and_emit(self, now: int) -> ReactResult:
         view = self.port.read(self.cursor)
+        if view.generation_mismatch:
+            # a restore invalidated our cursor: drop it so the next read is a full snapshot
+            # (which re-adopts the generation), rather than re-reading a stale numbering.
+            self.cursor = None
+            return ReactResult()
         board = view.board
-        if board is None:  # no-change / mismatch: re-snapshot fully next call
+        if board is None:  # no-change
             return ReactResult()
         self.cursor = view.cursor
         result = self.coord.decide(board, view.events, now)

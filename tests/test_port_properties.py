@@ -6,9 +6,19 @@ from __future__ import annotations
 
 import threading
 
+from psycopg import OperationalError
+
 import omegahive.board.reducer as reducer
+from omegahive.events.envelope import Actor
 from omegahive.gateway import Accepted, Rejected
-from omegahive.port import AssignOp, EscalateOp, PortView
+from omegahive.port import (
+    AssignOp,
+    BasisStore,
+    BatchOp,
+    EscalateOp,
+    HiveCoordinatorPort,
+    PortView,
+)
 
 
 def _run(threads):
@@ -35,6 +45,53 @@ def test_read_then_emit_commits(committing):
     assert isinstance(r, Accepted)
     # observed from an INDEPENDENT connection -> genuinely committed, not stranded
     assert len(_assigns(committing, "p0")) == 1
+
+
+# D1. unique-violation recovery must not strand the transaction ---------------
+
+def test_recovery_does_not_strand_transaction(committing):
+    """After the unique-violation recovery re-select, the connection must be clean: a
+    following emit must commit durably (not become a never-committed savepoint) and must
+    not leave the advisory lock held (which would hang every other writer on the run)."""
+    committing.seed_ready_task("d1")
+    a = committing.port("d1", "coordinator")
+    b = committing.port("d1", "coordinator")
+    ra = a.emit(EscalateOp(task_id="t1", reason="R"))            # commits key K
+    assert isinstance(ra, Accepted)
+
+    # Force B down the recovery path: its idempotency lookup misses (first call) even
+    # though K exists, so B inserts -> unique_violation -> recovery re-select.
+    store_b = b._gateway._store
+    original = store_b.find_by_key
+    calls = {"n": 0}
+
+    def flaky(actor_id, key):
+        calls["n"] += 1
+        return None if calls["n"] == 1 else original(actor_id, key)
+
+    store_b.find_by_key = flaky
+    rb = b.emit(EscalateOp(task_id="t1", reason="R"))            # same key -> recovery
+    store_b.find_by_key = original
+    assert isinstance(rb, Accepted) and rb.event.event_id == ra.event.event_id
+    assert calls["n"] >= 2                                       # lookup missed, then re-selected
+
+    # (the fix) a fresh emit on B's connection commits durably, seen from another conn
+    assert isinstance(b.emit(EscalateOp(task_id="t1", reason="FRESH")), Accepted)
+    fresh = [e for e in committing.read_events("d1")
+             if e.event_type == "task.escalated" and e.payload.get("reason") == "FRESH"]
+    assert len(fresh) == 1
+
+    # (the fix) no advisory lock is stranded — a third writer on the run completes
+    done = threading.Event()
+
+    def third():
+        committing.port("d1", "coordinator").emit(EscalateOp(task_id="t1", reason="THIRD"))
+        done.set()
+
+    t = threading.Thread(target=third)
+    t.start()
+    t.join(timeout=15)
+    assert done.is_set(), "third writer hung on a stranded advisory lock"
 
 
 # 1. race-to-assign ----------------------------------------------------------
@@ -207,6 +264,56 @@ def test_repeat_after_intervening_op(committing, tmp_path):
     assert len(escs) == 3
 
 
+# D4. crash-redispatch dedupe + no-change basis advance ----------------------
+
+def test_redispatch_dedupes_from_workdir(committing, tmp_path):
+    """A port recreated from an existing workdir re-derives the decision's key and dedupes
+    — the crash landed between the server COMMIT and the basis write-through, so the durable
+    basis is still the decision point."""
+    committing.seed_ready_task("d4a")
+    wd, run, actor = str(tmp_path), "d4a", "coordinator"
+    p1 = committing.port(run, actor, workdir=wd)
+    decision_basis = p1.read()  # basis persisted at the observed head
+    h = p1._basis_seq
+    r1 = p1.emit(AssignOp(task_id="t1", worker="wA"))  # keyed at basis h; commits
+    assert isinstance(r1, Accepted)
+    # simulate crash before the post-emit basis write-through landed durably
+    BasisStore(wd, run, actor)._atomic_write(h)
+    del p1
+
+    p2 = committing.port(run, actor, workdir=wd)        # redispatch reads basis h
+    r2 = p2.emit(AssignOp(task_id="t1", worker="wA"))    # identical decision -> identical key
+    assert isinstance(r2, Accepted) and r2.event.event_id == r1.event.event_id
+    assert len(_assigns(committing, run)) == 1
+    _ = decision_basis
+
+
+def test_no_change_read_advances_basis(committing, tmp_path):
+    """A no-change read still advances (and persists) basis to the confirmed head, so a
+    resumed client with a stale basis does not wrongly dedupe a legitimate new emit."""
+    committing.seed_ready_task("d4b")
+    wd, run, actor = str(tmp_path), "d4b", "coordinator"
+    p0 = committing.port(run, actor, workdir=wd)
+    p0.read()
+    old = p0.emit(EscalateOp(task_id="t1", reason="OLD"))   # keyed at the seed head
+    assert isinstance(old, Accepted)
+    head = p0.read().cursor
+
+    BasisStore(wd, run, actor)._atomic_write(2)              # roll durable basis back (stale)
+    resumed = committing.port(run, actor, workdir=wd)        # seeds the stale basis
+    view = resumed.read(head)                               # no-change (head <= cursor)
+    assert not view.changed
+    assert resumed._basis_seq == head                       # advanced despite no-change
+    assert BasisStore(wd, run, actor).get() == head         # and persisted
+
+    # so re-emitting content identical to the OLD op is a NEW decision, not a wrong dedupe
+    again = resumed.emit(EscalateOp(task_id="t1", reason="OLD"))
+    assert isinstance(again, Accepted) and again.event.event_id != old.event.event_id
+    olds = [e for e in committing.read_events(run)
+            if e.event_type == "task.escalated" and e.payload.get("reason") == "OLD"]
+    assert len(olds) == 2
+
+
 # 8. replay-vs-repeat matrix -------------------------------------------------
 
 def test_replay_dedupe_vs_truthful_regate(committing, tmp_path):
@@ -227,6 +334,77 @@ def test_replay_dedupe_vs_truthful_regate(committing, tmp_path):
     a3 = c1.emit(AssignOp(task_id="t1", worker="wA"))
     assert isinstance(a3, Rejected) and a3.code == "ALREADY_OWNED"
     assert len(_assigns(committing, "p8")) == 1
+
+
+# D5. batch envelope + connection-loss retry --------------------------------
+
+def test_batch_order_occ_and_replay(committing):
+    committing.seed_ready_task("d5a")
+    p = committing.port("d5a", "coordinator")
+    batch = BatchOp(ops=[
+        EscalateOp(task_id="t1", reason="A"),
+        EscalateOp(task_id="t1", reason="dup"),
+        EscalateOp(task_id="t1", reason="dup"),      # identical to previous -> occ=1
+    ])
+    results = p.emit(batch)
+    assert all(isinstance(r, Accepted) for r in results)
+
+    escs = [e for e in committing.read_events("d5a") if e.event_type == "task.escalated"]
+    assert [e.payload["reason"] for e in escs] == ["A", "dup", "dup"]   # emitted order
+    assert sum(e.payload["reason"] == "dup" for e in escs) == 2         # occ -> distinct keys
+
+    # replaying the whole batch on a fresh port (same basis progression) -> zero new events
+    p2 = committing.port("d5a", "coordinator")
+    assert all(isinstance(r, Accepted) for r in p2.emit(batch))
+    escs2 = [e for e in committing.read_events("d5a") if e.event_type == "task.escalated"]
+    assert len(escs2) == 3
+
+
+class _FaultTxn:
+    """Wraps a real transaction context; on the FIRST use it commits (delegates __exit__)
+    then raises OperationalError — modeling the connection dying after the server COMMIT
+    but before the client reads the ack."""
+
+    def __init__(self, real_cm, fault):
+        self._cm, self._fault = real_cm, fault
+
+    def __enter__(self):
+        return self._cm.__enter__()
+
+    def __exit__(self, *exc):
+        result = self._cm.__exit__(*exc)          # the real commit lands
+        if self._fault[0]:
+            self._fault[0] = False
+            raise OperationalError("simulated connection loss after commit")
+        return result
+
+
+class _FaultConn:
+    def __init__(self, real):
+        self._real, self.fault = real, [True]
+
+    def transaction(self, *a, **k):
+        return _FaultTxn(self._real.transaction(*a, **k), self.fault)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_connection_loss_retry(committing):
+    """The library retries with the SAME key under connection loss and returns Accepted
+    carrying the original event id — exactly one event (completes the spec's ack-loss test
+    with an actual kill, not just same-key semantics)."""
+    committing.seed_ready_task("d5b")
+    real1, real2 = committing.conn(), committing.conn()
+    fault = _FaultConn(real1)
+    port = HiveCoordinatorPort(Actor(role="coordinator", id="coordinator"), "d5b", fault,
+                               connect=lambda: real2, backoff_base=0.0)
+    r = port.emit(AssignOp(task_id="t1", worker="wA"))
+    assert isinstance(r, Accepted)
+    assert fault.fault[0] is False                 # the fault fired -> retry path taken
+    assigns = [e for e in committing.read_events("d5b") if e.event_type == "task.assigned"]
+    assert len(assigns) == 1                        # exactly one event
+    assert r.event.event_id == assigns[0].event_id  # retry returned the original
 
 
 # 9. no-change-poll-cheap ----------------------------------------------------
@@ -257,8 +435,14 @@ def test_restore_invalidates_cursors(committing):
     admin._conn.commit()
 
     view = port.read(cursor)                                     # stale-generation cursor
-    assert view.generation_mismatch
-    assert not view.changed
+    assert view.generation_mismatch and not view.changed
+    # NOT one-shot: re-presenting the same stale cursor signals again, never a silent read
+    assert port.read(cursor).generation_mismatch
+    # a full snapshot acknowledges the restore and adopts the new generation
+    snap = port.read()
+    assert not snap.generation_mismatch and snap.changed
+    # subsequent cursor reads work again
+    assert not port.read(snap.cursor).generation_mismatch
 
 
 def test_generation_mismatch_on_crash_resume(committing):
@@ -276,3 +460,7 @@ def test_generation_mismatch_on_crash_resume(committing):
     resumed = committing.port("p10b", "coordinator", generation=saved_gen)
     view = resumed.read(saved_cursor)                            # first read of a fresh client
     assert view.generation_mismatch
+    assert resumed.read(saved_cursor).generation_mismatch       # not one-shot
+    snap = resumed.read()                                        # full snapshot adopts
+    assert not snap.generation_mismatch
+    assert not resumed.read(snap.cursor).generation_mismatch     # cursor reads work again

@@ -1,6 +1,6 @@
 CREATE TABLE events (
     seq            BIGSERIAL PRIMARY KEY,                       -- total order + replay cursor
-    event_id       UUID NOT NULL UNIQUE,                        -- stable logical identity (deterministic)
+    event_id       UUID NOT NULL UNIQUE,                        -- stable logical identity (DB-generated; see 0002)
     run_id         TEXT NOT NULL,
     logical_ts     BIGINT NOT NULL,                             -- authoritative clock (sim ticks)
     wall_ts        TIMESTAMPTZ,                                 -- null in v0; real time in Regime B

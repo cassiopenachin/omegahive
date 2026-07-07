@@ -70,8 +70,10 @@ class Gateway:
     def check(
         self, *, actor: Actor, event_type: str, payload: dict, task_id: str | None = None,
     ) -> Rejection | None:
-        """Would this emit be accepted? Folds and evaluates the gate, appends nothing."""
-        board = fold(self._store.read_run())
+        """Would this emit be accepted? Folds and evaluates the gate, appends nothing.
+        The read runs in a transaction so it never strands one on a non-autocommit conn."""
+        with self._store.conn.transaction():
+            board = fold(self._store.read_run())
         return self._gate(board, actor, event_type, payload, task_id)
 
     def emit(
@@ -116,9 +118,12 @@ class Gateway:
                 return Accepted(ev)
         except UniqueViolation:
             # Ack-loss race: a concurrent writer committed this key between our lookup
-            # and insert. Re-select in a fresh transaction and return it (§3).
+            # and insert. Re-select in a FRESH transaction (§3) — a bare SELECT here would
+            # strand an uncommitted transaction on this non-autocommit connection, holding
+            # the advisory lock and turning later emits into never-committed savepoints.
             if idempotency_key is not None:
-                existing = self._store.find_by_key(actor.id, idempotency_key)
+                with conn.transaction():
+                    existing = self._store.find_by_key(actor.id, idempotency_key)
                 if existing is not None:
                     return Accepted(existing)
             raise
