@@ -16,11 +16,11 @@ from __future__ import annotations
 from collections import Counter
 from uuid import UUID
 
-from ..board.reducer import Board
+from ...board.reducer import Board
+from ...events.envelope import Event
+from ...promotion.config import PromotionConfig
+from ...promotion.rules import RuleContext, board_rules, evaluate
 from ..engine.protocol import Emit, ReactResult
-from ..events.envelope import Event
-from ..promotion.config import PromotionConfig
-from ..promotion.rules import RuleContext, board_rules, evaluate
 
 
 class PromotionEvaluator:

@@ -12,8 +12,8 @@ from dataclasses import dataclass, field
 from typing import Protocol
 from uuid import UUID
 
-from ..board.reducer import Board
-from ..events.envelope import Actor, Event
+from ...board.reducer import Board
+from ...events.envelope import Actor, Event
 
 
 @dataclass(frozen=True)

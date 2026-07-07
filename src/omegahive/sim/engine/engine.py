@@ -15,11 +15,10 @@ from __future__ import annotations
 import heapq
 from dataclasses import dataclass, field
 
-from ..board.reducer import fold
-from ..clock import LogicalClock
-from ..events.envelope import Actor
-from ..gateway.gateway import Gateway
-from ..gateway.policy import TransitionRejected
+from ...board.reducer import fold
+from ...clock import LogicalClock
+from ...events.envelope import Actor
+from ...gateway.gateway import Gateway
 from .protocol import Emit, Reactor
 
 
@@ -90,12 +89,15 @@ class Engine:
                 self._settle(top.logical_ts)
                 continue
             assert top.actor is not None
-            try:
-                self._emit(top.actor, top.emit, top.logical_ts)  # the scheduled event "happens"
-            except TransitionRejected:
-                # The emitter no longer owns the task (it was reassigned/cancelled);
-                # the scheduled event is stale. Drop it — lazy invalidation, no settle.
+            # Pre-check: if the emitter no longer owns the task (reassigned/cancelled),
+            # the scheduled event is stale. Drop it silently — a DES scheduling artifact,
+            # not a real refusal to record — lazy invalidation, no settle.
+            if self.gateway.check(
+                actor=top.actor, event_type=top.emit.event_type,
+                payload=top.emit.payload, task_id=top.emit.task_id,
+            ) is not None:
                 continue
+            self._emit(top.actor, top.emit, top.logical_ts)  # the scheduled event "happens"
             self._settle(top.logical_ts)
 
     def _settle(self, now: int) -> None:
@@ -112,8 +114,12 @@ class Engine:
                     continue
                 self._last_now[reactor.agent_id] = now
                 result = reactor.react(new, board, now)
-                for emit in result.immediate:
-                    self._emit(self._actor(reactor), emit, now)
+                # A self-emitting reactor (the port-backed coordinator in the equivalence
+                # harness) has already written its immediates through its own transport;
+                # the engine skips re-emitting them but still counts them as progress.
+                if not getattr(reactor, "self_emits", False):
+                    for emit in result.immediate:
+                        self._emit(self._actor(reactor), emit, now)
                 for sch in result.scheduled:
                     self._push(now + sch.delay, self._actor(reactor), sch.emit)
                 for delay in result.wakes:

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from omegahive.board.reducer import Board, TaskState
-from omegahive.engine.rng import rng_for
-from omegahive.reactors.worker import WorkerStub
+from omegahive.sim.engine.rng import rng_for
+from omegahive.sim.reactors.worker import WorkerStub
 
 
 def _result_quality(res):

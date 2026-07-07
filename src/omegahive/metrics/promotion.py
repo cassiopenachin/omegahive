@@ -10,7 +10,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 from ..events.envelope import Event
-from ..scenario.schema import Labels
+from ..sim.scenario.schema import Labels
 
 
 def _match(events: list[Event], entry: str) -> list[Event]:

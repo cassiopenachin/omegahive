@@ -13,9 +13,9 @@ coordinator implement the same interface).
 
 from __future__ import annotations
 
-from ..board.reducer import Board
+from ...board.reducer import Board
+from ...events.envelope import Event
 from ..engine.protocol import Emit, ReactResult
-from ..events.envelope import Event
 
 _STALE_STATUSES = ("assigned", "in_progress")
 

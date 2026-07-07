@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from omegahive.engine.simulate import simulate
-from omegahive.scenario.schema import Scenario
+from omegahive.sim.engine.simulate import simulate
+from omegahive.sim.scenario.schema import Scenario
 
 SEEDS = range(20)   # fixed set -> deterministic; gaps are wide enough to resolve monotonicity
 

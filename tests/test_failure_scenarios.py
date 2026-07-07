@@ -9,7 +9,7 @@ import pytest
 
 from omegahive.board import fold
 from omegahive.metrics import compute
-from omegahive.scenario.loader import load_scenario
+from omegahive.sim.scenario.loader import load_scenario
 
 SCEN = Path(__file__).resolve().parents[1] / "scenarios"
 F_PACK = [

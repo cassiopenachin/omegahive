@@ -8,10 +8,10 @@ once per threshold the first time the metric crosses it (idempotent via _emitted
 
 from __future__ import annotations
 
-from ..board.reducer import Board, fold
+from ...board.reducer import Board, fold
+from ...events.envelope import Event
+from ...metrics.core import compute
 from ..engine.protocol import Emit, ReactResult
-from ..events.envelope import Event
-from ..metrics.core import compute
 
 
 class MetricsRunner:

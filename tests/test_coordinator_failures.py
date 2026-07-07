@@ -5,7 +5,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 from omegahive.board.reducer import Board, TaskState
-from omegahive.reactors import Coordinator
+from omegahive.sim.reactors import Coordinator
 
 WORKERS = ["w1", "w2"]
 

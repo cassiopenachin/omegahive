@@ -7,9 +7,9 @@ review.failed. ref_result is the result event's id (provenance).
 
 from __future__ import annotations
 
-from ..board.reducer import Board
+from ...board.reducer import Board
+from ...events.envelope import Event
 from ..engine.protocol import Emit, ReactResult
-from ..events.envelope import Event
 
 
 class ReviewInstrument:

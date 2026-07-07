@@ -6,9 +6,9 @@ from collections import Counter
 from pathlib import Path
 
 from omegahive.clock import LogicalClock
-from omegahive.engine.simulate import simulate
 from omegahive.events.log import EventLog
-from omegahive.scenario.loader import load_scenario
+from omegahive.sim.engine.simulate import simulate
+from omegahive.sim.scenario.loader import load_scenario
 
 SCEN = Path(__file__).resolve().parents[1] / "scenarios"
 

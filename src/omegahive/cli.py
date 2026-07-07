@@ -10,8 +10,6 @@ from rich.console import Console
 from .board import fold
 from .clock import LogicalClock
 from .db import connect, migrate
-from .engine.assembly import build_engine
-from .engine.simulate import simulate
 from .events.envelope import Actor
 from .events.log import EventLog, read_run_ids
 from .gateway import Gateway, Policy
@@ -24,7 +22,9 @@ from .report.human import render_human
 from .report.metrics import render_metrics
 from .report.promotions import render_promotions
 from .report.trace import render_table, to_json
-from .scenario.loader import emit_plan, load_scenario
+from .sim.engine.assembly import build_engine
+from .sim.engine.simulate import simulate
+from .sim.scenario.loader import emit_plan, load_scenario
 
 app = typer.Typer(help="OmegaHive M1 — event-log spine + run engine.", no_args_is_help=True)
 console = Console()

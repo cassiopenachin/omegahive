@@ -7,7 +7,7 @@ from pathlib import Path
 from omegahive.metrics.promotion import score
 from omegahive.promotion.config import PromotionConfig
 from omegahive.promotion.tuning import _offline_scores, sweep_thresholds
-from omegahive.scenario.loader import load_scenario
+from omegahive.sim.scenario.loader import load_scenario
 
 F6 = Path(__file__).resolve().parents[1] / "scenarios" / "f6_noisy_failure.yaml"
 TARGET_RECALL = 0.90

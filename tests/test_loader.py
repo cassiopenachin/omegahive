@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from omegahive.events.envelope import Actor
-from omegahive.scenario.loader import emit_plan, load_scenario
+from omegahive.sim.scenario.loader import emit_plan, load_scenario
 
 SCENARIO = Path(__file__).resolve().parents[1] / "scenarios" / "m0_smoke.yaml"
 PLANNER = Actor(role="planner", id="planner")

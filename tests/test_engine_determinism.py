@@ -6,27 +6,18 @@ from pathlib import Path
 
 import pytest
 
+from _canonical import canonical_log
 from omegahive.clock import LogicalClock
-from omegahive.engine.assembly import build_engine
 from omegahive.events.envelope import Actor
 from omegahive.events.log import EventLog
 from omegahive.gateway import Gateway, Policy
-from omegahive.scenario.loader import emit_plan, load_scenario
+from omegahive.sim.engine.assembly import build_engine
+from omegahive.sim.scenario.loader import emit_plan, load_scenario
 
 SCEN = Path(__file__).resolve().parents[1] / "scenarios"
 M0_SMOKE = SCEN / "m0_smoke.yaml"
 RUN_ID = "determinism"
 PLANNER = Actor(role="planner", id="planner")
-
-
-def _fingerprint(events):
-    return [
-        (e.seq, str(e.event_id), e.logical_ts, (e.actor.role, e.actor.id),
-         e.event_type, e.task_id, e.payload,
-         str(e.causation_id) if e.causation_id else None,
-         str(e.correlation_id) if e.correlation_id else None)
-        for e in events
-    ]
 
 
 def _run(conn, scenario_path):
@@ -35,7 +26,8 @@ def _run(conn, scenario_path):
     scenario = load_scenario(scenario_path)
     emit_plan(gateway.handle(PLANNER), scenario)
     build_engine(gateway, store.clock, scenario).run()
-    return _fingerprint(store.read_run())
+    # event_id is DB-random now; compare structure after canonicalization.
+    return canonical_log(store.read_run())
 
 
 # m0_smoke (happy), f1 (failure recovery), f6 (promotion + detectors + wakes),

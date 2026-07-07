@@ -35,11 +35,16 @@ def _migrated() -> None:
 
 @pytest.fixture
 def conn():
+    # An outer transaction that always rolls back at teardown. The gateway write path
+    # wraps each emit in conn.transaction(); with this outer transaction open, those
+    # nest as savepoints (no real commit), so per-test isolation holds even though the
+    # write path now commits per emit against a connection with no ambient transaction
+    # (the CLI / the port).
     c = connect(TEST_DATABASE_URL)
     try:
-        yield c
+        with c.transaction(force_rollback=True):
+            yield c
     finally:
-        c.rollback()
         c.close()
 
 
@@ -79,10 +84,22 @@ def make_gateway(conn):
 
 
 @pytest.fixture
+def committing():
+    """A slate of independent committing connections (the port concurrency proofs)."""
+    from port_harness import Committing
+
+    slate = Committing()
+    try:
+        yield slate
+    finally:
+        slate.close()
+
+
+@pytest.fixture
 def run_scenario(make_gateway):
     """Emit a scenario's plan and run the DES engine to quiescence; return (store, events)."""
-    from omegahive.engine.assembly import build_engine
-    from omegahive.scenario.loader import emit_plan, load_scenario
+    from omegahive.sim.engine.assembly import build_engine
+    from omegahive.sim.scenario.loader import emit_plan, load_scenario
 
     def _run(scenario_path, run_id: str = "engine-run", max_logical_ts=None):
         scenario = load_scenario(scenario_path)

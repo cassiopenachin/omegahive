@@ -14,7 +14,7 @@ from uuid import UUID
 from ..board.reducer import fold
 from ..events.envelope import Event
 from ..metrics.promotion import group_situations, resolve_situations
-from ..scenario.schema import Labels
+from ..sim.scenario.schema import Labels
 from .config import PromotionConfig
 from .rules import RuleContext, board_rules, evaluate
 
