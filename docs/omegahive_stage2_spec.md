@@ -1,0 +1,115 @@
+# OmegaHive — Stage 2: Coordinator Spike (Build & Experiment Spec)
+
+**Status:** v2 (Jul 8 2026), post-panel (three seats: methodology, simplification, integration; §10 records dispositions). Stage 2 of the build plan ([omegahive_design_1_1.md](omegahive_design_1_1.md) §7): the first LLM in the loop — bind coordinators through the port, prove the binding end-to-end, and run the **coordinator ladder** that decides which coordinator configuration later stages use. Standalone; companions cited for depth — the design doc, [omegahive_port_spec.md](omegahive_port_spec.md), [omegahive_deployment_spec.md](omegahive_deployment_spec.md), [omegahive_c2_battery_spec.md](omegahive_c2_battery_spec.md), and [omegahive_test_plan.md](omegahive_test_plan.md), whose §D1 pre-registration this spec **explicitly amends** (§7 notes each amendment; amending before any run is legitimate and recorded — silent divergence is not).
+
+## 0. Orientation
+
+Two repos. **omegahive:** substrate change (§3), ladder harness (§6–§7), the knowledge-base artifact (§5.4). **The OmegaClaw fork:** three patches (§4 — board channel adapter, board-op skill, LLM-usage logging), consumed as a pinned image; the deployment spec §3 patch list is the normative home for all fork patches. Reuse deployment #0's acceptance machinery for boards/workers/runner. Substrate edits go through the frozen-directory PR rule.
+
+## 1. Purpose and hypotheses
+
+**Gate (decides, nothing more):** which coordinator configuration — architecture × model × knowledge — stages 3+ run. Residency does not wait on any particular answer; the winner may be a vanilla LLM with a good knowledge sheet, and that would be a fine outcome.
+
+- **H-amplifier (package claim):** the *OmegaClaw+KB package* on a cheap model matches a raw strong model coordinating the same boards, at lower cost.
+- **H-context:** curated knowledge improves quality-per-cost — measured in *both* architectures (the KB rides the system prompt in vanilla cells, the knowledge-priors mechanism in OmegaClaw cells), so knowledge value and machinery value are separately identified.
+
+Stated expectation: OmegaClaw cells likely lose several comparisons early; **losing informatively is a design goal** — every failed seed lands in a loss-diagnostic bucket (premise-formulation / orchestration / op-ceiling / latency / reasoning) naming the fork improvement it motivates.
+
+## 2. Shape: smoke first, then the grid
+
+**Binding smoke (per rung, not a build phase).** Each rung's harness runs the 2-task fixture (reuse the battery's `two-tasks-one-owned` board + acceptance runner): read views, emit ops, recover from one injected refusal, reach terminal state. Pass/fail; a rung enters the grid only after its smoke passes. This runs **before** any substrate work — it needs no k-joins and it retires the stage's riskiest unknown (the LLM-through-adapter-through-port binding) first.
+
+**The grid (§5–§7):** the comparative experiment on seed-varied fork boards.
+
+## 3. Substrate prerequisite: k-joins and prune
+
+Two changes through the legality/fold seam, pinned by regression tests before refactor:
+
+1. **Per-join `k`** (plan semantics): a task may declare `ready_when: k` (default: all) — ready when k dependencies are `done`.
+2. **`task.pruned`** (coordinator authority — the decision): a new legality row; coordinator may prune a single not-done task; a pruned dependency drops out of its join's requirement (a join retains ≥1 non-pruned dependency; pruning the last is `ILLEGAL_TRANSITION`). Pruning is early stopping *before* the join fires. Greedy never prunes (declared control property).
+
+**Deliberately not built:** derived `moot` (auto-cleanup of surplus branches at join satisfaction). It has no consumer here and would *truncate the measurement*: workers grinding on the un-pruned doomed branch until board end is exactly the cost that never-pruning is supposed to show. Armed follow-on for stage 3+ (port-spec style), where its legality/whitelist row for late attempt-reports gets specified. Subtree-scoped prune likewise deferred — the spike's branches are single tasks.
+
+## 4. The binding (fork patches — all three join deployment spec §3's list)
+
+**4.1 Board channel adapter** (`channels/board.py` + registration in the `initChannels`/`receive`/`send` chain, with a channel-registration consistency test): the agent's one active channel is the board. The adapter polls the port every second (the no-change read is O(1)); on **semantic delta** it delivers one message: the rendered S-expression view — tasks/states/dependencies, per-branch attempt outcomes, **this actor's rejections since the last view** (refusals must outlive the turn; skill results are one-cycle-visible). Buffering is **replace-with-latest** (never concatenate stale views); the rendered view has a pinned size budget (declared cell property). `send()` → captured harness log line (no board event: nothing consumes notes in the spike, and note events would fold under the run lock and pollute views for nothing). **On every poll, including no-change reads, the adapter write-throughs the view's anchor seq to the shared basis store** (§4.2).
+
+**4.2 Board-op skill** (single-string payload): one skill, `board`, registered across the three catalog sites with the parser round-trip test. `board "assign t1 w2"`; payload parsed in the body; one call = one emit. **Within-turn emission order is unguaranteed for this runtime** (its dispatch construct does not preserve order) — declared as a rung property, and boards are designed so no correct outcome depends on intra-turn ordering; the battery's batch-order metric is n/a for this binding. **Client state:** basis, cursor, and generation token are one persistence obligation (port spec §3a), stored **under `memory/`** — the only writable mount under the container policy (`include_workdir: false`) — in a single per-actor store shared by the adapter (reader) and each skill-call client (emitter, constructor-seeded from it). Without the shared store, an intentional repeat after a fresh view would reproduce a stale-basis key and silently dedupe — the inert-acceptance class the port exists to kill. Slice tests include a binding-level replay-vs-repeat matrix (mirror of port spec §8 tests 6–8) run under the real policy file.
+
+**4.3 LLM-usage logging** (`lib_llm_ext.py`): per-call usage fields — tokens in/out, model id — logged to stdout beside `[LLM_RAW]`. Without it, OmegaClaw cells cannot report cost, and cost is a primary outcome. (The raw-text `[LLM_RAW]` line carries no usage; the gateway proxy logs bytes, not tokens. This patch also repairs the battery spec's identical telemetry assumption.)
+
+**4.4 Agent configuration (not patches):** memory **enabled**; per-seed isolation via **volume templates**: one template per knowledge condition — pinned `prompt.txt` (no per-provider overrides), the KB markdown, a **pre-built embeddings collection + loader sentinel** (built once per condition; never re-embedded per seed), empty basis/cursor/generation store, empty history — cloned per seed, so every mutable store (history, embeddings, client state, scratch) is enumerated and fresh, and run-ids differ per seed. The empty condition runs the **same loader with an empty corpus** (mechanism held constant, content varied). Loop pacing is pinned per cell: small `maxNewInputLoops` (a delivered view funds a short burst, not 50 turns), `sleepInterval`, `wakeupInterval` — declared properties; the adapter's semantic-delta rule prevents self-excitation on quiet boards. *(Poll-based wake at 1s no-change reads sustains this cadence; the port's armed LISTEN/NOTIFY trigger stays un-fired.)*
+
+## 5. The grid
+
+### 5.1 Rungs
+
+- **R0 greedy** — existing scripted client; the calibration floor (separates plumbing from cognition; costs no tokens).
+- **R1 vanilla chief-of-staff** — plain LLM on a thin harness loop: same rendered view, same op vocabulary, direct port client, same effective cadence. Its smoke run (§2) is mandatory — R1-harness bugs would otherwise read as vanilla cognition failures and flatter OmegaClaw.
+- **R2 OmegaClaw as-shipped** — today's agent, bound per §4, symbolic layer available but not forced.
+- **R3 symbolic-emitter** — optional, only after the funded grid runs.
+
+**Instruction symmetry:** one **op-reference sheet** (syntax, semantics, legality of every op incl. prune — *no norms, no strategy*) is identical in content across R1's system prompt and the `board` skill's catalog text, and is a declared property. Strategy and norms live **only** in the KB artifact. Without this, vanilla's time-to-prune measures documentation access, not architecture.
+
+### 5.2 Models
+
+**strong** = the reference ceiling model; **cheap** = the highest-scoring low-cost model passing the C2 battery's bar. **Decoupling rule (the vanilla track never waits on the fork):** the grid freezes with a *provisional* cheap pick, informed by the battery's **v0a half** (emission-discipline metrics, which run on the pre-patch base image — battery spec) — evidence, not a guess. The **v0b half** (board-op discipline: legal-op rate, rejection recovery) runs on the patched image and confirms or replaces the pick before the OmegaClaw cells run; if replaced, **L2/L3 are re-run with the qualified model** — two vanilla cells is a cheap price for preserving every same-model contrast. Pre-registered, not a judgment call at result time. Adapter/logging-only image deltas do **not** re-trigger v0a (the loop-discipline surface is unchanged).
+
+### 5.3 Cells (renamed L\* to avoid collision with the C2 battery)
+
+| Cell | Rung | Model | Knowledge | Status |
+|---|---|---|---|---|
+| L0 | greedy | — | — | funded |
+| L1 | vanilla | strong | — | funded |
+| L2 | vanilla | cheap | — | funded |
+| L3 | vanilla | cheap | KB in system prompt | funded |
+| L4 | OmegaClaw | cheap | KB via priors | funded |
+| L5 | OmegaClaw | cheap | empty | funded |
+| L6 | OmegaClaw | strong | KB via priors | **conditional:** runs only if L4 or L5 shows the architecture is not a pure drag (pre-registered: L4 completion ≥ L2 − δ), on the same seed set |
+
+**Contrast map:** H-amplifier = L4 vs L1 (the package claim). Knowledge value: L3 vs L2 (in vanilla), L4 vs L5 (in OmegaClaw). Architecture at fixed model+knowledge: **L4 vs L3** (the cleanest architecture contrast in the grid). Machinery-alone: L5 vs L2. Gate candidates: all cells. 20 seeds per cell (floor), same seed set everywhere; per-seed pairing is real because seeds vary the environment (§6).
+
+### 5.4 The knowledge base
+
+**One markdown file** (3–5 pages), hash-pinned, **frozen before the Phase-2 board parameters (failure schedules, m, thresholds) are fixed** — authored blind to them. Content: coordination playbook (evidence norms for pruning, escalation, allocation under contention), k-of-n plan-structure notes, rejection-code recovery norms. It references (never restates) the op sheet. **Leakage criteria, pre-registered:** no numeric thresholds coinciding with any run-config value; no worked examples isomorphic to the test board topology; checked by a fresh-eyes reviewer against the frozen board configs, check note committed beside the KB. In vanilla-KB cells the same file rides the system prompt verbatim; in OmegaClaw-KB cells it loads via knowledge-priors. **Manipulation check (pre-registered):** knowledge-priors are pull-only — they enter context via the `query` skill — so the pinned persona (identical across cells) instructs when to query, and per-cell query-invocation counts are recorded; a null KB effect in OmegaClaw cells is then attributable (never queried vs queried-and-useless).
+
+## 6. Boards, workers, seeds
+
+**The fork board:** one k=1 fork — branch A and branch B (single tasks), a join, a downstream tail; small enough for one view. **Seeds draw the environment** (pre-registered generator): branch A's attempt-failure schedule, branch B's attempts-to-success m, and dispatch jitter — identical draws across cells per seed. **In 15 of 20 seeds A is doomed; in 5, A recovers** (succeeds after a long tail) — so blind instant pruning is punished, and pruning is only *correct conditional on evidence*. Board end = tail task done, or the per-seed turn/token cap (§7).
+**Workers:** scripted actors from the acceptance runner, child processes with their own port clients, **event-driven** — the next attempt dispatches on observed board events, never on wall-clock timers — so slower coordinators are not mechanically punished on event-count metrics.
+**Metrics clock:** intervening **worker/board event counts**, not `logical_ts` (which is wall-time-derived and would confound model latency into decision quality).
+
+## 7. Measures and decision rules (pre-registered; each ≠ D1 noted)
+
+**Per seed, per cell:** completed (bool — cap exhaustion = failure; all 20 seeds attempted in every cell, uniform per-seed token+turn caps, **no per-cell pool, no topping up**); unconditional cost (USD, tokens); prune correctness — **false-prune** (pruned A in a recovers-seed before its recovery evidence) and **premature-prune** (pruned before the evidence threshold: branch A's kth consecutive failure, k fixed per seed by the generator); **conditional time-to-prune** (event-count gap from threshold to prune, among justified prunes); wasted-attempts-after-evidence; decisions-per-completion; loss bucket for failures.
+
+**Aggregation and calls (amends test plan D1, with reasons):** at n=20 paired binary outcomes, CI machinery is decorative (a handful of discordant pairs) — D1's bootstrap-CI/Holm apparatus is replaced by **pre-registered descriptive criteria + adjudication** (test plan §2: panel prepares, Cassio decides): completion margin **δ = 2 seeds (0.10)**; "cheaper" = **≤ 0.8×** unconditional cost; "cost ≈" = within **±15%**; prune quality compared by rank (never-pruned = worst rank), false-prunes reported alongside. **H-amplifier supported** if L4 completion ≥ L1 − δ *and* L4 cost ≤ 0.8× L1. **Knowledge value supported** per architecture if the KB cell clears its empty/plain counterpart by > δ or clears cost by ≤ 0.8× at completion within δ. Contrasts beyond the §5.3 map are exploratory, labeled as such.
+**Gate rule:** best completion; tie (within δ) → lowest unconditional cost; still tied → the simpler/cheaper rung (D1's spirit retained). Time-to-prune is **not** in the gate chain (it's a diagnosis instrument, not a ranking one — and structurally censored for greedy).
+**Budgets:** one calendar week for the funded grid; per-seed caps fixed in the run config before the first run.
+
+## 8. Build tracks
+
+**Two independent tracks; Track V never waits on Track O.** L0–L3 touch no OmegaClaw code — pure greenfield omegahive work — while every fork patch needs live-runtime care and review and moves slower by design. The freeze discipline that keeps split-half running honest: **all** cell configs, the seed set, per-seed caps, the KB hash, and the §7 criteria freeze before the *first* run of either track; after that, running the halves at different times contaminates nothing (the environment is deterministic per seed, and no config can be tuned in response to early results). The gate may issue an **interim recommendation from the vanilla half** — stages 3+ can proceed on the best vanilla cell; residency doesn't wait — with the final gate reading the full grid.
+
+**Track V (omegahive repo only → runs L0–L3):**
+- V1 **Substrate**: §3 k-joins + prune row — legality + fold + pinned regressions + property tests (prune drops dependency; last-non-pruned illegal; k=1 fork end-to-end).
+- V2 **Harness**: ladder runner extending the acceptance runner (cell config → processes → seeds → collect); vanilla rung + its binding smoke (§2); harness-side telemetry; the seed generator (§6).
+- V3 **KB v1 + op sheet + persona** (§5.4 ordering: KB frozen before board params).
+- V4 **Freeze → run L0–L3** → vanilla-half record + interim gate recommendation.
+
+**Track O (fork + battery → runs L4–L6):**
+- O1 **Base image** (pre-patch: upstream HEAD + vendored boot + baked embeddings + policy — deployment spec §3): unblocks battery runner plumbing and the **v0a** emission-discipline matrix immediately; v0a informs Track V's provisional cheap pick (§5.2).
+- O2 **Fork patches** (§4.1–4.3): three-site + channel-registration consistency tests, replay-vs-repeat matrix under the real policy → the patched image.
+- O3 **R2 binding smoke** (§2, battery fixture) — pass/fail gate for the OmegaClaw half; then battery **v0b** confirms the cheap pick (§5.2 contingency if not).
+- O4 **Volume templates** (§4.4) → **run L4–L5 (+L6 if its condition fires)** → full-grid record, comparison report, final gate recommendation, loss-diagnostic report.
+
+## 9. Scope guard and open items
+
+**Not in the spike:** real workers, human channels, contracts machinery, outbound anything, Atomspace log-projection consumption (R3's concern), cross-run memory and inherited-memory conditions (named future arms: level-3 memory, learning-to-coordinate), best-model-per-rung arms (follow-ons), derived moot (armed, §3).
+**Open items:** (1) the seed generator's parameter ranges — set when the board is authored, before any LLM run, after the KB freezes; (2) R3 design sketch stays in the design doc until the funded grid reports.
+
+## 10. Revision record
+
+**v1 (Jul 8):** initial draft (join semantics, board-channel binding, 6-cell grid, CI-based rules).
+**v2.1 (Jul 8):** split into independent Tracks V (L0–L3, pure omegahive greenfield) and O (fork → L4–L6): fork patches move slowly by design and must not block the vanilla half. Two-image discipline adopted: a pre-patch **base image** ships first (unblocks battery plumbing + the v0a emission-discipline half immediately), the patched image follows; the provisional cheap pick is v0a-informed, v0b-confirmed, with the L2/L3 re-run contingency if replaced. Freeze-before-first-run discipline stated; interim gate recommendation from the vanilla half licensed.
+**v2 (Jul 8, post-panel):** *Methodology seat:* vanilla+KB cell added (L3) — knowledge and machinery now separately identified, H-amplifier restated as a package claim; time-to-prune de-gamed (5-of-20 A-recovers seeds, false/premature-prune scoring, conditional gap, event-count clock, dropped from the gate chain); seed-varied environment generator pre-registered; D1's CI/Holm apparatus replaced by descriptive criteria with the amendment justified; per-seed caps replace the per-cell pool; KB frozen-before-board with concrete leakage criteria and a named checker; instruction symmetry via the op sheet; per-rung smoke incl. R1. *Simplification seat:* derived moot deferred (would truncate the never-prune cost signal; no consumer); subtree prune cut; note-as-board-event cut (`send()` → harness log); KB deflated to one file; strong-model OmegaClaw cell (L6) made conditional; slices reordered — binding smoke first, substrate parallel. *Integration seat:* client state (basis+cursor+generation) moved to `memory/` (workdir isn't writable under the policy) in one shared per-actor store with adapter write-through on every poll (kills a silent-dedupe class); LLM-usage logging added as a third fork patch (cost was otherwise unrecoverable for OmegaClaw cells — battery spec assumption repaired too); within-turn order claim struck (runtime doesn't guarantee it); volume templates with pre-built embeddings (no per-seed re-embedding); wake-budget parameters pinned per cell with semantic-delta delivery (kills self-excitation); replace-with-latest view buffering + view size budget; battery scheduling gate + adapter-delta re-qualification rule; cells renamed L\*; NOTIFY trigger dispositioned (stays un-fired).

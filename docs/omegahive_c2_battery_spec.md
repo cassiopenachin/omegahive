@@ -24,7 +24,7 @@ Build in the **omegahive repo** under a new top-level `qual/` (not a frozen subs
 
 ## 3. Architecture
 
-Per (scenario × model × rep): the runner (1) boots the compose profile — Postgres + gateway migrations + the fork container configured with the candidate `model_profile`, **mock channel** (scripted I/O; never the mock *LLM* provider), pinned persona; (2) seeds the scenario's board fixture through the port (as the harness actor); (3) plays the turn script — channel injections and, between turns, scripted board mutations (e.g. a stub worker completing a task) emitted harness-side; (4) captures `[LLM_RAW]` stdout, `memory/history.metta`, the full event log, wall/token/cost telemetry; (5) tears down; (6) the metrics module computes the row; (7) the record writer emits the dated record (§8). Containers are ephemeral per rep — no state bleeds between reps.
+Per (scenario × model × rep): the runner (1) boots the compose profile — Postgres + gateway migrations + the fork container configured with the candidate `model_profile`, **mock channel** (scripted I/O; never the mock *LLM* provider), pinned persona; (2) seeds the scenario's board fixture through the port (as the harness actor); (3) plays the turn script — channel injections and, between turns, scripted board mutations (e.g. a stub worker completing a task) emitted harness-side; (4) captures `[LLM_RAW]` stdout and the adjacent per-call usage lines (tokens in/out, model — the fork's usage-logging patch; raw-text lines alone carry no usage), `memory/history.metta`, the full event log, wall-clock telemetry; (5) tears down; (6) the metrics module computes the row; (7) the record writer emits the dated record (§8). Containers are ephemeral per rep — no state bleeds between reps.
 
 ## 4. Scenario schema (YAML)
 
@@ -57,7 +57,7 @@ budget: {usd: 0.50, max_turns: 12}
 | **silent-unknown count** | heads ∉ catalog that self-evaluated with no error (agent-layer accepted-but-inert) | RESULTS echoes vs catalog |
 | **legal-op rate** | `Accepted` / (`Accepted` + `gateway.rejected`) | event log |
 | **rejection recovery** | after the injected `Rejected`: legal alternative or explicit escalation within K turns; count identical retries | event log |
-| **batch-order sanity** | multi-op turns: ops arrive in emitted order (batch envelope used correctly) | event log vs raw |
+| **batch-order sanity** | multi-op turns: ops arrive in emitted order — n/a for the as-shipped OmegaClaw binding (its dispatch does not guarantee within-turn order; one-call-one-emit); applies to bindings using the port's batch envelope | event log vs raw |
 | **pin discipline** | pinned-before-idle on multi-turn scenarios; pin re-referenced within history window post-filler | history |
 | **idle discipline** | junk ops emitted on a quiet board (S8) | event log |
 | **cost & latency** | tokens, USD, wall per turn | telemetry |
@@ -78,7 +78,7 @@ Hard-fail flags per scenario (e.g. `retry-identical > 2`, budget cap hit) mark t
 
 ## 7. Model matrix v0
 
-From the providers already wired in the runtime: `claude-opus-4-6` (reference ceiling), `gpt-5.4`, `asi1-ultra`, `minimax-m3`, `z-ai/glm-5.1` (OpenRouter), `qwen3.5` (Ollama local), plus DeepSeek via OpenRouter. R = 3. Keys live gateway-side (nginx proxy pattern inherited from upstream) — the agent container never holds them; the runner's budget caps (§2.6) bound total spend (matrix v0 ≈ 8 scenarios × 7 models × 3 reps × ~10 turns — trivial cost for cheap models, capped for the reference models).
+From the providers already wired in the runtime: `claude-opus-4-6` (reference ceiling), `gpt-5.4`, `asi1-ultra`, `minimax-m3`, `z-ai/glm-5.1` (OpenRouter), `qwen3.5` (Ollama local), plus DeepSeek via OpenRouter. R = 3. **The matrix runs in two halves on two images** (deployment spec §3): **v0a** on the pre-patch base image — every metric that needs no board integration (pre/post-repair parse rates, command recognition, silent-unknown count, pin discipline, idle discipline, cost/latency) over scenarios recast against the stock skill catalog; **v0b** on the hive image — the board-op metrics (legal-op rate, rejection recovery, per-op keying) over the board scenarios. v0a informs the stage-2 grid's provisional cheap pick; v0b confirms it. Adapter/logging-only image deltas do not re-trigger v0a. Keys live gateway-side (nginx proxy pattern inherited from upstream) — the agent container never holds them; the runner's budget caps (§2.6) bound total spend (matrix v0 ≈ 8 scenarios × 7 models × 3 reps × ~10 turns — trivial cost for cheap models, capped for the reference models).
 
 ## 8. Experiment record (dated dir, committed in-repo)
 
