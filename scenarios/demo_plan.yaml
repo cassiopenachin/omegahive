@@ -1,0 +1,15 @@
+# Deployment #0 acceptance demo plan (deployment spec §7, port spec §9).
+# A small two-task DAG with one dependency edge: t1 (research) gates t2 (writing).
+# Driven multi-process through the port, the deterministic terminal state is
+# {t1: done, t2: done}. Kept plan-only (no worker roster / outcome knobs) — the
+# acceptance driver supplies port-native actors, not the quarantined sim engine.
+scenario_id: demo_plan
+plan:
+  goal: "Draft a short technical note from research"
+  tasks:
+    - {id: t1, title: "Research the topic", task_type: research}
+    - {id: t2, title: "Write the note", task_type: writing, acceptance: "<= 1 page, cites sources"}
+  dependencies: [[t2, t1]]      # t2 depends on t1
+  priorities:   {t1: high}
+expected:
+  board: { t1: done, t2: done }

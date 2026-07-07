@@ -53,55 +53,52 @@ only) · typer + rich · uv for envs and locking. The substrate is safe under
 concurrent out-of-process writers; the quarantined sim run engine is a single-process
 discrete-event simulation over a logical clock (seed-reproducible).
 
-## Quickstart
+## Quickstart (fully containerized — a host needs only an OCI runtime + compose)
+
+Everything runs as a one-shot compose service on the single `omegahive` image; the
+host carries no Python/uv (deployment spec §4). Runtime is Docker **or** rootless
+Podman with the compose v2 binary talking to Podman's Docker-compatible socket:
 
 ```bash
-# 1. start Postgres (creates both omegahive and omegahive_test databases)
-docker compose up -d
+# rootless Podman route (Fedora-family): enable the API socket + point compose at it
+systemctl --user enable --now podman.socket
+export DOCKER_HOST="unix://$XDG_RUNTIME_DIR/podman/podman.sock"
 
-# 2. install deps into a self-contained venv
-uv sync
+cp .env.example .env                 # local DB creds + run id (secrets live only here)
+docker compose build                 # build the omegahive image
 
-# 3. apply migrations
-uv run omegahive db-migrate
+# bring the substrate up and migrate
+docker compose up -d postgres
+docker compose run --rm migrate
 
-# 4. load a scenario, emit the plan, and run the engine to quiescence
-uv run omegahive run scenarios/m1_smoke.yaml         # m0_smoke.yaml works too
-#   -> run_id: ... · N events · final tick T · 2/2 tasks done
-
-# 5. render the trace, the final board, and the metric set
-uv run omegahive report <run_id> --board --metrics
-uv run omegahive report <run_id> --json
+# --- acceptance run (deployment #0 / port spec §9): multi-process through the port ---
+docker compose run --rm seed                                  # emit the demo plan
+docker compose up --abort-on-container-exit coordinator worker review   # 3 separate processes
+docker compose run --rm board-view                            # read the board back → {t1,t2: done}
 ```
 
-Determinism: pass an explicit `--run-id` to `run` for a canonical, reproducible run.
-Same `(scenario, seed, run_id)` into a fresh log produces a byte-identical log
-across the whole engine run.
+The coordinator, worker, and review are three separate containers coordinating only
+through Postgres via the port — the out-of-process, multi-writer proof.
+
+Determinism note (simulation): the quarantined sim engine still runs via the image —
+`docker compose run --rm --entrypoint omegahive test run scenarios/m1_smoke.yaml
+--run-id r1` then `... report r1 --board --metrics`. Same `(scenario, seed, run_id)`
+into a fresh log is byte-identical.
 
 ## Configuration
 
-The database URL defaults to the docker-compose service. Override with:
-
-```bash
-export OMEGAHIVE_DATABASE_URL=postgresql://user:pass@host:5432/omegahive
-```
+`.env` holds the DB URLs and the acceptance run id (see `.env.example`); containers
+reach Postgres at the compose service name `postgres`. Override the log store with
+`OMEGAHIVE_DATABASE_URL`, the test DB with `OMEGAHIVE_TEST_DATABASE_URL`.
 
 ## Tests
 
-Tests run against a dedicated `omegahive_test` database (created automatically by
-the docker-compose init script), each test wrapped in a rolled-back transaction.
+The full suite runs in-container against the dedicated `omegahive_test` database
+(created by the compose init script), each test wrapped in a rolled-back transaction:
 
 ```bash
-uv run pytest
-```
-
-Override the test DB with `OMEGAHIVE_TEST_DATABASE_URL`.
-
-Lint and type-check:
-
-```bash
-uv run ruff check .
-uv run mypy
+docker compose run --rm test      # pytest
+docker compose run --rm lint      # ruff check . && mypy
 ```
 
 CI (`.github/workflows/ci.yml`) runs ruff, mypy, and pytest against a Postgres 16
@@ -127,6 +124,15 @@ tests/           append / gateway / reducer / gate / ownership / timer-wake / re
                  promotion-rules / h6-detectors / detectors-runner / human-view /
                  two-tier / promotion-tuning / schema
 ```
+
+## Simulation CLI (regression) — M2–M5
+
+The sections below drive the **quarantined sim engine** (a deterministic regression
+bed, not the product). The `uv run omegahive …` commands assume a host dev venv
+(`uv sync`); to stay fully containerized, run the same subcommand as a one-shot
+service instead — e.g. `docker compose run --rm board-view run
+scenarios/f6_noisy_failure.yaml --run-id f6` (any `omegahive` subcommand as args to a
+service whose entrypoint is `omegahive`).
 
 ## Promotion & legibility (M3)
 

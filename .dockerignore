@@ -1,0 +1,19 @@
+.git
+.venv
+**/__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+dist
+build
+.env
+backups
+# non-runtime dirs — kept out of the build context so doc/experiment churn
+# doesn't invalidate the deployment image (scenarios/, migrations/, tests/, src/ stay).
+docs
+experiments
+deploy
+.github
+.claude

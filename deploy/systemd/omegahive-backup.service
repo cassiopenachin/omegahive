@@ -1,0 +1,12 @@
+[Unit]
+Description=OmegaHive log-store backup (containerized pg_dump)
+Requires=podman.socket
+After=podman.socket
+
+[Service]
+Type=oneshot
+# rootless Podman socket + the compose v2 binary; the backup service is profile "ops".
+Environment=DOCKER_HOST=unix://%t/podman/podman.sock
+# Beastie's checkout (deployment #0); adjust WorkingDirectory per host.
+WorkingDirectory=%h/src/SNET/omegahive
+ExecStart=%h/.local/bin/docker-compose --profile ops run --rm backup

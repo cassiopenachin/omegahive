@@ -1,21 +1,103 @@
+name: omegahive
+
+# Generic deployment profile (deployment spec §4). Every non-Postgres service runs
+# the one `omegahive` image as a one-shot command — migrations, seed, the three
+# acceptance actors, board-view, tests, lint, and the containerized pg_dump backup.
+# A host needs only an OCI runtime (rootless Podman) + compose v2; no host runtimes.
+
+x-omega: &omega
+  image: omegahive:dev
+  build: .
+  env_file: [.env]
+  depends_on:
+    postgres:
+      condition: service_healthy
+  volumes:
+    # durable basis_seq per (run, actor) — crash-redispatch idempotency (port spec §3a).
+    - omegahive-basis:/var/lib/omegahive
+
 services:
   postgres:
-    image: postgres:16
+    image: postgres:16@sha256:1570e4013933875bf54995e9010e31420b5e21dd5f2524e5395089d480cc2df1
     container_name: omegahive-pg
     environment:
       POSTGRES_USER: omegahive
       POSTGRES_PASSWORD: omegahive
       POSTGRES_DB: omegahive
+    # Loopback-only: the log store is never exposed off-host (deployment spec §7).
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - omegahive-pgdata:/var/lib/postgresql/data
-      - ./scripts/init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql:ro
+      # :ro,Z — SELinux relabel required for rootless Podman on Fedora/RHEL.
+      - ./scripts/init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql:ro,Z
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U omegahive"]
       interval: 2s
       timeout: 3s
-      retries: 15
+      retries: 30
+
+  # --- one-shot tooling services (the omegahive image) ----------------------
+
+  migrate:
+    <<: *omega
+    command: ["db-migrate"]
+
+  seed:
+    <<: *omega
+    command: ["seed-demo", "--run-id", "${OMEGAHIVE_RUN_ID:-accept}",
+              "--plan", "scenarios/demo_plan.yaml"]
+
+  # The three acceptance actors — each its own process/container, coordinating only
+  # through Postgres via the port. `compose up coordinator worker review` is the
+  # multi-process acceptance run (deployment spec §7 step 6 / port spec §9).
+  coordinator:
+    <<: *omega
+    command: ["act", "coordinator", "--run-id", "${OMEGAHIVE_RUN_ID:-accept}", "--workers", "w1"]
+
+  worker:
+    <<: *omega
+    command: ["act", "worker", "--run-id", "${OMEGAHIVE_RUN_ID:-accept}", "--agent-id", "w1"]
+
+  review:
+    <<: *omega
+    command: ["act", "review", "--run-id", "${OMEGAHIVE_RUN_ID:-accept}"]
+
+  board-view:
+    <<: *omega
+    command: ["board-view", "${OMEGAHIVE_RUN_ID:-accept}"]
+
+  # Full suite in-container (deployment spec §4: no host pytest).
+  test:
+    <<: *omega
+    entrypoint: ["pytest"]
+    command: ["-q"]
+
+  lint:
+    <<: *omega
+    entrypoint: ["sh", "-c"]
+    command: ["ruff check . && mypy"]
+
+  deploy-checks:
+    <<: *omega
+    command: ["deploy-checks"]
+
+  # Containerized backup: pg_dump of the log store from the pinned postgres image
+  # (deployment spec §4/§5). `profiles: [ops]` keeps it out of a plain `up`; the
+  # host systemd timer runs `compose run --rm backup`.
+  backup:
+    image: postgres:16@sha256:1570e4013933875bf54995e9010e31420b5e21dd5f2524e5395089d480cc2df1
+    profiles: ["ops"]
+    env_file: [.env]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - omegahive-backups:/backups
+      - ./scripts:/scripts:ro,Z
+    entrypoint: ["sh", "/scripts/pg_backup.sh"]
 
 volumes:
   omegahive-pgdata:
+  omegahive-basis:
+  omegahive-backups:
