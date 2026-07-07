@@ -125,6 +125,15 @@ tests/           append / gateway / reducer / gate / ownership / timer-wake / re
                  two-tier / promotion-tuning / schema
 ```
 
+## Simulation CLI (regression) — M2–M5
+
+The sections below drive the **quarantined sim engine** (a deterministic regression
+bed, not the product). The `uv run omegahive …` commands assume a host dev venv
+(`uv sync`); to stay fully containerized, run the same subcommand as a one-shot
+service instead — e.g. `docker compose run --rm board-view run
+scenarios/f6_noisy_failure.yaml --run-id f6` (any `omegahive` subcommand as args to a
+service whose entrypoint is `omegahive`).
+
 ## Promotion & legibility (M3)
 
 `scenarios/f6_noisy_failure.yaml` is the H3/H6 driver: a task two bad workers can't

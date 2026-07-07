@@ -14,6 +14,7 @@ that, on an assignment addressed to it, immediately accepts and posts an `ok` re
 
 from __future__ import annotations
 
+import sys
 import time
 
 from ..board.reducer import Board
@@ -22,7 +23,8 @@ from ..db import connect
 from ..events.envelope import Actor
 from ..events.log import EventLog
 from ..gateway import Gateway
-from ..port import HiveCoordinatorPort
+from ..gateway.result import Rejected
+from ..port import HiveCoordinatorPort, open_run
 from ..sim.engine.protocol import Emit, ReactResult
 from ..sim.reactors.coordinator import Coordinator
 from ..sim.reactors.review import ReviewInstrument
@@ -34,7 +36,6 @@ PLANNER = Actor(role="planner", id="planner")
 _TERMINAL_STATUSES = frozenset({"done", "cancelled"})
 
 _DEFAULT_AGENT_ID = {"coordinator": "coordinator", "worker": "w1", "review": "review"}
-_ROLE = {"coordinator": "coordinator", "worker": "worker", "review": "instrument"}
 
 
 class _RawOp:
@@ -104,15 +105,22 @@ def _terminal(board: Board | None) -> bool:
 
 def seed_demo(run_id: str, plan_path: str, *, url: str | None = None) -> str:
     """Register the run and emit the demo plan (goal + tasks + deps) as planner events.
-    Idempotent registration via open_run; safe to run before or after the actors start."""
+
+    Idempotent: registration is `open_run` (ON CONFLICT DO NOTHING), and the plan
+    emit is skipped when the run already carries a goal — so a retried deploy step or
+    a re-run does not double-append the plan (which would reset the tasks mid-run).
+    The plan-layer emits have no idempotency key, so this guard is what makes it safe.
+    """
     scenario = load_scenario(plan_path)
     conn = connect(url)
     try:
+        open_run(conn, run_id)  # idempotent registration (shared port helper)
         store = EventLog(conn, LogicalClock(0), run_id, server_time=True)
-        gateway = Gateway(store)
         with conn.transaction():
-            store.open_run()
-        emit_plan(gateway.handle(PLANNER), scenario)
+            already_seeded = any(e.event_type == "goal.received" for e in store.read_run(run_id))
+        if already_seeded:
+            return run_id  # plan already present — a no-op, not a second copy
+        emit_plan(Gateway(store).handle(PLANNER), scenario)
         conn.commit()
     finally:
         conn.close()
@@ -136,8 +144,8 @@ def run_actor(
     process runs each role; they converge purely through Postgres. Returns the last
     board it observed (for the caller to assert the terminal state)."""
     agent_id = agent_id or _DEFAULT_AGENT_ID[role]
-    actor_role = _ROLE[role]
     reactor = _make_reactor(role, agent_id, workers or ["w1"])
+    actor_role = reactor.role  # authority role is the reactor's own — no parallel map to drift
 
     conn = connect(url)
     port = HiveCoordinatorPort(
@@ -154,13 +162,22 @@ def run_actor(
             view = port.read(cursor)
             if view.generation_mismatch:
                 cursor = None  # restore happened: drop the cursor and re-snapshot
+                if time.monotonic() > deadline:
+                    break
+                time.sleep(poll)  # don't busy-spin while a restore settles
                 continue
             cursor = view.cursor
             if view.changed and view.board is not None:
                 board = view.board
                 now = max((e.logical_ts for e in view.events), default=0)
                 for emit in reactor.react(view.events, board, now).immediate:
-                    port.emit(_RawOp(emit))
+                    result = port.emit(_RawOp(emit))
+                    # emit() only raises for infra exhaustion; a policy refusal is a value.
+                    # These reactors are edge-triggered on the delta, so a swallowed refusal
+                    # would silently livelock the run — surface it instead.
+                    if isinstance(result, Rejected):
+                        print(f"[{role}:{agent_id}] {emit.event_type} on {emit.task_id} "
+                              f"rejected: {result.code} {result.reason}", file=sys.stderr)
             if _terminal(board):
                 break
             if time.monotonic() > deadline:
