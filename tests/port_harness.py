@@ -41,9 +41,10 @@ class Committing:
         self._conns.append(c)
         return c
 
-    def port(self, run_id: str, actor_id: str, role: str = "coordinator", *, workdir=None):
+    def port(self, run_id: str, actor_id: str, role: str = "coordinator", *,
+             workdir=None, generation=None):
         return HiveCoordinatorPort(Actor(role=role, id=actor_id), run_id, self.conn(),
-                                   workdir=workdir)
+                                   workdir=workdir, generation=generation)
 
     def seed_ready_task(self, run_id: str, task_id: str = "t1") -> None:
         """Commit a plan (goal + one dependency-free task -> derives ready) on its own conn."""

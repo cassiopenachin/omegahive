@@ -22,6 +22,21 @@ def _assigns(committing, run):
     return [e for e in committing.read_events(run) if e.event_type == "task.assigned"]
 
 
+# 0. read-then-emit actually commits (regression) ---------------------------
+
+def test_read_then_emit_commits(committing):
+    """read() must not leave an uncommitted transaction open: a following emit() on the
+    same connection would otherwise nest as a savepoint that only RELEASEs, so the write
+    never commits (silent loss) and its advisory lock is held forever."""
+    committing.seed_ready_task("p0")
+    port = committing.port("p0", "coordinator")
+    port.read()                                                  # the board, then decide+emit
+    r = port.emit(AssignOp(task_id="t1", worker="wA"))
+    assert isinstance(r, Accepted)
+    # observed from an INDEPENDENT connection -> genuinely committed, not stranded
+    assert len(_assigns(committing, "p0")) == 1
+
+
 # 1. race-to-assign ----------------------------------------------------------
 
 def test_race_to_assign(committing):
@@ -244,3 +259,20 @@ def test_restore_invalidates_cursors(committing):
     view = port.read(cursor)                                     # stale-generation cursor
     assert view.generation_mismatch
     assert not view.changed
+
+
+def test_generation_mismatch_on_crash_resume(committing):
+    """A crashed client resumes as a fresh port seeded with its last-known generation, so
+    its very first cursor read still detects a post-restore bump (not just a live port)."""
+    committing.seed_ready_task("p10b")
+    original = committing.port("p10b", "coordinator")
+    v = original.read()
+    saved_cursor, saved_gen = v.cursor, v.generation            # persisted with the cursor
+
+    admin = committing.port("p10b", "coordinator")              # restore bumps generation
+    admin._store.bump_generation()
+    admin._conn.commit()
+
+    resumed = committing.port("p10b", "coordinator", generation=saved_gen)
+    view = resumed.read(saved_cursor)                            # first read of a fresh client
+    assert view.generation_mismatch

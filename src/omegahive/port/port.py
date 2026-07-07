@@ -19,6 +19,7 @@ from psycopg import OperationalError
 
 from ..board import reducer  # module (not fold) so a fold-invocation counter can patch it
 from ..clock import LogicalClock
+from ..config import get_settings
 from ..events.envelope import Actor
 from ..events.log import EventLog
 from ..gateway import Accepted, EmitResult, Policy
@@ -37,22 +38,34 @@ class HiveCoordinatorPort:
         *,
         workdir: str | None = None,
         connect: Callable[[], object] | None = None,
-        coalesce_window: int = 5,
+        coalesce_window: int | None = None,
         max_retries: int = 3,
         backoff_base: float = 0.05,
         server_time: bool = True,
         clock: LogicalClock | None = None,
+        generation: int | None = None,
     ) -> None:
         self.actor = actor
         self.run_id = run_id
         self._conn = conn
         self._connect = connect
-        self._coalesce_window = coalesce_window
+        # the flood-control window is operator-configurable via OMEGAHIVE_ (§5).
+        self._coalesce_window = (
+            coalesce_window if coalesce_window is not None
+            else get_settings().rejection_coalesce_window
+        )
         self._max_retries = max_retries
         self._backoff_base = backoff_base
         self._policy = Policy()
-        self._basis = BasisStore(workdir, run_id, actor.id) if workdir is not None else None
-        self._generation: int | None = None  # last-seen; local state, not server session state
+        # basis_seq is tracked in memory (advances on this client's reads and accepted
+        # emits) and, when a workdir is given, persisted durably for crash-redispatch.
+        # Without the in-memory track a workdir-less port would freeze basis at 0 and
+        # silently dedupe legitimate later re-emits of identical content.
+        self._basis_store = BasisStore(workdir, run_id, actor.id) if workdir is not None else None
+        self._basis_seq = self._basis_store.get() if self._basis_store is not None else 0
+        # last-seen generation; a crash-resumed client seeds it (with its persisted cursor)
+        # so its first cursor read can still detect a post-restore generation bump.
+        self._generation: int | None = generation
         # Production uses DB-side time (server_time=True). The quarantined sim binding
         # (equivalence harness) passes server_time=False + a clock so the port emits at the
         # engine's tick, keeping decisions and logical_ts identical to the direct path (§6).
@@ -77,27 +90,35 @@ class HiveCoordinatorPort:
     def read(self, cursor: int | None = None) -> PortView:
         """Board + events + new cursor + generation, all anchored to one log point S.
         cursor=None -> full snapshot; cursor=N -> events (N, S] plus the authoritative
-        server board (never a fragment). No-change short-circuit skips the fold entirely."""
-        gen = self._store.generation()
-        # a cursor presented under a stale generation gets a distinguishable signal,
-        # never a silent skipping read (restore-invalidates-cursors, §2).
-        if cursor is not None and self._generation is not None and gen != self._generation:
+        server board (never a fragment). No-change short-circuit skips the fold entirely.
+
+        All DB access runs inside one transaction: it gives the snapshot its consistency
+        AND ensures the (otherwise-implicit) read transaction is closed — leaving it open
+        would strand a following emit()'s savepoint against an uncommitted outer txn."""
+        # gen/head/prefix are fetched inside the transaction; the fold is pure and runs
+        # after, so the fold-invocation counter (property 9) sees zero calls on no-change.
+        with self._conn.transaction():
+            gen = self._store.generation()
+            # a cursor under a stale generation gets a distinguishable signal, never a
+            # silent skipping read (restore-invalidates-cursors, §2).
+            if cursor is not None and self._generation is not None and gen != self._generation:
+                self._generation = gen
+                return PortView(cursor=cursor, generation=gen, events=[], board=None,
+                                changed=False, generation_mismatch=True)
             self._generation = gen
-            return PortView(cursor=cursor, generation=gen, events=[], board=None,
-                            changed=False, generation_mismatch=True)
-        self._generation = gen
 
-        head = self._store.head_seq()
-        # no-change short-circuit: O(1) head check, no fold on a quiet board.
-        if cursor is not None and (head is None or head <= cursor):
-            return PortView(cursor=cursor, generation=gen, events=[], board=None, changed=False)
-        if head is None:
-            return PortView(cursor=0, generation=gen, events=[], board=reducer.fold([]),
-                            changed=True)
+            head = self._store.head_seq()
+            # no-change short-circuit: O(1) head check, no prefix read / fold on a quiet board.
+            if cursor is not None and (head is None or head <= cursor):
+                return PortView(cursor=cursor, generation=gen, events=[], board=None,
+                                changed=False)
+            if head is None:
+                return PortView(cursor=0, generation=gen, events=[], board=reducer.fold([]),
+                                changed=True)
+            # one snapshot read of the prefix up to S (board = server fold of the full
+            # prefix; events = the (cursor, S] slice — both anchored at the same S).
+            prefix = self._store.read_prefix(head)
 
-        # one snapshot read of the prefix up to S; board = server fold of the full prefix,
-        # events = the (cursor, S] slice — both anchored at the same S (client folds forbidden).
-        prefix = self._store.read_prefix(head)
         board = reducer.fold(prefix)
         low = cursor or 0
         delta = [e for e in prefix if e.seq is not None and e.seq > low]
@@ -105,10 +126,16 @@ class HiveCoordinatorPort:
             e for e in delta
             if self._policy.visible(self.actor.role, self.actor.id, e, board)
         ]
-
-        if self._basis is not None:
-            self._basis.observe(head)  # a read advances basis_seq (last observed board)
+        self._advance_basis(head)  # a read advances basis_seq (last observed board)
         return PortView(cursor=head, generation=gen, events=visible, board=board, changed=True)
+
+    def _advance_basis(self, seq: int | None) -> None:
+        """basis_seq = max(current, seq), in memory and (if durable) persisted."""
+        if seq is None or seq <= self._basis_seq:
+            return
+        self._basis_seq = seq
+        if self._basis_store is not None:
+            self._basis_store.observe(seq)
 
     # --- writes -------------------------------------------------------------
 
@@ -131,12 +158,11 @@ class HiveCoordinatorPort:
     def _emit_one(self, op, idempotency_key: str | None, occ: int = 0) -> EmitResult:
         event_type, payload, task_id = op.to_emit()
         if idempotency_key is None:
-            basis = self._basis.get() if self._basis is not None else 0
             # task_id is part of the op's identity (assign t1 vs assign t2 to the same
             # worker are different decisions), so it must key the idempotency.
             key_payload = {"task_id": task_id, **payload}
             idempotency_key = derive_key(self.run_id, self.actor.id, event_type, key_payload,
-                                         basis, occ)
+                                         self._basis_seq, occ)
         logical_ts = None if self._server_time else self._clock.now()
         result = self._with_retry(
             lambda: self._gateway.emit(
@@ -145,8 +171,8 @@ class HiveCoordinatorPort:
                 causation_id=op.causation_id,
             )
         )
-        if isinstance(result, Accepted) and self._basis is not None:
-            self._basis.observe(result.event.seq)
+        if isinstance(result, Accepted):
+            self._advance_basis(result.event.seq)  # own accepted emit advances basis_seq
         return result
 
     def _with_retry(self, call: Callable[[], EmitResult]) -> EmitResult:

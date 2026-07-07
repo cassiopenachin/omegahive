@@ -125,13 +125,14 @@ class Gateway:
 
     def _now_ts(self, logical_ts: int | None) -> int:
         """The current logical time for the coalescing window: the caller's tick, else
-        the run's max logical_ts (server_time) or the sim clock."""
+        the current epoch (server_time) or the sim clock."""
         if logical_ts is not None:
             return logical_ts
         if self._store.server_time:
+            # logical_ts == epoch seconds under DB-side time, so the current epoch is the
+            # right "now" for the window — O(1), vs a max(logical_ts) scan of the run.
             with self._store.conn.cursor() as cur:
-                cur.execute("SELECT COALESCE(max(logical_ts), 0) FROM events WHERE run_id = %s",
-                            (self._store.run_id,))
+                cur.execute("SELECT extract(epoch from now())::bigint")
                 return cur.fetchone()[0]
         return self._store.clock.now()
 
