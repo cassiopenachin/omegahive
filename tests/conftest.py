@@ -84,6 +84,18 @@ def make_gateway(conn):
 
 
 @pytest.fixture
+def committing():
+    """A slate of independent committing connections (the port concurrency proofs)."""
+    from port_harness import Committing
+
+    slate = Committing()
+    try:
+        yield slate
+    finally:
+        slate.close()
+
+
+@pytest.fixture
 def run_scenario(make_gateway):
     """Emit a scenario's plan and run the DES engine to quiescence; return (store, events)."""
     from omegahive.sim.engine.assembly import build_engine

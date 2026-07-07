@@ -114,8 +114,12 @@ class Engine:
                     continue
                 self._last_now[reactor.agent_id] = now
                 result = reactor.react(new, board, now)
-                for emit in result.immediate:
-                    self._emit(self._actor(reactor), emit, now)
+                # A self-emitting reactor (the port-backed coordinator in the equivalence
+                # harness) has already written its immediates through its own transport;
+                # the engine skips re-emitting them but still counts them as progress.
+                if not getattr(reactor, "self_emits", False):
+                    for emit in result.immediate:
+                        self._emit(self._actor(reactor), emit, now)
                 for sch in result.scheduled:
                     self._push(now + sch.delay, self._actor(reactor), sch.emit)
                 for delay in result.wakes:

@@ -15,10 +15,10 @@ def test_substrate_does_not_import_sim():
     script = textwrap.dedent(
         """
         import sys
-        # the substrate set (port is added in slice 3 once the package exists)
         import omegahive.events
         import omegahive.gateway
         import omegahive.board
+        import omegahive.port
         import omegahive.clock
         import omegahive.db
         import omegahive.config

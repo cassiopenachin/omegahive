@@ -75,6 +75,21 @@ _ROW_COLS = """seq, event_id, run_id, logical_ts, wall_ts, actor_role, actor_id,
 
 _SELECT_RUN = f"SELECT {_ROW_COLS} FROM events WHERE run_id = %(run_id)s ORDER BY seq"
 
+# Port read helpers (§2): all anchored to a snapshot point S = head_seq().
+_SELECT_HEAD = "SELECT max(seq) FROM events WHERE run_id = %(run_id)s"
+_SELECT_PREFIX = (
+    f"SELECT {_ROW_COLS} FROM events WHERE run_id = %(run_id)s AND seq <= %(upto)s ORDER BY seq"
+)
+_SELECT_DELTA = (
+    f"SELECT {_ROW_COLS} FROM events "
+    "WHERE run_id = %(run_id)s AND seq > %(cursor)s AND seq <= %(upto)s ORDER BY seq"
+)
+
+# The run registry (generation token, §2).
+_OPEN_RUN = "INSERT INTO runs (run_id) VALUES (%(run_id)s) ON CONFLICT DO NOTHING"
+_SELECT_GENERATION = "SELECT generation FROM runs WHERE run_id = %(run_id)s"
+_BUMP_GENERATION = "UPDATE runs SET generation = generation + 1 WHERE run_id = %(run_id)s"
+
 _SELECT_BY_KEY = f"""
 SELECT {_ROW_COLS} FROM events
 WHERE run_id = %(run_id)s AND actor_id = %(actor_id)s AND idempotency_key = %(key)s
@@ -205,6 +220,41 @@ class EventLog:
         with self.conn.cursor(row_factory=dict_row) as cur:
             cur.execute(_SELECT_RUN, {"run_id": target})
             return [_row_to_event(r) for r in cur.fetchall()]
+
+    def head_seq(self) -> int | None:
+        """The run's current max seq (the snapshot point S), or None if empty. O(1)."""
+        with self.conn.cursor() as cur:
+            cur.execute(_SELECT_HEAD, {"run_id": self.run_id})
+            return cur.fetchone()[0]
+
+    def read_prefix(self, upto: int) -> list[Event]:
+        """All run events with seq <= upto (the board fold input for a snapshot)."""
+        with self.conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(_SELECT_PREFIX, {"run_id": self.run_id, "upto": upto})
+            return [_row_to_event(r) for r in cur.fetchall()]
+
+    def read_delta(self, cursor: int, upto: int) -> list[Event]:
+        """Run events in (cursor, upto] — the events half of a cursor read."""
+        with self.conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(_SELECT_DELTA, {"run_id": self.run_id, "cursor": cursor, "upto": upto})
+            return [_row_to_event(r) for r in cur.fetchall()]
+
+    def open_run(self) -> None:
+        """Register the run (idempotent) so it carries a generation token."""
+        with self.conn.cursor() as cur:
+            cur.execute(_OPEN_RUN, {"run_id": self.run_id})
+
+    def generation(self) -> int | None:
+        """The run's log-generation, or None if the run is not registered."""
+        with self.conn.cursor() as cur:
+            cur.execute(_SELECT_GENERATION, {"run_id": self.run_id})
+            row = cur.fetchone()
+        return row[0] if row is not None else None
+
+    def bump_generation(self) -> None:
+        """Invalidate live cursors after a restore (deployment procedure; §2)."""
+        with self.conn.cursor() as cur:
+            cur.execute(_BUMP_GENERATION, {"run_id": self.run_id})
 
     def find_by_key(self, actor_id: str, idempotency_key: str) -> Event | None:
         """The accepted op event for (run, actor, key), or None — the idempotency

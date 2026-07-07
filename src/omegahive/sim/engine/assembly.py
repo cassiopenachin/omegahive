@@ -51,13 +51,16 @@ def build_engine(
     *,
     max_logical_ts: int | None = None,
     seed: int | None = None,
+    coordinator: Reactor | None = None,
 ) -> Engine:
     eff_seed = seed if seed is not None else scenario.seed
     roster = scenario.workers or {"w1": WorkerPolicy()}
     workers = [_worker(wid, pol, eff_seed) for wid, pol in roster.items()]
 
     thresholds = scenario.coordinator.thresholds if scenario.coordinator else {}
-    coordinator = Coordinator(workers=list(roster.keys()), thresholds=thresholds)
+    # coordinator override lets the equivalence harness drive it through the port.
+    if coordinator is None:
+        coordinator = Coordinator(workers=list(roster.keys()), thresholds=thresholds)
     review = ReviewInstrument()
     metrics = MetricsRunner()
 
