@@ -8,7 +8,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-Role = Literal["planner", "coordinator", "worker", "instrument"]
+# "gateway" is the actor of gateway.rejected feedback events (§5) — the gateway
+# recording a refusal in the log, distinct from any agent role.
+Role = Literal["planner", "coordinator", "worker", "instrument", "gateway"]
 
 
 class Actor(BaseModel):

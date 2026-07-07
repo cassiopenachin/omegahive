@@ -290,6 +290,7 @@ RULES: list[LegalityRule] = [
 NON_BOARD_WHITELIST: set[str] = {
     "goal.received", "priority.set", "note.posted", "task.progress",
     "question.asked", "metric.threshold_crossed", "promotion.created", "promotion.suppressed",
+    "gateway.rejected",  # recorded refusal feedback (§5); no board effect
 }
 
 # Worker emits whose legality additionally requires the worker to currently own the

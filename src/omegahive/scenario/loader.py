@@ -18,6 +18,7 @@ import yaml
 
 from ..events.envelope import Event
 from ..gateway.gateway import GatewayHandle
+from ..gateway.result import unwrap
 from .schema import Scenario
 
 
@@ -31,12 +32,12 @@ def emit_plan(planner: GatewayHandle, scenario: Scenario) -> list[Event]:
     plan = scenario.plan
     emitted: list[Event] = []
 
-    goal = planner.emit(event_type="goal.received", payload={"text": plan.goal})
+    goal = unwrap(planner.emit(event_type="goal.received", payload={"text": plan.goal}))
     emitted.append(goal)
 
     task_events: dict[str, Event] = {}
     for task in plan.tasks:
-        ev = planner.emit(
+        ev = unwrap(planner.emit(
             event_type="task.created",
             task_id=task.id,
             causation_id=goal.event_id,
@@ -46,26 +47,26 @@ def emit_plan(planner: GatewayHandle, scenario: Scenario) -> list[Event]:
                 "acceptance": task.acceptance,
                 "required_artifacts": task.required_artifacts,
             },
-        )
+        ))
         task_events[task.id] = ev
         emitted.append(ev)
 
     for dependent, depends_on in plan.dependencies:
-        ev = planner.emit(
+        ev = unwrap(planner.emit(
             event_type="dependency.added",
             task_id=dependent,
             causation_id=task_events[dependent].event_id,
             payload={"depends_on": depends_on},
-        )
+        ))
         emitted.append(ev)
 
     for task_id, priority in plan.priorities.items():
-        ev = planner.emit(
+        ev = unwrap(planner.emit(
             event_type="priority.set",
             task_id=task_id,
             causation_id=task_events[task_id].event_id,
             payload={"priority": priority},
-        )
+        ))
         emitted.append(ev)
 
     return emitted

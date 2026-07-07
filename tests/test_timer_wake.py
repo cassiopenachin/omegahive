@@ -5,6 +5,7 @@ from __future__ import annotations
 from omegahive.engine.engine import Engine
 from omegahive.engine.protocol import Emit, ReactResult, Scheduled
 from omegahive.events.envelope import Actor
+from omegahive.gateway import unwrap
 
 PLANNER = Actor(role="planner", id="planner")
 COORD = Actor(role="coordinator", id="coordinator")
@@ -58,7 +59,7 @@ class GhostScheduler:
 
 def test_engine_drops_rejected_scheduled_fire(make_gateway):
     gateway, store = make_gateway()
-    g = gateway.emit(actor=PLANNER, event_type="goal.received", payload={"text": "g"})
+    g = unwrap(gateway.emit(actor=PLANNER, event_type="goal.received", payload={"text": "g"}))
     gateway.emit(actor=PLANNER, event_type="task.created", task_id="t1",
                  causation_id=g.event_id, payload={"title": "T1", "task_type": "research"})
     gateway.emit(actor=COORD, event_type="task.assigned", task_id="t1", payload={"worker": "w1"})

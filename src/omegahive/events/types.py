@@ -145,6 +145,22 @@ class PromotionSuppressed(BaseModel):  # defined for registry completeness; not 
     reason: str | None = None
 
 
+# --- Gateway feedback payloads (§5) ---
+
+class GatewayRejected(BaseModel):
+    """A recorded refusal: the op that was refused, the machine code, and the human
+    reason. `coalesced_count` folds a burst of identical (actor, op, code) refusals
+    into one event (§5 flood control)."""
+    refused_event_type: str
+    refused_task_id: str | None = None
+    refused_payload: dict = {}
+    code: str
+    reason: str
+    original_actor_role: str
+    original_actor_id: str
+    coalesced_count: int = 1
+
+
 PAYLOADS: dict[str, type[BaseModel]] = {
     # planner
     "goal.received": GoalReceived,
@@ -173,4 +189,6 @@ PAYLOADS: dict[str, type[BaseModel]] = {
     "metric.threshold_crossed": MetricThresholdCrossed,
     "promotion.created": PromotionCreated,
     "promotion.suppressed": PromotionSuppressed,
+    # gateway
+    "gateway.rejected": GatewayRejected,
 }

@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
-
 from omegahive.events.envelope import Actor
-from omegahive.gateway import TransitionRejected
+from omegahive.gateway import Rejected, unwrap
 
 PLANNER = Actor(role="planner", id="planner")
 COORD = Actor(role="coordinator", id="coordinator")
@@ -14,7 +12,7 @@ REVIEW = Actor(role="instrument", id="review")
 
 
 def _drive_to_in_review(gateway):
-    g = gateway.emit(actor=PLANNER, event_type="goal.received", payload={"text": "g"})
+    g = unwrap(gateway.emit(actor=PLANNER, event_type="goal.received", payload={"text": "g"}))
     gateway.emit(actor=PLANNER, event_type="task.created", task_id="t1",
                  causation_id=g.event_id, payload={"title": "T1", "task_type": "research"})
     gateway.emit(actor=COORD, event_type="task.assigned", task_id="t1", payload={"worker": "w1"})
@@ -26,9 +24,10 @@ def _drive_to_in_review(gateway):
 def test_done_gate_rejects_close_without_passed_review(make_gateway):
     gateway, _ = make_gateway()
     _drive_to_in_review(gateway)
-    with pytest.raises(TransitionRejected):
-        gateway.emit(actor=COORD, event_type="task.status_override", task_id="t1",
-                     payload={"status": "done", "reason": "premature"})
+    res = gateway.emit(actor=COORD, event_type="task.status_override", task_id="t1",
+                       payload={"status": "done", "reason": "premature"})
+    assert isinstance(res, Rejected)
+    assert res.code == "ILLEGAL_TRANSITION"
 
 
 def test_done_gate_allows_close_after_passed_review(make_gateway):
@@ -36,6 +35,6 @@ def test_done_gate_allows_close_after_passed_review(make_gateway):
     _drive_to_in_review(gateway)
     gateway.emit(actor=REVIEW, event_type="review.passed", task_id="t1",
                  payload={"ref_result": "r1"})
-    ev = gateway.emit(actor=COORD, event_type="task.status_override", task_id="t1",
-                      payload={"status": "done", "reason": "review passed"})
+    ev = unwrap(gateway.emit(actor=COORD, event_type="task.status_override", task_id="t1",
+                             payload={"status": "done", "reason": "review passed"}))
     assert ev.seq is not None

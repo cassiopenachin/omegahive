@@ -26,7 +26,7 @@ class UnknownEventType(Exception):
     """Raised when an event_type has no registered payload model in PAYLOADS.
 
     A structural/config error (the registry has a gap), distinct from the
-    gateway's policy denials (EmitDenied / TransitionRejected).
+    gateway's policy refusals (which are recorded Rejected values, not exceptions).
     """
 
 
@@ -51,6 +51,24 @@ ORDER BY seq
 """
 
 _SELECT_RUN_IDS = "SELECT DISTINCT run_id FROM events WHERE run_id LIKE %(prefix)s ORDER BY run_id"
+
+_SELECT_RECENT_REJECTION = """
+SELECT event_id, (payload->>'coalesced_count')::int
+FROM events
+WHERE run_id = %(run_id)s AND event_type = 'gateway.rejected'
+  AND payload->>'original_actor_id' = %(oa)s
+  AND payload->>'refused_event_type' = %(ret)s
+  AND payload->>'refused_task_id' IS NOT DISTINCT FROM %(rt)s
+  AND payload->>'code' = %(code)s
+  AND logical_ts >= %(since)s
+ORDER BY seq DESC
+LIMIT 1
+"""
+
+_BUMP_COALESCED = """
+UPDATE events SET payload = jsonb_set(payload, '{coalesced_count}', to_jsonb(%(cc)s::int))
+WHERE event_id = %(id)s
+"""
 
 
 def read_run_ids(conn, prefix: str) -> list[str]:
@@ -152,3 +170,23 @@ class EventLog:
         with self.conn.cursor(row_factory=dict_row) as cur:
             cur.execute(_SELECT_RUN, {"run_id": target})
             return [_row_to_event(r) for r in cur.fetchall()]
+
+    def find_recent_rejection(
+        self, *, original_actor_id: str, refused_event_type: str,
+        refused_task_id: str | None, code: str, since_ts: int,
+    ) -> tuple[UUID, int] | None:
+        """The most recent gateway.rejected in this run matching the coalescing key and
+        no older than since_ts (logical_ts) — the anchor to increment, or None. Uses
+        IS NOT DISTINCT FROM so a NULL refused_task_id matches NULL."""
+        with self.conn.cursor() as cur:
+            cur.execute(_SELECT_RECENT_REJECTION, {
+                "run_id": self.run_id, "oa": original_actor_id,
+                "ret": refused_event_type, "rt": refused_task_id,
+                "code": code, "since": since_ts,
+            })
+            row = cur.fetchone()
+        return (row[0], row[1]) if row is not None else None
+
+    def bump_coalesced_count(self, event_id: UUID, new_count: int) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute(_BUMP_COALESCED, {"id": event_id, "cc": new_count})

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from omegahive.board import fold
 from omegahive.events.envelope import Actor
+from omegahive.gateway import unwrap
 
 PLANNER = Actor(role="planner", id="planner")
 COORD = Actor(role="coordinator", id="coordinator")
@@ -49,7 +50,7 @@ def board_of(store):
 
 def _plan(gateway):
     """goal + t1 (no deps) + t2 (depends on t1). t1 derives ready; t2 stays created."""
-    g = gateway.emit(actor=PLANNER, event_type="goal.received", payload={"text": "g"})
+    g = unwrap(gateway.emit(actor=PLANNER, event_type="goal.received", payload={"text": "g"}))
     gateway.emit(actor=PLANNER, event_type="task.created", task_id="t1",
                  causation_id=g.event_id, payload={"title": "T1", "task_type": "research"})
     gateway.emit(actor=PLANNER, event_type="task.created", task_id="t2",

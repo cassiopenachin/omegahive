@@ -12,15 +12,6 @@ from __future__ import annotations
 from ..board.reducer import Board
 from ..events.envelope import Event
 
-
-class EmitDenied(Exception):
-    """Raised by the gateway when a role is not authorized to emit an event_type."""
-
-
-class TransitionRejected(Exception):
-    """Raised by the gateway when an emit would make an illegal state transition."""
-
-
 # role -> allowed event_types. The taxonomy's organizing principle (v0 §5): types
 # are grouped by emitter authority. PAYLOADS (events/types.py) must cover every
 # type listed here — guarded by tests/test_append.py.
@@ -39,6 +30,8 @@ EMIT_AUTHORITY: dict[str, set[str]] = {
         "promotion.created", "promotion.suppressed", "metric.threshold_crossed",
         "review.passed", "review.failed",
     },
+    # the gateway records its own refusals (§5); never emitted by an agent.
+    "gateway": {"gateway.rejected"},
 }
 
 
