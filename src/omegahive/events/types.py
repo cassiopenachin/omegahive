@@ -1,4 +1,4 @@
-"""event_type -> payload model registry (the structural schema) + the uuid5 namespace.
+"""event_type -> payload model registry (the structural schema).
 
 This is the *store-facing* schema: the shape of each event's payload. Emit-authority
 (who may emit what) is policy, not schema — it lives in the gateway
@@ -10,14 +10,8 @@ split. PAYLOADS must cover every event_type any role is authorized to emit;
 from __future__ import annotations
 
 from typing import Literal
-from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
-
-# Fixed project namespace for deterministic uuid5 event ids. Do not change:
-# changing it would alter every event_id and break replay identity.
-NAMESPACE = UUID("a3f1c2d4-5e6f-4a8b-9c0d-1e2f3a4b5c6d")
-
 
 # --- Planner payloads ---
 
