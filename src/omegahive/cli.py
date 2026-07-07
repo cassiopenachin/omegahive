@@ -7,6 +7,7 @@ from uuid import uuid4
 import typer
 from rich.console import Console
 
+from .acceptance import run_actor, seed_demo
 from .board import fold
 from .clock import LogicalClock
 from .db import connect, migrate
@@ -16,6 +17,7 @@ from .gateway import Gateway, Policy
 from .metrics import compute
 from .metrics.distribution import aggregate
 from .metrics.promotion import score
+from .port import HiveCoordinatorPort
 from .report.board import render_board
 from .report.distribution import render_distribution, render_promotion_distribution
 from .report.human import render_human
@@ -159,6 +161,50 @@ def simulate_cmd(
     render_distribution(result.metrics, console)
     if result.promotion is not None:
         render_promotion_distribution(result.promotion, console)
+
+
+@app.command("seed-demo")
+def seed_demo_cmd(
+    run_id: str = typer.Option(..., "--run-id", help="run to seed (the acceptance run)"),
+    plan: str = typer.Option("scenarios/demo_plan.yaml", "--plan", help="demo plan YAML"),
+) -> None:
+    """Register the run and emit the demo plan through the port's gateway (planner events)."""
+    seed_demo(run_id, plan)
+    console.print(f"seeded {run_id} from {plan}")
+
+
+@app.command("act")
+def act_cmd(
+    role: str = typer.Argument(..., help="coordinator | worker | review"),
+    run_id: str = typer.Option(..., "--run-id", help="the acceptance run to bind to"),
+    agent_id: str | None = typer.Option(None, "--agent-id", help="actor id (default per role)"),
+    workers: str = typer.Option("w1", "--workers", help="coordinator's roster, comma-separated"),
+    workdir: str = typer.Option(
+        "/var/lib/omegahive/basis", "--workdir", help="durable basis dir (crash-redispatch dedupe)"
+    ),
+    timeout: float = typer.Option(120.0, "--timeout", help="wall-clock cap (seconds)"),
+) -> None:
+    """Run one actor (its own process) through the port until the board is terminal."""
+    board = run_actor(
+        role, run_id, agent_id=agent_id, workers=[w for w in workers.split(",") if w],
+        workdir=workdir, timeout=timeout,
+    )
+    done = 0 if board is None else sum(1 for s in board.tasks.values() if s.status == "done")
+    total = 0 if board is None else len(board.tasks)
+    console.print(f"{role} exited · {done}/{total} tasks done")
+
+
+@app.command("board-view")
+def board_view_cmd(
+    run_id: str = typer.Argument(..., help="run_id to read through the port and print"),
+) -> None:
+    """Read the board through the port (read surface) and render it."""
+    with connect() as conn:
+        view = HiveCoordinatorPort(Actor(role="coordinator", id="board-view"), run_id, conn).read()
+        if view.board is None or not view.board.tasks:
+            console.print(f"no board state for run_id: {run_id}")
+            raise typer.Exit(code=1)
+        render_board(view.board, console)
 
 
 if __name__ == "__main__":
