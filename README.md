@@ -1,4 +1,4 @@
-# OmegaHive — M5 (per-task-type difficulty)
+# OmegaHive — Port milestone (out-of-process writers)
 
 A runnable spine, a deterministic run engine, a coordinator that recovers from
 failures, a legibility layer, stochastic workers, and now **per-task-type difficulty**:
@@ -23,19 +23,35 @@ the science is. Opt-in and byte-identical — a worker with no `outcome` (or no
   roster sharing one map makes difficulty a property of the *task type* — reliable setup,
   flaky experiments — so the RP2 reproduction DAG reaches and stresses its experiment fork.
 
+- **Port (out-of-process writers):** the substrate is now correct under independent,
+  concurrent, out-of-process writers over TCP-to-Postgres. One declarative legality
+  table (`board/legality.py`) is consulted by both the gate and the fold (no
+  accepted-but-inert events). Refusals are *recorded values* — a `gateway.rejected`
+  event + a non-raising `Accepted | Rejected` return, coalesced under flood. The write
+  path is one atomic per-run-serialized transaction: idempotency-lookup-first,
+  `pg_advisory_xact_lock(hashtext(run_id))`, DB-side monotonic time, a unique index on
+  `(run_id, actor_id, idempotency_key)` with catch-and-reselect. `omegahive.port` is
+  the one binding surface — `read(cursor) -> PortView` (server-folded board + delta,
+  one snapshot, no-change short-circuit, generation token) and
+  `emit(op, key) -> Accepted | Rejected` (content+basis idempotency keys). The sim
+  (`omegahive.sim`) is quarantined from the substrate; a transport-equivalence test
+  proves the port produces event-identical logs to the direct engine path.
+
 Agents never touch the log directly. Every emit goes through the **gateway** — the
 policy layer that enforces emit-authority and transition-gates, folding the board,
 then calls the dumb store. *Structure in the store, policy in the gateway.*
 Timeouts and time-based detectors are stateless policies over board timestamps plus
 a bare **wake** in the engine — no scheduler, no watchdog.
 
-See `docs/omegahive_m5_spec.md` (and `docs/omegahive_v0_spec.md` §7) for the spec.
+See `docs/omegahive_port_spec.md` for the port milestone; `docs/omegahive_m5_spec.md`
+(and `docs/omegahive_v0_spec.md` §7) for the earlier substrate.
 
 ## Stack
 
-Python 3.12 (synchronous, single-process) · Postgres 16 · psycopg 3 + hand-written
-SQL · Pydantic v2 · typer + rich · uv for envs and locking. The run engine is a
-discrete-event simulation over a logical clock (no wall-clock; seed-reproducible).
+Python 3.12 · Postgres 16 · psycopg 3 + hand-written SQL · Pydantic v2 (wire types
+only) · typer + rich · uv for envs and locking. The substrate is safe under
+concurrent out-of-process writers; the quarantined sim run engine is a single-process
+discrete-event simulation over a logical clock (seed-reproducible).
 
 ## Quickstart
 
