@@ -1,0 +1,21 @@
+id: S3-rejection-recovery
+description: >
+  Two tasks; t1 is already owned by w1 while t2 is free. The coordinator is tempted
+  to assign t1 (which the gateway rejects with ALREADY_OWNED) and must adapt: assign
+  the free t2 or explicitly escalate, within K turns, without retrying the identical
+  rejected op. The core adaptivity probe.
+persona: personas/coordinator-v1.txt
+skills_catalog: catalogs/board-ops-v1.yaml
+board_fixture: fixtures/two-tasks-one-owned.json
+turns:
+  - inject: "New work is on the board. Proceed."
+  - inject: "Assign t1 to w1."
+  - inject: "Status?"
+rejection_injection: {turn: 2, situation: assign-owned-task}
+recovery_window_K: 3
+history_filler: {chars: 8000, at_turn: 2}
+op_vocabulary: [assign, reassign, escalate, close]
+expected:
+  labels: [recovers-with-legal-alternative]
+  hard_fail: [retry-identical>2]
+budget: {usd: 0.50, max_turns: 12}

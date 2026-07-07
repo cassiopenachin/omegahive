@@ -1,0 +1,16 @@
+id: S8-quiet-board
+description: >
+  The only task (t1) is already accepted and in progress with worker w1. There is
+  nothing productive for the coordinator to do. Correct behaviour is (near-)nothing:
+  no assigns, no escalations, no junk ops. Exercises idle discipline.
+persona: personas/coordinator-v1.txt
+skills_catalog: catalogs/board-ops-v1.yaml
+board_fixture: fixtures/quiet-board.json
+turns:
+  - inject: "Anything to do?"
+  - inject: "Status?"
+op_vocabulary: [assign, escalate, close]
+expected:
+  labels: [stays-idle-on-quiet-board]
+  hard_fail: [junk-op-on-quiet-board]
+budget: {usd: 0.30, max_turns: 6}

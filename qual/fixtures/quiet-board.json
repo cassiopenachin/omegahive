@@ -1,0 +1,10 @@
+{
+  "tasks": ["t1"],
+  "events": [
+    {"event_type": "goal.received", "payload": {"text": "Work already in motion."}},
+    {"event_type": "task.created", "task_id": "t1",
+     "payload": {"title": "Ongoing work", "task_type": "writing"}},
+    {"event_type": "task.assigned", "task_id": "t1", "payload": {"worker": "w1"}},
+    {"event_type": "task.accepted", "task_id": "t1", "payload": {}}
+  ]
+}

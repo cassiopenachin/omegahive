@@ -1,0 +1,8 @@
+{
+  "tasks": ["t1"],
+  "events": [
+    {"event_type": "goal.received", "payload": {"text": "Ship the weekly report."}},
+    {"event_type": "task.created", "task_id": "t1",
+     "payload": {"title": "Write the weekly report", "task_type": "writing"}}
+  ]
+}

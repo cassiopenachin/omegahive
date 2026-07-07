@@ -1,0 +1,11 @@
+{
+  "tasks": ["t1", "t2"],
+  "events": [
+    {"event_type": "goal.received", "payload": {"text": "Produce two drafts."}},
+    {"event_type": "task.created", "task_id": "t1",
+     "payload": {"title": "Draft A", "task_type": "writing"}},
+    {"event_type": "task.created", "task_id": "t2",
+     "payload": {"title": "Draft B", "task_type": "writing"}},
+    {"event_type": "task.assigned", "task_id": "t1", "payload": {"worker": "w1"}}
+  ]
+}
