@@ -33,10 +33,10 @@ and the deployment-#0 substrate slice needs far less.
 
 | Component | Pin |
 |---|---|
-| Repo | tag `deploy0-v1` @ commit `4044c279646b7a75080f7aaf22b0470ff10ce40b` |
+| Repo | tag `deploy0-v1` @ commit `483be2700f07ab57b93e3f5e7f83ee78f0d8154f` |
 | Postgres image | `postgres:16@sha256:1570e4013933875bf54995e9010e31420b5e21dd5f2524e5395089d480cc2df1` |
 | Base image (omegahive) | `python:3.12-slim@sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf` |
-| omegahive image | local build, config id `sha256:d93c61cc8826312b15e8c91d7026286d137622d8c933086641f1d3562dbd0f2e` — reproducible from `Dockerfile` (`sha256:c2bb18b0b25baccb5e81d074f74cfa8978d50edbb37f930d82bdae85070dee93`) + `uv.lock` + the pinned base. Push to a registry and pin the RepoDigest before any multi-host deployment. |
+| omegahive image | local build, config id `sha256:f4579ad68541287cfdd0afb72916fb5b6e4ce1d932de4b939849c21e99e3ee54` — reproducible from `Dockerfile` (`sha256:c2bb18b0b25baccb5e81d074f74cfa8978d50edbb37f930d82bdae85070dee93`) + `uv.lock` + the pinned base. Push to a registry and pin the RepoDigest before any multi-host deployment. |
 | Migration set | `0001_events.sql`, `0002_write_path.sql` → `sha256:dce439381ed69f6ade703ff180f3849ba55a10b4039ba458927f335c7d3ba44e` |
 | Compose profile | `docker-compose.yml` → `sha256:d2efe0f0ae4bf4375dc1af50a6d85434842e8e91402056a7d707a09cc2f6ae73` |
 | Compose binary | `docker-compose v5.3.1`, asset `sha256:f9ebc6ebdb19d769b793c245a736caaeb198c62587f13b25c660c13b4987f959` |
