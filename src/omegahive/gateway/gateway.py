@@ -12,8 +12,8 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from ..board.legality import NON_BOARD_WHITELIST, Rejection, lookup, worker_ownership_violation
 from ..board.reducer import Board, fold
-from ..board.transitions import validate_transition
 from ..events.envelope import Actor, Event
 from ..events.log import EventLog
 from .policy import EmitDenied, Policy, TransitionRejected
@@ -43,11 +43,21 @@ class Gateway:
         if not self._policy.may_emit(actor.role, event_type):
             raise EmitDenied(f"{actor.role} may not emit {event_type}")
 
-        # 2. transition gate (stateful: fold the board and check legality)
+        # 2. gate against the derived board: worker-ownership, then transition legality.
+        # Both draw on the single legality spec (board/legality.py) so the gate can never
+        # disagree with the fold's effects. A non-board/whitelisted event has no rule and
+        # passes; a stateful event with no rule is refused by construction (default-deny).
         board = fold(self._store.read_run())
-        reason = validate_transition(board, actor, event_type, task_id, payload)
-        if reason is not None:
-            raise TransitionRejected(reason)
+        rej = worker_ownership_violation(board, actor, event_type, task_id)
+        if rej is None:
+            rule = lookup(event_type, payload)
+            if rule is not None:
+                rej = rule.guard(board, actor, payload, task_id)
+            elif event_type not in NON_BOARD_WHITELIST:
+                rej = Rejection("ILLEGAL_TRANSITION",
+                                f"no legality rule for {event_type} {payload}")
+        if rej is not None:
+            raise TransitionRejected(rej.reason)
 
         # 3. structural validation + persistence happen in the dumb store
         return self._store.append(
