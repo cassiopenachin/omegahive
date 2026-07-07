@@ -3,7 +3,7 @@
 **Status:** Build spec, ready to scaffold on top of M0. **Implements:** the board reducer + transition graph (v0 spec §6), a deterministic run engine, and the first stub roles — enough to run one plan end-to-end on the happy path.
 **Builds on:** the M0 spine (event log, append chokepoint, envelope, planner events, trace). Everything here is additive — no schema change to the `events` table.
 
-**Decisions baked in (from the M1 kickoff):** the run engine is a **discrete-event simulation**; **metrics are in** M1 (useful signal on every run); **promotion is deferred** to M2 (near-vacuous on a happy path; trivial to add once failures give it something to surface).
+**Decisions baked in (from the M1 kickoff):** the run engine is a **discrete-event simulation**; **metrics are in** M1 (useful signal on every run); **promotion is deferred** to M3 (near-vacuous on a happy path; it lands with the human view in the promotion/H3 milestone).
 
 ---
 
@@ -21,7 +21,7 @@ Running `m0_smoke` (t1; t2 depends on t1) through M1 should drive **both** tasks
 
 **New in M1:** the **board reducer**, a **DES run engine**, a **happy-path worker stub**, the **greedy coordinator**, the **auto-fire review instrument**, the **metrics runner**, a minimal **read-projection**, and the coordinator/worker/instrument **payload models** that complete `PAYLOADS`.
 
-**Deferred:** the promotion component (M2); failure scenarios and the coordinator's failure reactions — reassign / escalate / reopen-on-fail (M2); stochastic / closed-loop worker policies and variant comparison (M4); the human view and simulated human; per-agent policy. The done-gate *is* enforced in M1 (it's load-bearing for the happy path), but exercising its *rejection* path is an M2 test.
+**Deferred:** the promotion component (M3); failure scenarios and the coordinator's failure reactions — reassign / escalate / reopen-on-fail (M2); stochastic / closed-loop worker policies and variant comparison (M4); the human view and simulated human; per-agent policy. The done-gate *is* enforced in M1 (it's load-bearing for the happy path), but exercising its *rejection* path is an M2 test.
 
 ## 2. Components overview
 
@@ -144,7 +144,7 @@ So `task.result_posted` (delivered at `now`) settles into `review.passed` (immed
 **Worker stub** (scheduling). Policy per worker: a latency profile and a result quality. M1 happy-path policy is deterministic.
 
 - On a `task.assigned` addressed to it: emit `task.accepted` **immediately**; schedule `task.progress` at `now + p` and `task.result_posted` at `now + n` (n > p). The result payload carries `artifact_refs: [{quality: ok}]` and a `cost` from the policy.
-- On `task.reassigned` away / `plan.revised(cancel)` for its task: drop scheduled events for that task (M2 fleshes this out; M1 happy path never hits it).
+- On `task.reassigned` away / `plan.revised(cancel)`: the worker's already-scheduled events become stale, but it does **not** track or drop them — M2 invalidates them *lazily* (they fire and the gateway rejects a non-owner's emit). M1 happy path never hits it.
 - Reads only its own tasks' events (§7).
 
 ```yaml
@@ -201,7 +201,7 @@ M1 **completes `PAYLOADS`** so the registry guard (`UnknownEventType`) has no ga
 
 - `review.passed` ✓ `{ref_result: str}` · `review.failed` ✓ `{ref_result: str, reason: str | None}`
 - `metric.threshold_crossed` ✓ `{metric: str, value: float, threshold: float}`
-- `promotion.created` / `promotion.suppressed` — payload models defined for registry completeness; **not emitted in M1** (promotion deferred to M2).
+- `promotion.created` / `promotion.suppressed` — payload models defined for registry completeness; **not emitted in M1** (promotion deferred to M3).
 
 ## 7. Read-projection (minimal gateway read side)
 
@@ -252,4 +252,4 @@ If `workers` is omitted, the engine uses a single **default worker** (latency `{
 
 ## 11. Deferred to M2+
 
-Promotion evaluator + the human view (M2); failure scenarios and the coordinator's failure reactions — reassign / escalate / reopen-on-`review.failed`, and the done-gate *rejection* test (M2); stochastic / closed-loop worker policies, the baseline-coordinator ladder, and variant comparison (M4); strict policy-driven read-projection + the attention/rendering stage; per-agent policy; real artifacts + content-inspecting review (later phase). None require changes to the engine or the event schema — they are new reactors, new rules, and richer policies over the same spine.
+Promotion evaluator + the human view (M3); failure scenarios and the coordinator's failure reactions — reassign / escalate / reopen-on-`review.failed`, and the done-gate *rejection* test (M2); stochastic / closed-loop worker policies, the baseline-coordinator ladder, and variant comparison (M4); strict policy-driven read-projection + the attention/rendering stage; per-agent policy; real artifacts + content-inspecting review (later phase). None require changes to the engine or the event schema — they are new reactors, new rules, and richer policies over the same spine.
