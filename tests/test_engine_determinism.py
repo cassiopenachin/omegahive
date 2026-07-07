@@ -8,11 +8,11 @@ import pytest
 
 from _canonical import canonical_log
 from omegahive.clock import LogicalClock
-from omegahive.engine.assembly import build_engine
 from omegahive.events.envelope import Actor
 from omegahive.events.log import EventLog
 from omegahive.gateway import Gateway, Policy
-from omegahive.scenario.loader import emit_plan, load_scenario
+from omegahive.sim.engine.assembly import build_engine
+from omegahive.sim.scenario.loader import emit_plan, load_scenario
 
 SCEN = Path(__file__).resolve().parents[1] / "scenarios"
 M0_SMOKE = SCEN / "m0_smoke.yaml"

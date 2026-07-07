@@ -7,10 +7,10 @@ consistent (crash-on-reject fix). Identical refusals coalesce within a window.
 from __future__ import annotations
 
 from omegahive.board import fold
-from omegahive.engine.engine import Engine
-from omegahive.engine.protocol import Emit, ReactResult
 from omegahive.events.envelope import Actor
 from omegahive.gateway import Accepted, Rejected, unwrap
+from omegahive.sim.engine.engine import Engine
+from omegahive.sim.engine.protocol import Emit, ReactResult
 
 PLANNER = Actor(role="planner", id="planner")
 COORD = Actor(role="coordinator", id="coordinator")

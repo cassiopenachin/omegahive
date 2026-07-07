@@ -8,12 +8,12 @@ from rich.console import Console
 
 from omegahive.board import fold
 from omegahive.clock import LogicalClock
-from omegahive.engine.simulate import simulate
 from omegahive.events.log import EventLog, read_run_ids
 from omegahive.metrics import compute
 from omegahive.metrics.distribution import aggregate
 from omegahive.report.distribution import render_distribution
-from omegahive.scenario.loader import load_scenario
+from omegahive.sim.engine.simulate import simulate
+from omegahive.sim.scenario.loader import load_scenario
 
 S1 = Path(__file__).resolve().parents[1] / "scenarios" / "s1_flaky_worker.yaml"
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 
-from ..scenario.schema import ScenarioConfig
+from ..sim.scenario.schema import ScenarioConfig
 
 
 @dataclass(frozen=True)

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from omegahive.engine.engine import Engine
-from omegahive.engine.protocol import Emit, ReactResult, Scheduled
 from omegahive.events.envelope import Actor
 from omegahive.gateway import unwrap
+from omegahive.sim.engine.engine import Engine
+from omegahive.sim.engine.protocol import Emit, ReactResult, Scheduled
 
 PLANNER = Actor(role="planner", id="planner")
 COORD = Actor(role="coordinator", id="coordinator")

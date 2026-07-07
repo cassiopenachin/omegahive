@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from omegahive.board.reducer import Board
-from omegahive.engine.rng import rng_for
-from omegahive.reactors.worker import WorkerStub
+from omegahive.sim.engine.rng import rng_for
+from omegahive.sim.reactors.worker import WorkerStub
 
 EMPTY = Board(tasks={})
 SCEN = Path(__file__).resolve().parents[1] / "scenarios"
@@ -53,11 +53,11 @@ def _fingerprint(events):
 
 def _run_seed(conn, seed, run_id, *, scenario_path=S1, truncate=False):
     from omegahive.clock import LogicalClock
-    from omegahive.engine.assembly import build_engine
     from omegahive.events.envelope import Actor
     from omegahive.events.log import EventLog
     from omegahive.gateway import Gateway, Policy
-    from omegahive.scenario.loader import emit_plan, load_scenario
+    from omegahive.sim.engine.assembly import build_engine
+    from omegahive.sim.scenario.loader import emit_plan, load_scenario
 
     if truncate:
         with conn.cursor() as cur:

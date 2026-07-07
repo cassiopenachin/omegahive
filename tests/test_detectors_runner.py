@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from omegahive.engine.assembly import build_engine
 from omegahive.events.envelope import Actor
-from omegahive.scenario.loader import emit_plan
-from omegahive.scenario.schema import Scenario
+from omegahive.sim.engine.assembly import build_engine
+from omegahive.sim.scenario.loader import emit_plan
+from omegahive.sim.scenario.schema import Scenario
 
 PLANNER = Actor(role="planner", id="planner")
 

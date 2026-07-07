@@ -19,10 +19,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..board.reducer import Board
+from ...board.reducer import Board
+from ...events.envelope import Event
 from ..engine.protocol import Emit, ReactResult, Scheduled
 from ..engine.rng import rng_for
-from ..events.envelope import Event
 
 
 @dataclass(frozen=True)

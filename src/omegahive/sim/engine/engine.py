@@ -15,10 +15,10 @@ from __future__ import annotations
 import heapq
 from dataclasses import dataclass, field
 
-from ..board.reducer import fold
-from ..clock import LogicalClock
-from ..events.envelope import Actor
-from ..gateway.gateway import Gateway
+from ...board.reducer import fold
+from ...clock import LogicalClock
+from ...events.envelope import Actor
+from ...gateway.gateway import Gateway
 from .protocol import Emit, Reactor
 
 

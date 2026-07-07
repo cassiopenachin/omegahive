@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from omegahive.board.reducer import Board
-from omegahive.reactors import WorkerStub
-from omegahive.reactors.worker import BlockSpec
+from omegahive.sim.reactors import WorkerStub
+from omegahive.sim.reactors.worker import BlockSpec
 
 EMPTY = Board(tasks={})
 

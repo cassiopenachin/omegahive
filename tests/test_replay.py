@@ -9,7 +9,7 @@ from omegahive.clock import LogicalClock
 from omegahive.events.envelope import Actor
 from omegahive.events.log import EventLog
 from omegahive.gateway import Gateway, Policy
-from omegahive.scenario.loader import emit_plan, load_scenario
+from omegahive.sim.scenario.loader import emit_plan, load_scenario
 
 SCENARIO = Path(__file__).resolve().parents[1] / "scenarios" / "m0_smoke.yaml"
 

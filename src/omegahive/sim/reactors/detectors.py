@@ -14,11 +14,11 @@ enumeration, wakes carry (logical_ts, schedule_seq), no hash()/wall clock.
 
 from __future__ import annotations
 
-from ..board.reducer import Board
+from ...board.reducer import Board
+from ...events.envelope import Event
+from ...metrics.detectors import run_detectors, time_based_deadlines
+from ...promotion.config import DetectorConfig
 from ..engine.protocol import Emit, ReactResult
-from ..events.envelope import Event
-from ..metrics.detectors import run_detectors, time_based_deadlines
-from ..promotion.config import DetectorConfig
 
 
 class DetectorsRunner:

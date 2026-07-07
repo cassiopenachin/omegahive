@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from omegahive.scenario.loader import load_scenario
-from omegahive.scenario.schema import Labels, Scenario
+from omegahive.sim.scenario.loader import load_scenario
+from omegahive.sim.scenario.schema import Labels, Scenario
 
 SCEN = Path(__file__).resolve().parents[1] / "scenarios"
 

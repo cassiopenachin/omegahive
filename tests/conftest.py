@@ -86,8 +86,8 @@ def make_gateway(conn):
 @pytest.fixture
 def run_scenario(make_gateway):
     """Emit a scenario's plan and run the DES engine to quiescence; return (store, events)."""
-    from omegahive.engine.assembly import build_engine
-    from omegahive.scenario.loader import emit_plan, load_scenario
+    from omegahive.sim.engine.assembly import build_engine
+    from omegahive.sim.scenario.loader import emit_plan, load_scenario
 
     def _run(scenario_path, run_id: str = "engine-run", max_logical_ts=None):
         scenario = load_scenario(scenario_path)

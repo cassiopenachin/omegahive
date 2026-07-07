@@ -7,9 +7,9 @@ the M2 worker failure scripting and the coordinator's staleness thresholds.
 
 from __future__ import annotations
 
-from ..clock import LogicalClock
-from ..gateway.gateway import Gateway
-from ..promotion.config import PromotionConfig
+from ...clock import LogicalClock
+from ...gateway.gateway import Gateway
+from ...promotion.config import PromotionConfig
 from ..reactors import (
     Coordinator,
     DetectorsRunner,

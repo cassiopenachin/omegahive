@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from omegahive.board.reducer import Board
-from omegahive.reactors import ReviewInstrument
+from omegahive.sim.reactors import ReviewInstrument
 
 EMPTY = Board(tasks={})
 

@@ -16,9 +16,9 @@ from pathlib import Path
 
 import yaml
 
-from ..events.envelope import Event
-from ..gateway.gateway import GatewayHandle
-from ..gateway.result import unwrap
+from ...events.envelope import Event
+from ...gateway.gateway import GatewayHandle
+from ...gateway.result import unwrap
 from .schema import Scenario
 
 
