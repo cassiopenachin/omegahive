@@ -59,6 +59,7 @@ def drive(
     board: Board | None = None
     deadline = time.monotonic() + timeout
     ops = 0
+    now = 0
     stop = "cap_timeout"
     try:
         while True:
@@ -71,10 +72,17 @@ def drive(
                 time.sleep(poll)
                 continue
             cursor = view.cursor
+            # react on a board delta, or — when the reactor still has unfinished business it
+            # can only resolve by acting (e.g. deliver dropped-line feedback) — on a quiet board.
+            react_events: list | None = None
             if view.changed and view.board is not None:
                 board = view.board
-                now = max((e.logical_ts for e in view.events), default=0)
-                for emit in reactor.react(view.events, board, now).immediate:
+                now = max((e.logical_ts for e in view.events), default=now)
+                react_events = view.events
+            elif getattr(reactor, "wants_retry", False) and board is not None:
+                react_events = []
+            if react_events is not None:
+                for emit in reactor.react(react_events, board, now).immediate:
                     result = port.emit(_RawOp(emit))
                     ops += 1
                     if isinstance(result, Rejected):
@@ -82,6 +90,9 @@ def drive(
                               f"rejected: {result.code}", file=sys.stderr)
             if is_terminal(board):
                 stop = "terminal"
+                break
+            if getattr(reactor, "exhausted", False):  # reactor spent its own budget (LLM calls)
+                stop = "cap_llm_calls"
                 break
             if max_ops is not None and ops >= max_ops:
                 stop = "cap_ops"

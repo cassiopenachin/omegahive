@@ -70,9 +70,17 @@ class ReopenOp(_Op):
         return "task.status_override", {"status": "reopened", "reason": self.reason}, self.task_id
 
 
+class PruneOp(_Op):
+    op: Literal["prune"] = "prune"
+    reason: str | None = None
+
+    def to_emit(self) -> tuple[str, dict, str | None]:
+        return "task.pruned", {"reason": self.reason}, self.task_id
+
+
 # The closed op vocabulary (plan ops stay behind a flag until needed — §2).
 Op = Annotated[
-    AssignOp | ReassignOp | EscalateOp | CloseOp | ReopenOp,
+    AssignOp | ReassignOp | EscalateOp | CloseOp | ReopenOp | PruneOp,
     Field(discriminator="op"),
 ]
 

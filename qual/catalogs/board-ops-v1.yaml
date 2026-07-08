@@ -24,3 +24,7 @@ entries:
     text: "Reopen a task that is in review: reopen <task>"
     arity: 1
     port_op: ReopenOp
+  - head: prune
+    text: "Abandon a doomed not-done task; it drops from its join's pool but never lowers the join's k: prune <task>"
+    arity: 1
+    port_op: PruneOp

@@ -4,7 +4,7 @@ Pydantic models mirroring the sim scenario pattern (`omegahive.sim.scenario.sche
 Three distinct, load-bearing vocabularies live here:
 
   - **command heads** — what the coordinator LLM is told it may emit
-    (`assign`/`reassign`/`escalate`/`close`/`reopen`); the catalog enumerates them.
+    (`assign`/`reassign`/`escalate`/`close`/`reopen`/`prune`); the catalog enumerates them.
   - **board-mutation ops** — scripted, harness-side worker/stub actions played
     *between* turns (`complete`, `block`, …); these are not coordinator commands.
 
@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field, model_validator
 
 # The coordinator command heads (the port Op union; omegahive_port_spec.md §2, and
 # the binding skill equations). A scenario's op_vocabulary is a subset of these.
-KNOWN_HEADS = frozenset({"assign", "reassign", "escalate", "close", "reopen"})
+KNOWN_HEADS = frozenset({"assign", "reassign", "escalate", "close", "reopen", "prune"})
 
 # Scripted worker/stub mutations the harness plays between turns. Not coordinator
 # commands. The event-type each maps to is a slice-2 concern (the runner emits them
