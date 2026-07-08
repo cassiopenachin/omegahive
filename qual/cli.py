@@ -1,17 +1,22 @@
 """typer CLI for the qualification battery.
 
-Slice 1 wires `qual validate` (load + cross-validate a scenario set). `qual run`
-(boot the fork image, drive the loop, capture artifacts) lands in slices 2–3.
+`qual validate` cross-validates a scenario set; `qual run` executes the matrix through
+a capture backend and writes the §8 record; `qual validate-record` checks a record's
+config pins.
 """
 
 from __future__ import annotations
 
+from datetime import date as _date
 from pathlib import Path
 
 import typer
 from rich.console import Console
 
+from . import runner
+from .capture import StubCaptureBackend
 from .loader import QUAL_ROOT, load_scenario_set
+from .record import validate_record
 
 app = typer.Typer(help="OmegaHive C2 qualification battery.", no_args_is_help=True)
 console = Console()
@@ -49,12 +54,73 @@ def validate(
 
 
 @app.command("run")
-def run() -> None:
-    """Run the matrix (boot the fork image, drive the loop, capture artifacts)."""
-    raise NotImplementedError(
-        "qual run lands in slice 2 (runner plumbing against the fork image). "
-        "Slice 1 provides the schema, scenarios, and the grading core only."
+def run(
+    models: str = typer.Option(..., "--models", help="comma-separated model names"),
+    matrix_id: str = typer.Option(..., "--matrix-id", help="record dir label: <date>-<id>"),
+    scenarios: str | None = typer.Option(None, "--scenarios", help="scenario dir"),
+    reps: int = typer.Option(3, "--reps", help="repetitions per scenario × model"),
+    backend: str = typer.Option("stub", "--backend", help="stub | fork"),
+    image: str = typer.Option("stub", "--image", help="container image ref"),
+    image_role: str = typer.Option("v0a", "--image-role", help="v0a (base) | v0b (hive)"),
+    out: str = typer.Option("qual/records", "--out", help="records output dir"),
+) -> None:
+    """Run the matrix through a capture backend and write the dated §8 record."""
+    target = Path(scenarios) if scenarios else DEFAULT_SCENARIOS
+    loaded = load_scenario_set(target)
+    model_list = [m.strip() for m in models.split(",") if m.strip()]
+
+    if backend == "stub":
+        be: object = StubCaptureBackend(image_ref=image)
+    elif backend == "fork":
+        from .fork_backend import ForkContainerCaptureBackend
+
+        be = ForkContainerCaptureBackend(image_ref=image)
+    else:
+        console.print(f"unknown backend {backend!r} (expected stub|fork)")
+        raise typer.Exit(code=2)
+
+    path = runner.run(
+        loaded=loaded,
+        models=model_list,
+        reps=reps,
+        backend=be,  # type: ignore[arg-type]
+        image_role=image_role,
+        matrix_id=matrix_id,
+        date=_date.today().isoformat(),
+        out_dir=out,
     )
+    console.print(f"wrote record: {path}")
+
+
+@app.command("smoke-fork")
+def smoke_fork_cmd(
+    image: str = typer.Option("localhost/omegaclaw-base:0.1", "--image", help="base image ref"),
+    fork_repo: str | None = typer.Option(None, "--fork-repo", help="OmegaClaw-Core checkout"),
+    keep: bool = typer.Option(False, "--keep", help="leave the container running"),
+) -> None:
+    """Boot the fork base image and drive ONE scripted turn (plumbing-only smoke)."""
+    from .smoke_fork import DEFAULT_FORK_REPO, run_smoke
+
+    result = run_smoke(image=image, fork_repo=fork_repo or DEFAULT_FORK_REPO, keep=keep)
+    verdict = "PASS" if result.ok else "FAIL"
+    console.print(
+        f"\nsmoke: [bold]{verdict}[/bold]  "
+        f"booted={result.booted} reply={bool(result.reply)} history={result.history_written}"
+    )
+    if not result.ok:
+        raise typer.Exit(code=1)
+
+
+@app.command("validate-record")
+def validate_record_cmd(
+    path: str = typer.Argument(..., help="record dir or config.json path"),
+) -> None:
+    """Check a record's config pins (the §8 validity gate, shared Mode A / Mode B)."""
+    missing = validate_record(path)
+    if missing:
+        console.print(f"[bold]invalid record[/bold]: missing pins: {missing}")
+        raise typer.Exit(code=1)
+    console.print("valid record")
 
 
 if __name__ == "__main__":
