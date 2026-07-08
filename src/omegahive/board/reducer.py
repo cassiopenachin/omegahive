@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from ..events.envelope import Event
 from .legality import lookup
-from .state import Board, TaskState, _change, _stamp
+from .state import Board, TaskState, _change, _stamp, resolve_k
 
 __all__ = ["Board", "TaskState", "fold"]
 
@@ -54,8 +54,7 @@ def fold(events: list[Event]) -> Board:
             ts.status = "ready"
             continue
         active = [d for d in deps if not (d in board.tasks and board.tasks[d].pruned)]
-        required = ts.ready_when if (ts.ready_when is not None and ts.ready_when >= 1) \
-            else len(deps)
+        required = resolve_k(ts)
         capacity = sum(1 for d in active if d in board.tasks)  # live deps that actually exist
         ts.join_unsatisfiable = required > capacity
         done = sum(1 for d in active if d in board.tasks and board.tasks[d].status == "done")

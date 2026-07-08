@@ -22,20 +22,27 @@ _COORD_OPS = frozenset(
 )
 
 
-# Mechanical loss buckets (§7) — attributed at run time from evidence the runner already
-# has, distinct from the cognitive buckets (premise/orchestration/reasoning) a human
-# assigns later. `board_stalled` is derivable from the event log alone (an ill-formed or
-# starved join that can never fire); the cap/error buckets need the runner's process view.
-LOSS_BUCKETS = frozenset({"board_stalled", "cap_ops_exhausted", "cap_timeout", "run_error"})
+# Mechanical loss buckets (§7) — attributed from evidence the runner already has, distinct
+# from the cognitive buckets (premise/orchestration/reasoning) a human assigns later. The
+# runner's process view (a cap/error) is the authoritative mechanical stop; the structural
+# `unsatisfiable_joins` fact is carried *alongside* as evidence rather than overwriting the
+# stop, so a run that hit a cap while a join happened to be unsatisfiable is still bucketed
+# by how it mechanically stopped. `board_stalled` is the pure-log verdict used when no runner
+# stop is supplied (analysis over an event log); `incomplete` is the no-signal fallback.
+LOSS_BUCKETS = frozenset(
+    {"board_stalled", "cap_ops_exhausted", "cap_timeout", "run_error", "incomplete"}
+)
 
 
 def _loss_bucket(completed: bool, unsatisfiable: tuple[str, ...],
                  stop_reason: str | None) -> str | None:
     if completed:
         return None
+    if stop_reason is not None:
+        return stop_reason              # the runner's mechanical stop is authoritative
     if unsatisfiable:
-        return "board_stalled"          # structural deadlock: a join that can never fire
-    return stop_reason or "incomplete"  # runner-attributed cap/error, or unknown (pure fold)
+        return "board_stalled"          # no runner stop (pure-log analysis): structural deadlock
+    return "incomplete"                 # no signal at all
 
 
 @dataclass(frozen=True)

@@ -12,6 +12,7 @@ Later rungs swap only the coordinator process.
 from __future__ import annotations
 
 import multiprocessing as mp
+import queue as _queue
 import uuid
 
 from omegahive.board.reducer import Board
@@ -59,17 +60,20 @@ def _run_review(run_id: str, url: str | None, timeout: float) -> None:
           url=url, is_terminal=_terminal, timeout=timeout)
 
 
-def _stop_reason(coord_stop: str | None, errored: bool) -> str | None:
-    """Map the coordinator's stop signal (+ any child crash) to a mechanical loss-bucket
-    hint. `terminal` => the run completed, so no bucket. A coordinator that neither
-    reported nor crashed cleanly (killed/hung) is bucketed as a timeout."""
-    if errored:
-        return "run_error"
+def _stop_reason(coord_stop: str | None, coord_errored: bool) -> str | None:
+    """Map the *coordinator's* stop signal to a mechanical loss-bucket hint. Attribution is
+    coordinator-only: it drives the run, so its cap report is authoritative even if an
+    ancillary worker/review child also crashed (that crash is subsumed — the run still ended
+    however the coordinator says). `terminal` => the run completed, so no bucket. A
+    coordinator that gave no clean report either crashed (run_error, non-zero exit) or was
+    killed/hung (bucketed as a timeout)."""
     if coord_stop == "cap_ops":
         return "cap_ops_exhausted"
+    if coord_stop == "cap_timeout":
+        return "cap_timeout"
     if coord_stop == "terminal":
         return None
-    return "cap_timeout"
+    return "run_error" if coord_errored else "cap_timeout"
 
 
 def run_seed(cell: str, seed: int, *, url: str | None = None, timeout: float = 60.0,
@@ -82,11 +86,12 @@ def run_seed(cell: str, seed: int, *, url: str | None = None, timeout: float = 6
     seed_fork_board(run_id, url=url)
 
     report: mp.Queue = mp.Queue()  # the coordinator reports its stop reason (§7 loss bucket)
+    coord = mp.Process(target=_run_coordinator,
+                       args=(cell, run_id, sched.roster, url, timeout, max_ops, report))
     procs = [mp.Process(target=_run_review, args=(run_id, url, timeout))]
     procs += [mp.Process(target=_run_worker, args=(run_id, wid, seed, url, timeout))
               for wid in sched.roster]
-    procs.append(mp.Process(target=_run_coordinator,
-                            args=(cell, run_id, sched.roster, url, timeout, max_ops, report)))
+    procs.append(coord)
     try:
         for p in procs:
             p.start()
@@ -99,11 +104,12 @@ def run_seed(cell: str, seed: int, *, url: str | None = None, timeout: float = 6
                 p.terminate()
                 p.join(5)
 
-    coord_stop: str | None = None
-    while not report.empty():  # a single small item put before the coordinator exited
-        coord_stop = report.get_nowait()
-    errored = any(p.exitcode is not None and p.exitcode > 0 for p in procs)  # a child raised
-    stop_reason = _stop_reason(coord_stop, errored)
+    try:
+        coord_stop: str | None = report.get_nowait()  # one small item, put before coord exit
+    except _queue.Empty:                               # coord crashed/killed before reporting
+        coord_stop = None
+    coord_errored = coord.exitcode is not None and coord.exitcode > 0
+    stop_reason = _stop_reason(coord_stop, coord_errored)
 
     conn = connect(url)
     try:

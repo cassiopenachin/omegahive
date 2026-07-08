@@ -59,6 +59,14 @@ class Board:
         )
 
 
+def resolve_k(ts: TaskState) -> int:
+    """The join threshold k (§3): `ready_when` when it is a positive int, else all declared
+    dependencies. Single source of truth for both the fold's readiness derivation and the
+    prune guard, so the gate and fold can never disagree on how many deps a join needs."""
+    return ts.ready_when if (ts.ready_when is not None and ts.ready_when >= 1) \
+        else len(ts.depends_on)
+
+
 def _stamp(ts: TaskState, ev: Event) -> None:
     """Record the event that last moved this task (provenance + causation source)."""
     ts.last_causing_seq = ev.seq

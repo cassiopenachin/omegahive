@@ -159,6 +159,28 @@ def test_prune_below_k_is_illegal_but_above_k_is_allowed():
     assert rej is not None and rej.code == ILLEGAL_TRANSITION
 
 
+def test_prune_upstream_of_an_abandoned_join_is_allowed():
+    """A pruned (abandoned) dependent imposes no k-invariant, so pruning one of its
+    now-orphaned upstream branches is legal — it cannot make an abandoned join worse."""
+    board = Board(tasks={
+        "a": TaskState("a", "ready"),
+        "b": TaskState("b", "ready"),
+        "j": TaskState("j", "created", depends_on={"a", "b"}, ready_when=1, pruned=True),
+    })
+    assert _g_prune(board, COORD, {}, "a") is None
+
+
+def test_prune_branch_of_already_unsatisfiable_join_is_allowed():
+    """A join that already cannot reach k — here a dangling, never-created dependency leaves
+    it one live dep short — is not made worse by pruning a real branch, so the prune is not
+    falsely rejected."""
+    board = Board(tasks={
+        "a": TaskState("a", "ready"),
+        "j": TaskState("j", "created", depends_on={"a", "ghost"}),  # ghost uncreated -> k=2, 1 live
+    })
+    assert _g_prune(board, COORD, {}, "a") is None
+
+
 def test_prune_unknown_or_terminal_task_rejected():
     board = Board(tasks={"a": TaskState("a", "done")})
     assert _g_prune(board, COORD, {}, "missing").code == UNKNOWN_TASK
