@@ -72,14 +72,17 @@ def run_seed(cell: str, seed: int, *, url: str | None = None, timeout: float = 6
               for wid in sched.roster]
     procs.append(mp.Process(target=_run_coordinator,
                             args=(cell, run_id, sched.roster, url, timeout, max_ops)))
-    for p in procs:
-        p.start()
-    for p in procs:
-        p.join(timeout + 15)
-    for p in procs:
-        if p.is_alive():
-            p.terminate()
-            p.join(5)
+    try:
+        for p in procs:
+            p.start()
+        for p in procs:
+            p.join(timeout + 15)
+    finally:
+        # always reap children, even if start()/join() raised mid-loop
+        for p in procs:
+            if p.is_alive():
+                p.terminate()
+                p.join(5)
 
     conn = connect(url)
     try:

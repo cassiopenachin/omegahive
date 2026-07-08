@@ -35,6 +35,9 @@ def run_cmd(
     if cell not in CELLS:
         console.print(f"unknown cell {cell!r}; V2a has {sorted(CELLS)}")
         raise typer.Exit(1)
+    if seeds < 1:
+        console.print("--seeds must be >= 1")
+        raise typer.Exit(1)
     seed_list = list(range(seeds))
     rows = run_cell(cell, seed_list, timeout=timeout)
     agg = aggregate(rows)

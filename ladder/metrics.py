@@ -76,6 +76,12 @@ def compute_row(events: list[Event], schedule: SeedSchedule) -> LadderRow:
     )
 
 
+def _median(xs: list[int]) -> float:
+    s = sorted(xs)
+    n = len(s)
+    return float(s[n // 2]) if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+
 def aggregate(rows: list[LadderRow]) -> dict:
     """Cell-level summary over the seed set (never a single run)."""
     n = len(rows)
@@ -83,7 +89,7 @@ def aggregate(rows: list[LadderRow]) -> dict:
         return {"n": 0}
     completed = [r for r in rows if r.completed]
     ttp = [r.time_to_prune for r in rows if r.time_to_prune is not None]
-    wasted = sorted(r.wasted_attempts_after_evidence for r in rows)
+    wasted = [r.wasted_attempts_after_evidence for r in rows]
     return {
         "n": n,
         "completion_rate": len(completed) / n,
@@ -91,7 +97,7 @@ def aggregate(rows: list[LadderRow]) -> dict:
         "false_prunes": sum(r.false_prune for r in rows),
         "premature_prunes": sum(r.premature_prune for r in rows),
         "wasted_after_evidence_mean": sum(wasted) / n,
-        "wasted_after_evidence_median": wasted[n // 2],
+        "wasted_after_evidence_median": _median(wasted),
         "decisions_mean": sum(r.decisions for r in rows) / n,
         "time_to_prune_n": len(ttp),
         "time_to_prune_mean": (sum(ttp) / len(ttp)) if ttp else None,

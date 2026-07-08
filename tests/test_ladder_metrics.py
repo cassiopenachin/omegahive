@@ -5,7 +5,7 @@ from __future__ import annotations
 from itertools import count
 from uuid import uuid4
 
-from ladder.metrics import aggregate, compute_row
+from ladder.metrics import _median, aggregate, compute_row
 from ladder.seeds import schedule_for
 
 from omegahive.events.envelope import Actor, Event
@@ -99,3 +99,8 @@ def test_aggregate_over_rows():
     assert agg["n"] == 2
     assert agg["completion_rate"] == 0.5
     assert agg["prune_rate"] == 0.0
+
+
+def test_median_true_for_even_and_odd():
+    assert _median([1, 2, 3]) == 2.0
+    assert _median([1, 2, 3, 4]) == 2.5   # even n: average the two middles, not the upper
