@@ -40,8 +40,12 @@ class Board:
     tasks: dict[str, TaskState]
 
     def ready(self) -> list[str]:
-        """Task ids that are ready and unowned — sorted for deterministic iteration."""
-        return sorted(t for t, s in self.tasks.items() if s.status == "ready" and s.owner is None)
+        """Ready, unowned, non-pruned task ids — sorted for deterministic iteration.
+        A pruned task is being abandoned (§3), so it is never surfaced as assignable."""
+        return sorted(
+            t for t, s in self.tasks.items()
+            if s.status == "ready" and s.owner is None and not s.pruned
+        )
 
     def awaiting_close(self) -> list[str]:
         """Task ids in review with a passed verdict — sorted for determinism."""

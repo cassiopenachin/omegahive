@@ -40,16 +40,18 @@ class Plan(BaseModel):
         for ref in self.priorities:
             if ref not in ids:
                 raise ValueError(f"priority references unknown task id: {ref}")
-        dep_counts: dict[str, int] = {}
-        for dependent, _ in self.dependencies:
-            dep_counts[dependent] = dep_counts.get(dependent, 0) + 1
+        # count *distinct* dependencies per task — the board dedups depends_on into a set,
+        # so duplicate pairs must not inflate the ready_when bound.
+        dep_ids: dict[str, set[str]] = {}
+        for dependent, on in self.dependencies:
+            dep_ids.setdefault(dependent, set()).add(on)
         for t in self.tasks:
             if t.ready_when is not None:
-                n = dep_counts.get(t.id, 0)
+                n = len(dep_ids.get(t.id, set()))
                 if not (1 <= t.ready_when <= n):
                     raise ValueError(
                         f"task {t.id!r} ready_when={t.ready_when} must be in [1, {n}] "
-                        "(its dependency count)"
+                        "(its distinct dependency count)"
                     )
         return self
 
