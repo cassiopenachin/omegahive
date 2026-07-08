@@ -82,10 +82,13 @@ def test_default_ready_when_is_all():
 
 def test_missing_dependency_blocks_readiness_fail_closed():
     """A declared-but-never-created (dangling) dependency keeps the join waiting — a
-    missing dep is not the same as a pruned one (only pruning drops the requirement)."""
+    missing dep is not the same as a pruned one (only pruning drops it from the pool).
+    Fewer live-existing deps than k requires also flags the derived diagnostic."""
     events = [created("a"), created("j")] + [depends("j", "a"), depends("j", "ghost")]
     # 'a' done but 'ghost' was never created -> join must NOT fire (fail-closed).
-    assert status_of(fold(events + drive_to_done("a")), "j") == "created"
+    board = fold(events + drive_to_done("a"))
+    assert status_of(board, "j") == "created"
+    assert board.tasks["j"].join_unsatisfiable is True      # capacity 1 < k 2
 
 
 def test_nonpositive_ready_when_falls_back_to_all():
@@ -100,24 +103,27 @@ def test_nonpositive_ready_when_falls_back_to_all():
 
 # --- (b) prune drops a dependency from the requirement ------------------------
 
-def test_prune_drops_dependency_so_join_fires_on_survivor():
-    """An all-deps join with a doomed dep never readies; pruning the doomed dep drops it
-    from the requirement, so the join fires when the survivor completes."""
-    events = [created("a"), created("b"), created("j")] + [depends("j", "a"), depends("j", "b")]
-
-    # b done, a not, no prune -> join still waits on a
-    assert status_of(fold(events + drive_to_done("b")), "j") == "created"
-
-    # prune a, then b done -> join ready on b alone
+def test_prune_removes_from_pool_but_never_lowers_the_done_bar():
+    """Corrected v2.2 semantics: pruning drops a dep from the pool but never shrinks k.
+    A k=2-of-3 join with one dep pruned still needs two survivors done — it must NOT fire
+    on one (the silent-weakening the fold's old min()-clamp used to cause)."""
+    events = [created("a"), created("b"), created("c"), created("j", ready_when=2)]
+    events += [depends("j", "a"), depends("j", "b"), depends("j", "c")]
     pruned = events + [ev("task.pruned", {"reason": "doomed"}, task_id="a", actor=COORD)]
-    assert status_of(fold(pruned + drive_to_done("b")), "j") == "ready"
+
+    # one survivor done -> still one short of k=2 -> NOT ready (the old clamp wrongly fired)
+    assert status_of(fold(pruned + drive_to_done("b")), "j") == "created"
+    # both survivors done -> k=2 met on the survivors -> ready
+    assert status_of(fold(pruned + drive_to_done("b") + drive_to_done("c")), "j") == "ready"
     assert fold(pruned).tasks["a"].pruned is True
 
 
 def test_pruned_task_is_not_surfaced_as_ready():
     """A pruned branch is abandoned: neither the readiness derivation nor Board.ready()
-    surfaces it as assignable (prevents a coordinator from working a pruned task)."""
-    events = [created("a"), created("b"), created("j")] + [depends("j", "a"), depends("j", "b")]
+    surfaces it as assignable (prevents a coordinator from working a pruned task). Uses a
+    k=1 join so the prune is legal (a live sibling remains at k=1)."""
+    events = [created("a"), created("b"), created("j", ready_when=1)]
+    events += [depends("j", "a"), depends("j", "b")]
     events += [ev("task.pruned", {"reason": "doomed"}, task_id="a", actor=COORD)]
     board = fold(events)
     assert board.tasks["a"].pruned is True
@@ -137,15 +143,20 @@ def test_prune_last_non_pruned_dep_is_illegal():
     assert rej is not None and rej.code == ILLEGAL_TRANSITION
 
 
-def test_prune_allowed_while_a_live_sibling_remains():
+def test_prune_below_k_is_illegal_but_above_k_is_allowed():
+    """k=2 over {a,b,c}: the first prune leaves two live (>= k) and is allowed; a second
+    prune would leave one (< k) and is rejected — no silent weakening to a 1-of-1 join.
+    (A default-all join over two deps is k=2, so pruning either dep is already illegal.)"""
     board = Board(tasks={
         "a": TaskState("a", "ready"),
         "b": TaskState("b", "ready"),
-        "j": TaskState("j", "created", depends_on={"a", "b"}),
+        "c": TaskState("c", "ready"),
+        "j": TaskState("j", "created", depends_on={"a", "b", "c"}, ready_when=2),
     })
-    assert _g_prune(board, COORD, {}, "a") is None          # b still live
-    board.tasks["b"].pruned = True                          # now b is pruned
-    assert _g_prune(board, COORD, {}, "a") is not None       # a is the last live dep
+    assert _g_prune(board, COORD, {}, "a") is None          # leaves {b,c}=2 >= k=2
+    board.tasks["a"].pruned = True                          # now a is pruned
+    rej = _g_prune(board, COORD, {}, "b")                   # would leave {c}=1 < k=2
+    assert rej is not None and rej.code == ILLEGAL_TRANSITION
 
 
 def test_prune_unknown_or_terminal_task_rejected():
@@ -173,6 +184,29 @@ def test_k1_fork_resolves_on_survivor_after_pruning_doomed_branch():
 
     board = fold(events + drive_to_done("j") + drive_to_done("t"))
     assert status_of(board, "t") == "done"
+
+
+# --- (e) derived diagnostic: ill-formed joins fail closed and are flagged -----
+
+def test_over_declared_ready_when_is_unsatisfiable_and_fails_closed():
+    """ready_when greater than the number of dependencies that exist can never be met: the
+    join stays created (fail-closed — no downward clamp) and is flagged join_unsatisfiable,
+    even with every existing dependency done."""
+    events = [created("a"), created("b"), created("j", ready_when=3)]
+    events += [depends("j", "a"), depends("j", "b")]          # only 2 deps exist, k=3
+    board = fold(events + drive_to_done("a") + drive_to_done("b"))
+    assert status_of(board, "j") == "created"                 # never fires
+    assert board.tasks["j"].join_unsatisfiable is True
+
+
+def test_well_formed_join_is_not_flagged_unsatisfiable():
+    """A join whose k is within its live dependency count is never flagged, whether or not
+    it has fired yet."""
+    events = [created("a"), created("b"), created("j", ready_when=2)]
+    events += [depends("j", "a"), depends("j", "b")]
+    assert fold(events + drive_to_done("a")).tasks["j"].join_unsatisfiable is False     # 1/2
+    assert fold(events + drive_to_done("a") + drive_to_done("b")).tasks["j"].join_unsatisfiable \
+        is False                                                                        # 2/2
 
 
 # --- scenario validation -----------------------------------------------------

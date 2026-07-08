@@ -33,6 +33,10 @@ class TaskState:
     task_type: str | None = None           # surfaced from task.created (M5 per-type difficulty)
     ready_when: int | None = None          # k-of-n join: ready at k done deps (None = all — §3)
     pruned: bool = False                   # set by task.pruned (early-stop a doomed branch — §3)
+    join_unsatisfiable: bool = False       # derived diagnostic (§3): fewer live deps exist than
+    #                                        k requires (over-declared ready_when / dangling dep) —
+    #                                        the join can never fire. Non-fatal: readiness stays
+    #                                        fail-closed; surfaced for tooling (e.g. loss buckets).
 
 
 @dataclass

@@ -77,6 +77,31 @@ def test_payload_validation_rejects_malformed_task_created(make_log):
         )
 
 
+def test_ready_when_zero_or_negative_refused_on_emit(make_log):
+    """Wire-level §3 guard: a join's k must be a positive integer, so k=0 / negative are
+    refused at append (structural payload validation) — closing the hole where an LLM
+    coordinator could emit a malformed join with one op."""
+    log = make_log()
+    for bad in (0, -1):
+        with pytest.raises(ValidationError):
+            log.append(
+                actor=PLANNER, event_type="task.created", task_id="t1",
+                payload={"title": "j", "task_type": "x", "ready_when": bad},
+            )
+
+
+def test_ready_when_positive_accepted_even_above_dep_count(make_log):
+    """A positive k is accepted at creation even if it exceeds the (not-yet-emitted)
+    dependency count: dependencies arrive as separate later events, so the upper bound is
+    enforced downstream as a fail-closed `join_unsatisfiable` join, not a wire check."""
+    log = make_log()
+    ev = log.append(
+        actor=PLANNER, event_type="task.created", task_id="j",
+        payload={"title": "j", "task_type": "x", "ready_when": 5},
+    )
+    assert ev.payload["ready_when"] == 5
+
+
 def test_stored_payload_is_canonical_with_defaults(make_log):
     """A minimal valid payload gets the model's defaults persisted, not dropped."""
     log = make_log(run_id="canonical-test")

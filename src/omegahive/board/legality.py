@@ -120,8 +120,12 @@ def _g_done(board: Board, actor: Actor, payload: dict, task_id: str | None) -> R
 
 
 def _g_prune(board: Board, actor: Actor, payload: dict, task_id: str | None) -> Rejection | None:
-    """Coordinator early-stops a not-done branch (§3). A join must retain >=1 non-pruned
-    dependency, so pruning the last non-pruned dep of any dependent is ILLEGAL_TRANSITION."""
+    """Coordinator early-stops a not-done branch (§3). Pruning drops the target from a
+    dependent join's pool but never shrinks the join's k, so a dependent join must retain
+    at least k non-pruned dependencies: pruning below that is ILLEGAL_TRANSITION. (The
+    earlier ">=1 retained" rule was the k=1 special case — for k>1 it would let successive
+    prunes silently weaken the join, completing it on less redundancy than the plan
+    declared.)"""
     ts = _task(board, task_id)
     if ts is None:
         return Rejection(UNKNOWN_TASK, f"task.pruned on unknown task {task_id!r}")
@@ -136,11 +140,14 @@ def _g_prune(board: Board, actor: Actor, payload: dict, task_id: str | None) -> 
                 d for d in dependent.depends_on
                 if d != task_id and d in board.tasks and not board.tasks[d].pruned
             ]
-            if not live:
+            k = dependent.ready_when if (dependent.ready_when is not None
+                                         and dependent.ready_when >= 1) \
+                else len(dependent.depends_on)
+            if len(live) < k:
                 return Rejection(
                     ILLEGAL_TRANSITION,
-                    f"pruning {task_id!r} would leave {dependent.task_id!r}'s join with no "
-                    "non-pruned dependency",
+                    f"pruning {task_id!r} would leave {dependent.task_id!r}'s join with "
+                    f"{len(live)} non-pruned deps, below its required k={k}",
                 )
     return None
 
