@@ -64,10 +64,12 @@ class LadderRow:
 
 
 def compute_row(events: list[Event], schedule: SeedSchedule, *,
-                stop_reason: str | None = None) -> LadderRow:
+                stop_reason: str | None = None, cost_tokens: int = 0,
+                cost_usd: float = 0.0) -> LadderRow:
     """Project one seed's event log into a metrics row. `stop_reason` is the runner's
     mechanical attribution for a non-completion (a cap/error bucket); a `board_stalled`
-    diagnostic derived from the log itself overrides it."""
+    diagnostic derived from the log itself overrides it. `cost_tokens`/`cost_usd` are the
+    coordinator's LLM spend for the run (0 for the R0 greedy control)."""
     board = fold(events)
     tail = board.tasks.get(TERMINAL_TASK)
     completed = tail is not None and tail.status == "done"
@@ -101,7 +103,7 @@ def compute_row(events: list[Event], schedule: SeedSchedule, *,
         a_failed_attempts=a_failed, worker_attempts=worker_attempts,
         wasted_attempts_after_evidence=wasted, pruned_a=pruned_a,
         false_prune=false_prune, premature_prune=premature, time_to_prune=time_to_prune,
-        cost_tokens=0, cost_usd=0.0,
+        cost_tokens=cost_tokens, cost_usd=cost_usd,
         loss_bucket=_loss_bucket(completed, unsatisfiable, stop_reason),
         unsatisfiable_joins=unsatisfiable,
     )

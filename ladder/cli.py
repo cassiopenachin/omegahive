@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict
 from pathlib import Path
 
@@ -17,6 +18,18 @@ from .seeds import N_SEEDS, schedule_for
 app = typer.Typer(help="OmegaHive coordinator ladder (stage 2).", no_args_is_help=True)
 console = Console()
 
+# provider prefix -> the env var litellm reads (kept out of the OMEGAHIVE_ namespace, §5.2).
+_PROVIDER_KEY = {"openrouter": "OPENROUTER_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}
+
+
+def _require_key(model: str) -> None:
+    provider = model.split("/", 1)[0]
+    env = _PROVIDER_KEY.get(provider)
+    if env and not os.environ.get(env):
+        console.print(f"[bold]{env}[/] is not set (needed for model {model!r}). Provider keys "
+                      "live in the host shell, never .env.")
+        raise typer.Exit(2)
+
 
 @app.callback()
 def _main() -> None:
@@ -25,21 +38,30 @@ def _main() -> None:
 
 @app.command("run")
 def run_cmd(
-    cell: str = typer.Option("L0", "--cell", help="ladder cell (V2a: L0 greedy)"),
+    cell: str = typer.Option("L0", "--cell", help="ladder cell (L0 greedy, L1 vanilla LLM)"),
     seeds: int = typer.Option(N_SEEDS, "--seeds", help="seed count (0..N-1)"),
     timeout: float = typer.Option(60.0, "--timeout", help="per-actor wall-clock cap (s)"),
+    model: str | None = typer.Option(None, "--model", help="LLM model for vanilla cells, "
+                                     "e.g. openrouter/<vendor>/<model>"),
+    max_llm_calls: int = typer.Option(40, "--max-llm-calls", help="per-seed LLM turn cap "
+                                      "(provisional; frozen at V4)"),
     out: str | None = typer.Option(None, "--out", help="record dir (skip to only print)"),
     tag: str = typer.Option("run", "--tag", help="record subdir tag"),
 ) -> None:
     """Sweep a cell across seeds; print a per-seed table + aggregate, optionally record."""
     if cell not in CELLS:
-        console.print(f"unknown cell {cell!r}; V2a has {sorted(CELLS)}")
+        console.print(f"unknown cell {cell!r}; known {sorted(CELLS)}")
         raise typer.Exit(1)
     if seeds < 1:
         console.print("--seeds must be >= 1")
         raise typer.Exit(1)
+    if CELLS[cell] == "vanilla":
+        if model is None:
+            console.print(f"cell {cell!r} (vanilla) needs --model")
+            raise typer.Exit(1)
+        _require_key(model)
     seed_list = list(range(seeds))
-    rows = run_cell(cell, seed_list, timeout=timeout)
+    rows = run_cell(cell, seed_list, timeout=timeout, model=model, max_llm_calls=max_llm_calls)
     agg = aggregate(rows)
 
     table = Table(title=f"ladder {cell} ({CELLS[cell]}) — {len(rows)} seeds")
@@ -59,14 +81,40 @@ def run_cmd(
     )
 
     if out is not None:
-        _write_record(Path(out) / f"{cell}-{tag}", cell, seed_list, rows, agg)
+        _write_record(Path(out) / f"{cell}-{tag}", cell, seed_list, rows, agg, model)
         console.print(f"record written to {Path(out) / f'{cell}-{tag}'}")
 
 
-def _write_record(path: Path, cell: str, seed_list: list[int], rows, agg) -> None:
+@app.command("smoke")
+def smoke_cmd(
+    model: str = typer.Option(..., "--model", help="LLM model, e.g. openrouter/<vendor>/<model>"),
+    seed: int = typer.Option(0, "--seed", help="seed drawing the fork-board environment"),
+    timeout: float = typer.Option(45.0, "--timeout", help="per-actor wall-clock cap (s)"),
+    max_llm_calls: int = typer.Option(25, "--max-llm-calls", help="LLM turn cap"),
+) -> None:
+    """R1 binding smoke (§2): drive the vanilla coordinator through the real port on the
+    fork board with a live model; report terminal, refusals recovered, and cost."""
+    _require_key(model)
+    from .smoke import run_binding_smoke
+    res = run_binding_smoke(model=model, seed=seed, timeout=timeout, max_llm_calls=max_llm_calls)
+    console.print(
+        f"terminal={res.terminal} accepted_decisions={res.accepted_decisions} "
+        f"coord_rejections={res.coord_rejections} calls={res.cost['calls']} "
+        f"tokens={res.cost['tokens_in'] + res.cost['tokens_out']} usd={res.cost['usd']:.4f}"
+    )
+    if res.accepted_decisions == 0:
+        console.print("[bold]SMOKE FAILED[/]: coordinator landed no accepted op — binding broken")
+        raise typer.Exit(1)
+    verdict = "SMOKE PASS" if res.terminal else \
+        "SMOKE PASS (binding ok; model did not reach terminal)"
+    console.print(f"[bold]{verdict}[/]")
+
+
+def _write_record(path: Path, cell: str, seed_list: list[int], rows, agg,
+                  model: str | None) -> None:
     path.mkdir(parents=True, exist_ok=True)
     (path / "config.json").write_text(json.dumps({
-        "cell": cell, "coordinator": CELLS[cell], "seeds": seed_list,
+        "cell": cell, "coordinator": CELLS[cell], "model": model, "seeds": seed_list,
         "schedules": [asdict(schedule_for(s)) for s in seed_list],
     }, indent=2))
     (path / "rows.json").write_text(json.dumps([row_to_dict(r) for r in rows], indent=2))

@@ -82,6 +82,19 @@ services:
     <<: *omega
     command: ["deploy-checks"]
 
+  # The LLM coordinator ladder (R1+). The provider key is a *host-passthrough* env var,
+  # listed here with no value — compose forwards it only to services that declare it, so it
+  # reaches this container but never `deploy-checks` (which declares none), and it is never
+  # written to `.env`. That keeps the substrate credential scan honest (deployment/stage2
+  # §5.2): the key lives only in the harness run context. Run e.g.
+  #   OPENROUTER_API_KEY=… docker compose run --rm ladder smoke --model openrouter/<model>
+  ladder:
+    <<: *omega
+    environment:
+      - OPENROUTER_API_KEY
+      - ANTHROPIC_API_KEY
+    entrypoint: ["ladder"]
+
   # Containerized backup: pg_dump of the log store from the pinned postgres image
   # (deployment spec §4/§5). `profiles: [ops]` keeps it out of a plain `up`; the
   # host systemd timer runs `compose run --rm backup`.
