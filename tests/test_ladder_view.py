@@ -60,3 +60,9 @@ def test_notes_are_appended_to_the_view():
     board = Board(tasks={"t1": TaskState("t1", "ready")})
     out = render_view(board, [], notes=["  (unparsed 'assign t1 w9' :reason not in roster)"])
     assert "(unparsed 'assign t1 w9' :reason not in roster)" in out
+
+
+def test_roster_is_listed_so_the_model_knows_valid_worker_ids():
+    board = Board(tasks={"t1": TaskState("t1", "ready")})
+    assert "(roster w1 w2 w3)" in render_view(board, [], workers=["w1", "w2", "w3"])
+    assert "roster" not in render_view(board, [])   # omitted when no workers given

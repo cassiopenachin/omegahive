@@ -91,9 +91,12 @@ def test_dropped_line_is_echoed_next_turn_and_provokes_recovery():
 
     r1 = coord.react([], board, 0)
     assert r1.immediate == [] and coord._pending_notes   # w9 dropped, feedback queued
+    assert coord.wants_retry is True                     # asks drive for a turn on the quiet board
     r2 = coord.react([], board, 1)                        # board unchanged, but a note is owed
     assert [e.task_id for e in r2.immediate] == ["t1"] and llm.calls == 2
+    assert coord.wants_retry is False                    # recovered with a valid op
     assert "(unparsed" in llm.last_user and "w9" in llm.last_user   # the echo reached the model
+    assert "(roster w1 w2)" in llm.last_user             # and the model can see the valid ids
 
 
 def test_cost_aggregates_usage_and_transcript_gets_llm_raw():

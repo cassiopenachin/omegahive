@@ -48,11 +48,15 @@ def _my_rejections(events: list[Event], actor_id: str) -> list[str]:
 
 
 def render_view(board: Board, events: list[Event], *, actor_id: str = "coordinator",
-                notes: list[str] | None = None) -> str:
+                notes: list[str] | None = None, workers: list[str] | None = None) -> str:
     """Render the board (+ this actor's rejections in `events`, + any `notes`) as an
     S-expression. `notes` carries feedback the log cannot — e.g. lines the parser dropped
-    last turn — so a malformed op gets the same corrective echo a gateway refusal does."""
+    last turn — so a malformed op gets the same corrective echo a gateway refusal does.
+    `workers` lists the assignable roster: the ids are environment, not board state, so
+    without this line the model has no way to know a valid worker id to assign to."""
     lines = ["(board"]
+    if workers:
+        lines.append(f"  (roster {' '.join(workers)})   ; the only valid worker ids for assign")
     for tid in sorted(board.tasks):
         ts = board.tasks[tid]
         deps = " ".join(sorted(ts.depends_on)) or "-"

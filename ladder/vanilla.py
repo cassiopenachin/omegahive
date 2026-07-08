@@ -65,10 +65,12 @@ class VanillaCoordinator:
         self._last_tasks: tuple[_TaskSig, ...] | None = None
         self._pending_notes: list[str] = []   # dropped lines to echo back next turn
         self.exhausted = False                 # set when the call budget is spent (drive stops)
+        self.wants_retry = False               # a turn dropped every op -> ask drive for another
         self.calls = 0
         self.usages: list[Usage] = []
 
     def react(self, new_events: list[Event], board: Board, now: int) -> ReactResult:
+        self.wants_retry = False
         tasks_sig, my_rejections = _signature(board, new_events, self.agent_id)
         unchanged = self._last_tasks is not None and tasks_sig == self._last_tasks
         # delta gate: skip the LLM only on a truly idle turn — no coordination-state change,
@@ -79,7 +81,8 @@ class VanillaCoordinator:
             self.exhausted = True   # tell drive to stop, not idle-spin to the wall-clock cap
             return ReactResult()
 
-        user = render_view(board, new_events, actor_id=self.agent_id, notes=self._pending_notes)
+        user = render_view(board, new_events, actor_id=self.agent_id, notes=self._pending_notes,
+                           workers=self.workers)
         resp = self.llm.complete(self._system, user)
         self.calls += 1
         self.usages.append(resp.usage)
@@ -97,6 +100,9 @@ class VanillaCoordinator:
                                for raw, reason in result.skipped]
         for raw, reason in result.skipped:
             print(f"[LLM_SKIP] {raw!r}: {reason}", file=sys.stderr)
+        # a turn that emitted nothing but dropped lines changed no board state, so drive would
+        # see no delta and never re-invoke us — ask for a retry to deliver the feedback.
+        self.wants_retry = not result.emits and bool(self._pending_notes)
         return ReactResult(immediate=result.emits)
 
     def cost(self) -> dict:
