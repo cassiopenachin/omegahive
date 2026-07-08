@@ -46,6 +46,7 @@ def emit_plan(planner: GatewayHandle, scenario: Scenario) -> list[Event]:
                 "task_type": task.task_type,
                 "acceptance": task.acceptance,
                 "required_artifacts": task.required_artifacts,
+                "ready_when": task.ready_when,
             },
         ))
         task_events[task.id] = ev

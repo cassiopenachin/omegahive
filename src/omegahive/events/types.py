@@ -24,6 +24,8 @@ class TaskCreated(BaseModel):
     task_type: str
     acceptance: str | None = None
     required_artifacts: list[str] = []
+    # k-of-n join: ready when `ready_when` dependencies are done (None = all — §3).
+    ready_when: int | None = None
 
 
 class DependencyAdded(BaseModel):
@@ -72,6 +74,11 @@ class TaskStatusOverride(BaseModel):
 
 class NotePosted(BaseModel):
     text: str
+
+
+class TaskPruned(BaseModel):
+    # Coordinator early-stops a not-done branch before its join fires (§3).
+    reason: str | None = None
 
 
 # --- Worker payloads ---
@@ -167,6 +174,7 @@ PAYLOADS: dict[str, type[BaseModel]] = {
     "task.reassigned": TaskReassigned,
     "task.escalated": TaskEscalated,
     "task.status_override": TaskStatusOverride,
+    "task.pruned": TaskPruned,
     "note.posted": NotePosted,
     # worker
     "task.accepted": TaskAccepted,

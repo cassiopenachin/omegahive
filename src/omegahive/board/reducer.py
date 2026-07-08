@@ -33,11 +33,24 @@ def fold(events: list[Event]) -> Board:
         if rule is not None:
             rule.effect(board, ev)
 
-    # derived: a created/reopened task whose every dependency is done becomes ready
+    # derived: a created/reopened unowned task becomes ready once k of its dependencies
+    # are done. k = ready_when (None -> all). Pruned dependencies drop out of the
+    # requirement (§3): they leave both the pool and the count, so the join fires on the
+    # survivors. A no-dependency task is ready as before. `_g_prune` guarantees a join is
+    # never left with zero non-pruned deps.
     for ts in board.tasks.values():
-        if ts.status in ("created", "reopened") and ts.owner is None and all(
-            dep in board.tasks and board.tasks[dep].status == "done" for dep in ts.depends_on
-        ):
+        if ts.status not in ("created", "reopened") or ts.owner is not None:
+            continue
+        if not ts.depends_on:
+            ts.status = "ready"
+            continue
+        non_pruned = [
+            d for d in ts.depends_on if d in board.tasks and not board.tasks[d].pruned
+        ]
+        required = ts.ready_when if ts.ready_when is not None else len(ts.depends_on)
+        effective = min(required, len(non_pruned))
+        done = sum(1 for d in non_pruned if board.tasks[d].status == "done")
+        if non_pruned and done >= effective:
             ts.status = "ready"
 
     return board

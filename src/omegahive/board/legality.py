@@ -119,6 +119,32 @@ def _g_done(board: Board, actor: Actor, payload: dict, task_id: str | None) -> R
     return None
 
 
+def _g_prune(board: Board, actor: Actor, payload: dict, task_id: str | None) -> Rejection | None:
+    """Coordinator early-stops a not-done branch (§3). A join must retain >=1 non-pruned
+    dependency, so pruning the last non-pruned dep of any dependent is ILLEGAL_TRANSITION."""
+    ts = _task(board, task_id)
+    if ts is None:
+        return Rejection(UNKNOWN_TASK, f"task.pruned on unknown task {task_id!r}")
+    if ts.status in ("done", "cancelled"):
+        return Rejection(ILLEGAL_TRANSITION,
+                         f"cannot prune {task_id!r} in terminal status {ts.status!r}")
+    if ts.pruned:
+        return Rejection(ILLEGAL_TRANSITION, f"task {task_id!r} is already pruned")
+    for dependent in board.tasks.values():
+        if task_id in dependent.depends_on:
+            live = [
+                d for d in dependent.depends_on
+                if d != task_id and d in board.tasks and not board.tasks[d].pruned
+            ]
+            if not live:
+                return Rejection(
+                    ILLEGAL_TRANSITION,
+                    f"pruning {task_id!r} would leave {dependent.task_id!r}'s join with no "
+                    "non-pruned dependency",
+                )
+    return None
+
+
 # --- effects (transcribed verbatim from the former reducer.fold bodies) ------
 
 def _e_created(board: Board, ev: Event) -> None:
@@ -126,7 +152,8 @@ def _e_created(board: Board, ev: Event) -> None:
     if tid is None:
         return
     board.tasks[tid] = TaskState(
-        task_id=tid, status="created", task_type=ev.payload.get("task_type"))
+        task_id=tid, status="created", task_type=ev.payload.get("task_type"),
+        ready_when=ev.payload.get("ready_when"))
     _change(board.tasks[tid], ev)
 
 
@@ -252,6 +279,14 @@ def _e_escalated(board: Board, ev: Event) -> None:
     _stamp(here, ev)
 
 
+def _e_pruned(board: Board, ev: Event) -> None:
+    here = _task(board, ev.task_id)
+    if here is None or here.status in ("done", "cancelled"):
+        return
+    here.pruned = True  # a flag, not a status change (like escalated)
+    _stamp(here, ev)
+
+
 def _e_plan_cancel(board: Board, ev: Event) -> None:
     for ts in board.tasks.values():
         ts.status = "cancelled"
@@ -282,6 +317,7 @@ RULES: list[LegalityRule] = [
                  _e_reopened),
     LegalityRule("task.failed", None, _from_state("in_progress", "blocked"), _e_failed),
     LegalityRule("task.escalated", None, _g_needs_task, _e_escalated),
+    LegalityRule("task.pruned", None, _g_prune, _e_pruned),
     LegalityRule("plan.revised", _is("action", "cancel"), lambda b, a, p, t: None, _e_plan_cancel),
 ]
 

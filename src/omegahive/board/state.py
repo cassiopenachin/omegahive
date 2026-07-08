@@ -31,6 +31,8 @@ class TaskState:
     escalated: bool = False                # set by task.escalated (escalate-once)
     tried_by: set[str] = field(default_factory=set)  # workers ever given this task
     task_type: str | None = None           # surfaced from task.created (M5 per-type difficulty)
+    ready_when: int | None = None          # k-of-n join: ready at k done deps (None = all — §3)
+    pruned: bool = False                   # set by task.pruned (early-stop a doomed branch — §3)
 
 
 @dataclass
