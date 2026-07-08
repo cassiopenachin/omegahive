@@ -30,7 +30,8 @@ _COORD_OPS = frozenset(
 # by how it mechanically stopped. `board_stalled` is the pure-log verdict used when no runner
 # stop is supplied (analysis over an event log); `incomplete` is the no-signal fallback.
 LOSS_BUCKETS = frozenset(
-    {"board_stalled", "cap_ops_exhausted", "cap_timeout", "run_error", "incomplete"}
+    {"board_stalled", "cap_ops_exhausted", "cap_llm_calls", "cap_timeout", "run_error",
+     "incomplete"}
 )
 
 

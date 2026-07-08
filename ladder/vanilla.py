@@ -24,7 +24,7 @@ from omegahive.sim.engine.protocol import ReactResult
 from .llm import LLMClient, Usage
 from .opsheet import op_reference_sheet
 from .parse import parse_commands
-from .view import render_view
+from .view import is_coordinator_rejection, render_view
 
 # a task's coordination-relevant fields — the signature the delta gate compares.
 _TaskSig = tuple[str, str, "str | None", bool, "str | None", int]
@@ -37,12 +37,7 @@ def _signature(
         (tid, ts.status, ts.owner, ts.pruned, ts.latest_review, len(ts.tried_by))
         for tid, ts in board.tasks.items()
     ))
-    my_rejections = sum(
-        1 for e in new_events
-        if e.event_type == "gateway.rejected"
-        and e.payload.get("original_actor_role") == "coordinator"
-        and e.payload.get("original_actor_id") == actor_id
-    )
+    my_rejections = sum(1 for e in new_events if is_coordinator_rejection(e, actor_id))
     return tasks, my_rejections
 
 
@@ -63,22 +58,28 @@ class VanillaCoordinator:
         self.llm = llm
         self.catalog = catalog
         self.workers = sorted(workers or [])
+        self._roster = frozenset(self.workers)
         self.max_llm_calls = max_llm_calls
         self.transcript = transcript
         self._system = op_reference_sheet(catalog)
         self._last_tasks: tuple[_TaskSig, ...] | None = None
+        self._pending_notes: list[str] = []   # dropped lines to echo back next turn
+        self.exhausted = False                 # set when the call budget is spent (drive stops)
         self.calls = 0
         self.usages: list[Usage] = []
 
     def react(self, new_events: list[Event], board: Board, now: int) -> ReactResult:
         tasks_sig, my_rejections = _signature(board, new_events, self.agent_id)
-        # delta gate: skip the LLM unless coordination state changed or a fresh rejection arrived
-        if self._last_tasks is not None and tasks_sig == self._last_tasks and my_rejections == 0:
+        unchanged = self._last_tasks is not None and tasks_sig == self._last_tasks
+        # delta gate: skip the LLM only on a truly idle turn — no coordination-state change,
+        # no fresh rejection, and nothing owed (dropped lines still to echo back).
+        if unchanged and my_rejections == 0 and not self._pending_notes:
             return ReactResult()
         if self.max_llm_calls is not None and self.calls >= self.max_llm_calls:
+            self.exhausted = True   # tell drive to stop, not idle-spin to the wall-clock cap
             return ReactResult()
 
-        user = render_view(board, new_events, actor_id=self.agent_id)
+        user = render_view(board, new_events, actor_id=self.agent_id, notes=self._pending_notes)
         resp = self.llm.complete(self._system, user)
         self.calls += 1
         self.usages.append(resp.usage)
@@ -89,7 +90,11 @@ class VanillaCoordinator:
             f"out={resp.usage.tokens_out} usd={resp.usage.usd:.6f}",
             file=self.transcript,
         )
-        result = parse_commands(resp.text, board, self.catalog)
+        result = parse_commands(resp.text, board, self.catalog, roster=self._roster)
+        # carry dropped lines into the next view: a skipped op produces no event, so without
+        # this the model gets no corrective echo (unlike a gateway refusal) and repeats it.
+        self._pending_notes = [f"  (unparsed {raw!r} :reason {reason})"
+                               for raw, reason in result.skipped]
         for raw, reason in result.skipped:
             print(f"[LLM_SKIP] {raw!r}: {reason}", file=sys.stderr)
         return ReactResult(immediate=result.emits)

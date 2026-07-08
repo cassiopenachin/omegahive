@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import asdict
 from pathlib import Path
 
@@ -18,16 +17,17 @@ from .seeds import N_SEEDS, schedule_for
 app = typer.Typer(help="OmegaHive coordinator ladder (stage 2).", no_args_is_help=True)
 console = Console()
 
-# provider prefix -> the env var litellm reads (kept out of the OMEGAHIVE_ namespace, §5.2).
-_PROVIDER_KEY = {"openrouter": "OPENROUTER_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}
-
 
 def _require_key(model: str) -> None:
-    provider = model.split("/", 1)[0]
-    env = _PROVIDER_KEY.get(provider)
-    if env and not os.environ.get(env):
-        console.print(f"[bold]{env}[/] is not set (needed for model {model!r}). Provider keys "
-                      "live in the host shell, never .env.")
+    """Fail fast if the model's provider credential is absent — litellm knows the required env
+    var for any provider (openrouter/anthropic/openai/…). Keys live in the host shell, never
+    .env (kept out of the OMEGAHIVE_ namespace and the deploy-checks scan, §5.2)."""
+    import litellm
+    env = litellm.validate_environment(model)
+    if not env.get("keys_in_environment", True):
+        missing = env.get("missing_keys") or ["<unknown>"]
+        console.print(f"missing provider credential(s) {missing} for model {model!r}. "
+                      "Provider keys live in the host shell, never .env.")
         raise typer.Exit(2)
 
 

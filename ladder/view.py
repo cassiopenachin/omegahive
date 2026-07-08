@@ -26,22 +26,32 @@ def _refused_head(event_type: str, payload: dict) -> str:
     return _HEAD_FOR_EVENT.get(event_type, event_type)
 
 
+def is_coordinator_rejection(event: Event, actor_id: str) -> bool:
+    """A gateway.rejected event recording a refusal of *this* coordinator's op. Single source
+    of truth shared by the view (what to echo) and the delta gate (when to re-provoke)."""
+    p = event.payload
+    return (event.event_type == "gateway.rejected"
+            and p.get("original_actor_role") == "coordinator"
+            and p.get("original_actor_id") == actor_id)
+
+
 def _my_rejections(events: list[Event], actor_id: str) -> list[str]:
     out: list[str] = []
     for e in events:
-        if e.event_type != "gateway.rejected":
+        if not is_coordinator_rejection(e, actor_id):
             continue
         p = e.payload
-        if p.get("original_actor_role") != "coordinator" or p.get("original_actor_id") != actor_id:
-            continue
         head = _refused_head(p.get("refused_event_type", "?"), p.get("refused_payload") or {})
         task = p.get("refused_task_id") or "-"
         out.append(f"  (rejected (op {head} {task}) :code {p.get('code', '?')})")
     return out
 
 
-def render_view(board: Board, events: list[Event], *, actor_id: str = "coordinator") -> str:
-    """Render the board (+ this actor's rejections in `events`) as an S-expression."""
+def render_view(board: Board, events: list[Event], *, actor_id: str = "coordinator",
+                notes: list[str] | None = None) -> str:
+    """Render the board (+ this actor's rejections in `events`, + any `notes`) as an
+    S-expression. `notes` carries feedback the log cannot — e.g. lines the parser dropped
+    last turn — so a malformed op gets the same corrective echo a gateway refusal does."""
     lines = ["(board"]
     for tid in sorted(board.tasks):
         ts = board.tasks[tid]
@@ -54,5 +64,6 @@ def render_view(board: Board, events: list[Event], *, actor_id: str = "coordinat
             f":tried ({tried}))"
         )
     lines.extend(_my_rejections(events, actor_id))
+    lines.extend(notes or [])
     lines.append(")")
     return "\n".join(lines)

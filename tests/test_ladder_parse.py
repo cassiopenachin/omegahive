@@ -49,9 +49,23 @@ def test_unknown_head_and_bad_arity_are_skipped_not_raised():
 
 def test_reassign_without_current_owner_is_skipped():
     res = parse_commands("reassign t3 w9", _board(), CATALOG)   # t3 is unowned
-    assert not res.emits and res.skipped and "could not build" in res.skipped[0][1]
+    assert not res.emits and res.skipped and "no current owner" in res.skipped[0][1]
 
 
 def test_reassign_with_owner_fills_from():
     res = parse_commands("reassign A w9", _board(), CATALOG)    # A owned by w3
     assert res.emits[0].payload == {"from": "w3", "to": "w9", "reason": None}
+
+
+def test_worker_not_in_roster_is_skipped():
+    roster = frozenset({"w1", "w2"})
+    res = parse_commands("assign t1 w9", _board(), CATALOG, roster)   # w9 hallucinated
+    assert not res.emits and "not in the roster" in res.skipped[0][1]
+    assert parse_commands("assign t1 w1", _board(), CATALOG, roster).emits   # w1 is fine
+
+
+def test_strips_markdown_and_trailing_punctuation():
+    for line in ("**assign A w1**", "assign A w1.", "`assign A w1`", "- assign A w1,"):
+        res = parse_commands(line, _board(), CATALOG)
+        assert [e.event_type for e in res.emits] == ["task.assigned"], line
+        assert res.emits[0].payload == {"worker": "w1"} and not res.skipped, line

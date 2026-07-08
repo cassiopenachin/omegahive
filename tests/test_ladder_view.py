@@ -54,3 +54,9 @@ def test_status_override_rejection_maps_to_close_or_reopen():
     board = Board(tasks={"t1": TaskState("t1", "created")})
     ev = _rejected(et="task.status_override", payload={"status": "done"}, code="ILLEGAL_TRANSITION")
     assert "(op close t1)" in render_view(board, [ev])
+
+
+def test_notes_are_appended_to_the_view():
+    board = Board(tasks={"t1": TaskState("t1", "ready")})
+    out = render_view(board, [], notes=["  (unparsed 'assign t1 w9' :reason not in roster)"])
+    assert "(unparsed 'assign t1 w9' :reason not in roster)" in out

@@ -83,6 +83,9 @@ def drive(
             if is_terminal(board):
                 stop = "terminal"
                 break
+            if getattr(reactor, "exhausted", False):  # reactor spent its own budget (LLM calls)
+                stop = "cap_llm_calls"
+                break
             if max_ops is not None and ops >= max_ops:
                 stop = "cap_ops"
                 break

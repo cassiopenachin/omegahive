@@ -70,7 +70,10 @@ class LLMClient:
             timeout=self.timeout,
             mock_response=self.mock_response,
         )
-        text = (resp.choices[0].message.content or "").strip()
+        # a moderation block / truncated error can surface as choices=[]; degrade to an empty
+        # turn (parses to no ops) rather than an IndexError that aborts the whole seed.
+        choices = getattr(resp, "choices", None) or []
+        text = (choices[0].message.content or "").strip() if choices else ""
         usage = getattr(resp, "usage", None)
         tokens_in = int(getattr(usage, "prompt_tokens", 0) or 0)
         tokens_out = int(getattr(usage, "completion_tokens", 0) or 0)

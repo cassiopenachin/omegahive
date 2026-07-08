@@ -21,8 +21,10 @@ class FakeLLM:
     def __init__(self, *responses: str) -> None:
         self._responses = list(responses)
         self.calls = 0
+        self.last_user = ""
 
     def complete(self, system: str, user: str) -> LLMResponse:
+        self.last_user = user
         text = self._responses[min(self.calls, len(self._responses) - 1)]
         self.calls += 1
         return LLMResponse(text=text, usage=Usage(tokens_in=3, tokens_out=2, model="fake", usd=0.0))
@@ -71,12 +73,27 @@ def test_board_change_reprovokes_without_a_rejection():
     assert llm.calls == 2 and [e.event_type for e in r.immediate] == ["task.pruned"]
 
 
-def test_max_llm_calls_caps_turns():
+def test_max_llm_calls_caps_turns_and_sets_exhausted():
     llm = FakeLLM("prune A", "prune A")
     coord = _coord(llm, max_llm_calls=1)
     coord.react([], Board(tasks={"A": TaskState("A", "in_progress", owner="w1")}), 0)  # call 1
     r = coord.react([], Board(tasks={"A": TaskState("A", "failed", owner="w1")}), 1)   # capped
     assert r.immediate == [] and llm.calls == 1
+    assert coord.exhausted is True   # tells drive to stop rather than idle-spin to cap_timeout
+
+
+def test_dropped_line_is_echoed_next_turn_and_provokes_recovery():
+    # a hallucinated worker id is dropped by the parser (no event, so nothing on the board
+    # moves); the next view must carry the (unparsed …) note and the gate must still fire.
+    llm = FakeLLM("assign t1 w9", "assign t1 w1")   # w9 not in roster -> skipped; then valid
+    coord = _coord(llm)                             # roster {w1, w2}
+    board = Board(tasks={"t1": TaskState("t1", "ready")})
+
+    r1 = coord.react([], board, 0)
+    assert r1.immediate == [] and coord._pending_notes   # w9 dropped, feedback queued
+    r2 = coord.react([], board, 1)                        # board unchanged, but a note is owed
+    assert [e.task_id for e in r2.immediate] == ["t1"] and llm.calls == 2
+    assert "(unparsed" in llm.last_user and "w9" in llm.last_user   # the echo reached the model
 
 
 def test_cost_aggregates_usage_and_transcript_gets_llm_raw():

@@ -94,6 +94,8 @@ def _stop_reason(coord_stop: str | None, coord_errored: bool) -> str | None:
     killed/hung (bucketed as a timeout)."""
     if coord_stop == "cap_ops":
         return "cap_ops_exhausted"
+    if coord_stop == "cap_llm_calls":
+        return "cap_llm_calls"
     if coord_stop == "cap_timeout":
         return "cap_timeout"
     if coord_stop == "terminal":
@@ -101,29 +103,30 @@ def _stop_reason(coord_stop: str | None, coord_errored: bool) -> str | None:
     return "run_error" if coord_errored else "cap_timeout"
 
 
-def run_seed(cell: str, seed: int, *, url: str | None = None, timeout: float = 60.0,
-             max_ops: int = 2000, nonce: str | None = None, model: str | None = None,
-             max_llm_calls: int | None = None) -> LadderRow:
-    # A fresh run id per sweep: reusing one would let actors re-observe a prior run's
-    # history on their first (full-snapshot) read and re-emit against it.
-    nonce = nonce or uuid.uuid4().hex[:8]
-    sched = schedule_for(seed)
-    run_id = f"ladder-{cell}-{nonce}-s{seed}"
-    seed_fork_board(run_id, url=url)
+# a coordinator react() can block in an in-flight LLM call up to the client timeout (~60s)
+# *after* the drive deadline (drive checks the deadline only between reacts), so the parent
+# must give the coordinator that much extra grace to finish and report its cost before it is
+# reaped — otherwise a near-deadline call is SIGTERM'd and its spend is lost as _ZERO_COST.
+_LLM_JOIN_GRACE = 75
 
+
+def _spawn_and_collect(run_id: str, roster: tuple[str, ...], seed: int, url: str | None,
+                       timeout: float, coord_target, coord_args: tuple):
+    """Spawn review + workers + the coordinator, run to quiescence, and return
+    (events, stop_reason, cost). Shared by run_seed and the binding smoke so the spawn/report
+    /reap logic (and its join-grace tuning) lives in exactly one place."""
     report: mp.Queue = mp.Queue()  # the coordinator reports (stop reason, LLM cost)
-    coord = mp.Process(target=_run_coordinator,
-                       args=(cell, run_id, sched.roster, url, timeout, max_ops, model,
-                             max_llm_calls, report))
-    procs = [mp.Process(target=_run_review, args=(run_id, url, timeout))]
-    procs += [mp.Process(target=_run_worker, args=(run_id, wid, seed, url, timeout))
-              for wid in sched.roster]
-    procs.append(coord)
+    coord = mp.Process(target=coord_target, args=(*coord_args, report))
+    ancillary = [mp.Process(target=_run_review, args=(run_id, url, timeout))]
+    ancillary += [mp.Process(target=_run_worker, args=(run_id, wid, seed, url, timeout))
+                  for wid in roster]
+    procs = [*ancillary, coord]
     try:
         for p in procs:
             p.start()
-        for p in procs:
+        for p in ancillary:
             p.join(timeout + 15)
+        coord.join(timeout + _LLM_JOIN_GRACE)   # may be mid LLM call past the drive deadline
     finally:
         # always reap children, even if start()/join() raised mid-loop
         for p in procs:
@@ -136,7 +139,6 @@ def run_seed(cell: str, seed: int, *, url: str | None = None, timeout: float = 6
     except _queue.Empty:                         # coord crashed/killed before reporting
         coord_stop, cost = None, _ZERO_COST
     coord_errored = coord.exitcode is not None and coord.exitcode > 0
-    stop_reason = _stop_reason(coord_stop, coord_errored)
 
     conn = connect(url)
     try:
@@ -144,6 +146,21 @@ def run_seed(cell: str, seed: int, *, url: str | None = None, timeout: float = 6
             events = EventLog(conn, LogicalClock(0), run_id).read_run(run_id)
     finally:
         conn.close()
+    return events, _stop_reason(coord_stop, coord_errored), cost
+
+
+def run_seed(cell: str, seed: int, *, url: str | None = None, timeout: float = 60.0,
+             max_ops: int = 2000, nonce: str | None = None, model: str | None = None,
+             max_llm_calls: int | None = None) -> LadderRow:
+    # A fresh run id per sweep: reusing one would let actors re-observe a prior run's
+    # history on their first (full-snapshot) read and re-emit against it.
+    nonce = nonce or uuid.uuid4().hex[:8]
+    sched = schedule_for(seed)
+    run_id = f"ladder-{cell}-{nonce}-s{seed}"
+    seed_fork_board(run_id, url=url)
+    events, stop_reason, cost = _spawn_and_collect(
+        run_id, sched.roster, seed, url, timeout, _run_coordinator,
+        (cell, run_id, sched.roster, url, timeout, max_ops, model, max_llm_calls))
     return compute_row(events, sched, stop_reason=stop_reason,
                        cost_tokens=cost["tokens_in"] + cost["tokens_out"], cost_usd=cost["usd"])
 
