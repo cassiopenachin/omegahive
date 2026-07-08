@@ -15,6 +15,7 @@ from .wire import (
     EscalateOp,
     Op,
     PortView,
+    PruneOp,
     ReassignOp,
     ReopenOp,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "EscalateOp",
     "CloseOp",
     "ReopenOp",
+    "PruneOp",
     "BatchOp",
     "derive_key",
     "BasisStore",

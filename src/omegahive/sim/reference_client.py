@@ -11,7 +11,7 @@ the port).
 
 from __future__ import annotations
 
-from ..port import AssignOp, CloseOp, EscalateOp, ReassignOp, ReopenOp
+from ..port import AssignOp, CloseOp, EscalateOp, PruneOp, ReassignOp, ReopenOp
 from ..port.port import HiveCoordinatorPort
 from ..port.wire import Op
 from .engine.protocol import Emit, ReactResult
@@ -36,6 +36,8 @@ def emit_to_op(emit: Emit) -> Op:
         if p.get("status") == "done":
             return CloseOp(task_id=tid, causation_id=cause, reason=p.get("reason"))
         return ReopenOp(task_id=tid, causation_id=cause, reason=p.get("reason"))
+    if et == "task.pruned":
+        return PruneOp(task_id=tid, causation_id=cause, reason=p.get("reason"))
     raise ValueError(f"no port Op for coordinator emit {et!r}")
 
 
