@@ -31,6 +31,8 @@ class TaskState:
     escalated: bool = False                # set by task.escalated (escalate-once)
     tried_by: set[str] = field(default_factory=set)  # workers ever given this task
     task_type: str | None = None           # surfaced from task.created (M5 per-type difficulty)
+    ready_when: int | None = None          # k-of-n join: ready at k done deps (None = all — §3)
+    pruned: bool = False                   # set by task.pruned (early-stop a doomed branch — §3)
 
 
 @dataclass
@@ -38,8 +40,12 @@ class Board:
     tasks: dict[str, TaskState]
 
     def ready(self) -> list[str]:
-        """Task ids that are ready and unowned — sorted for deterministic iteration."""
-        return sorted(t for t, s in self.tasks.items() if s.status == "ready" and s.owner is None)
+        """Ready, unowned, non-pruned task ids — sorted for deterministic iteration.
+        A pruned task is being abandoned (§3), so it is never surfaced as assignable."""
+        return sorted(
+            t for t, s in self.tasks.items()
+            if s.status == "ready" and s.owner is None and not s.pruned
+        )
 
     def awaiting_close(self) -> list[str]:
         """Task ids in review with a passed verdict — sorted for determinism."""

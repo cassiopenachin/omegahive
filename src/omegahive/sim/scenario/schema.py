@@ -19,6 +19,8 @@ class TaskSpec(BaseModel):
     task_type: str
     acceptance: str | None = None
     required_artifacts: list[str] = []
+    # k-of-n join: ready when `ready_when` dependencies are done (None = all — §3).
+    ready_when: int | None = None
 
 
 class Plan(BaseModel):
@@ -38,6 +40,19 @@ class Plan(BaseModel):
         for ref in self.priorities:
             if ref not in ids:
                 raise ValueError(f"priority references unknown task id: {ref}")
+        # count *distinct* dependencies per task — the board dedups depends_on into a set,
+        # so duplicate pairs must not inflate the ready_when bound.
+        dep_ids: dict[str, set[str]] = {}
+        for dependent, on in self.dependencies:
+            dep_ids.setdefault(dependent, set()).add(on)
+        for t in self.tasks:
+            if t.ready_when is not None:
+                n = len(dep_ids.get(t.id, set()))
+                if not (1 <= t.ready_when <= n):
+                    raise ValueError(
+                        f"task {t.id!r} ready_when={t.ready_when} must be in [1, {n}] "
+                        "(its distinct dependency count)"
+                    )
         return self
 
 

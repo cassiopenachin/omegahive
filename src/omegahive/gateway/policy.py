@@ -20,7 +20,8 @@ EMIT_AUTHORITY: dict[str, set[str]] = {
         "goal.received", "task.created", "dependency.added", "priority.set", "plan.revised",
     },
     "coordinator": {
-        "task.assigned", "task.reassigned", "task.escalated", "task.status_override", "note.posted",
+        "task.assigned", "task.reassigned", "task.escalated", "task.status_override",
+        "task.pruned", "note.posted",
     },
     "worker": {
         "task.accepted", "task.rejected", "task.progress", "task.blocked", "task.unblocked",

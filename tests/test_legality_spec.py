@@ -46,7 +46,7 @@ def substantive(board: Board):
     for the event not to be silently inert."""
     return {
         tid: (ts.status, ts.owner, frozenset(ts.depends_on), ts.latest_review,
-              ts.last_result_ref, ts.escalated, frozenset(ts.tried_by), ts.task_type)
+              ts.last_result_ref, ts.escalated, frozenset(ts.tried_by), ts.task_type, ts.pruned)
         for tid, ts in board.tasks.items()
     }
 
@@ -115,6 +115,11 @@ CASES = [
     (board_with(TaskState("t1", "assigned", owner="w1")),
      ev("task.escalated", {"reason": "x"}, task_id="t1"),
      board_with()),  # missing task
+    # task.pruned
+    (board_with(TaskState("t1", "ready")),
+     ev("task.pruned", {"reason": "doomed"}, task_id="t1"),
+     board_with(TaskState("t1", "ready"),
+                TaskState("j", "created", depends_on={"t1"}))),  # last non-pruned dep of j
     # plan.revised{cancel}
     (board_with(TaskState("t1", "created")),
      ev("plan.revised", {"action": "cancel"}),

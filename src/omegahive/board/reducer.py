@@ -33,11 +33,24 @@ def fold(events: list[Event]) -> Board:
         if rule is not None:
             rule.effect(board, ev)
 
-    # derived: a created/reopened task whose every dependency is done becomes ready
+    # derived: a created/reopened, unowned, non-pruned task becomes ready once k of its
+    # dependencies are done. k = ready_when (None or non-positive -> all). Only *pruned*
+    # dependencies drop out of the requirement (§3), so the join fires on the survivors;
+    # a missing or undone dependency still blocks (fail-closed, as the old all() did). A
+    # no-dependency task is ready as before.
     for ts in board.tasks.values():
-        if ts.status in ("created", "reopened") and ts.owner is None and all(
-            dep in board.tasks and board.tasks[dep].status == "done" for dep in ts.depends_on
-        ):
+        if ts.status not in ("created", "reopened") or ts.owner is not None or ts.pruned:
+            continue
+        deps = ts.depends_on
+        if not deps:
+            ts.status = "ready"
+            continue
+        active = [d for d in deps if not (d in board.tasks and board.tasks[d].pruned)]
+        required = ts.ready_when if (ts.ready_when is not None and ts.ready_when >= 1) \
+            else len(deps)
+        effective = min(required, len(active))
+        done = sum(1 for d in active if d in board.tasks and board.tasks[d].status == "done")
+        if active and done >= effective:
             ts.status = "ready"
 
     return board

@@ -87,7 +87,7 @@ def test_stored_payload_is_canonical_with_defaults(make_log):
     # returned + stored payload carry the model defaults
     assert ev.payload == {
         "title": "x", "task_type": "research",
-        "acceptance": None, "required_artifacts": [],
+        "acceptance": None, "required_artifacts": [], "ready_when": None,
     }
     (stored,) = log.read_run()
     assert stored.payload == ev.payload
