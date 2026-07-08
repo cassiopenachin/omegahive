@@ -1,0 +1,18 @@
+scenario_id: k1_fork
+seed: 123
+# A k=1-of-2 fork for the port-equivalence keystone (§8): two independent probes feed a
+# join that is ready once *either* completes (ready_when: 1), then a tail. Exercises the
+# k<n readiness path — `ready_when` threaded through the scenario loader and the shared
+# fold — so a regression in either the direct or the via-port handling trips the keystone.
+plan:
+  goal: "Two independent probes feeding a join; either probe suffices (k=1)"
+  tasks:
+    - {id: a, title: "Probe A",     task_type: research}
+    - {id: b, title: "Probe B",     task_type: research}
+    - {id: j, title: "Synthesize",  task_type: writing, ready_when: 1}   # k=1 of {a, b}
+    - {id: t, title: "Deliver",     task_type: writing}
+  dependencies: [[j, a], [j, b], [t, j]]   # j joins a,b at k=1; t depends on j
+workers:
+  w1: { latency: {accept: 0, progress: 2, result: 4}, quality: ok }
+run:
+  max_logical_ts: 1000

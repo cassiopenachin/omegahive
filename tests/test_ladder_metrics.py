@@ -5,7 +5,7 @@ from __future__ import annotations
 from itertools import count
 from uuid import uuid4
 
-from ladder.metrics import _median, aggregate, compute_row
+from ladder.metrics import LOSS_BUCKETS, _median, aggregate, compute_row
 from ladder.seeds import schedule_for
 
 from omegahive.events.envelope import Actor, Event
@@ -104,3 +104,52 @@ def test_aggregate_over_rows():
 def test_median_true_for_even_and_odd():
     assert _median([1, 2, 3]) == 2.0
     assert _median([1, 2, 3, 4]) == 2.5   # even n: average the two middles, not the upper
+
+
+# --- §7 mechanical loss buckets ----------------------------------------------
+
+def _stalled_log():
+    """A join J needing k=2 with only one dependency that exists — unsatisfiable."""
+    return [
+        ev("task.created", {"title": "J", "task_type": "x", "ready_when": 2}, task_id="J"),
+        ev("task.created", {"title": "A", "task_type": "x"}, task_id="A"),
+        ev("dependency.added", {"depends_on": "A"}, task_id="J"),
+    ]
+
+
+def test_board_stalled_derived_from_unsatisfiable_join():
+    row = compute_row(_stalled_log(), DOOMED)
+    assert row.completed is False
+    assert row.unsatisfiable_joins == ("J",)
+    assert row.loss_bucket == "board_stalled"
+
+
+def test_cap_and_error_buckets_pass_through_stop_reason():
+    events = [_created("T")]   # no done tail -> incomplete, no structural stall
+    for reason in ("cap_ops_exhausted", "cap_timeout", "run_error"):
+        assert compute_row(events, DOOMED, stop_reason=reason).loss_bucket == reason
+
+
+def test_cap_stop_reason_wins_and_unsatisfiable_rides_as_evidence():
+    # the runner's mechanical stop is authoritative; the structural stall is preserved as
+    # evidence (unsatisfiable_joins), not used to overwrite how the run mechanically stopped
+    row = compute_row(_stalled_log(), DOOMED, stop_reason="cap_timeout")
+    assert row.loss_bucket == "cap_timeout"
+    assert row.unsatisfiable_joins == ("J",)
+
+
+def test_every_loss_bucket_is_declared():
+    for reason in ("cap_ops_exhausted", "cap_timeout", "run_error"):
+        assert compute_row([_created("T")], DOOMED, stop_reason=reason).loss_bucket in LOSS_BUCKETS
+    assert compute_row([_created("T")], DOOMED).loss_bucket in LOSS_BUCKETS        # incomplete
+    assert compute_row(_stalled_log(), DOOMED).loss_bucket in LOSS_BUCKETS         # board_stalled
+
+
+def test_completed_run_has_no_bucket_even_with_stop_reason():
+    row = compute_row([_created("T"), _done_tail()], DOOMED, stop_reason="cap_timeout")
+    assert row.completed is True and row.loss_bucket is None
+
+
+def test_unknown_stop_reason_falls_back_to_incomplete():
+    row = compute_row([_created("T")], DOOMED)   # no runner hint, no stall
+    assert row.loss_bucket == "incomplete" and row.unsatisfiable_joins == ()

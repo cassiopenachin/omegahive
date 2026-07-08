@@ -44,9 +44,11 @@ def drive(
     poll: float = 0.1,
     timeout: float = 60.0,
     max_ops: int | None = None,
-) -> Board | None:
+) -> tuple[Board | None, str]:
     """Loop read → react → emit until the board is terminal, the deadline passes, or the
-    op cap trips. Returns the last board observed."""
+    op cap trips. Returns (last board observed, stop reason) where the stop reason is one
+    of `terminal` / `cap_ops` / `cap_timeout` — the runner maps it to a mechanical loss
+    bucket (ladder.metrics) for non-completions."""
     conn = connect(url)
     port = HiveCoordinatorPort(
         Actor(role=actor_role, id=agent_id), run_id, conn,
@@ -57,12 +59,14 @@ def drive(
     board: Board | None = None
     deadline = time.monotonic() + timeout
     ops = 0
+    stop = "cap_timeout"
     try:
         while True:
             view = port.read(cursor)
             if view.generation_mismatch:
                 cursor = None
                 if time.monotonic() > deadline:
+                    stop = "cap_timeout"
                     break
                 time.sleep(poll)
                 continue
@@ -77,11 +81,16 @@ def drive(
                         print(f"[{actor_role}:{agent_id}] {emit.event_type} on {emit.task_id} "
                               f"rejected: {result.code}", file=sys.stderr)
             if is_terminal(board):
+                stop = "terminal"
                 break
-            if time.monotonic() > deadline or (max_ops is not None and ops >= max_ops):
+            if max_ops is not None and ops >= max_ops:
+                stop = "cap_ops"
+                break
+            if time.monotonic() > deadline:
+                stop = "cap_timeout"
                 break
             time.sleep(poll)
         conn.commit()
     finally:
         conn.close()
-    return board
+    return board, stop

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # --- Planner payloads ---
 
@@ -26,6 +26,18 @@ class TaskCreated(BaseModel):
     required_artifacts: list[str] = []
     # k-of-n join: ready when `ready_when` dependencies are done (None = all — §3).
     ready_when: int | None = None
+
+    @field_validator("ready_when")
+    @classmethod
+    def _ready_when_positive(cls, v: int | None) -> int | None:
+        # Wire-level guard (§3): a join's k must be a positive integer. The *upper* bound
+        # (k <= dependency count) can't be checked here — dependencies arrive as separate
+        # later `dependency.added` events, so at creation the count is unknown; an
+        # over-declared k is caught downstream as a fail-closed, `join_unsatisfiable` join
+        # (board/reducer.py). This kills the k=0/negative case an LLM coordinator could emit.
+        if v is not None and v < 1:
+            raise ValueError(f"ready_when must be >= 1 (a join needs a positive k), got {v}")
+        return v
 
 
 class DependencyAdded(BaseModel):

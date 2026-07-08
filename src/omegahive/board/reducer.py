@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from ..events.envelope import Event
 from .legality import lookup
-from .state import Board, TaskState, _change, _stamp
+from .state import Board, TaskState, _change, _stamp, resolve_k
 
 __all__ = ["Board", "TaskState", "fold"]
 
@@ -35,9 +35,17 @@ def fold(events: list[Event]) -> Board:
 
     # derived: a created/reopened, unowned, non-pruned task becomes ready once k of its
     # dependencies are done. k = ready_when (None or non-positive -> all). Only *pruned*
-    # dependencies drop out of the requirement (§3), so the join fires on the survivors;
-    # a missing or undone dependency still blocks (fail-closed, as the old all() did). A
-    # no-dependency task is ready as before.
+    # dependencies drop out of the pool (§3) — but k itself never shrinks: the join still
+    # needs k done from the survivors. A missing or undone dependency still blocks
+    # (fail-closed, as the old all() did). A no-dependency task is ready as before.
+    #
+    # No downward clamp on k (§3, corrected v2.2): the prune guard (legality._g_prune)
+    # guarantees a legal prune never drops a join's live deps below k, so a join that ends
+    # up with fewer live-existing deps than k can only arise from an over-declared
+    # ready_when or a dangling dependency — an ill-formed join that must fail closed (never
+    # fire), not silently weaken to fire on the survivors. That condition is recorded as the
+    # non-fatal `join_unsatisfiable` diagnostic (never an assertion: the fold is a pure
+    # projection run on every append and replay, and must not crash on a gate-accepted log).
     for ts in board.tasks.values():
         if ts.status not in ("created", "reopened") or ts.owner is not None or ts.pruned:
             continue
@@ -46,11 +54,11 @@ def fold(events: list[Event]) -> Board:
             ts.status = "ready"
             continue
         active = [d for d in deps if not (d in board.tasks and board.tasks[d].pruned)]
-        required = ts.ready_when if (ts.ready_when is not None and ts.ready_when >= 1) \
-            else len(deps)
-        effective = min(required, len(active))
+        required = resolve_k(ts)
+        capacity = sum(1 for d in active if d in board.tasks)  # live deps that actually exist
+        ts.join_unsatisfiable = required > capacity
         done = sum(1 for d in active if d in board.tasks and board.tasks[d].status == "done")
-        if active and done >= effective:
+        if done >= required:
             ts.status = "ready"
 
     return board

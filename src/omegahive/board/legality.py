@@ -34,7 +34,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from ..events.envelope import Actor, Event
-from .state import Board, TaskState, _change, _stamp
+from .state import Board, TaskState, _change, _stamp, resolve_k
 
 # Machine-readable refusal codes (mirrors the port's Rejected.code vocabulary, §2).
 NOT_READY = "NOT_READY"
@@ -120,8 +120,16 @@ def _g_done(board: Board, actor: Actor, payload: dict, task_id: str | None) -> R
 
 
 def _g_prune(board: Board, actor: Actor, payload: dict, task_id: str | None) -> Rejection | None:
-    """Coordinator early-stops a not-done branch (§3). A join must retain >=1 non-pruned
-    dependency, so pruning the last non-pruned dep of any dependent is ILLEGAL_TRANSITION."""
+    """Coordinator early-stops a not-done branch (§3). Pruning drops the target from a
+    dependent join's pool but never shrinks the join's k, so pruning is illegal when it would
+    take a currently-*satisfiable* dependent join below k live dependencies. (The earlier
+    ">=1 retained" rule was the k=1 special case — for k>1 it would let successive prunes
+    silently weaken the join.) Dependents that pruning cannot make worse are skipped: an
+    already-pruned join is abandoned and imposes no invariant, and an already-unsatisfiable
+    join (fewer live deps than k — e.g. a dangling dependency) is not broken further by
+    pruning one of its branches. (`dependency.added` is planner-only and emitted up front, so
+    a dependent's live-dep set is settled by the time any prune runs — an unsatisfiable join
+    stays unsatisfiable.)"""
     ts = _task(board, task_id)
     if ts is None:
         return Rejection(UNKNOWN_TASK, f"task.pruned on unknown task {task_id!r}")
@@ -131,17 +139,19 @@ def _g_prune(board: Board, actor: Actor, payload: dict, task_id: str | None) -> 
     if ts.pruned:
         return Rejection(ILLEGAL_TRANSITION, f"task {task_id!r} is already pruned")
     for dependent in board.tasks.values():
-        if task_id in dependent.depends_on:
-            live = [
-                d for d in dependent.depends_on
-                if d != task_id and d in board.tasks and not board.tasks[d].pruned
-            ]
-            if not live:
-                return Rejection(
-                    ILLEGAL_TRANSITION,
-                    f"pruning {task_id!r} would leave {dependent.task_id!r}'s join with no "
-                    "non-pruned dependency",
-                )
+        if task_id not in dependent.depends_on or dependent.pruned:
+            continue
+        k = resolve_k(dependent)
+        # live deps that exist and are not pruned — includes the target, which we are pruning
+        live = [d for d in dependent.depends_on
+                if d in board.tasks and not board.tasks[d].pruned]
+        before = len(live)
+        if before >= k and before - 1 < k:   # satisfiable now, unsatisfiable once target goes
+            return Rejection(
+                ILLEGAL_TRANSITION,
+                f"pruning {task_id!r} would drop {dependent.task_id!r}'s join to {before - 1} "
+                f"live deps, below its required k={k}",
+            )
     return None
 
 
