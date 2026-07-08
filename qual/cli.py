@@ -92,6 +92,25 @@ def run(
     console.print(f"wrote record: {path}")
 
 
+@app.command("smoke-fork")
+def smoke_fork_cmd(
+    image: str = typer.Option("localhost/omegaclaw-base:0.1", "--image", help="base image ref"),
+    fork_repo: str | None = typer.Option(None, "--fork-repo", help="OmegaClaw-Core checkout"),
+    keep: bool = typer.Option(False, "--keep", help="leave the container running"),
+) -> None:
+    """Boot the fork base image and drive ONE scripted turn (plumbing-only smoke)."""
+    from .smoke_fork import DEFAULT_FORK_REPO, run_smoke
+
+    result = run_smoke(image=image, fork_repo=fork_repo or DEFAULT_FORK_REPO, keep=keep)
+    verdict = "PASS" if result.ok else "FAIL"
+    console.print(
+        f"\nsmoke: [bold]{verdict}[/bold]  "
+        f"booted={result.booted} reply={bool(result.reply)} history={result.history_written}"
+    )
+    if not result.ok:
+        raise typer.Exit(code=1)
+
+
 @app.command("validate-record")
 def validate_record_cmd(
     path: str = typer.Argument(..., help="record dir or config.json path"),
