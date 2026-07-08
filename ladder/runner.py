@@ -39,13 +39,14 @@ def _terminal(board: Board | None) -> bool:
 
 # --- process entrypoints (module-level so they pickle under any start method) ---
 
-def _run_coordinator(cell: str, run_id: str, roster: tuple[str, ...],
-                     url: str | None, timeout: float, max_ops: int) -> None:
+def _run_coordinator(cell: str, run_id: str, roster: tuple[str, ...], url: str | None,
+                     timeout: float, max_ops: int, report: mp.Queue) -> None:
     if CELLS.get(cell) != "greedy":
         raise ValueError(f"cell {cell!r} has no coordinator in V2a")
-    drive(Coordinator("coordinator", workers=list(roster), thresholds={}),
-          run_id, "coordinator", "coordinator",
-          url=url, is_terminal=_terminal, timeout=timeout, max_ops=max_ops)
+    _board, stop = drive(Coordinator("coordinator", workers=list(roster), thresholds={}),
+                         run_id, "coordinator", "coordinator",
+                         url=url, is_terminal=_terminal, timeout=timeout, max_ops=max_ops)
+    report.put(stop)  # the coordinator carries max_ops, so its stop reason attributes the cap
 
 
 def _run_worker(run_id: str, wid: str, seed: int, url: str | None, timeout: float) -> None:
@@ -58,6 +59,19 @@ def _run_review(run_id: str, url: str | None, timeout: float) -> None:
           url=url, is_terminal=_terminal, timeout=timeout)
 
 
+def _stop_reason(coord_stop: str | None, errored: bool) -> str | None:
+    """Map the coordinator's stop signal (+ any child crash) to a mechanical loss-bucket
+    hint. `terminal` => the run completed, so no bucket. A coordinator that neither
+    reported nor crashed cleanly (killed/hung) is bucketed as a timeout."""
+    if errored:
+        return "run_error"
+    if coord_stop == "cap_ops":
+        return "cap_ops_exhausted"
+    if coord_stop == "terminal":
+        return None
+    return "cap_timeout"
+
+
 def run_seed(cell: str, seed: int, *, url: str | None = None, timeout: float = 60.0,
              max_ops: int = 2000, nonce: str | None = None) -> LadderRow:
     # A fresh run id per sweep: reusing one would let actors re-observe a prior run's
@@ -67,11 +81,12 @@ def run_seed(cell: str, seed: int, *, url: str | None = None, timeout: float = 6
     run_id = f"ladder-{cell}-{nonce}-s{seed}"
     seed_fork_board(run_id, url=url)
 
+    report: mp.Queue = mp.Queue()  # the coordinator reports its stop reason (§7 loss bucket)
     procs = [mp.Process(target=_run_review, args=(run_id, url, timeout))]
     procs += [mp.Process(target=_run_worker, args=(run_id, wid, seed, url, timeout))
               for wid in sched.roster]
     procs.append(mp.Process(target=_run_coordinator,
-                            args=(cell, run_id, sched.roster, url, timeout, max_ops)))
+                            args=(cell, run_id, sched.roster, url, timeout, max_ops, report)))
     try:
         for p in procs:
             p.start()
@@ -84,13 +99,19 @@ def run_seed(cell: str, seed: int, *, url: str | None = None, timeout: float = 6
                 p.terminate()
                 p.join(5)
 
+    coord_stop: str | None = None
+    while not report.empty():  # a single small item put before the coordinator exited
+        coord_stop = report.get_nowait()
+    errored = any(p.exitcode is not None and p.exitcode > 0 for p in procs)  # a child raised
+    stop_reason = _stop_reason(coord_stop, errored)
+
     conn = connect(url)
     try:
         with conn.transaction():
             events = EventLog(conn, LogicalClock(0), run_id).read_run(run_id)
     finally:
         conn.close()
-    return compute_row(events, sched)
+    return compute_row(events, sched, stop_reason=stop_reason)
 
 
 def run_cell(cell: str, seeds: list[int], *, url: str | None = None,

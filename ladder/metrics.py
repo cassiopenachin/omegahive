@@ -22,6 +22,22 @@ _COORD_OPS = frozenset(
 )
 
 
+# Mechanical loss buckets (§7) — attributed at run time from evidence the runner already
+# has, distinct from the cognitive buckets (premise/orchestration/reasoning) a human
+# assigns later. `board_stalled` is derivable from the event log alone (an ill-formed or
+# starved join that can never fire); the cap/error buckets need the runner's process view.
+LOSS_BUCKETS = frozenset({"board_stalled", "cap_ops_exhausted", "cap_timeout", "run_error"})
+
+
+def _loss_bucket(completed: bool, unsatisfiable: tuple[str, ...],
+                 stop_reason: str | None) -> str | None:
+    if completed:
+        return None
+    if unsatisfiable:
+        return "board_stalled"          # structural deadlock: a join that can never fire
+    return stop_reason or "incomplete"  # runner-attributed cap/error, or unknown (pure fold)
+
+
 @dataclass(frozen=True)
 class LadderRow:
     seed: int
@@ -36,13 +52,19 @@ class LadderRow:
     time_to_prune: int | None           # event-count gap threshold→prune; None = censored
     cost_tokens: int
     cost_usd: float
-    loss_bucket: str | None             # None if completed
+    loss_bucket: str | None             # None if completed; else a mechanical LOSS_BUCKET
+    unsatisfiable_joins: tuple[str, ...]  # evidence: joins flagged unsatisfiable (board_stalled)
 
 
-def compute_row(events: list[Event], schedule: SeedSchedule) -> LadderRow:
+def compute_row(events: list[Event], schedule: SeedSchedule, *,
+                stop_reason: str | None = None) -> LadderRow:
+    """Project one seed's event log into a metrics row. `stop_reason` is the runner's
+    mechanical attribution for a non-completion (a cap/error bucket); a `board_stalled`
+    diagnostic derived from the log itself overrides it."""
     board = fold(events)
     tail = board.tasks.get(TERMINAL_TASK)
     completed = tail is not None and tail.status == "done"
+    unsatisfiable = tuple(sorted(t for t, ts in board.tasks.items() if ts.join_unsatisfiable))
 
     decisions = sum(1 for e in events if e.event_type in _COORD_OPS)
     worker_attempts = sum(1 for e in events if e.event_type == "task.result_posted")
@@ -72,7 +94,9 @@ def compute_row(events: list[Event], schedule: SeedSchedule) -> LadderRow:
         a_failed_attempts=a_failed, worker_attempts=worker_attempts,
         wasted_attempts_after_evidence=wasted, pruned_a=pruned_a,
         false_prune=false_prune, premature_prune=premature, time_to_prune=time_to_prune,
-        cost_tokens=0, cost_usd=0.0, loss_bucket=None if completed else "incomplete",
+        cost_tokens=0, cost_usd=0.0,
+        loss_bucket=_loss_bucket(completed, unsatisfiable, stop_reason),
+        unsatisfiable_joins=unsatisfiable,
     )
 
 
@@ -90,6 +114,10 @@ def aggregate(rows: list[LadderRow]) -> dict:
     completed = [r for r in rows if r.completed]
     ttp = [r.time_to_prune for r in rows if r.time_to_prune is not None]
     wasted = [r.wasted_attempts_after_evidence for r in rows]
+    loss_buckets: dict[str, int] = {}
+    for r in rows:
+        if r.loss_bucket is not None:
+            loss_buckets[r.loss_bucket] = loss_buckets.get(r.loss_bucket, 0) + 1
     return {
         "n": n,
         "completion_rate": len(completed) / n,
@@ -101,6 +129,7 @@ def aggregate(rows: list[LadderRow]) -> dict:
         "decisions_mean": sum(r.decisions for r in rows) / n,
         "time_to_prune_n": len(ttp),
         "time_to_prune_mean": (sum(ttp) / len(ttp)) if ttp else None,
+        "loss_buckets": loss_buckets,   # mechanical-bucket histogram over non-completions
     }
 
 

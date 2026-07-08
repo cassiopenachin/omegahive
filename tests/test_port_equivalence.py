@@ -59,7 +59,8 @@ def _run_via_port(conn, scenario):
     return store.read_run()
 
 
-@pytest.mark.parametrize("name", ["m1_smoke.yaml", "f1_review_failed_reopen.yaml"])
+@pytest.mark.parametrize("name",
+                         ["m1_smoke.yaml", "f1_review_failed_reopen.yaml", "k1_fork.yaml"])
 def test_port_equivalence(conn, name):
     scenario = load_scenario(SCEN / name)
     _truncate(conn)
