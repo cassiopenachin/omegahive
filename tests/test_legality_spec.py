@@ -37,18 +37,20 @@ def ev(event_type, payload, *, task_id=None, actor=COORD) -> Event:
     )
 
 
-def board_with(*tasks: TaskState) -> Board:
-    return Board(tasks={t.task_id: t for t in tasks})
+def board_with(*tasks: TaskState, roster=()) -> Board:
+    return Board(tasks={t.task_id: t for t in tasks}, roster=set(roster))
 
 
 def substantive(board: Board):
     """Board state minus provenance/clock stamps — the fields a transition must move
-    for the event not to be silently inert."""
-    return {
+    for the event not to be silently inert. Includes the roster (board-level, not
+    per-task) so a worker.registered-only mutation is not invisible to this check."""
+    tasks = {
         tid: (ts.status, ts.owner, frozenset(ts.depends_on), ts.latest_review,
               ts.last_result_ref, ts.escalated, frozenset(ts.tried_by), ts.task_type, ts.pruned)
         for tid, ts in board.tasks.items()
     }
+    return tasks, frozenset(board.roster)
 
 
 # One case per rule: a guard-passing (board, event). `fail` is a board on which the
@@ -62,14 +64,18 @@ CASES = [
     (board_with(TaskState("t1", "created")),
      ev("dependency.added", {"depends_on": "d"}, task_id="t1"),
      board_with()),  # missing task -> UNKNOWN_TASK
+    # worker.registered
+    (board_with(),
+     ev("worker.registered", {"worker_id": "w1"}, actor=PLANNER),
+     board_with(roster={"w1"})),  # already registered
     # task.assigned
-    (board_with(TaskState("t1", "ready")),
+    (board_with(TaskState("t1", "ready"), roster={"w1"}),
      ev("task.assigned", {"worker": "w1"}, task_id="t1"),
-     board_with(TaskState("t1", "created"))),  # not ready
+     board_with(TaskState("t1", "created"))),  # not ready (also no roster -> UNKNOWN_WORKER)
     # task.reassigned
-    (board_with(TaskState("t1", "assigned", owner="w1")),
+    (board_with(TaskState("t1", "assigned", owner="w1"), roster={"w2"}),
      ev("task.reassigned", {"from": "w1", "to": "w2"}, task_id="t1"),
-     board_with(TaskState("t1", "ready"))),  # wrong from-state
+     board_with(TaskState("t1", "ready"))),  # wrong from-state (also no roster)
     # task.rejected
     (board_with(TaskState("t1", "assigned", owner="w1")),
      ev("task.rejected", {"reason": "no"}, task_id="t1", actor=W1),
@@ -153,7 +159,8 @@ def test_accepted_events_are_never_inert():
         assert rule.guard(pass_board, event.actor, event.payload, event.task_id) is None, \
             f"guard should pass for {event.event_type} {event.payload}"
         before = substantive(pass_board)
-        after_board = Board(tasks={tid: replace(ts) for tid, ts in pass_board.tasks.items()})
+        after_board = Board(tasks={tid: replace(ts) for tid, ts in pass_board.tasks.items()},
+                            roster=set(pass_board.roster))
         rule.effect(after_board, event)
         assert substantive(after_board) != before, \
             f"effect for {event.event_type} {event.payload} produced no board delta"

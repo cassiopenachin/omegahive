@@ -21,6 +21,7 @@ def test_m0_smoke_event_sequence(make_gateway):
     events = _emit(make_gateway)
     assert [e.event_type for e in events] == [
         "goal.received",
+        "worker.registered",   # scenario has no workers: -> the one default ("w1")
         "task.created",
         "task.created",
         "dependency.added",
@@ -29,7 +30,9 @@ def test_m0_smoke_event_sequence(make_gateway):
 
 
 def test_m0_smoke_causal_links(make_gateway):
-    goal, t1, t2, dep, prio = _emit(make_gateway)
+    goal, worker, t1, t2, dep, prio = _emit(make_gateway)
+    assert worker.causation_id == goal.event_id
+    assert worker.payload["worker_id"] == "w1"
     # tasks caused by the goal
     assert t1.causation_id == goal.event_id
     assert t2.causation_id == goal.event_id

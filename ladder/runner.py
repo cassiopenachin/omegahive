@@ -58,7 +58,7 @@ def _make_coordinator(cell: str, roster: tuple[str, ...], *, model: str | None,
             raise ValueError(f"cell {cell!r} (vanilla) requires a model")
         catalog = load_catalog(QUAL_ROOT / "catalogs" / "board-ops-v2.yaml")
         return VanillaCoordinator("coordinator", llm=LLMClient(model), catalog=catalog,
-                                  workers=list(roster), max_llm_calls=max_llm_calls)
+                                  max_llm_calls=max_llm_calls)
     raise ValueError(f"cell {cell!r} has no coordinator")
 
 
@@ -157,7 +157,7 @@ def run_seed(cell: str, seed: int, *, url: str | None = None, timeout: float = 6
     nonce = nonce or uuid.uuid4().hex[:8]
     sched = schedule_for(seed)
     run_id = f"ladder-{cell}-{nonce}-s{seed}"
-    seed_fork_board(run_id, url=url)
+    seed_fork_board(run_id, url=url, roster=sched.roster)
     events, stop_reason, cost = _spawn_and_collect(
         run_id, sched.roster, seed, url, timeout, _run_coordinator,
         (cell, run_id, sched.roster, url, timeout, max_ops, model, max_llm_calls))

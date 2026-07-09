@@ -19,7 +19,7 @@ from ..reactors import (
     WorkerStub,
 )
 from ..reactors.worker import BlockSpec
-from ..scenario.schema import Scenario, WorkerPolicy
+from ..scenario.schema import Scenario, WorkerPolicy, effective_workers
 from .engine import Engine
 from .protocol import Reactor
 
@@ -54,7 +54,7 @@ def build_engine(
     coordinator: Reactor | None = None,
 ) -> Engine:
     eff_seed = seed if seed is not None else scenario.seed
-    roster = scenario.workers or {"w1": WorkerPolicy()}
+    roster = effective_workers(scenario)
     workers = [_worker(wid, pol, eff_seed) for wid, pol in roster.items()]
 
     thresholds = scenario.coordinator.thresholds if scenario.coordinator else {}

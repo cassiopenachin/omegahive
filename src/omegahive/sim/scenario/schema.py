@@ -172,3 +172,11 @@ class Scenario(BaseModel):
     config: ScenarioConfig = ScenarioConfig()
     labels: Labels = Labels()
     expected: Expected | None = None
+
+
+def effective_workers(scenario: Scenario) -> dict[str, WorkerPolicy]:
+    """The scenario's worker roster, defaulting to one worker when none is given. Single
+    source of truth for "which worker ids exist" — consulted both to build the simulated
+    worker reactors (assembly.py) and to register the board roster (loader.py's
+    `emit_plan`), so the two can never disagree on who may be assigned to (§6)."""
+    return scenario.workers or {"w1": WorkerPolicy()}

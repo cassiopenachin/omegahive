@@ -3,6 +3,12 @@ per line, positional args; a line with an unknown head, wrong arity, or an unbui
 is *skipped* (surfaced in `ParseResult.skipped`), never raised — a malformed line must not
 crash the run. Emits (not `wire.Op`) because the ladder's `drive` wraps each Emit in
 `_RawOp`; each carries the board's `last_causing_event_id` for the task as its causation.
+
+An unregistered worker id is *not* filtered here (§6, B3 fix): the parser used to
+silently drop such ops before they reached the board, which meant no feedback, no
+recorded rejection, and no next-view surfacing — the exact silent-failure class the
+board roster exists to kill. The op is built and passed through; the gateway's
+`UNKNOWN_WORKER` guard (board/legality.py) is the sole authority on worker legality.
 """
 
 from __future__ import annotations
@@ -33,14 +39,11 @@ def _cause(board: Board, tid: str) -> UUID | None:
     return ts.last_causing_event_id if ts is not None else None
 
 
-def _to_emit(head: str, args: list[str], board: Board,
-             roster: frozenset[str] | None) -> tuple[Emit | None, str]:
+def _to_emit(head: str, args: list[str], board: Board) -> tuple[Emit | None, str]:
     """Return (emit, reason). emit is None when the op cannot be built; reason explains why
     (surfaced back to the model)."""
     tid = args[0]
     cause = _cause(board, tid)
-    if head in ("assign", "reassign") and roster is not None and args[1] not in roster:
-        return None, f"worker {args[1]!r} is not in the roster {sorted(roster)}"
     if head == "assign":
         return Emit("task.assigned", {"worker": args[1]}, task_id=tid, causation_id=cause), ""
     if head == "reassign":
@@ -62,8 +65,7 @@ def _to_emit(head: str, args: list[str], board: Board,
     return None, f"no emit for head {head!r}"
 
 
-def parse_commands(text: str, board: Board, catalog: Catalog,
-                   roster: frozenset[str] | None = None) -> ParseResult:
+def parse_commands(text: str, board: Board, catalog: Catalog) -> ParseResult:
     arity = {e.head: e.arity for e in catalog.entries}
     emits: list[Emit] = []
     skipped: list[tuple[str, str]] = []
@@ -82,7 +84,7 @@ def parse_commands(text: str, board: Board, catalog: Catalog,
         if len(args) != arity[head]:
             skipped.append((raw, f"{head} expects {arity[head]} arg(s), got {len(args)}"))
             continue
-        emit, reason = _to_emit(head, args, board, roster)
+        emit, reason = _to_emit(head, args, board)
         if emit is None:
             skipped.append((raw, reason))
             continue

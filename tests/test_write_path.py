@@ -21,6 +21,8 @@ COORD = Actor(role="coordinator", id="coordinator")
 
 def _ready_t1(gateway):
     g = unwrap(gateway.emit(actor=PLANNER, event_type="goal.received", payload={"text": "g"}))
+    gateway.emit(actor=PLANNER, event_type="worker.registered", payload={"worker_id": "w1"})
+    gateway.emit(actor=PLANNER, event_type="worker.registered", payload={"worker_id": "w2"})
     gateway.emit(actor=PLANNER, event_type="task.created", task_id="t1",
                  causation_id=g.event_id, payload={"title": "T1", "task_type": "research"})
 

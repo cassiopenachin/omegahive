@@ -50,15 +50,12 @@ class VanillaCoordinator:
         *,
         llm: LLMClient,
         catalog: Catalog,
-        workers: list[str] | None = None,
         max_llm_calls: int | None = None,
         transcript: TextIO = sys.stdout,
     ) -> None:
         self.agent_id = agent_id
         self.llm = llm
         self.catalog = catalog
-        self.workers = sorted(workers or [])
-        self._roster = frozenset(self.workers)
         self.max_llm_calls = max_llm_calls
         self.transcript = transcript
         self._system = op_reference_sheet(catalog)
@@ -81,8 +78,7 @@ class VanillaCoordinator:
             self.exhausted = True   # tell drive to stop, not idle-spin to the wall-clock cap
             return ReactResult()
 
-        user = render_view(board, new_events, actor_id=self.agent_id, notes=self._pending_notes,
-                           workers=self.workers)
+        user = render_view(board, new_events, actor_id=self.agent_id, notes=self._pending_notes)
         resp = self.llm.complete(self._system, user)
         self.calls += 1
         self.usages.append(resp.usage)
@@ -93,7 +89,7 @@ class VanillaCoordinator:
             f"out={resp.usage.tokens_out} usd={resp.usage.usd:.6f}",
             file=self.transcript,
         )
-        result = parse_commands(resp.text, board, self.catalog, roster=self._roster)
+        result = parse_commands(resp.text, board, self.catalog)
         # carry dropped lines into the next view: a skipped op produces no event, so without
         # this the model gets no corrective echo (unlike a gateway refusal) and repeats it.
         self._pending_notes = [f"  (unparsed {raw!r} :reason {reason})"

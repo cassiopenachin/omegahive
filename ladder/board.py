@@ -18,13 +18,15 @@ from omegahive.events.log import EventLog
 from omegahive.gateway import Gateway
 from omegahive.port import open_run
 from omegahive.sim.scenario.loader import emit_plan
-from omegahive.sim.scenario.schema import Plan, Scenario, TaskSpec
+from omegahive.sim.scenario.schema import Plan, Scenario, TaskSpec, WorkerPolicy
 
 PLANNER = Actor(role="planner", id="planner")
 TERMINAL_TASK = "T"   # the run is complete when the tail is done
 
 
-def fork_scenario() -> Scenario:
+def fork_scenario(roster: tuple[str, ...] = ()) -> Scenario:
+    """`roster` is registered as the scenario's workers (§6) so `emit_plan` seeds a
+    `worker.registered` event per id; empty defaults to the usual single worker."""
     return Scenario(
         scenario_id="ladder-fork",
         plan=Plan(
@@ -37,10 +39,11 @@ def fork_scenario() -> Scenario:
             ],
             dependencies=[("J", "A"), ("J", "B"), ("T", "J")],
         ),
+        workers={wid: WorkerPolicy() for wid in roster},
     )
 
 
-def seed_fork_board(run_id: str, *, url: str | None = None) -> str:
+def seed_fork_board(run_id: str, *, url: str | None = None, roster: tuple[str, ...] = ()) -> str:
     """Register the run and emit the fork plan (idempotent — skips if already seeded)."""
     conn = connect(url)
     try:
@@ -49,7 +52,7 @@ def seed_fork_board(run_id: str, *, url: str | None = None) -> str:
         with conn.transaction():
             already = any(e.event_type == "goal.received" for e in store.read_run(run_id))
         if not already:
-            emit_plan(Gateway(store).handle(PLANNER), fork_scenario())
+            emit_plan(Gateway(store).handle(PLANNER), fork_scenario(roster))
             conn.commit()
     finally:
         conn.close()

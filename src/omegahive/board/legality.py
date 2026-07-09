@@ -40,6 +40,7 @@ from .state import Board, TaskState, _change, _stamp, resolve_k
 NOT_READY = "NOT_READY"
 ALREADY_OWNED = "ALREADY_OWNED"
 UNKNOWN_TASK = "UNKNOWN_TASK"
+UNKNOWN_WORKER = "UNKNOWN_WORKER"
 NOT_AUTHORIZED = "NOT_AUTHORIZED"
 ILLEGAL_TRANSITION = "ILLEGAL_TRANSITION"
 
@@ -85,11 +86,39 @@ def _g_assigned(board: Board, actor: Actor, payload: dict, task_id: str | None) 
     ts = _task(board, task_id)
     if ts is None:
         return Rejection(UNKNOWN_TASK, f"task.assigned on unknown task {task_id!r}")
+    worker = payload.get("worker")
+    if worker not in board.roster:
+        return Rejection(UNKNOWN_WORKER, f"worker {worker!r} is not registered")
     if ts.owner is not None:
         return Rejection(ALREADY_OWNED, f"task {task_id!r} already owned by {ts.owner!r}")
     if ts.status != "ready":
         return Rejection(NOT_READY,
                          f"task.assigned on {task_id!r} requires ready (is {ts.status!r})")
+    return None
+
+
+def _g_reassigned(board: Board, actor: Actor, payload: dict,
+                  task_id: str | None) -> Rejection | None:
+    ts = _task(board, task_id)
+    if ts is None:
+        return Rejection(UNKNOWN_TASK, f"task.reassigned on unknown task {task_id!r}")
+    worker = payload.get("to")
+    if worker not in board.roster:
+        return Rejection(UNKNOWN_WORKER, f"worker {worker!r} is not registered")
+    if ts.status not in ("assigned", "blocked", "in_progress"):
+        return Rejection(
+            ILLEGAL_TRANSITION,
+            f"{task_id!r} must be in ('assigned', 'blocked', 'in_progress') for this "
+            f"transition (is {ts.status!r})",
+        )
+    return None
+
+
+def _g_worker_registered(board: Board, actor: Actor, payload: dict,
+                         task_id: str | None) -> Rejection | None:
+    wid = payload.get("worker_id")
+    if wid in board.roster:
+        return Rejection(ILLEGAL_TRANSITION, f"worker {wid!r} is already registered")
     return None
 
 
@@ -173,6 +202,10 @@ def _e_dependency_added(board: Board, ev: Event) -> None:
         return
     here.depends_on.add(ev.payload["depends_on"])
     _stamp(here, ev)
+
+
+def _e_worker_registered(board: Board, ev: Event) -> None:
+    board.roster.add(ev.payload["worker_id"])
 
 
 def _e_assigned(board: Board, ev: Event) -> None:
@@ -312,9 +345,9 @@ def _is(field: str, value: str) -> Callable[[dict], bool]:
 RULES: list[LegalityRule] = [
     LegalityRule("task.created", None, _g_created, _e_created),
     LegalityRule("dependency.added", None, _g_needs_task, _e_dependency_added),
+    LegalityRule("worker.registered", None, _g_worker_registered, _e_worker_registered),
     LegalityRule("task.assigned", None, _g_assigned, _e_assigned),
-    LegalityRule("task.reassigned", None, _from_state("assigned", "blocked", "in_progress"),
-                 _e_reassigned),
+    LegalityRule("task.reassigned", None, _g_reassigned, _e_reassigned),
     LegalityRule("task.rejected", None, _from_state("assigned"), _e_rejected),
     LegalityRule("task.accepted", None, _from_state("assigned"), _e_accepted),
     LegalityRule("task.blocked", None, _from_state("in_progress"), _e_blocked),

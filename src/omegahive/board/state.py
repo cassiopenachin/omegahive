@@ -42,6 +42,8 @@ class TaskState:
 @dataclass
 class Board:
     tasks: dict[str, TaskState]
+    roster: set[str] = field(default_factory=set)  # registered worker ids (§6) — the only
+    #                                                 valid assign/reassign targets
 
     def ready(self) -> list[str]:
         """Ready, unowned, non-pruned task ids — sorted for deterministic iteration.
