@@ -12,13 +12,20 @@ REVIEW = Actor(role="instrument", id="review")
 
 
 def _drive_to_in_review(gateway):
+    # each step is unwrap()ed (raises on Rejected): a broken link in this chain must fail
+    # loudly here, not slip through silently because a later assertion happens to hold
+    # regardless (that masking is exactly what let the missing worker.registered above go
+    # unnoticed before this fix).
     g = unwrap(gateway.emit(actor=PLANNER, event_type="goal.received", payload={"text": "g"}))
-    gateway.emit(actor=PLANNER, event_type="task.created", task_id="t1",
-                 causation_id=g.event_id, payload={"title": "T1", "task_type": "research"})
-    gateway.emit(actor=COORD, event_type="task.assigned", task_id="t1", payload={"worker": "w1"})
-    gateway.emit(actor=W1, event_type="task.accepted", task_id="t1", payload={})
-    gateway.emit(actor=W1, event_type="task.result_posted", task_id="t1",
-                 payload={"artifact_refs": [{"ref": "t1-art", "quality": "ok"}], "cost": 5})
+    unwrap(gateway.emit(actor=PLANNER, event_type="worker.registered",
+                        payload={"worker_id": "w1"}))
+    unwrap(gateway.emit(actor=PLANNER, event_type="task.created", task_id="t1",
+                        causation_id=g.event_id, payload={"title": "T1", "task_type": "research"}))
+    unwrap(gateway.emit(actor=COORD, event_type="task.assigned", task_id="t1",
+                        payload={"worker": "w1"}))
+    unwrap(gateway.emit(actor=W1, event_type="task.accepted", task_id="t1", payload={}))
+    unwrap(gateway.emit(actor=W1, event_type="task.result_posted", task_id="t1",
+                        payload={"artifact_refs": [{"ref": "t1-art", "quality": "ok"}], "cost": 5}))
 
 
 def test_done_gate_rejects_close_without_passed_review(make_gateway):

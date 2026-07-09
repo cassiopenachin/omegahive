@@ -12,7 +12,7 @@ WORKERS = ["w1", "w2"]
 
 def _board(ts: TaskState) -> Board:
     ts.last_causing_event_id = ts.last_causing_event_id or uuid4()
-    return Board(tasks={ts.task_id: ts})
+    return Board(tasks={ts.task_id: ts}, roster=set(WORKERS))
 
 
 def _coord(**kw) -> Coordinator:

@@ -82,13 +82,20 @@ def _g_needs_task(board: Board, actor: Actor, payload: dict,
     return None
 
 
+def _g_known_worker(board: Board, worker: str | None) -> Rejection | None:
+    """Shared by assign/reassign (§6): the target worker must be on the board's roster."""
+    if worker not in board.roster:
+        return Rejection(UNKNOWN_WORKER, f"worker {worker!r} is not registered")
+    return None
+
+
 def _g_assigned(board: Board, actor: Actor, payload: dict, task_id: str | None) -> Rejection | None:
     ts = _task(board, task_id)
     if ts is None:
         return Rejection(UNKNOWN_TASK, f"task.assigned on unknown task {task_id!r}")
-    worker = payload.get("worker")
-    if worker not in board.roster:
-        return Rejection(UNKNOWN_WORKER, f"worker {worker!r} is not registered")
+    rej = _g_known_worker(board, payload.get("worker"))
+    if rej is not None:
+        return rej
     if ts.owner is not None:
         return Rejection(ALREADY_OWNED, f"task {task_id!r} already owned by {ts.owner!r}")
     if ts.status != "ready":
@@ -102,9 +109,9 @@ def _g_reassigned(board: Board, actor: Actor, payload: dict,
     ts = _task(board, task_id)
     if ts is None:
         return Rejection(UNKNOWN_TASK, f"task.reassigned on unknown task {task_id!r}")
-    worker = payload.get("to")
-    if worker not in board.roster:
-        return Rejection(UNKNOWN_WORKER, f"worker {worker!r} is not registered")
+    rej = _g_known_worker(board, payload.get("to"))
+    if rej is not None:
+        return rej
     if ts.status not in ("assigned", "blocked", "in_progress"):
         return Rejection(
             ILLEGAL_TRANSITION,

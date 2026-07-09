@@ -13,19 +13,22 @@ day the first template is added — it is not deferred or skipped.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# Directories that can never legitimately hold a persona override, so scanning them
-# would only slow the test down or trip on unrelated fixtures (e.g. .git internals).
+# Directories that can never legitimately hold a persona override — pruned during the
+# walk (not filtered after) so the scan never descends into .venv's tens of thousands of
+# files.
 _SKIP_DIRS = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache"}
 
 
 def _iter_repo_files():
-    for path in REPO_ROOT.rglob("*"):
-        if path.is_file() and not any(part in _SKIP_DIRS for part in path.parts):
-            yield path
+    for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        for name in filenames:
+            yield Path(dirpath) / name
 
 
 def test_no_provider_override_prompt_file_exists_anywhere():
