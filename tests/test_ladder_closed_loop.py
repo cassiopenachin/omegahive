@@ -34,14 +34,6 @@ not exhaustion.
 
 from __future__ import annotations
 
-from omegahive.clock import LogicalClock
-from omegahive.events.envelope import Actor
-from omegahive.events.log import EventLog
-from omegahive.gateway import Gateway
-from omegahive.port import HiveCoordinatorPort, open_run
-from omegahive.sim.scenario.loader import emit_plan
-from omegahive.sim.scenario.schema import Plan, Scenario, TaskSpec, WorkerPolicy
-
 from ladder.actor import _RawOp
 from ladder.llm import LLMResponse, Usage
 from ladder.metrics import compute_row
@@ -50,6 +42,14 @@ from ladder.seeds import schedule_for
 from ladder.vanilla import VanillaCoordinator
 from ladder.view import render_view
 from qual.loader import QUAL_ROOT, load_catalog
+
+from omegahive.clock import LogicalClock
+from omegahive.events.envelope import Actor
+from omegahive.events.log import EventLog
+from omegahive.gateway import Gateway
+from omegahive.port import HiveCoordinatorPort, open_run
+from omegahive.sim.scenario.loader import emit_plan
+from omegahive.sim.scenario.schema import Plan, Scenario, TaskSpec, WorkerPolicy
 
 CATALOG = load_catalog(QUAL_ROOT / "catalogs" / "board-ops-v2.yaml")
 PLANNER = Actor(role="planner", id="planner")
