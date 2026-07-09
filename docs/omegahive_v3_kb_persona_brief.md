@@ -1,16 +1,29 @@
 # V3 — KB, op sheet, persona (self-contained work order)
 
+**Supersession (v2 artifacts replace all prior drafts):** the pre-existing flat `qual/personas/coordinator-v1.txt` (a 5-op draft predating `prune`) and `qual/catalogs/board-ops-v1.yaml` are superseded — your deliverables are **`coordinator-v2/`** and **`qual/catalogs/board-ops-v2.yaml`** (same 6-op set as v1's catalog, descriptions aligned to the §2 table). `git rm` the stale flat persona draft in the same PR (git history preserves it); leave `board-ops-v1.yaml` in place until its referencing scenarios migrate.
+
 **Context (all you need):** you are authoring the three text artifacts for the stage-2 coordinator ladder ([omegahive_stage2_spec.md](omegahive_stage2_spec.md) — read §5.1, §5.4, §5.5 first; they are the contract). Deliverables: `persona-coordinator-v1` (one `prompt.txt` + the R1 system-prompt variant), the **op-reference sheet**, and `coordination-kb-v1` (one markdown file, 3–5 pages). All three are hash-pinned experiment inputs.
 
 **Authoring discipline (hard rule):** work from this brief and the spec sections named above **only**. Do **not** read `ladder/` code, `seeds.py`, board fixtures, or any run configuration — the KB must be authored blind to board parameters (the leakage check compares afterward). If you need a fact about the runtime or ops, it is in this brief or the spec; if it isn't, stop and ask rather than reading the ladder.
 
 ## 1. Persona
 
-Blocks and exact constraints per spec §5.5. Deliver as: `qual/personas/coordinator-v1/prompt.txt` (R2: the five blocks — IDENTITY, OBJECTIVE, ENVIRONMENT, FEEDBACK, MEMORY — nothing else) and `qual/personas/coordinator-v1/r1-system.txt` (R1: same four shared blocks, no MEMORY, plus a [MECHANICS] block stating the harness op-output format — one op per line, exact shapes from the op sheet). Wording rules: strategically inert (objectives yes, policies no — when in doubt, the sentence goes to the KB or dies); no contractions or quoted examples; [MEMORY] must use exactly the spec's sentence naming the `query` skill; [ENVIRONMENT] must say "most recent" view and mark earlier history views stale.
+Blocks and exact constraints per spec §5.5. Deliver as: `qual/personas/coordinator-v2/prompt.txt` (R2: the five blocks — IDENTITY, OBJECTIVE, ENVIRONMENT, FEEDBACK, MEMORY — nothing else) and `qual/personas/coordinator-v2/r1-system.txt` (R1: same four shared blocks, no MEMORY, plus a [MECHANICS] block stating the harness op-output format — one op per line, exact shapes from the op sheet). Wording rules: strategically inert (objectives yes, policies no — when in doubt, the sentence goes to the KB or dies); no contractions or quoted examples; [MEMORY] must use exactly the spec's sentence naming the `query` skill; [ENVIRONMENT] must say "most recent" view and mark earlier history views stale.
 
 ## 2. Op-reference sheet
 
-Syntax, semantics, and legality of every op — **no strategy, no norms**: `assign <task> <worker>` · `reassign <task> <worker>` · `escalate <task>` · `close <task>` · `reopen <task>` · `prune <task>`. For each: what it does, when it is *legal* (e.g. assign requires the task ready and unowned and the worker in the view's workers section; prune is illegal on done tasks and when it would leave a dependent join under its `ready_when` k), and the rejection codes it can return (`NOT_READY`, `ALREADY_OWNED`, `UNKNOWN_TASK`, `UNKNOWN_WORKER`, `NOT_AUTHORIZED`, `ILLEGAL_TRANSITION`). State that worker ids come from the view's `(workers …)` section and task ids from `(tasks …)`. Keep every example in bare `board "verb args"` shape; no quotes/apostrophes inside payloads. One file, used verbatim in two places (R1 system prompt; the `board` skill catalog entry) — you deliver the single source file; wiring is not your job.
+Syntax, semantics, and legality of every op — **no strategy, no norms**. The legality below is **authoritative** (extracted from the substrate's legality spec, Jul 9; the fresh-eyes reviewer re-verifies it against the merged substrate at freeze — you do not read the code):
+
+| Op | Legal when | Rejection codes you can see |
+|---|---|---|
+| `assign <task> <worker>` | task exists, status `ready`, no owner; worker is in the view's `(workers …)` section | `UNKNOWN_TASK` · `ALREADY_OWNED` · `NOT_READY` · `UNKNOWN_WORKER` |
+| `reassign <task> <worker>` | task exists, status `assigned`, `blocked`, or `in_progress`; worker registered | `UNKNOWN_TASK` · `ILLEGAL_TRANSITION` (wrong status) · `UNKNOWN_WORKER` |
+| `escalate <task>` | task exists — **any status**; escalation is always available as a flag for attention | `UNKNOWN_TASK` |
+| `close <task>` | task's **latest review is `passed`** (review happens via worker/review events, not your ops) | `ILLEGAL_TRANSITION` (incl. unknown task — reported as the review precondition failing) |
+| `reopen <task>` | task status is **`in_review` only** | `UNKNOWN_TASK` · `ILLEGAL_TRANSITION` |
+| `prune <task>` | task exists, not `done`/`cancelled`, not already pruned, and pruning would not take a currently-satisfiable dependent join below its `ready_when` k surviving dependencies | `UNKNOWN_TASK` · `ILLEGAL_TRANSITION` |
+
+Any op from an actor without coordinator authority returns `NOT_AUTHORIZED` (not relevant to your text — the coordinator has authority; omit or mention once). State in the sheet: worker ids come from the view's `(workers …)` section, task ids from `(tasks …)`; a rejection always carries a reason string alongside the code. Keep every example in bare `board "verb args"` shape; no quotes/apostrophes inside payloads. One file, used verbatim in two places (R1 system prompt; the `board` skill catalog entry) — you deliver the single source file; wiring is not your job.
 
 ## 3. Knowledge base (`qual/kb/coordination-kb-v1/kb.md`)
 
@@ -18,7 +31,7 @@ One markdown file, 3–5 pages, chunk-friendly headings. Content list (general c
 
 ## 4. Freeze checklist (you complete, the reviewer verifies)
 
-- [ ] Three artifacts committed; SHA-256 of each recorded in `qual/personas/coordinator-v1/HASHES` and `qual/kb/coordination-kb-v1/HASHES`
+- [ ] Three artifacts committed; SHA-256 of each recorded in `qual/personas/coordinator-v2/HASHES` and `qual/kb/coordination-kb-v1/HASHES`
 - [ ] No `prompt_<provider>.txt` exists in any volume template (assert absence — a stray override silently replaces the persona per-provider)
 - [ ] Persona sentences each classifiable as identity/objective/environment/feedback/mechanics — zero policy sentences (reviewer runs this check)
 - [ ] KB leakage check passed against the frozen board parameters (reviewer runs it — you never see those parameters)
