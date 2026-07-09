@@ -1,0 +1,32 @@
+# Board-op catalog v2 — the command heads the coordinator is told it may emit.
+# These are the coordinator authority ops (omegahive_port_spec.md §2 Op union; the
+# binding skill equations). `port_op` names the omegahive.port Op the head maps to.
+# `text` is the line the agent is shown; descriptions state legality only, no strategy
+# or norms (those live in the knowledge base). Supersedes board-ops-v1: same 6-op set,
+# descriptions aligned to the coordinator op-reference sheet.
+version: board-ops-v2
+entries:
+  - head: assign
+    text: "Give a ready and unowned task to a worker in the view: assign <task> <worker>"
+    arity: 2
+    port_op: AssignOp
+  - head: reassign
+    text: "Move a task with status assigned, blocked, or in_progress to a different worker: reassign <task> <worker>"
+    arity: 2
+    port_op: ReassignOp
+  - head: escalate
+    text: "Flag a task for attention; legal in any status: escalate <task>"
+    arity: 1
+    port_op: EscalateOp
+  - head: close
+    text: "Close a task whose latest review is passed: close <task>"
+    arity: 1
+    port_op: CloseOp
+  - head: reopen
+    text: "Reopen a task whose status is in_review: reopen <task>"
+    arity: 1
+    port_op: ReopenOp
+  - head: prune
+    text: "Abandon a not-done task; it drops from every dependent join's pool but never lowers the join's k: prune <task>"
+    arity: 1
+    port_op: PruneOp

@@ -1,0 +1,39 @@
+Board operation reference
+
+You act on the board by emitting operations. Each operation names a task and, where required, a worker.
+
+Task ids come from the (tasks ...) section of the most recent view. Worker ids come from the (workers ...) section of the most recent view. Use only ids that appear in that view.
+
+Write every operation in the shape board "verb args". Do not put quotation marks or apostrophes inside a payload.
+
+A rejected operation returns a machine code and a reason string. The codes are:
+- NOT_READY: the task is not in the status the operation requires.
+- ALREADY_OWNED: the task already has an owner.
+- UNKNOWN_TASK: no task with that id is in the view.
+- UNKNOWN_WORKER: no worker with that id is in the view.
+- NOT_AUTHORIZED: the actor may not perform this operation. The coordinator has authority for every operation below, so you do not see this code for your own operations.
+- ILLEGAL_TRANSITION: the operation is not legal from the current task status.
+
+assign
+  board "assign <task> <worker>"
+  Gives a ready and unowned task to a worker. Legal when the task exists with status ready and no owner, and the worker appears in the workers section of the view. Codes: UNKNOWN_TASK, ALREADY_OWNED, NOT_READY, UNKNOWN_WORKER.
+
+reassign
+  board "reassign <task> <worker>"
+  Moves a task to a different worker. Legal when the task exists with status assigned, blocked, or in_progress, and the worker is registered. Codes: UNKNOWN_TASK, ILLEGAL_TRANSITION (wrong status), UNKNOWN_WORKER.
+
+escalate
+  board "escalate <task>"
+  Flags a task for attention. Legal when the task exists, in any status. Codes: UNKNOWN_TASK.
+
+close
+  board "close <task>"
+  Closes a task whose latest review is passed. Review happens through worker and review events, not through your operations. Legal when the latest review of the task is passed. Codes: ILLEGAL_TRANSITION (this includes an unknown task, reported as the review precondition failing).
+
+reopen
+  board "reopen <task>"
+  Returns a task that is in review to an earlier status. Legal when the task status is in_review. Codes: UNKNOWN_TASK, ILLEGAL_TRANSITION.
+
+prune
+  board "prune <task>"
+  Abandons a single not-done task and drops it from the pool of every join that depends on it. Legal when the task exists, is not done or cancelled, and is not already pruned, and only when dropping it would not take a currently satisfiable dependent join below its ready_when k of surviving dependencies. Pruning never lowers a join ready_when k. Codes: UNKNOWN_TASK, ILLEGAL_TRANSITION.
