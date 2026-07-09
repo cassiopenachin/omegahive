@@ -20,6 +20,16 @@ an orthogonal concern, flood control's rejection coalescing (§5, gateway.py): c
 keys on (actor, refused_event_type, refused_task_id, code), so distinct task ids can never
 collide regardless of timing/timestamp granularity, and every attempt is guaranteed its own
 recorded event.
+
+Two tests cover B4's property 3 (the run terminates cap_ops_exhausted) in complementary
+ways. The first below loops until every task id has been attempted once and then asserts
+the mapping `_stop_reason("cap_ops", ...) == "cap_ops_exhausted"` — a hardcoded stop label,
+documented as such, proving the code/bucket contract but not that a bounded loop actually
+observes and acts on a live cap mid-run. The second test exercises that: it mirrors
+`ladder.actor.drive`'s own cap-detection branch (`if ops >= max_ops: stop = "cap_ops";
+break`) with `max_ops` set below the number of available ready tasks, so the loop is
+provably cut short with untouched ready work still on the board — the real cap trips it,
+not exhaustion.
 """
 
 from __future__ import annotations
@@ -114,6 +124,8 @@ def test_ignorant_coordinator_hallucinated_worker_fails_visibly_not_silently(con
     # (3) the run terminates cap_ops_exhausted — the correct mechanical bucket for a
     # completable board (board_stalled stays reserved for its offline, unsatisfiable-join
     # meaning); no live no-progress detector is involved. Uses the real runner mapping.
+    # `stop` is a hardcoded label here (documented above); the sibling test below drives an
+    # actual bounded loop through the real cap-detection branch instead.
     bucket = _stop_reason(stop, False)
     assert bucket == "cap_ops_exhausted"
 
@@ -124,3 +136,54 @@ def test_ignorant_coordinator_hallucinated_worker_fails_visibly_not_silently(con
     assert row.decisions == 0
     assert row.loss_bucket == "cap_ops_exhausted"
     assert all(board.tasks[tid].owner is None for tid in TASK_IDS)
+
+
+def test_ignorant_coordinator_stops_at_the_real_ops_cap_before_exhausting_ready_work(conn):
+    """Property-3 proof: an actual bounded loop, mirroring `ladder.actor.drive`'s own
+    cap-detection branch, with `max_ops` set below the number of available ready tasks —
+    so the run is provably cut short by the live cap check, not by running out of distinct
+    legal-shaped attempts to make (the sibling test above hardcodes the stop label for a
+    loop that runs to exhaustion; this one observes the cap trip mid-run)."""
+    max_ops = 3
+    assert max_ops < N_TASKS   # must stop with ready work still untouched, not from exhaustion
+
+    run_id = "closed-loop-case2-cap"
+    open_run(conn, run_id)
+    store = EventLog(conn, LogicalClock(0), run_id, server_time=True)
+    emit_plan(Gateway(store).handle(PLANNER), _ignorant_scenario())
+
+    coord = VanillaCoordinator(llm=_AlwaysGhost(), catalog=CATALOG)
+    port = HiveCoordinatorPort(COORD, run_id, conn, server_time=True)
+    port.open_run()
+
+    cursor = None
+    board = None
+    ops = 0
+    stop = None
+    while stop is None:
+        view = port.read(cursor)
+        cursor = view.cursor
+        if view.changed and view.board is not None:
+            board = view.board
+        for emit in coord.react(view.events, board, ops).immediate:
+            port.emit(_RawOp(emit))
+            ops += 1
+            if ops >= max_ops:   # ladder.actor.drive's own cap check, mirrored verbatim
+                stop = "cap_ops"
+                break
+
+    assert stop == "cap_ops" and ops == max_ops
+
+    events = store.read_run(run_id)
+    rejections = [e for e in events if e.event_type == "gateway.rejected"
+                 and e.payload.get("code") == "UNKNOWN_WORKER"]
+    attempted = {r.payload.get("refused_task_id") for r in rejections}
+    assert len(attempted) == max_ops
+    untouched = set(TASK_IDS) - attempted
+    assert untouched, "the cap should have cut the run short with ready work remaining"
+
+    bucket = _stop_reason(stop, False)
+    assert bucket == "cap_ops_exhausted"
+    row = compute_row(events, schedule_for(0), stop_reason=bucket)
+    assert row.decisions == 0
+    assert row.loss_bucket == "cap_ops_exhausted"
