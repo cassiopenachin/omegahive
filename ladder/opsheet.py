@@ -1,6 +1,6 @@
 """The op-reference sheet — R1's *entire* system prompt (stage 2 §5.1). It is the op
 catalog's syntax/semantics/legality lines and nothing else: no norms, no strategy (those
-live only in the KB, V3). Deriving it from the same `board-ops-v1.yaml` the fork `board`
+live only in the KB, V3). Deriving it from the same `board-ops-v2.yaml` the fork `board`
 skill is built from makes "identical op sheet across R1 and the skill" a structural fact,
 not a copy — so a comparison measures architecture, not documentation access.
 """

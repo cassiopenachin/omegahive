@@ -56,7 +56,7 @@ def _make_coordinator(cell: str, roster: tuple[str, ...], *, model: str | None,
         from .vanilla import VanillaCoordinator
         if model is None:
             raise ValueError(f"cell {cell!r} (vanilla) requires a model")
-        catalog = load_catalog(QUAL_ROOT / "catalogs" / "board-ops-v1.yaml")
+        catalog = load_catalog(QUAL_ROOT / "catalogs" / "board-ops-v2.yaml")
         return VanillaCoordinator("coordinator", llm=LLMClient(model), catalog=catalog,
                                   workers=list(roster), max_llm_calls=max_llm_calls)
     raise ValueError(f"cell {cell!r} has no coordinator")
