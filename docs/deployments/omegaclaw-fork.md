@@ -93,7 +93,7 @@ at merge.
 
 | Component | Pin |
 |---|---|
-| Hive image (`omegaclaw-hive`) | local build, config id `sha256:de9eebfea6a8933112df0638a1a35ec52ea72eabc4559701085de23d0ca9d2e2` — reproducible from `Dockerfile.hive` + the base + the pins below |
+| Hive image (`omegaclaw-hive`) | local build, config id `sha256:74ea5e3c12f462e6ecdfc1316a7301a9c0f821bc9d8dd10586d13c9f72369f38` — reproducible from `Dockerfile.hive` + the base + the pins below |
 | Base image it derives from | `omegaclaw-base` @ `omegaclaw-base-v1` (config id `sha256:6932bc4…`) — unmodified |
 | omegahive port client | commit `3c4a0fc` (branch `feature/port-render`; adds the shared `omegahive.port.render`), installed as a wheel; production pins the merged tag |
 | Postgres driver | `psycopg[binary]` 3.3.4 |
@@ -125,6 +125,16 @@ the hive image on a shared network with `commchannel=board` + the DSN:
 - **Emit path** — the `board` skill emits through a per-call port client:
   `assign t1 w1 → Accepted task.assigned t1`, `escalate t2 → Accepted`, `prune t2 → Accepted`;
   a malformed op returns an error string, never crashing the loop.
+- **Agent-driven closed loop** (`Autotests/test_board_e2e.py`, `RUN_BOARD_E2E=1`) — the *live*
+  agent on `commchannel=board` reads the board, its (mock) LLM replies `board "assign t1 w1"`,
+  the agent parses and dispatches the skill, the port **accepts**, and `t1` is **assigned in
+  Postgres**. `receive(view) → LLM → parse → skill → emit → board change` in one process. An
+  illegal reply (`prune t1`) is correctly **rejected** (`ILLEGAL_TRANSITION`, k=1 join) and the
+  refusal folds back into the next view — the reject path works too.
+
+This E2E caught a binding bug now fixed: a `configure` (add-atom) equation is invisible to a
+`py-call` argument in the same `progn`, so the board channel registration passes argv values via
+`argk` directly (`(py-call (board.start_board (argk run_id "") …))`), not `(configure …)`+`(run_id)`.
 
 The full R2 replay-vs-repeat binding smoke (adapter under the real policy, DB fixtures) is the
 omegahive-side follow-up that consumes this image.
