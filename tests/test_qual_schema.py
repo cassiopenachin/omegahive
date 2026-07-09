@@ -12,8 +12,8 @@ from qual.schema import Scenario, Turn
 VALID_SCENARIO = {
     "id": "X",
     "description": "x",
-    "persona": "personas/coordinator-v1.txt",
-    "skills_catalog": "catalogs/board-ops-v1.yaml",
+    "persona": "personas/coordinator-v2/prompt.txt",
+    "skills_catalog": "catalogs/board-ops-v2.yaml",
     "board_fixture": "fixtures/one-ready-task.json",
     "turns": [{"inject": "hi"}],
     "op_vocabulary": ["assign"],

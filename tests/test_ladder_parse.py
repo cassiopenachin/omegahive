@@ -9,7 +9,7 @@ from qual.loader import QUAL_ROOT, load_catalog
 
 from omegahive.board.state import Board, TaskState
 
-CATALOG = load_catalog(QUAL_ROOT / "catalogs" / "board-ops-v1.yaml")
+CATALOG = load_catalog(QUAL_ROOT / "catalogs" / "board-ops-v2.yaml")
 CID = uuid4()
 
 

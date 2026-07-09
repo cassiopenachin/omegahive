@@ -3,8 +3,8 @@ description: >
   The only task (t1) is already accepted and in progress with worker w1. There is
   nothing productive for the coordinator to do. Correct behaviour is (near-)nothing:
   no assigns, no escalations, no junk ops. Exercises idle discipline.
-persona: personas/coordinator-v1.txt
-skills_catalog: catalogs/board-ops-v1.yaml
+persona: personas/coordinator-v2/prompt.txt
+skills_catalog: catalogs/board-ops-v2.yaml
 board_fixture: fixtures/quiet-board.json
 turns:
   - inject: "Anything to do?"

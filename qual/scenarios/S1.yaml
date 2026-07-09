@@ -3,8 +3,8 @@ description: >
   One ready task (t1) and one available worker (w1). The coordinator should assign
   the task and report status. Pass: exactly one accepted assign, no rejections, no
   junk ops, no identical retries.
-persona: personas/coordinator-v1.txt
-skills_catalog: catalogs/board-ops-v1.yaml
+persona: personas/coordinator-v2/prompt.txt
+skills_catalog: catalogs/board-ops-v2.yaml
 board_fixture: fixtures/one-ready-task.json
 turns:
   - inject: "New work is on the board. Assign it and report."

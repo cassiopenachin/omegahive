@@ -21,7 +21,7 @@ from omegahive.gateway import Accepted, Gateway, Rejected
 from omegahive.port import HiveCoordinatorPort, open_run
 from omegahive.sim.scenario.loader import emit_plan
 
-CATALOG = load_catalog(QUAL_ROOT / "catalogs" / "board-ops-v1.yaml")
+CATALOG = load_catalog(QUAL_ROOT / "catalogs" / "board-ops-v2.yaml")
 COORD = Actor(role="coordinator", id="coordinator")
 
 
