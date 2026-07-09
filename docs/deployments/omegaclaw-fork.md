@@ -93,9 +93,9 @@ at merge.
 
 | Component | Pin |
 |---|---|
-| Hive image (`omegaclaw-hive`) | local build, config id `sha256:74ea5e3c12f462e6ecdfc1316a7301a9c0f821bc9d8dd10586d13c9f72369f38` — reproducible from `Dockerfile.hive` + the base + the pins below |
+| Hive image (`omegaclaw-hive`) | local build, config id `sha256:31aaf750b572ad3e9fbc0deb877face499813646c6a1e3d5e0b626a431b9c2be` — reproducible from `Dockerfile.hive` + the base + the pins below |
 | Base image it derives from | `omegaclaw-base` @ `omegaclaw-base-v1` (config id `sha256:6932bc4…`) — unmodified |
-| omegahive port client | commit `3c4a0fc` (branch `feature/port-render`; adds the shared `omegahive.port.render`), installed as a wheel; production pins the merged tag |
+| omegahive port client | commit `380b9d5` (branch `feature/port-render`; adds the shared `omegahive.port.render`), installed as a wheel; production pins the merged tag |
 | Postgres driver | `psycopg[binary]` 3.3.4 |
 | Python note | base image is Python 3.11; the port surface is 3.11-compatible, installed with `--ignore-requires-python` (omegahive's declared `>=3.12` target is unchanged) |
 
