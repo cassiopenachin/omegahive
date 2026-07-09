@@ -62,7 +62,18 @@ def test_notes_are_appended_to_the_view():
     assert "(unparsed 'assign t1 w9' :reason not in roster)" in out
 
 
-def test_roster_is_listed_so_the_model_knows_valid_worker_ids():
-    board = Board(tasks={"t1": TaskState("t1", "ready")})
-    assert "(roster w1 w2 w3)" in render_view(board, [], workers=["w1", "w2", "w3"])
-    assert "roster" not in render_view(board, [])   # omitted when no workers given
+def test_workers_section_lists_the_board_roster_idle_and_busy():
+    # §6: the roster is board state (worker.registered), not an environment param — idle/
+    # busy is derived from task ownership, and the section is present on every view,
+    # fresh boards included.
+    board = Board(
+        tasks={"t1": TaskState("t1", "assigned", owner="w2"), "t2": TaskState("t2", "ready")},
+        roster={"w1", "w2", "w3"},
+    )
+    out = render_view(board, [])
+    assert "(workers (w1 :idle) (w2 :busy t1) (w3 :idle))" in out
+
+
+def test_workers_section_present_even_on_a_fresh_empty_roster():
+    board = Board(tasks={"t1": TaskState("t1", "ready")})   # no roster registered yet
+    assert "(workers )" in render_view(board, [])

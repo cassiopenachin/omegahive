@@ -44,6 +44,13 @@ class DependencyAdded(BaseModel):
     depends_on: str
 
 
+class WorkerRegistered(BaseModel):
+    # Roster whitelist row (stage 2 §6): the coordinator may only assign/reassign to a
+    # worker id that has been registered. Emitted at run-seed, planner-authority — the
+    # same seeding authority as task.created/dependency.added.
+    worker_id: str
+
+
 class PrioritySet(BaseModel):
     priority: Literal["low", "normal", "high"]
 
@@ -179,6 +186,7 @@ PAYLOADS: dict[str, type[BaseModel]] = {
     "goal.received": GoalReceived,
     "task.created": TaskCreated,
     "dependency.added": DependencyAdded,
+    "worker.registered": WorkerRegistered,
     "priority.set": PrioritySet,
     "plan.revised": PlanRevised,
     # coordinator

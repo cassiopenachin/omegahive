@@ -17,7 +17,8 @@ from ..events.envelope import Event
 # type listed here — guarded by tests/test_append.py.
 EMIT_AUTHORITY: dict[str, set[str]] = {
     "planner": {
-        "goal.received", "task.created", "dependency.added", "priority.set", "plan.revised",
+        "goal.received", "task.created", "dependency.added", "worker.registered",
+        "priority.set", "plan.revised",
     },
     "coordinator": {
         "task.assigned", "task.reassigned", "task.escalated", "task.status_override",

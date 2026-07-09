@@ -50,4 +50,5 @@ def test_replay_produces_identical_rows(conn):
     second = _fingerprint(store2.read_run())
 
     assert first == second
-    assert [row[0] for row in second] == [1, 2, 3, 4, 5]  # seq starts fresh at 1
+    # 6 events: goal, worker.registered (default "w1"), 2x task.created, dependency, priority
+    assert [row[0] for row in second] == [1, 2, 3, 4, 5, 6]  # seq starts fresh at 1

@@ -9,7 +9,7 @@ from qual.loader import QUAL_ROOT, load_catalog
 
 from omegahive.board.state import Board, TaskState
 
-CATALOG = load_catalog(QUAL_ROOT / "catalogs" / "board-ops-v1.yaml")
+CATALOG = load_catalog(QUAL_ROOT / "catalogs" / "board-ops-v2.yaml")
 CID = uuid4()
 
 
@@ -57,11 +57,14 @@ def test_reassign_with_owner_fills_from():
     assert res.emits[0].payload == {"from": "w3", "to": "w9", "reason": None}
 
 
-def test_worker_not_in_roster_is_skipped():
-    roster = frozenset({"w1", "w2"})
-    res = parse_commands("assign t1 w9", _board(), CATALOG, roster)   # w9 hallucinated
-    assert not res.emits and "not in the roster" in res.skipped[0][1]
-    assert parse_commands("assign t1 w1", _board(), CATALOG, roster).emits   # w1 is fine
+def test_unregistered_worker_is_not_filtered_by_the_parser():
+    # B3: the parser used to silently drop an unknown-worker assign; that class of ghost-
+    # worker filtering now belongs solely to the board's UNKNOWN_WORKER guard
+    # (board/legality.py), so the parser builds the op regardless of roster membership —
+    # a hallucinated worker id parses exactly like a real one; only the gateway can tell
+    # them apart.
+    res = parse_commands("assign t1 w9", _board(), CATALOG)
+    assert res.emits and res.emits[0].payload == {"worker": "w9"} and not res.skipped
 
 
 def test_strips_markdown_and_trailing_punctuation():

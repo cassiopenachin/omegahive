@@ -33,8 +33,8 @@ Per (scenario × model × rep): the runner (1) boots the compose profile — Pos
 ```yaml
 id: S3-rejection-recovery
 description: coordinator meets ALREADY_OWNED and must adapt
-persona: personas/coordinator-v1.txt        # pinned, provider-independent
-skills_catalog: catalogs/board-ops-v2.yaml  # v2 = op sheet aligned; v1 superseded  # what the agent is told it can do
+persona: personas/coordinator-v2/prompt.txt # pinned, provider-independent (Mode A / R2 agent)
+skills_catalog: catalogs/board-ops-v2.yaml  # what the agent is told it can do
 board_fixture: fixtures/two-tasks-one-owned.json   # seed events via port
 turns:                                       # scripted; N ≈ 6–12
   - inject: "New work is on the board. Proceed."

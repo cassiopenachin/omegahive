@@ -38,7 +38,7 @@ def run_binding_smoke(*, model: str, url: str | None = None, seed: int = 0, time
     nonce = uuid.uuid4().hex[:8]
     sched = schedule_for(seed)
     run_id = f"smoke-{nonce}-s{seed}"
-    seed_fork_board(run_id, url=url)
+    seed_fork_board(run_id, url=url, roster=sched.roster)
     events, _stop_reason, cost = _spawn_and_collect(
         run_id, sched.roster, seed, url, timeout, _run_coordinator,
         ("L1", run_id, sched.roster, url, timeout, max_ops, model, max_llm_calls))

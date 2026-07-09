@@ -53,10 +53,15 @@ class Coordinator:
                          task_id=tid, causation_id=cause(tid))
                 )
 
-        # 2. (re)assign ready+unowned tasks to an untried worker; escalate if exhausted
+        # 2. (re)assign ready+unowned tasks to an untried worker; escalate if exhausted.
+        # `w in board.roster` guards against Coordinator being configured with an id the
+        # board never registered (worker.registered, §6) — without it, an untried-but-
+        # unregistered worker is refused UNKNOWN_WORKER forever without moving tried_by
+        # (only the accepted effect touches it), so the task would starve rather than
+        # reach the exhausted-escalation branch below.
         for tid in board.ready():
             ts = tasks[tid]
-            untried = [w for w in self.workers if w not in ts.tried_by]
+            untried = [w for w in self.workers if w not in ts.tried_by and w in board.roster]
             if untried:
                 res.immediate.append(
                     Emit("task.assigned", {"worker": untried[0]},

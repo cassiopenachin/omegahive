@@ -12,7 +12,7 @@ from qual.loader import QUAL_ROOT, load_catalog
 from omegahive.board.state import Board, TaskState
 from omegahive.events.envelope import Actor, Event
 
-CATALOG = load_catalog(QUAL_ROOT / "catalogs" / "board-ops-v1.yaml")
+CATALOG = load_catalog(QUAL_ROOT / "catalogs" / "board-ops-v2.yaml")
 
 
 class FakeLLM:
@@ -31,8 +31,7 @@ class FakeLLM:
 
 
 def _coord(llm, **kw) -> VanillaCoordinator:
-    return VanillaCoordinator(llm=llm, catalog=CATALOG, workers=["w1", "w2"],
-                              transcript=io.StringIO(), **kw)
+    return VanillaCoordinator(llm=llm, catalog=CATALOG, transcript=io.StringIO(), **kw)
 
 
 def _coord_rejection() -> Event:
@@ -83,26 +82,28 @@ def test_max_llm_calls_caps_turns_and_sets_exhausted():
 
 
 def test_dropped_line_is_echoed_next_turn_and_provokes_recovery():
-    # a hallucinated worker id is dropped by the parser (no event, so nothing on the board
-    # moves); the next view must carry the (unparsed …) note and the gate must still fire.
-    llm = FakeLLM("assign t1 w9", "assign t1 w1")   # w9 not in roster -> skipped; then valid
-    coord = _coord(llm)                             # roster {w1, w2}
+    # a malformed line (unknown head) is skipped by the parser (no event, so nothing on the
+    # board moves); the next view must carry the (unparsed …) note and the gate must still
+    # fire. (B3: an unregistered *worker* id is no longer dropped here — the parser passes
+    # it through and only the gateway's UNKNOWN_WORKER guard can refuse it; see
+    # test_ladder_parse.py and the closed-loop case-2 test for that path.)
+    llm = FakeLLM("frobnicate t1", "assign t1 w1")   # unknown head -> skipped; then valid
+    coord = _coord(llm)
     board = Board(tasks={"t1": TaskState("t1", "ready")})
 
     r1 = coord.react([], board, 0)
-    assert r1.immediate == [] and coord._pending_notes   # w9 dropped, feedback queued
+    assert r1.immediate == [] and coord._pending_notes   # dropped, feedback queued
     assert coord.wants_retry is True                     # asks drive for a turn on the quiet board
     r2 = coord.react([], board, 1)                        # board unchanged, but a note is owed
     assert [e.task_id for e in r2.immediate] == ["t1"] and llm.calls == 2
     assert coord.wants_retry is False                    # recovered with a valid op
-    assert "(unparsed" in llm.last_user and "w9" in llm.last_user   # the echo reached the model
-    assert "(roster w1 w2)" in llm.last_user             # and the model can see the valid ids
+    assert "(unparsed" in llm.last_user and "frobnicate" in llm.last_user   # echo reached the model
 
 
 def test_cost_aggregates_usage_and_transcript_gets_llm_raw():
     buf = io.StringIO()
     llm = FakeLLM("prune A")
-    coord = VanillaCoordinator(llm=llm, catalog=CATALOG, workers=[], transcript=buf)
+    coord = VanillaCoordinator(llm=llm, catalog=CATALOG, transcript=buf)
     coord.react([], Board(tasks={"A": TaskState("A", "in_progress", owner="w1")}), 0)
     c = coord.cost()
     assert c == {"calls": 1, "tokens_in": 3, "tokens_out": 2, "usd": 0.0}

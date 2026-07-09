@@ -3,12 +3,20 @@ reads each turn — tasks/states/dependencies, per-branch attempt outcomes, and 
 actor's* rejections since the last view. Rejections are not board state; they are
 `gateway.rejected` events in the log, so the renderer folds them in from the event delta
 (that is how a refusal "outlives the turn"). Ordering is fully sorted for determinism.
+
+The `(workers …)` section (§6) is sourced from the fold's roster (`board.roster`), never
+from an environment-supplied list — the roster is board state now (`worker.registered`
+events), so a coordinator that sees only the view can still name every valid assign
+target. Emitted on every view, fresh boards included.
 """
 
 from __future__ import annotations
 
 from omegahive.board.state import Board
 from omegahive.events.envelope import Event
+
+# statuses in which a worker's ownership counts as "busy" for the workers section.
+_BUSY_STATUSES = {"assigned", "in_progress", "blocked", "in_review"}
 
 # refused event_type -> the command head the coordinator emitted (for echoing rejections
 # back in the vocabulary the agent speaks). status_override splits on its status.
@@ -47,16 +55,25 @@ def _my_rejections(events: list[Event], actor_id: str) -> list[str]:
     return out
 
 
+def _workers_section(board: Board) -> str:
+    busy: dict[str, str] = {}   # worker id -> the task it owns (first found, sorted below)
+    for tid in sorted(board.tasks):
+        ts = board.tasks[tid]
+        if ts.owner and ts.status in _BUSY_STATUSES and ts.owner not in busy:
+            busy[ts.owner] = tid
+    entries = " ".join(
+        f"({wid} :busy {busy[wid]})" if wid in busy else f"({wid} :idle)"
+        for wid in sorted(board.roster)
+    )
+    return f"  (workers {entries})"
+
+
 def render_view(board: Board, events: list[Event], *, actor_id: str = "coordinator",
-                notes: list[str] | None = None, workers: list[str] | None = None) -> str:
+                notes: list[str] | None = None) -> str:
     """Render the board (+ this actor's rejections in `events`, + any `notes`) as an
     S-expression. `notes` carries feedback the log cannot — e.g. lines the parser dropped
-    last turn — so a malformed op gets the same corrective echo a gateway refusal does.
-    `workers` lists the assignable roster: the ids are environment, not board state, so
-    without this line the model has no way to know a valid worker id to assign to."""
-    lines = ["(board"]
-    if workers:
-        lines.append(f"  (roster {' '.join(workers)})   ; the only valid worker ids for assign")
+    last turn — so a malformed op gets the same corrective echo a gateway refusal does."""
+    lines = ["(board", _workers_section(board)]
     for tid in sorted(board.tasks):
         ts = board.tasks[tid]
         deps = " ".join(sorted(ts.depends_on)) or "-"

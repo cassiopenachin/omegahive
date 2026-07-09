@@ -21,7 +21,7 @@ from omegahive.gateway import Accepted, Gateway, Rejected
 from omegahive.port import HiveCoordinatorPort, open_run
 from omegahive.sim.scenario.loader import emit_plan
 
-CATALOG = load_catalog(QUAL_ROOT / "catalogs" / "board-ops-v1.yaml")
+CATALOG = load_catalog(QUAL_ROOT / "catalogs" / "board-ops-v2.yaml")
 COORD = Actor(role="coordinator", id="coordinator")
 
 
@@ -39,7 +39,7 @@ class FakeLLM:
 def _seed_fork(conn, run_id: str) -> None:
     open_run(conn, run_id)
     store = EventLog(conn, LogicalClock(0), run_id, server_time=True)
-    emit_plan(Gateway(store).handle(PLANNER), fork_scenario())
+    emit_plan(Gateway(store).handle(PLANNER), fork_scenario(("w1", "w2")))
 
 
 def test_binding_smoke_refusal_recovery(conn):
@@ -49,8 +49,7 @@ def test_binding_smoke_refusal_recovery(conn):
     port.open_run()
     # J depends on A,B (k=1) so it is not ready at the start -> assigning it is refused;
     # the recovery assigns the genuinely-ready branch A.
-    coord = VanillaCoordinator(llm=FakeLLM("assign J w1", "assign A w1"),
-                               catalog=CATALOG, workers=["w1", "w2"])
+    coord = VanillaCoordinator(llm=FakeLLM("assign J w1", "assign A w1"), catalog=CATALOG)
 
     # turn 1: the illegal op is refused by the real gateway (NOT_READY), and recorded.
     v1 = port.read(None)

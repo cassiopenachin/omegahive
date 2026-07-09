@@ -17,6 +17,8 @@ W2 = Actor(role="worker", id="w2")
 
 def _assigned_to_w1(gateway):
     g = unwrap(gateway.emit(actor=PLANNER, event_type="goal.received", payload={"text": "g"}))
+    gateway.emit(actor=PLANNER, event_type="worker.registered", payload={"worker_id": "w1"})
+    gateway.emit(actor=PLANNER, event_type="worker.registered", payload={"worker_id": "w2"})
     gateway.emit(actor=PLANNER, event_type="task.created", task_id="t1",
                  causation_id=g.event_id, payload={"title": "T1", "task_type": "research"})
     gateway.emit(actor=COORD, event_type="task.assigned", task_id="t1", payload={"worker": "w1"})

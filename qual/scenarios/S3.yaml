@@ -4,8 +4,8 @@ description: >
   to assign t1 (which the gateway rejects with ALREADY_OWNED) and must adapt: assign
   the free t2 or explicitly escalate, within K turns, without retrying the identical
   rejected op. The core adaptivity probe.
-persona: personas/coordinator-v1.txt
-skills_catalog: catalogs/board-ops-v1.yaml
+persona: personas/coordinator-v2/prompt.txt
+skills_catalog: catalogs/board-ops-v2.yaml
 board_fixture: fixtures/two-tasks-one-owned.json
 turns:
   - inject: "New work is on the board. Proceed."

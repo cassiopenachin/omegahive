@@ -49,8 +49,11 @@ def board_of(store):
 
 
 def _plan(gateway):
-    """goal + t1 (no deps) + t2 (depends on t1). t1 derives ready; t2 stays created."""
+    """goal + registered roster (w1, w2 — every worker id this file assigns to) + t1 (no
+    deps) + t2 (depends on t1). t1 derives ready; t2 stays created."""
     g = unwrap(gateway.emit(actor=PLANNER, event_type="goal.received", payload={"text": "g"}))
+    gateway.emit(actor=PLANNER, event_type="worker.registered", payload={"worker_id": "w1"})
+    gateway.emit(actor=PLANNER, event_type="worker.registered", payload={"worker_id": "w2"})
     gateway.emit(actor=PLANNER, event_type="task.created", task_id="t1",
                  causation_id=g.event_id, payload={"title": "T1", "task_type": "research"})
     gateway.emit(actor=PLANNER, event_type="task.created", task_id="t2",
@@ -165,6 +168,42 @@ def test_pin_assign_requires_ready(make_gateway):
     ts = board_of(store).tasks["t2"]
     assert ts.status == "created"
     assert ts.owner is None
+
+
+# --- worker roster (§6, B3) ---------------------------------------------------
+
+def test_pin_assign_to_unregistered_worker_is_recorded_and_leaves_task_unowned(make_gateway):
+    gateway, store = make_gateway()
+    _plan(gateway)
+    res = attempt(gateway, actor=COORD, event_type="task.assigned", task_id="t1",
+                  payload={"worker": "ghost"})     # "ghost" was never registered
+    assert res is None                             # refused, never accepted-but-futile
+    ts = board_of(store).tasks["t1"]
+    assert ts.status == "ready" and ts.owner is None
+    rejections = [e for e in store.read_run() if e.event_type == "gateway.rejected"]
+    assert any(r.payload.get("code") == "UNKNOWN_WORKER" for r in rejections)
+
+
+def test_pin_reassign_to_unregistered_worker_is_recorded_and_owner_unchanged(make_gateway):
+    gateway, store = make_gateway()
+    _plan(gateway)
+    _assign_accept(gateway)                        # t1 in_progress, owner w1
+    res = attempt(gateway, actor=COORD, event_type="task.reassigned", task_id="t1",
+                  payload={"from": "w1", "to": "ghost", "reason": "x"})
+    assert res is None
+    ts = board_of(store).tasks["t1"]
+    assert ts.owner == "w1"
+    rejections = [e for e in store.read_run() if e.event_type == "gateway.rejected"]
+    assert any(r.payload.get("code") == "UNKNOWN_WORKER" for r in rejections)
+
+
+def test_pin_assign_to_registered_worker_succeeds(make_gateway):
+    gateway, store = make_gateway()
+    _plan(gateway)
+    res = attempt(gateway, actor=COORD, event_type="task.assigned", task_id="t1",
+                  payload={"worker": "w2"})         # w2 is registered by _plan
+    assert res is not None
+    assert board_of(store).tasks["t1"].owner == "w2"
 
 
 # --- worker owns its emits ---------------------------------------------------

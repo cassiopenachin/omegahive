@@ -9,7 +9,7 @@ from omegahive.sim.reactors import Coordinator
 
 
 def _board(**tasks: TaskState) -> Board:
-    return Board(tasks=dict(tasks))
+    return Board(tasks=dict(tasks), roster={"w1"})  # every test in this file assigns to w1
 
 
 def test_assigns_ready_task():

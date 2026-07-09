@@ -1,10 +1,11 @@
 """Load a scenario YAML and emit its planner events through the gateway.
 
 Emits, in order, a causal tree rooted at the goal:
-  1. goal.received   — origin (no causation => correlation = its own id).
-  2. task.created    — one per task, causation = the goal event.
-  3. dependency.added — causation = the dependent task's task.created.
-  4. priority.set    — causation = that task's task.created.
+  1. goal.received    — origin (no causation => correlation = its own id).
+  2. worker.registered — one per scenario worker (roster whitelist, §6), causation = goal.
+  3. task.created     — one per task, causation = the goal event.
+  4. dependency.added — causation = the dependent task's task.created.
+  5. priority.set     — causation = that task's task.created.
 
 All plan events therefore share the goal's correlation_id. The planner reaches
 the log only through its gateway handle (no ungoverned route, even at bootstrap).
@@ -19,7 +20,7 @@ import yaml
 from ...events.envelope import Event
 from ...gateway.gateway import GatewayHandle
 from ...gateway.result import unwrap
-from .schema import Scenario
+from .schema import Scenario, effective_workers
 
 
 def load_scenario(path: str | Path) -> Scenario:
@@ -34,6 +35,13 @@ def emit_plan(planner: GatewayHandle, scenario: Scenario) -> list[Event]:
 
     goal = unwrap(planner.emit(event_type="goal.received", payload={"text": plan.goal}))
     emitted.append(goal)
+
+    # register the roster before any task, so a coordinator that reacts immediately after
+    # the plan lands never sees a ready task with no legal worker to assign it to (§6).
+    for wid in effective_workers(scenario):
+        w = unwrap(planner.emit(event_type="worker.registered", causation_id=goal.event_id,
+                                payload={"worker_id": wid}))
+        emitted.append(w)
 
     task_events: dict[str, Event] = {}
     for task in plan.tasks:

@@ -14,7 +14,7 @@ from omegahive.sim.reference_client import emit_to_op
 
 VALID_SCENARIO = {
     "id": "X", "description": "x", "persona": "p.txt",
-    "skills_catalog": "catalogs/board-ops-v1.yaml", "board_fixture": "f.json",
+    "skills_catalog": "catalogs/board-ops-v2.yaml", "board_fixture": "f.json",
     "turns": [{"inject": "hi"}], "op_vocabulary": ["prune"],
     "budget": {"usd": 0.5, "max_turns": 8},
 }
@@ -35,7 +35,7 @@ def test_emit_to_op_maps_task_pruned_to_prune_op():
 
 def test_prune_is_a_known_head_and_in_the_catalog():
     assert "prune" in KNOWN_HEADS
-    catalog = load_catalog(QUAL_ROOT / "catalogs" / "board-ops-v1.yaml")
+    catalog = load_catalog(QUAL_ROOT / "catalogs" / "board-ops-v2.yaml")
     assert "prune" in catalog.heads
     (entry,) = [e for e in catalog.entries if e.head == "prune"]
     assert entry.arity == 1 and entry.port_op == "PruneOp"

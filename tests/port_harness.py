@@ -47,12 +47,16 @@ class Committing:
                                    workdir=workdir, generation=generation)
 
     def seed_ready_task(self, run_id: str, task_id: str = "t1") -> None:
-        """Commit a plan (goal + one dependency-free task -> derives ready) on its own conn."""
+        """Commit a plan (goal + a registered roster + one dependency-free task -> derives
+        ready) on its own conn. The roster covers every worker id this harness's callers
+        assign to (wA, wB — see test_port_properties.py)."""
         c = self.conn()
         store = EventLog(c, LogicalClock(0), run_id, server_time=True)
         gw = Gateway(store)
         store.open_run()
         g = unwrap(gw.emit(actor=PLANNER, event_type="goal.received", payload={"text": "g"}))
+        for wid in ("wA", "wB"):
+            gw.emit(actor=PLANNER, event_type="worker.registered", payload={"worker_id": wid})
         gw.emit(actor=PLANNER, event_type="task.created", task_id=task_id,
                 causation_id=g.event_id, payload={"title": "T", "task_type": "research"})
         c.commit()
