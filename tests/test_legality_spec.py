@@ -47,7 +47,8 @@ def substantive(board: Board):
     per-task) so a worker.registered-only mutation is not invisible to this check."""
     tasks = {
         tid: (ts.status, ts.owner, frozenset(ts.depends_on), ts.latest_review,
-              ts.last_result_ref, ts.escalated, frozenset(ts.tried_by), ts.task_type, ts.pruned)
+              ts.last_result_ref, ts.escalated, frozenset(ts.tried_by), ts.task_type, ts.pruned,
+              ts.title, ts.priority, ts.blocker_reason, ts.blocker_needs)
         for tid, ts in board.tasks.items()
     }
     return tasks, frozenset(board.roster)
@@ -63,6 +64,10 @@ CASES = [
     # dependency.added
     (board_with(TaskState("t1", "created")),
      ev("dependency.added", {"depends_on": "d"}, task_id="t1"),
+     board_with()),  # missing task -> UNKNOWN_TASK
+    # priority.set
+    (board_with(TaskState("t1", "created")),
+     ev("priority.set", {"priority": "high"}, task_id="t1", actor=PLANNER),
      board_with()),  # missing task -> UNKNOWN_TASK
     # worker.registered
     (board_with(),

@@ -1,0 +1,12 @@
+<section id="ticker-fragment" class="ticker" aria-labelledby="ticker-title" aria-live="polite">
+  <header><p class="eyebrow">Hive activity</p><h2 id="ticker-title">The latest signals</h2></header>
+  <ol>
+    {% for event in ticker_events %}
+      <li class="{% if event.event_type == 'gateway.rejected' %}refusal{% endif %}">
+        <span class="event-seq">{{ event.seq }}</span><span>{{ event_sentence(event) }}</span>
+      </li>
+    {% else %}
+      <li>No activity yet.</li>
+    {% endfor %}
+  </ol>
+</section>

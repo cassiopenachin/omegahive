@@ -1,0 +1,32 @@
+<section id="board-fragment" class="board-region" aria-label="Task board">
+  <div class="summary-grid">
+    <article><strong>{{ summary.total }}</strong><span>tasks in view</span></article>
+    <article><strong>{{ summary.active }}</strong><span>in motion</span></article>
+    <article class="attention-summary"><strong>{{ summary.attention }}</strong><span>need attention</span></article>
+    <article><strong>{{ summary.completed }}</strong><span>completed</span></article>
+  </div>
+  <div class="board-grid">
+    {% for lane, label in [('ready', 'Ready'), ('active', 'In motion'), ('attention', 'Needs attention'), ('completed', 'Completed')] %}
+      <section class="lane lane-{{ lane }}" aria-labelledby="lane-{{ lane }}">
+        <header><h2 id="lane-{{ lane }}">{{ label }}</h2><span>{{ lanes[lane]|length }}</span></header>
+        <div class="task-stack">
+          {% for task in lanes[lane] %}
+            <article class="task-card priority-{{ task.priority }}">
+              <div class="task-card-topline"><span class="task-id">{{ task.task_id }}</span><span class="priority">{{ task.priority }}</span></div>
+              <h3>{{ task.title or task.task_id }}</h3>
+              <p class="task-meta">{{ task.status|replace('_', ' ') }}{% if task.owner %} · {{ task.owner }}{% endif %}</p>
+              {% if task.blocker_reason %}
+                <p class="blocker"><strong>Blocked:</strong> {{ task.blocker_reason }}{% if task.blocker_needs %} <span>Needs {{ task.blocker_needs }}.</span>{% endif %}</p>
+              {% elif task.escalated %}
+                <p class="blocker"><strong>Escalated:</strong> waiting for an operator decision.</p>
+              {% endif %}
+              {% if task.depends_on %}<p class="dependencies">Depends on {{ task.depends_on|sort|join(', ') }}</p>{% endif %}
+            </article>
+          {% else %}
+            <p class="empty-lane">Nothing here.</p>
+          {% endfor %}
+        </div>
+      </section>
+    {% endfor %}
+  </div>
+</section>

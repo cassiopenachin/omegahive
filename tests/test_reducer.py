@@ -34,6 +34,29 @@ def test_created_to_ready_derivation(make_log):
     assert board.tasks["t2"].depends_on == {"t1"}
 
 
+def test_board_carries_operator_fields_from_existing_events(make_log):
+    log = make_log()
+    log.append(actor=PLANNER, event_type="task.created", task_id="t1",
+               payload={"title": "Prepare source corpus", "task_type": "research"})
+    log.append(actor=PLANNER, event_type="priority.set", task_id="t1",
+               payload={"priority": "high"})
+    log.append(actor=COORD, event_type="task.assigned", task_id="t1", payload={"worker": "w1"})
+    log.append(actor=W1, event_type="task.accepted", task_id="t1", payload={})
+    log.append(actor=W1, event_type="task.blocked", task_id="t1",
+               payload={"reason": "source archive is unavailable", "needs": "operator access"})
+
+    blocked = fold(log.read_run()).tasks["t1"]
+    assert blocked.title == "Prepare source corpus"
+    assert blocked.priority == "high"
+    assert blocked.blocker_reason == "source archive is unavailable"
+    assert blocked.blocker_needs == "operator access"
+
+    log.append(actor=W1, event_type="task.unblocked", task_id="t1", payload={})
+    unblocked = fold(log.read_run()).tasks["t1"]
+    assert unblocked.blocker_reason is None
+    assert unblocked.blocker_needs is None
+
+
 def test_full_lifecycle_to_done_and_dependent_becomes_ready(make_log):
     log = make_log()
     _plan(log)

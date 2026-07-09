@@ -1,0 +1,7 @@
+<div id="freshness-fragment" class="freshness" aria-live="polite">
+  {% if generation_notice %}
+    <span class="freshness-warning">Log restored — refreshed from a new generation.</span>
+  {% else %}
+    <span>Cursor {{ cursor }} · generation {{ generation if generation is not none else '—' }}</span>
+  {% endif %}
+</div>
