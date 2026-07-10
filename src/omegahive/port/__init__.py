@@ -8,6 +8,7 @@ from ..gateway import Accepted, Rejected
 from .errors import PortInfraError
 from .keys import BasisStore, derive_key
 from .port import HiveCoordinatorPort, open_run
+from .render import is_coordinator_rejection, render_view
 from .wire import (
     AssignOp,
     BatchOp,
@@ -37,4 +38,6 @@ __all__ = [
     "BatchOp",
     "derive_key",
     "BasisStore",
+    "render_view",
+    "is_coordinator_rejection",
 ]
