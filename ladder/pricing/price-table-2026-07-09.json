@@ -1,0 +1,14 @@
+{
+  "date": "2026-07-09",
+  "note": "USD per million tokens, pinned at V4 freeze. Opus 4.8 from the Anthropic catalog (no intro pricing); GLM 5.2 from the OpenRouter /models catalog (z-ai/glm-5.2 standard variant). Cost is computed post-hoc from recorded token splits against this table, so an unpriced-in-litellm model can never leave a cell's cost at a silent $0.",
+  "models": {
+    "anthropic/claude-opus-4-8": {
+      "input_usd_per_mtok": 5.0,
+      "output_usd_per_mtok": 25.0
+    },
+    "openrouter/z-ai/glm-5.2": {
+      "input_usd_per_mtok": 0.49,
+      "output_usd_per_mtok": 1.54
+    }
+  }
+}

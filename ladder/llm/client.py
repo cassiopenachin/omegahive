@@ -21,6 +21,14 @@ import litellm
 # Keep litellm offline-safe and quiet inside the harness: no update pings, no banner.
 litellm.telemetry = False
 litellm.suppress_debug_info = True
+# The Anthropic 4.8-family (Opus 4.8, Sonnet 5, Fable 5) removed the sampling knobs:
+# temperature/top_p/top_k return 400. Anthropic exposes no seed or determinism control,
+# and even temperature=0 was only ever near-deterministic. litellm's documented remedy is
+# drop_params — an unsupported sampling param is dropped rather than raising
+# UnsupportedParamsError — so these models run at provider default while OpenRouter cells
+# still honor temperature=0. The frozen run-config's `sampling` pin records this asymmetry
+# (V4: strong-cell stochasticity is absorbed by 20-seed aggregation + §7 boundary-replication).
+litellm.drop_params = True
 
 log = logging.getLogger(__name__)
 
