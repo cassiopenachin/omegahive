@@ -110,6 +110,33 @@ def smoke_cmd(
     console.print(f"[bold]{verdict}[/]")
 
 
+@app.command("grid")
+def grid_cmd(
+    config: str = typer.Option(..., "--config", help="frozen run-config JSON"),
+    out: str = typer.Option(..., "--out", help="records output dir"),
+) -> None:
+    """Run the funded vanilla grid (L0, then L1/L2/L3 seed-major interleaved) per a frozen
+    run-config. Refuses to run unless `validate-config` is clean."""
+    from .freeze import validate_config_file
+    problems = validate_config_file(config)
+    if problems:
+        for p in problems:
+            console.print(f"[bold]FAIL[/] {p}")
+        console.print("run-config does not validate; refusing to run")
+        raise typer.Exit(1)
+    cfg = json.loads(Path(config).read_text())
+    for cell in cfg["cells"].values():
+        if cell.get("kind") == "vanilla" and cell.get("model"):
+            _require_key(cell["model"])
+    from .grid import run_grid
+    results = run_grid(cfg, out=out)
+    for name, res in results.items():
+        agg = aggregate(res["rows"])
+        console.print(f"{name}: completion={agg.get('completion_rate', 0):.2f} "
+                      f"cost_usd={agg.get('cost_usd_total', 0):.4f} n={agg.get('n', 0)}")
+    console.print(f"records written to {out}")
+
+
 @app.command("validate-config")
 def validate_config_cmd(
     path: str = typer.Argument(..., help="frozen run-config JSON"),
