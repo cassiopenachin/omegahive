@@ -35,11 +35,19 @@ Four screens, each a thin adapter over an existing fold — no new SQL, no chart
 | # | Screen | Route | Shows | Reads via |
 |---|--------|-------|-------|-----------|
 | 1 | **Board** | `/run/{run}/board` | The current task graph — objectives, status, owner, priority, blockers — through the existing board renderer wrapped to HTML. Rejected/blocked states styled distinctly. | `PortView.board` (server's authoritative fold; never a client fragment) |
-| 2 | **Events** | `/run/{run}/events` | The event stream, reverse-chronological, with filter chips (by actor/agent, by project, by type). `gateway.rejected` events styled distinctly so refusals are visible as they land. | `PortView.events` |
-| 3 | **Metrics** | `/run/{run}/metrics` | Existing metric folds (loop coefficient, refusal rate, consumption, abandonment gap) as a plain table. **No sparklines, no charts** in v0.1 (a flagged rabbit hole). | existing metric fold functions |
-| 4 | **Record detail** | `/run/{run}/record/{id}` | A single task/experiment record: fold the referenced artifacts — render `aggregate.md`, table `metrics.json`, pretty-print pinned `config.json`, link transcripts. Markdown via a pure-Python renderer; code/diffs via Pygments. Files served from the in-image repo checkout (tailnet-offline-friendly). | fold over event refs; bytes from the artifact/repo checkout, not the log |
+| 2 | **Events** | `/run/{run}/events` | The event stream, reverse-chronological, with filter chips by actor/agent and type. `gateway.rejected` events styled distinctly so refusals are visible as they land. | `PortView.events` |
+| 3 | **Metrics** | `/run/{run}/metrics` | The metric folds available at the deployed stage, as a plain table. **No sparklines, no charts** in v0.1 (a flagged rabbit hole). | existing metric fold functions |
 
 **Deliberately out of v0.1:** interactive diff viewers, math rendering in markdown, semantic/full-text search over transcripts, any charting. Each is named a rabbit hole and deferred.
+
+### 3.2 Data-boundary deferrals (implementation alignment, Jul 9)
+
+The first read-only deployment renders only facts that the current port and projection expose.
+Three specified features are deliberately deferred rather than reconstructed in the UI:
+
+1. **Project filtering and a project index** wait for the run-mapping decision to add an addressable project attribute to events. The Events screen ships with actor and type filters only.
+2. **Stage-4 metrics** — loop coefficient, output consumption, abandonment gap, and memory reuse — appear only when their deterministic projections and feedstock exist. The initial Metrics screen renders the current core metric set without placeholder values.
+3. **Generic record detail** waits for an artifact-reference resolver with explicit allowed roots and checksum semantics. The UI must never interpret an event reference as an arbitrary filesystem path.
 
 **The self-narrating ticker ships in v0.1 (spicy-idea adjudication — see §3.1).** It is a live region on the Board and Events screens.
 
@@ -75,9 +83,9 @@ Named, boring, no build step, one compose service.
 
 - **FastAPI + uvicorn** — async, and SSE is native; the port's wire types are already pydantic, so the API models are free.
 - **Jinja2** — server-side templates.
-- **htmx** (~14 kB, vendored, no `node_modules` ever) + its **SSE extension** — live regions via out-of-band swaps; writes (later) are `hx-post` forms targeting the same fragments.
-- **Pico.css** — classless styling, one stylesheet, no build.
-- **Markdown:** a pure-Python renderer (mistune or markdown-it-py). **Pygments** for code and unified diffs.
+- **A tiny native EventSource fragment swapper** — local, under 20 lines, and it swaps server-rendered HTML only; it never folds log data in the browser. This replaces htmx/SSE for the read-only MVP without changing the later POST seam.
+- **One local desktop-first stylesheet** — no build step and no external asset dependency. It replaces Pico.css because the board needs a deliberately designed dense desktop layout rather than a classless document skin.
+- **Markdown and code rendering** are deferred with generic record detail (§3.2); select a pure-Python renderer and Pygments when that artifact contract lands.
 
 **Rejected, with reasons:** an SPA (rebuilds fold logic client-side or forces a versioned REST API — the port spec forbids client-side incremental folding, so an SPA fights the grain); static generation (live updates are required); a browser TUI (phone-hostile, dead-ends the write path). No charting library in v0.1.
 
@@ -111,7 +119,7 @@ The honesty rules, condensed. These are structural commitments, not style.
 
 ## 8. Build plan (Claude-Code-session units)
 
-- **Session 1–2 (MVP, read-only, v0.1):** the compose service + tailnet/8443 binding; the FastAPI app with the four §3 screens reading in-process via the port; the SSE poll-loop endpoint with the no-change short-circuit and generation-banner handling; base layout + fragments; the self-narrating ticker; the URL-carries-run seam and the auth dependency stub. **Useful after this.**
+- **Session 1–2 (MVP, read-only, v0.1):** first land the board projection fields (title, priority, blocker context), then the FastAPI app with the Board, Events, and Metrics screens reading in-process via the port; the SSE poll-loop endpoint with the no-change short-circuit and generation-banner handling; base layout + fragments; the self-narrating ticker; the URL-carries-run seam and the auth dependency stub. Local development and visual iteration precede tailnet/8443 deployment work. **Useful after this.**
 - **Session 3 (write path):** per-person human actors, ack/steering/board ops as `/emit` form POSTs with server-side §3a keying, receipts, the honest spinner, confirm-step for irreversible ops. **Lands with stage-4 Tier-1.5 machinery, not before** (§4). Brings the `hive_reader` / gateway split with it (§2, §9).
 - **Session 4–5 (polish):** record-detail rendering depth, filter chips, and whichever of the deferred spicy ideas (§9) earn their keep.
 
@@ -131,3 +139,5 @@ The honesty rules, condensed. These are structural commitments, not style.
 ## 10. Revision record
 
 - **v0.1 DRAFT (Jul 8 2026)** — initial synthesis. Adjudications made: (1) v0.1 reads as a coordinator-role actor under the single application DB role; dedicated `hive_reader` deferred to the write-path revision, not accelerated for read-only. (2) v0.1 ships read-only; the write path (per-person human actors, ack/steering ops) is designed here but built with stage-4 Tier-1.5 machinery — the UI ack button and the stage-4 outbound gate are identified as one mechanism. (3) §10.3 run-mapping stated as an input (project-as-addressable-attribute), not re-decided. (4) Telegram remains the push/ack surface until the write path lands; v0.1 web is read-only; deep links work via operator-phone Tailscale. (5) Spicy-idea triage: self-narrating ticker → v0.1; catch-up replay and time-travel scrub → later; `human.viewed` event flagged as an owner decision.
+- **Implementation alignment (Jul 9 2026):** Board title, priority, and blocker context become authoritative board-projection fields. Project filtering/indexing, stage-4 metrics, and generic record detail are explicitly deferred in §3.2; local screen work and visual iteration precede tailnet deployment.
+- **MVP stack simplification (Jul 9 2026):** the read-only implementation uses a local native SSE fragment swapper and one local desktop-first stylesheet in place of htmx/SSE and Pico.css. This preserves server rendering and removes asset/vendor work before the first useful operator view; the write-path seam remains ordinary form POSTs.

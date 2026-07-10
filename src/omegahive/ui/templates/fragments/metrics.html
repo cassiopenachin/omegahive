@@ -1,0 +1,7 @@
+<section id="metrics-fragment" class="metrics-region" aria-label="Run metrics">
+  <dl class="metric-grid">
+    {% for name, value in metrics.__dict__.items() %}
+      <div><dt>{{ name|replace('_', ' ') }}</dt><dd>{% if value is none %}—{% else %}{{ value }}{% endif %}</dd></div>
+    {% endfor %}
+  </dl>
+</section>

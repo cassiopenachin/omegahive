@@ -1,0 +1,31 @@
+<section id="events-fragment" class="events-region" aria-label="Event stream">
+  <form class="filters" method="get">
+    <label>Actor
+      <select name="actor" onchange="this.form.submit()">
+        <option value="">All actors</option>
+        {% for item in actors %}<option value="{{ item }}" {% if item == selected_actor %}selected{% endif %}>{{ item }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Event type
+      <select name="type" onchange="this.form.submit()">
+        <option value="">All events</option>
+        {% for item in event_types %}<option value="{{ item }}" {% if item == selected_type %}selected{% endif %}>{{ item }}</option>{% endfor %}
+      </select>
+    </label>
+    {% if selected_actor or selected_type %}<a class="clear-filter" href="/run/{{ run_id }}/events">Clear filters</a>{% endif %}
+  </form>
+  <div class="event-list">
+    {% for event in events %}
+      <details class="event-row {% if event.event_type == 'gateway.rejected' %}refusal{% endif %}">
+        <summary>
+          <span class="event-seq">{{ event.seq }}</span>
+          <span class="event-main"><strong>{{ event.actor.id }}</strong> {{ event_sentence(event) }}</span>
+          <span class="event-type">{{ event.event_type }}</span>
+        </summary>
+        <pre>{{ event_payload(event) }}</pre>
+      </details>
+    {% else %}
+      <p class="empty-state">No events match these filters.</p>
+    {% endfor %}
+  </div>
+</section>
