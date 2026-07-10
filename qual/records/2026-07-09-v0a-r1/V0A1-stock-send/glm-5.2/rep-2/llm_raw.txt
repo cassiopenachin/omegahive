@@ -1,0 +1,5 @@
+[LLM_RAW] '```text\nquery user goals\nquery ongoing tasks\nquery current context\nquery user preferences\nquery skills and memories\n```'
+[LLM_RAW] 'send Hello! I am OmegaClaw, your agentic assistant ready to help you achieve your goals.\npin Objective: Introduce myself and assist the user with their ongoing tasks.'
+[LLM_RAW] 'query ongoing tasks\nquery user goals\nquery current context\nquery recent memories\npin Checking current state before responding to user inquirysend I just introduced myself and pinned our objective. No active tasks yet — what would you like to work on?'
+[LLM_RAW] 'query pinned items\nquery user goals\nquery task state\nquery recent interactions\nsend I have my introduction and our pinned objective. No active tasks or stored goals yet. What would you like to work on?'
+[LLM_RAW] 'query ready state\nquery pending user input\nquery system status\npin Awaiting user response regarding what they would like to work on\nsend Standing by for your next request or question.'

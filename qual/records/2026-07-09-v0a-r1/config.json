@@ -1,0 +1,16 @@
+{
+  "date": "2026-07-09",
+  "image_id": "31aaf750b572ad3e9fbc0deb877face499813646c6a1e3d5e0b626a431b9c2be",
+  "image_ref": "localhost/omegaclaw-hive:0.1",
+  "image_role": "v0a",
+  "matrix_id": "v0a-r1",
+  "model_profiles": [
+    "glm-5.2"
+  ],
+  "persona_hashes": {
+    "personas/coordinator-v2/prompt.txt": "sha256:b24b27221705b5a0f8fe380c5f440f564a96f325f7b0b65c28a53a8bb9f82d7f"
+  },
+  "port_library_sha": "2f0456ea474601bfc5c54484bd20c6ff8b9370bc",
+  "reps": 3,
+  "scenario_set_sha": "sha256:508f95f48a50fee43d0ec08180959ab03bb9fc4c2b378e5fc451871df0e02ae9"
+}

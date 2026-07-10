@@ -1,0 +1,34 @@
+{
+  "note_usd": "USD is 0 \u2014 token\u2192USD pricing not yet applied (needs the price table).",
+  "per_rep": [
+    {
+      "model": "glm-5.2",
+      "rep": 0,
+      "scenario": "V0A1-stock-send",
+      "tokens": 6746,
+      "usd": 0.0,
+      "wall_ms": 16000
+    },
+    {
+      "model": "glm-5.2",
+      "rep": 1,
+      "scenario": "V0A1-stock-send",
+      "tokens": 7217,
+      "usd": 0.0,
+      "wall_ms": 16000
+    },
+    {
+      "model": "glm-5.2",
+      "rep": 2,
+      "scenario": "V0A1-stock-send",
+      "tokens": 6977,
+      "usd": 0.0,
+      "wall_ms": 16000
+    }
+  ],
+  "totals": {
+    "tokens": 20940,
+    "usd": 0.0,
+    "wall_ms": 48000
+  }
+}
