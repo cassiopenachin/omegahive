@@ -17,7 +17,7 @@ Frozen run-config dated 2026-07-09 (v4-1); 20-seed set; caps {'timeout': 60, 'ma
 
 ## Interim gate recommendation
 
-- **recommended cell: L0** — best completion 20/20; ties within δ=2 broken by unconditional cost, then the simpler rung.
+- **recommended cell: L0** — completion 20/20 (also the grid-best); ties within δ=2 broken by unconditional cost, then the simpler rung.
 - contenders within δ: L0
 
 > Vanilla-half only: H-amplifier (L4 vs L1) and the architecture contrast (L4 vs L3) wait on Track O. The cheap pick is provisional (v0a not yet run); the §5.2 L2/L3 re-run contingency applies if v0b later replaces it.
@@ -76,14 +76,17 @@ format/parser mismatch (L2/L3) — not the L0 completion count.
 - **The board may reward inaction too cheaply.** A k=1 join that B always satisfies lets greedy win
   by doing nothing; a k>1 join, or a topology where the doomed branch must be pruned to make
   progress, would force the coordinator to actually reason. Worth revisiting at the spec level
-  before drawing strategy conclusions — flagged as a follow-up, not resolved here.
+  before drawing strategy conclusions — flagged as a follow-up, not resolved here (spec §9 open
+  item 3).
 - **Vanilla half only.** The H-amplifier (L4 vs L1) and architecture (L4 vs L3) contrasts wait on
   Track O (OmegaClaw).
 
 ## Provenance
 
 - Frozen 20-seed grid: `ladder/records/2026-07-09/{L0,L1,L2,L3}/` (rows, aggregate, per-seed
-  stamps); `grid.json`; `run-config.json`.
+  stamps); `grid.json`; `run-config.json`. Regenerate this record with
+  `ladder report --records ladder/records/2026-07-09` (the sections above the "Findings" heading
+  are tool-produced; everything from "Findings" down is analysis).
 - Sensitivity probe (scratch — not part of the frozen run):
   `ladder/records/2026-07-09/sensitivity-l1-t180/`.
 - Funded spend: frozen grid $3.26 (L1 $2.86, L2 $0.13, L3 $0.27) + sensitivity scratch $1.90 =
