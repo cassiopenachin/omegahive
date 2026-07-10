@@ -1,0 +1,22 @@
+# Stock-skill catalog v1 — the base skills the OmegaClaw fork image advertises
+# (extracted from the image's getSkills, src/skills.metta). Used by the v0a
+# emission-discipline half: the battery measures whether a model emits well-formed
+# skill commands over THIS vocabulary. `board` is the single board-op wrapper skill;
+# the board OPS (assign/reassign/…) are its arguments and are graded in v0b, not here.
+# No port_op (that mapping is board-catalog-only).
+version: stock-v1
+entries:
+  - {head: remember, text: "Remember a string: remember string", arity: 1}
+  - {head: query, text: "Query long-term memory with a short phrase: query string", arity: 1}
+  - {head: episodes, text: "Search history episodes around a timestamp: episodes time_string", arity: 1}
+  - {head: pin, text: "Pin a string as short-term working memory: pin string", arity: 1}
+  - {head: shell, text: "Execute a shell command: shell string", arity: 1}
+  - {head: read-file, text: "Read a file to string: read-file filename", arity: 1}
+  - {head: write-file, text: "Write string to a file: write-file filename string", arity: 2}
+  - {head: append-file, text: "Append a line to a file: append-file filename string", arity: 2}
+  - {head: send, text: "Send a message to the user: send string", arity: 1}
+  - {head: board, text: "Emit one board operation: board string", arity: 1}
+  - {head: search, text: "Search the web: search string", arity: 1}
+  - {head: tavily-search, text: "Search the web via Tavily: tavily-search string", arity: 1}
+  - {head: technical-analysis, text: "Technical analysis for a ticker: technical-analysis ticker", arity: 1}
+  - {head: metta, text: "Evaluate a MeTTa expression: metta sexpression", arity: 1}

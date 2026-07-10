@@ -7,7 +7,7 @@ import json
 import pytest
 from pydantic import ValidationError
 from qual.loader import QUAL_ROOT, load_scenario_checked, load_scenario_set
-from qual.schema import Scenario, Turn
+from qual.schema import Catalog, Scenario, Turn
 
 VALID_SCENARIO = {
     "id": "X",
@@ -25,17 +25,24 @@ def test_packaged_scenarios_load_and_cross_validate():
     for name in ("S1.yaml", "S3.yaml", "S8.yaml"):
         ls = load_scenario_checked(QUAL_ROOT / "scenarios" / name)
         assert set(ls.scenario.op_vocabulary) <= ls.catalog.heads
-        assert ls.fixture.events  # every fixture seeds at least one event
+        assert ls.fixture is not None and ls.fixture.events  # board scenarios seed a fixture
 
 
 def test_load_scenario_set_finds_all_three():
     assert len(load_scenario_set(QUAL_ROOT / "scenarios")) == 3
 
 
-def test_unknown_head_in_op_vocabulary_rejected():
-    bad = {**VALID_SCENARIO, "op_vocabulary": ["delegate"]}
-    with pytest.raises(ValidationError):
-        Scenario.model_validate(bad)
+def test_catalog_is_self_describing_stock_heads_ok():
+    # Non-board heads (stock skills) are valid; port_op is optional (v0a catalogs).
+    cat = Catalog.model_validate(
+        {"version": "stock", "entries": [{"head": "send", "text": "Send: send string", "arity": 1}]}
+    )
+    assert "send" in cat.heads
+
+
+def test_scenario_board_fixture_optional():
+    Scenario.model_validate({**VALID_SCENARIO, "board_fixture": None})  # v0a: no board
+    Scenario.model_validate(VALID_SCENARIO)  # v0b: board fixture present
 
 
 def test_unknown_board_mutation_op_rejected():

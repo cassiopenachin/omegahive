@@ -45,10 +45,14 @@ def validate(
 
     for ls in loaded:
         s = ls.scenario
+        fixture = (
+            f"{len(ls.fixture.events)} events / {len(ls.fixture.tasks)} tasks"
+            if ls.fixture is not None
+            else "none (v0a)"
+        )
         console.print(
             f"ok  {s.id}  ·  ops={s.op_vocabulary}  ·  "
-            f"catalog={ls.catalog.version}({len(ls.catalog.heads)} heads)  ·  "
-            f"fixture={len(ls.fixture.events)} events / {len(ls.fixture.tasks)} tasks"
+            f"catalog={ls.catalog.version}({len(ls.catalog.heads)} heads)  ·  fixture={fixture}"
         )
     console.print(f"validated {len(loaded)} scenario(s)")
 

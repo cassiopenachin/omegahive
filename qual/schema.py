@@ -1,23 +1,24 @@
 """Scenario / catalog / fixture schema for the qualification battery (spec §4).
 
 Pydantic models mirroring the sim scenario pattern (`omegahive.sim.scenario.schema`).
-Three distinct, load-bearing vocabularies live here:
 
-  - **command heads** — what the coordinator LLM is told it may emit
-    (`assign`/`reassign`/`escalate`/`close`/`reopen`/`prune`); the catalog enumerates them.
-  - **board-mutation ops** — scripted, harness-side worker/stub actions played
-    *between* turns (`complete`, `block`, …); these are not coordinator commands.
+Catalogs are **self-describing**: a catalog enumerates its own heads, and a scenario's
+`op_vocabulary` must be a subset of *its* catalog's heads. Two catalog kinds exist —
+the board-op catalog (`assign`/`reassign`/…/`prune`, mapped to port ops for v0b) and the
+stock-skill catalog (`send`/`pin`/`query`/`board`/… advertised by the fork image, for the
+v0a emission-discipline half). The cross-file `op_vocabulary ⊆ catalog.heads` invariant is
+enforced in `qual.loader`, not on any model in isolation.
 
-Cross-file invariants that need the catalog (e.g. a scenario's `op_vocabulary` ⊆
-the catalog's heads) are checked in `qual.loader`, not on the model in isolation.
+  - **board-mutation ops** — scripted, harness-side worker/stub actions played *between*
+    turns (`complete`, `block`, …); these are not coordinator commands (v0b only).
 """
 
 from __future__ import annotations
 
 from pydantic import BaseModel, Field, model_validator
 
-# The coordinator command heads (the port Op union; omegahive_port_spec.md §2, and
-# the binding skill equations). A scenario's op_vocabulary is a subset of these.
+# The coordinator board-op heads (the port Op union; omegahive_port_spec.md §2). Reference
+# constant for the board-op catalog; catalogs are no longer required to draw from it.
 KNOWN_HEADS = frozenset({"assign", "reassign", "escalate", "close", "reopen", "prune"})
 
 # Scripted worker/stub mutations the harness plays between turns. Not coordinator
@@ -80,9 +81,9 @@ class Budget(BaseModel):
 class Scenario(BaseModel):
     id: str
     description: str
-    persona: str            # path to a pinned persona file (never loaded in slice 1)
-    skills_catalog: str     # path to the catalog YAML
-    board_fixture: str      # path to the board-fixture JSON
+    persona: str                    # path to the pinned persona file
+    skills_catalog: str             # path to the catalog YAML
+    board_fixture: str | None = None  # board seed (v0b); absent for v0a stock probes
     turns: list[Turn]
     rejection_injection: RejectionInjection | None = None
     recovery_window_K: int = 3
@@ -91,29 +92,12 @@ class Scenario(BaseModel):
     expected: Expected = Field(default_factory=Expected)
     budget: Budget
 
-    @model_validator(mode="after")
-    def _check_op_vocabulary(self) -> Scenario:
-        # Standalone check against the universe of heads; the loader additionally
-        # checks the subset against the *actual* catalog file.
-        unknown = [op for op in self.op_vocabulary if op not in KNOWN_HEADS]
-        if unknown:
-            raise ValueError(
-                f"op_vocabulary has unknown heads {unknown} (known: {sorted(KNOWN_HEADS)})"
-            )
-        return self
-
 
 class CatalogEntry(BaseModel):
-    head: str          # the command head the agent emits, e.g. "assign"
-    text: str          # the catalog line the agent is shown, e.g. "Assign task to worker: ..."
+    head: str          # the head the agent emits, e.g. "assign" (board) or "send" (stock)
+    text: str          # the catalog line the agent is shown
     arity: int         # number of positional args
-    port_op: str       # the omegahive.port Op this maps to (reference; wired in slice 2)
-
-    @model_validator(mode="after")
-    def _known_head(self) -> CatalogEntry:
-        if self.head not in KNOWN_HEADS:
-            raise ValueError(f"catalog head {self.head!r} not in {sorted(KNOWN_HEADS)}")
-        return self
+    port_op: str = ""  # the omegahive.port Op this maps to (board catalogs only)
 
 
 class Catalog(BaseModel):
