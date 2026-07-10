@@ -1,0 +1,19 @@
+{
+  "n": 20,
+  "completion_rate": 0.15,
+  "prune_rate": 0.2,
+  "false_prunes": 1,
+  "premature_prunes": 0,
+  "wasted_after_evidence_mean": 5.55,
+  "wasted_after_evidence_median": 6.0,
+  "decisions_mean": 41.4,
+  "time_to_prune_n": 4,
+  "time_to_prune_mean": 51.5,
+  "loss_buckets": {
+    "cap_timeout": 16,
+    "run_error": 1
+  },
+  "cost_usd_total": 2.85837,
+  "cost_usd_mean": 0.1429185,
+  "cost_tokens_total": 419462
+}
