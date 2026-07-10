@@ -16,6 +16,7 @@ from __future__ import annotations
 import multiprocessing as mp
 import queue as _queue
 import uuid
+from dataclasses import dataclass
 
 from omegahive.board.reducer import Board
 from omegahive.clock import LogicalClock
@@ -30,7 +31,23 @@ from .metrics import LadderRow, compute_row
 from .seeds import schedule_for
 from .workers import ScheduledWorker
 
-CELLS = {"L0": "greedy", "L1": "vanilla"}   # R0 greedy control; R1 vanilla LLM
+
+@dataclass(frozen=True)
+class Cell:
+    """A grid cell's *structural* identity (§5.3): rung kind + knowledge condition. The model
+    id is a run parameter (frozen run-config / --model override), not part of the cell code."""
+    kind: str                     # "greedy" | "vanilla"
+    knowledge: str | None = None  # KB name for a KB cell (e.g. "coordination-kb-v1")
+
+
+# The vanilla-half grid (§5.3): L0 greedy control; L1/L2 vanilla (strong/cheap, no KB);
+# L3 vanilla + KB in the system prompt. Model ids come from the frozen run-config at grid time.
+CELLS: dict[str, Cell] = {
+    "L0": Cell("greedy"),
+    "L1": Cell("vanilla"),
+    "L2": Cell("vanilla"),
+    "L3": Cell("vanilla", knowledge="coordination-kb-v1"),
+}
 
 _ZERO_COST = {"calls": 0, "tokens_in": 0, "tokens_out": 0, "usd": 0.0}
 
@@ -45,21 +62,27 @@ def _terminal(board: Board | None) -> bool:
 def _make_coordinator(cell: str, roster: tuple[str, ...], *, model: str | None,
                       max_llm_calls: int | None):
     """The reactor for a cell. Greedy is the sim `Coordinator`; vanilla is the LLM-backed
-    `VanillaCoordinator` (lazy-imported so litellm loads only for an L1 run)."""
-    kind = CELLS.get(cell)
-    if kind == "greedy":
+    `VanillaCoordinator` (persona + op-sheet [+ KB for a knowledge cell]). LLM/KB modules are
+    lazy-imported so an L0 run (and test collection) never pays litellm's import cost."""
+    spec = CELLS.get(cell)
+    if spec is None:
+        raise ValueError(f"cell {cell!r} has no coordinator")
+    if spec.kind == "greedy":
         return Coordinator("coordinator", workers=list(roster), thresholds={})
-    if kind == "vanilla":
+    if spec.kind == "vanilla":
         from qual.loader import QUAL_ROOT, load_catalog
 
+        from .knowledge import load_kb, persona_blocks
         from .llm import LLMClient
         from .vanilla import VanillaCoordinator
         if model is None:
             raise ValueError(f"cell {cell!r} (vanilla) requires a model")
         catalog = load_catalog(QUAL_ROOT / "catalogs" / "board-ops-v2.yaml")
+        kb = load_kb(spec.knowledge) if spec.knowledge else None
         return VanillaCoordinator("coordinator", llm=LLMClient(model), catalog=catalog,
+                                  persona=persona_blocks(), knowledge=kb,
                                   max_llm_calls=max_llm_calls)
-    raise ValueError(f"cell {cell!r} has no coordinator")
+    raise ValueError(f"cell {cell!r} has unknown kind {spec.kind!r}")
 
 
 # --- process entrypoints (module-level so they pickle under any start method) ---

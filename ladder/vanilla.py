@@ -50,6 +50,8 @@ class VanillaCoordinator:
         *,
         llm: LLMClient,
         catalog: Catalog,
+        persona: str | None = None,
+        knowledge: str | None = None,
         max_llm_calls: int | None = None,
         transcript: TextIO = sys.stdout,
     ) -> None:
@@ -58,7 +60,12 @@ class VanillaCoordinator:
         self.catalog = catalog
         self.max_llm_calls = max_llm_calls
         self.transcript = transcript
-        self._system = op_reference_sheet(catalog)
+        # System prompt = persona role blocks (identical across cells) + the op-reference sheet
+        # + the KB (KB cells only, §5.4). op-sheet-only when persona/knowledge are None (R1 as
+        # in V2b). The KB is the *only* piece that varies L2→L3, isolating the knowledge contrast.
+        self._system = "\n\n".join(
+            part for part in (persona, op_reference_sheet(catalog), knowledge) if part
+        )
         self._last_tasks: tuple[_TaskSig, ...] | None = None
         self._pending_notes: list[str] = []   # dropped lines to echo back next turn
         self.exhausted = False                 # set when the call budget is spent (drive stops)

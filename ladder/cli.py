@@ -55,7 +55,7 @@ def run_cmd(
     if seeds < 1:
         console.print("--seeds must be >= 1")
         raise typer.Exit(1)
-    if CELLS[cell] == "vanilla":
+    if CELLS[cell].kind == "vanilla":
         if model is None:
             console.print(f"cell {cell!r} (vanilla) needs --model")
             raise typer.Exit(1)
@@ -64,7 +64,7 @@ def run_cmd(
     rows = run_cell(cell, seed_list, timeout=timeout, model=model, max_llm_calls=max_llm_calls)
     agg = aggregate(rows)
 
-    table = Table(title=f"ladder {cell} ({CELLS[cell]}) — {len(rows)} seeds")
+    table = Table(title=f"ladder {cell} ({CELLS[cell].kind}) — {len(rows)} seeds")
     for col in ("seed", "done", "decisions", "A-fail", "wasted", "pruned", "cost$"):
         table.add_column(col, justify="right")
     for r in rows:
@@ -114,7 +114,8 @@ def _write_record(path: Path, cell: str, seed_list: list[int], rows, agg,
                   model: str | None) -> None:
     path.mkdir(parents=True, exist_ok=True)
     (path / "config.json").write_text(json.dumps({
-        "cell": cell, "coordinator": CELLS[cell], "model": model, "seeds": seed_list,
+        "cell": cell, "coordinator": CELLS[cell].kind, "knowledge": CELLS[cell].knowledge,
+        "model": model, "seeds": seed_list,
         "schedules": [asdict(schedule_for(s)) for s in seed_list],
     }, indent=2))
     (path / "rows.json").write_text(json.dumps([row_to_dict(r) for r in rows], indent=2))
