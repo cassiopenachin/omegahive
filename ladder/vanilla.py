@@ -19,12 +19,12 @@ from qual.schema import Catalog
 
 from omegahive.board.state import Board
 from omegahive.events.envelope import Event
+from omegahive.port.render import is_coordinator_rejection, render_view
 from omegahive.sim.engine.protocol import ReactResult
 
 from .llm import LLMClient, Usage
 from .opsheet import op_reference_sheet
 from .parse import parse_commands
-from .view import is_coordinator_rejection, render_view
 
 # a task's coordination-relevant fields — the signature the delta gate compares.
 _TaskSig = tuple[str, str, "str | None", bool, "str | None", int]
