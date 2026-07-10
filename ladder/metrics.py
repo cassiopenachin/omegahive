@@ -135,6 +135,7 @@ def aggregate(rows: list[LadderRow]) -> dict:
     return {
         "n": n,
         "completion_rate": len(completed) / n,
+        "prunes": sum(r.pruned_a for r in rows),   # exact count (report uses this, not rate×n)
         "prune_rate": sum(r.pruned_a for r in rows) / n,
         "false_prunes": sum(r.false_prune for r in rows),
         "premature_prunes": sum(r.premature_prune for r in rows),

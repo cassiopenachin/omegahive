@@ -130,11 +130,35 @@ def grid_cmd(
             _require_key(cell["model"])
     from .grid import run_grid
     results = run_grid(cfg, out=out)
-    for name, res in results.items():
-        agg = aggregate(res["rows"])
+    aggs = {name: aggregate(res["rows"]) for name, res in results.items()}
+    for name, agg in aggs.items():
         console.print(f"{name}: completion={agg.get('completion_rate', 0):.2f} "
                       f"cost_usd={agg.get('cost_usd_total', 0):.4f} n={agg.get('n', 0)}")
-    console.print(f"records written to {out}")
+    record = _write_report(Path(out), cfg, aggs)
+    console.print(f"records + vanilla-half record ({record}) written to {out}")
+
+
+def _write_report(out: Path, cfg: dict, aggs: dict) -> Path:
+    """Render the §7 vanilla-half record + interim gate recommendation beside the records — the
+    deliverable, produced by the tool (not a side script), so a grid run always emits it."""
+    from .report import render
+    models = {name: c.get("model") for name, c in cfg["cells"].items()}
+    record = out / "vanilla-half-record.md"
+    record.write_text(render(aggs, models, cfg) + "\n")
+    return record
+
+
+@app.command("report")
+def report_cmd(
+    records: str = typer.Option(..., "--records", help="a grid records dir "
+                               "(holds run-config.json and <cell>/aggregate.json)"),
+) -> None:
+    """Regenerate the vanilla-half record + interim gate recommendation from a grid records dir."""
+    rec = Path(records)
+    cfg = json.loads((rec / "run-config.json").read_text())
+    aggs = {name: json.loads((rec / name / "aggregate.json").read_text())
+            for name in cfg["cells"] if (rec / name / "aggregate.json").exists()}
+    console.print(f"wrote {_write_report(rec, cfg, aggs)}")
 
 
 @app.command("validate-config")

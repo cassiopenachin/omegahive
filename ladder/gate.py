@@ -30,7 +30,10 @@ def _near_boundary(margin: int, cost_ratio: float | None, crit: dict) -> bool:
         return True
     if cost_ratio is not None:
         edge = crit.get("boundary_cost_pp", 5) / 100.0
-        thresholds = (crit["cheaper"], 1 - crit["cost_approx"], 1 + crit["cost_approx"])
+        # the actual cost-classification edges contrast() uses: "cheaper" (≤0.8) and the top of
+        # the "approx" band (1+cost_approx=1.15). 1−cost_approx (0.85) is NOT an edge — it sits
+        # inside the approx band — so flagging near it would call spurious replications.
+        thresholds = (crit["cheaper"], 1 + crit["cost_approx"])
         if any(abs(cost_ratio - t) <= edge for t in thresholds):
             return True
     return False
@@ -70,8 +73,11 @@ def knowledge_value(l3: dict, l2: dict, crit: dict) -> dict:
 
 
 def gate(aggs: dict[str, dict], crit: dict) -> dict:
-    """The interim gate recommendation over the vanilla cells: best completion; ties within δ
-    broken by lowest unconditional cost; residual ties by the simpler/cheaper rung."""
+    """The interim gate recommendation over the ladder cells passed in — the L0 greedy control
+    plus the vanilla cells (L1–L3), per the §7 chain: best completion; ties within δ broken by
+    lowest unconditional cost; residual ties by the simpler/cheaper rung (greedy is the simplest,
+    so L0 can legitimately win when it is within δ of the best — it is the control, in-chain by
+    design, not an omission)."""
     cells = list(aggs)
     best = max(completion(aggs[c]) for c in cells)
     contenders = [c for c in cells if best - completion(aggs[c]) <= crit["delta_seeds"]]

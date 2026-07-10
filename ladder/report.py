@@ -13,6 +13,14 @@ _CELL_DESC = {
 }
 
 
+def _prunes(a: dict) -> int:
+    """Exact prune count. aggregate() now stores `prunes`; fall back to round(rate×n) for older
+    records (int(rate×n) truncates — 3/20 stored as 0.15 floats to 2.9999→2)."""
+    if "prunes" in a:
+        return int(a["prunes"])
+    return round(a.get("prune_rate", 0.0) * a.get("n", 0))
+
+
 def render(aggs: dict[str, dict], models: dict[str, str | None], config: dict) -> str:
     crit = config["criteria"]
     ev = evaluate(aggs, crit)
@@ -39,7 +47,7 @@ def render(aggs: dict[str, dict], models: dict[str, str | None], config: dict) -
         lines.append(
             f"| {name} | {_CELL_DESC.get(name, '')} | {models.get(name) or '—'} | "
             f"{completion(a)}/{a.get('n', 0)} | {a.get('cost_usd_total', 0.0):.4f} | "
-            f"{a.get('decisions_mean', 0):.1f} | {int(a.get('prune_rate', 0) * a.get('n', 0))} | "
+            f"{a.get('decisions_mean', 0):.1f} | {_prunes(a)} | "
             f"{a.get('false_prunes', 0)} | {a.get('premature_prunes', 0)} | {loss} |")
 
     lines += ["", "## Knowledge value (L3 vs L2)", ""]
@@ -54,10 +62,18 @@ def render(aggs: dict[str, dict], models: dict[str, str | None], config: dict) -
     else:
         lines.append("- (L2 and L3 not both present)")
 
+    win = aggs[g["winner"]]
+    wc, wn, best = completion(win), win.get("n", 0), g["best_completion"]
+    if wc < best:
+        rec = (f"- **recommended cell: {g['winner']}** — completion {wc}/{wn} (grid-best is "
+               f"{best}/{wn}; {g['winner']} chosen within δ={crit['delta_seeds']} by lower "
+               f"unconditional cost, then the simpler rung).")
+    else:
+        rec = (f"- **recommended cell: {g['winner']}** — completion {wc}/{wn} (also the "
+               f"grid-best); ties within δ={crit['delta_seeds']} broken by unconditional cost, "
+               f"then the simpler rung.")
     lines += [
-        "", "## Interim gate recommendation", "",
-        f"- **recommended cell: {g['winner']}** — best completion {g['best_completion']}/20; ties "
-        f"within δ={crit['delta_seeds']} broken by unconditional cost, then the simpler rung.",
+        "", "## Interim gate recommendation", "", rec,
         f"- contenders within δ: {', '.join(g['contenders'])}",
     ]
     if g["needs_replication"]:
