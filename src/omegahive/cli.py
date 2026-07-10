@@ -15,8 +15,9 @@ from .board import fold
 from .clock import LogicalClock
 from .db import connect, migrate
 from .events.envelope import Actor
-from .events.log import EventLog, read_run_ids
+from .events.log import EventLog, UnknownEventType, read_run_ids
 from .gateway import Gateway, Policy, Rejected
+from .gateway.policy import DESIGN_PARTNER_ACTOR_ID, OPERATOR_ACTOR_ID
 from .metrics import compute
 from .metrics.distribution import aggregate
 from .metrics.promotion import score
@@ -211,8 +212,9 @@ def emit_cmd(
         ..., "--role", help="actor role: worker | human | planner | coordinator | instrument"
     ),
     actor_id: str = typer.Option(
-        ..., "--actor", help="actor id (human tier: 'operator' | 'design-partner'; a Code "
-        "session emits under its own registered worker id)"
+        ..., "--actor", help=f"actor id (human tier: {OPERATOR_ACTOR_ID!r} | "
+        f"{DESIGN_PARTNER_ACTOR_ID!r}; a Code session emits under its own registered "
+        "worker id)"
     ),
     task_id: str | None = typer.Option(None, "--task", help="target task_id, if any"),
     payload: str | None = typer.Option(None, "--payload", help="JSON payload (default {})"),
@@ -249,6 +251,10 @@ def emit_cmd(
         except ValidationError as e:
             # structural payload validation (shape, e.g. task.reported ref) — no event lands.
             console.print(f"rejected: INVALID_PAYLOAD · {e.errors()[0]['msg']}")
+            raise typer.Exit(code=1) from e
+        except UnknownEventType as e:
+            # an event_type with no registered payload model — no event lands.
+            console.print(f"rejected: UNKNOWN_EVENT_TYPE · {e}")
             raise typer.Exit(code=1) from e
         conn.commit()
 

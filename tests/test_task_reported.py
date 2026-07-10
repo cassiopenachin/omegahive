@@ -42,7 +42,16 @@ def _rejections(store):
 def test_ref_shape_validator():
     assert TaskReported(ref=GOOD_REF, kind="result").ref == GOOD_REF
     assert TaskReported(ref="a/b.md@abc1234", kind="finding").ref  # 7-char abbreviated sha ok
+    # a path may itself contain '@' (e.g. an npm scope) — the sha anchors at the end
+    assert TaskReported(ref="web/node_modules/@scope/x.ts@abcdef1", kind="finding").ref
     for bad in ("nope", "no-at-sign", "path@xyz", "path@ABC1234", "path@abc12", "@abc1234"):
+        with pytest.raises(ValidationError):
+            TaskReported(ref=bad, kind="result")
+
+
+def test_ref_rejects_embedded_and_trailing_newlines():
+    # fullmatch (not `$`) rejects a trailing newline; `.+` rejects an embedded one.
+    for bad in ("docs/x.md@abcdef1\n", "docs/x.md@abcdef1\nmore", "docs\n/x.md@abcdef1"):
         with pytest.raises(ValidationError):
             TaskReported(ref=bad, kind="result")
 

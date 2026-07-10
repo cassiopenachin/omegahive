@@ -155,7 +155,10 @@ class QuestionAsked(BaseModel):
 # A ref pins a workspace artifact to a pushed commit: `path@<git-sha>` with a
 # 7–40-char lowercase-hex sha (abbreviated or full). Shape is validated here at the
 # payload model — the store's structural validation is the enforcement point.
-_REF_SHAPE = re.compile(r"^[^@]+@[0-9a-f]{7,40}$")
+# `.+` is greedy and excludes newlines, so it spans a path that itself contains `@`
+# (e.g. node_modules/@scope/x) and backtracks to the final `@<sha>`; fullmatch anchors
+# both ends, rejecting any embedded or trailing newline (`$` would allow a trailing one).
+_REF_SHAPE = re.compile(r".+@[0-9a-f]{7,40}")
 
 
 class TaskReported(BaseModel):
@@ -170,7 +173,7 @@ class TaskReported(BaseModel):
     @field_validator("ref")
     @classmethod
     def _ref_shape(cls, v: str) -> str:
-        if not _REF_SHAPE.match(v):
+        if not _REF_SHAPE.fullmatch(v):
             raise ValueError(
                 f"ref must match 'path@<git-sha>' (7–40 hex chars), got {v!r}"
             )
