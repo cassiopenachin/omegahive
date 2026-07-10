@@ -13,7 +13,7 @@ from pathlib import Path
 from qual.loader import QUAL_ROOT
 
 from .knowledge import kb_path, sha256_of
-from .pricing import load_table, priced_models
+from .pricing import load_table
 from .runner import CELLS
 from .seeds import all_schedules
 
@@ -22,10 +22,27 @@ REQUIRED_PINS = [
     "kb_hash", "persona_hash", "catalog_hash", "price_table", "criteria",
 ]
 
+# Sub-keys that grid/gate/report index unguarded — a config missing any of these passes a
+# bare presence check but crashes a funded run or its report, so the §8 gate must catch them.
+_REQUIRED_SUBKEYS = {
+    "caps": ("timeout", "max_ops", "max_llm_calls"),          # grid.run_grid indexes these
+    "criteria": ("delta_seeds", "cheaper", "cost_approx", "boundary_cost_pp"),  # gate.py
+    "sampling": ("temperature", "max_output_tokens"),         # threaded into the LLM client
+}
+_PRICE_FIELDS = ("input_usd_per_mtok", "output_usd_per_mtok")  # pricing.price indexes these
+
 _SEEDS_FILE = Path(__file__).with_name("seeds.py")
 _OPSHEET_SRC = QUAL_ROOT / "catalogs" / "board-ops-v2.yaml"
 _PERSONA = QUAL_ROOT / "personas" / "coordinator-v2" / "r1-system.txt"
 _KB_NAME = "coordination-kb-v1"
+
+# Pins that must still hash-match their on-disk artifact at validate time (tamper detection).
+_HASH_PINS = {
+    "seeds_sha": _SEEDS_FILE,
+    "catalog_hash": _OPSHEET_SRC,
+    "persona_hash": _PERSONA,
+    # kb_hash is resolved lazily (via kb_path) so a missing KB surfaces as a hash problem
+}
 
 
 def build_config(*, date: str, models: dict[str, str | None], caps: dict, sampling: dict,
@@ -62,34 +79,78 @@ def write_config(config: dict, path: str | Path) -> Path:
     return p
 
 
+def _hash_problems(config: dict) -> list[str]:
+    """Re-verify every pinned artifact hash against its current on-disk bytes. A pinned config
+    whose seeds/catalog/persona/KB/price-table drifted post-freeze runs off-spec under a stale
+    hash unless the gate re-checks — so the §8 gate must, not just record, the hashes."""
+    problems: list[str] = []
+    checks = list(_HASH_PINS.items()) + [("kb_hash", kb_path(_KB_NAME))]
+    for pin, path in checks:
+        pinned = config.get(pin)
+        if not pinned:
+            continue  # absence is already reported by the presence loop
+        try:
+            actual = sha256_of(Path(path))
+        except Exception as exc:  # noqa: BLE001 - an unreadable pinned artifact is itself a problem
+            problems.append(f"{pin}: cannot hash {path}: {exc}")
+            continue
+        if actual != pinned:
+            problems.append(f"{pin}: {path} changed since freeze "
+                            f"(pinned {pinned[:12]}…, now {actual[:12]}…)")
+    pt = config.get("price_table") or {}
+    if pt.get("path") and pt.get("sha"):
+        try:
+            if sha256_of(Path(pt["path"])) != pt["sha"]:
+                problems.append(f"price_table: {pt['path']} changed since freeze")
+        except Exception:  # noqa: BLE001 - unreadable table already reported below
+            pass
+    return problems
+
+
 def validate_config(config: dict) -> list[str]:
     """The §8 validity gate: every problem that would make this config unfit to freeze/run.
-    Empty list == frozen. Enforces that every vanilla cell names a model AND that model has a
-    price-table row (kills the silent-$0 gap), and that the seed set matches the generator."""
+    Empty list == frozen. Beyond pin presence it enforces that (a) each dict pin carries the
+    sub-keys grid/gate/report index, (b) every vanilla cell names a model whose price-table row
+    carries numeric input/output USD (kills both the silent-$0 gap and a malformed row that would
+    KeyError mid-run), (c) the seed set matches the generator, and (d) every pinned artifact hash
+    still matches its on-disk bytes (tamper detection — else a drifted artifact runs off-spec)."""
     problems: list[str] = []
     for pin in REQUIRED_PINS:
-        if not config.get(pin):
+        if config.get(pin) in (None, "", [], {}):
             problems.append(f"missing pin: {pin}")
 
-    priced: set[str] = set()
+    for pin, keys in _REQUIRED_SUBKEYS.items():
+        d = config.get(pin)
+        if isinstance(d, dict):
+            problems += [f"{pin}: missing sub-key {k!r}" for k in keys if k not in d]
+
+    models: dict = {}
     pt = config.get("price_table") or {}
     if pt.get("path"):
         try:
-            priced = priced_models(load_table(pt["path"]))
+            models = load_table(pt["path"]).get("models", {})
         except Exception as exc:  # noqa: BLE001 - surface any read/parse failure as a problem
             problems.append(f"price_table unreadable: {exc}")
 
     for name, cell in (config.get("cells") or {}).items():
-        if cell.get("kind") == "vanilla":
-            model = cell.get("model")
-            if not model:
-                problems.append(f"cell {name}: vanilla cell has no model")
-            elif model not in priced:
-                problems.append(f"cell {name}: model {model!r} has no price-table row")
+        if cell.get("kind") != "vanilla":
+            continue
+        model = cell.get("model")
+        if not model:
+            problems.append(f"cell {name}: vanilla cell has no model")
+            continue
+        row = models.get(model)
+        if row is None:
+            problems.append(f"cell {name}: model {model!r} has no price-table row")
+            continue
+        problems += [f"cell {name}: price row for {model!r} missing numeric {f!r}"
+                     for f in _PRICE_FIELDS if not isinstance(row.get(f), (int, float))]
 
     if config.get("seed_set") is not None and \
             config["seed_set"] != [s.seed for s in all_schedules()]:
         problems.append("seed_set does not match the pre-registered seed generator")
+
+    problems += _hash_problems(config)
     return problems
 
 

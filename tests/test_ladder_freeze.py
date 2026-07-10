@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from ladder.freeze import REQUIRED_PINS, build_config, validate_config, validate_config_file
+from ladder.knowledge import sha256_of
 from ladder.pricing import UnpricedModel, load_table, price
 from ladder.seeds import all_schedules
 
@@ -83,3 +85,34 @@ def test_validate_config_file_round_trip(tmp_path):
     p = tmp_path / "run-config.json"
     p.write_text(json.dumps(cfg))
     assert validate_config_file(p) == []
+
+
+def test_validate_flags_a_malformed_price_row(tmp_path):
+    # a row that is present (model is a key) but missing a USD field passes a key-only check yet
+    # KeyErrors in pricing.price mid-run — the gate must catch it. Re-pin the table sha so only
+    # the row-field problem fires, not the tamper check.
+    cfg = _config(tmp_path)
+    pt_path = Path(cfg["price_table"]["path"])
+    t = json.loads(pt_path.read_text())
+    t["models"][CHEAP] = {"input_usd_per_mtok": 1.0}   # output field dropped
+    pt_path.write_text(json.dumps(t))
+    cfg["price_table"]["sha"] = sha256_of(pt_path)
+    assert any("missing numeric 'output_usd_per_mtok'" in p for p in validate_config(cfg))
+
+
+def test_validate_flags_a_missing_caps_subkey(tmp_path):
+    cfg = _config(tmp_path)
+    del cfg["caps"]["max_ops"]                          # grid.run_grid would KeyError on this
+    assert any("caps: missing sub-key 'max_ops'" in p for p in validate_config(cfg))
+
+
+def test_validate_flags_a_missing_criteria_subkey(tmp_path):
+    cfg = _config(tmp_path)
+    del cfg["criteria"]["delta_seeds"]                  # gate.py would KeyError on this
+    assert any("criteria: missing sub-key 'delta_seeds'" in p for p in validate_config(cfg))
+
+
+def test_validate_flags_a_tampered_artifact_hash(tmp_path):
+    cfg = _config(tmp_path)
+    cfg["kb_hash"] = "0" * 64                           # pinned hash no longer matches the KB bytes
+    assert any("kb_hash" in p and "changed since freeze" in p for p in validate_config(cfg))
