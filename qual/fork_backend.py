@@ -12,12 +12,18 @@ Provider keys come from `~/.config/omegahive/secrets/harness.env` (values are qu
 and passed as `-e VAR` so they never appear in argv/logs); in-container they terminate in the
 nginx key-isolation proxy, never reaching the agent process.
 
-Parse-trace fidelity (v0a): the fork emits *bare* command lines (`query user goals`), so a
-line "parses pre-repair" only if it is already a balanced parenthesised s-expr; `parses_post`
-/ `dispatched` use the fork's own `helper.LLM_COMMANDS` table (imported host-side — pure
-stdlib, identical to the image since the image is `COPY .` of this source). `repair_dependency`
-is therefore the real signal: how much `balance_parentheses` carries a model that emits bare
-lines. Board-op events are not captured here (v0a has no board); `event_log_slice` is empty.
+Parse-trace fidelity (v0a) — KNOWN LIMITATION (validity audit: docs/evidence/
+omegahive_c2_v0a_r1.md). The parse trace is computed HOST-SIDE, not by the container's real
+parser, so several fields are artifacts rather than measured behaviour:
+  - `parses_pre_repair` is a paren-balance heuristic (`startswith("(")`), so it is 0 for the
+    fork's bare-line convention BY CONSTRUCTION — but the real fork (`helper._is_known_command`)
+    accepts bare lines, so `repair_dependency` here is a tautology, not a signal about repair.
+  - `dispatched` / `parses_post_repair` = head ∈ `helper.LLM_COMMANDS` (faithful — that set
+    equals the stock catalog heads); this is the one solid quantity (≡ command recognition).
+  - `results_echo` is synthesised (raw for unknown heads), so `silent_unknown` miscounts prose.
+  - pin state is derived from an emitted `pin` line, NOT from the captured `history.metta`.
+A faithful v2 must replay each line through the container's own `sread` / `balance_parentheses`
+and parse `history.metta`. Board-op events are not captured here (v0a has no board).
 """
 
 from __future__ import annotations

@@ -231,6 +231,11 @@ def hard_fail_flags(scenario: Scenario, row: MetricsRow) -> list[str]:
         for t in scenario.expected.hard_fail
         if t in _RECOGNIZERS and _RECOGNIZERS[t](scenario, row)
     ]
+    # A run that produced no loop cycles at all (empty model reply / capture failure) is the
+    # clearest possible fail — never let the vacuous "no acting turns → 1.0 rates" path certify
+    # it as passing. Distinct from a quiet board, where the agent still cycles (turns_played>0).
+    if row.turns_played == 0:
+        fired.append("empty-run")
     if row.total_usd > scenario.budget.usd or row.turns_played > scenario.budget.max_turns:
         fired.append("budget-cap-hit")
     return fired
