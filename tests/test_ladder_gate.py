@@ -50,7 +50,7 @@ def test_time_to_prune_is_not_in_the_gate_chain():
 
 def test_boundary_flag_fires_within_delta():
     assert contrast(_agg(14, 1.0), _agg(13, 1.0), CRIT)["needs_replication"]      # margin 1 ≤ δ
-    assert not contrast(_agg(18, 1.0), _agg(10, 1.0), CRIT)["needs_replication"]  # margin 8, ratio 1
+    assert not contrast(_agg(18, 1.0), _agg(10, 1.0), CRIT)["needs_replication"]  # margin 8
 
 
 def test_report_renders_the_recommendation():
