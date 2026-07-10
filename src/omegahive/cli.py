@@ -1,10 +1,12 @@
-"""typer CLI — db-migrate | run | report."""
+"""typer CLI — db-migrate | run | report | emit."""
 
 from __future__ import annotations
 
+import json
 from uuid import uuid4
 
 import typer
+from pydantic import ValidationError
 from rich.console import Console
 
 from .acceptance import run_actor, seed_demo
@@ -14,11 +16,11 @@ from .clock import LogicalClock
 from .db import connect, migrate
 from .events.envelope import Actor
 from .events.log import EventLog, read_run_ids
-from .gateway import Gateway, Policy
+from .gateway import Gateway, Policy, Rejected
 from .metrics import compute
 from .metrics.distribution import aggregate
 from .metrics.promotion import score
-from .port import HiveCoordinatorPort
+from .port import HiveCoordinatorPort, RawOp
 from .report.board import render_board
 from .report.distribution import render_distribution, render_promotion_distribution
 from .report.human import render_human
@@ -199,6 +201,61 @@ def act_cmd(
 def deploy_checks_cmd() -> None:
     """Structural deployment checks 4 & 5 (tier-routing, credential scope). Hard-fail."""
     raise typer.Exit(code=run_structural_checks())
+
+
+@app.command("emit")
+def emit_cmd(
+    run_id: str = typer.Option(..., "--run-id", help="run to emit into (events are run-scoped)"),
+    event_type: str = typer.Option(..., "--type", help="event_type, e.g. task.reported"),
+    role: str = typer.Option(
+        ..., "--role", help="actor role: worker | human | planner | coordinator | instrument"
+    ),
+    actor_id: str = typer.Option(
+        ..., "--actor", help="actor id (human tier: 'operator' | 'design-partner'; a Code "
+        "session emits under its own registered worker id)"
+    ),
+    task_id: str | None = typer.Option(None, "--task", help="target task_id, if any"),
+    payload: str | None = typer.Option(None, "--payload", help="JSON payload (default {})"),
+) -> None:
+    """Emit one governed event through the port — the human/worker write path.
+
+    Routed through the same gateway that governs every agent (no admin side-door). The
+    port derives the idempotency key by the standard content+basis rule, so re-emitting
+    an identical report is a no-op (one event). A rejection prints the gateway's code and
+    reason; a malformed payload (e.g. a bad task.reported ref) prints a validation error.
+
+    Session convention: every launched Code session is a registered worker — its actor id
+    is stated in its work order — so it reports under `--role worker --actor <its-id>`.
+    """
+    try:
+        actor = Actor(role=role, id=actor_id)  # type: ignore[arg-type]  # role validated here
+    except ValidationError as e:
+        console.print(f"invalid actor: {e.errors()[0]['msg']}")
+        raise typer.Exit(code=1) from e
+
+    try:
+        data = json.loads(payload) if payload else {}
+    except json.JSONDecodeError as e:
+        console.print(f"invalid --payload JSON: {e}")
+        raise typer.Exit(code=1) from e
+    if not isinstance(data, dict):
+        console.print("invalid --payload: must be a JSON object")
+        raise typer.Exit(code=1)
+
+    with connect() as conn:
+        port = HiveCoordinatorPort(actor, run_id, conn)
+        try:
+            result = port.emit(RawOp(event_type, data, task_id))
+        except ValidationError as e:
+            # structural payload validation (shape, e.g. task.reported ref) — no event lands.
+            console.print(f"rejected: INVALID_PAYLOAD · {e.errors()[0]['msg']}")
+            raise typer.Exit(code=1) from e
+        conn.commit()
+
+    if isinstance(result, Rejected):
+        console.print(f"rejected: {result.code} · {result.reason}")
+        raise typer.Exit(code=1)
+    console.print(f"emitted {event_type} · seq {result.event.seq}")
 
 
 @app.command("board-view")
