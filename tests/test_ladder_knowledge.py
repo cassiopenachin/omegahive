@@ -4,16 +4,11 @@ from __future__ import annotations
 
 import pytest
 from ladder.knowledge import _verified_text, load_kb, persona_blocks, sha256_of
-from ladder.llm import LLMResponse, Usage
+from ladder.llm import LLMClient
 from ladder.vanilla import VanillaCoordinator
 from qual.loader import QUAL_ROOT, load_catalog
 
 CATALOG = load_catalog(QUAL_ROOT / "catalogs" / "board-ops-v2.yaml")
-
-
-class _FakeLLM:
-    def complete(self, system: str, user: str) -> LLMResponse:
-        return LLMResponse(text="", usage=Usage(0, 0, "fake", 0.0))
 
 
 # --- loader: SHA-256 verification against the pinned HASHES manifest ---
@@ -48,7 +43,7 @@ def test_verified_text_rejects_tampered_file(tmp_path):
 # --- composition: persona + op-sheet base (identical across cells); KB only for L3 ---
 
 def _system(*, knowledge: str | None) -> str:
-    coord = VanillaCoordinator(llm=_FakeLLM(), catalog=CATALOG,
+    coord = VanillaCoordinator(llm=LLMClient("fake/model", mock_response=""), catalog=CATALOG,
                                persona=persona_blocks(), knowledge=knowledge)
     return coord._system
 
