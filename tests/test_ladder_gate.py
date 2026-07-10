@@ -8,9 +8,10 @@ from ladder.report import render
 CRIT = {"delta_seeds": 2, "cheaper": 0.8, "cost_approx": 0.15, "boundary_cost_pp": 5}
 
 
-def _agg(done: int, cost: float, n: int = 20) -> dict:
+def _agg(done: int, cost: float, n: int = 20, loss_buckets: dict | None = None) -> dict:
     return {"n": n, "completion_rate": done / n, "cost_usd_total": cost,
-            "decisions_mean": 0.0, "prune_rate": 0.0, "false_prunes": 0, "premature_prunes": 0}
+            "decisions_mean": 0.0, "prune_rate": 0.0, "false_prunes": 0, "premature_prunes": 0,
+            "loss_buckets": loss_buckets or {}}
 
 
 def test_completion_recovers_the_seed_count():
@@ -54,10 +55,13 @@ def test_boundary_flag_fires_within_delta():
 
 
 def test_report_renders_the_recommendation():
-    aggs = {"L0": _agg(19, 0.0), "L1": _agg(20, 5.0), "L2": _agg(12, 0.2), "L3": _agg(16, 0.2)}
+    aggs = {"L0": _agg(19, 0.0),
+            "L1": _agg(20, 5.0, loss_buckets={"cap_timeout": 16, "run_error": 1}),
+            "L2": _agg(12, 0.2), "L3": _agg(16, 0.2)}
     models = {"L0": None, "L1": "opus", "L2": "cheap", "L3": "cheap"}
     config = {"date": "2026-07-09", "config_version": "v4-1", "caps": {"max_llm_calls": 40},
               "price_table": {"date": "2026-07-09"}, "criteria": CRIT}
     md = render(aggs, models, config)
     assert "recommended cell: L0" in md and "Knowledge value (L3 vs L2)" in md
     assert "| L3 |" in md and "16/20" in md
+    assert "cap_timeout×16" in md and "run_error×1" in md   # dominant bucket first

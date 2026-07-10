@@ -26,18 +26,21 @@ def render(aggs: dict[str, dict], models: dict[str, str | None], config: dict) -
         "## Per-cell results",
         "",
         "| cell | rung | model | completion | cost USD | decisions (mean) | prunes | false | "
-        "premature |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "premature | loss buckets |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for name in ("L0", "L1", "L2", "L3"):
         a = aggs.get(name)
         if a is None:
             continue
+        buckets = a.get("loss_buckets") or {}
+        loss = ", ".join(f"{k}×{v}" for k, v in sorted(buckets.items(), key=lambda kv: -kv[1])) \
+            or "—"
         lines.append(
             f"| {name} | {_CELL_DESC.get(name, '')} | {models.get(name) or '—'} | "
             f"{completion(a)}/{a.get('n', 0)} | {a.get('cost_usd_total', 0.0):.4f} | "
             f"{a.get('decisions_mean', 0):.1f} | {int(a.get('prune_rate', 0) * a.get('n', 0))} | "
-            f"{a.get('false_prunes', 0)} | {a.get('premature_prunes', 0)} |")
+            f"{a.get('false_prunes', 0)} | {a.get('premature_prunes', 0)} | {loss} |")
 
     lines += ["", "## Knowledge value (L3 vs L2)", ""]
     if "knowledge_value" in ev:
