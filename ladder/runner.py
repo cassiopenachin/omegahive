@@ -59,8 +59,18 @@ def _terminal(board: Board | None) -> bool:
     return tail is not None and tail.status == "done"
 
 
+def _sampling_kwargs(sampling: dict | None) -> dict:
+    """Map a frozen run-config `sampling` pin onto LLMClient kwargs so the pin is load-bearing
+    (not decorative). None → the client's own defaults. Unknown keys (e.g. the `unsupported_params`
+    provenance note) are ignored; the Anthropic 4.8-family drops temperature via litellm anyway."""
+    if not sampling:
+        return {}
+    return {"temperature": sampling.get("temperature", 0.0),
+            "max_tokens": sampling.get("max_output_tokens", 1024)}
+
+
 def _make_coordinator(cell: str, roster: tuple[str, ...], *, model: str | None,
-                      max_llm_calls: int | None):
+                      max_llm_calls: int | None, sampling: dict | None = None):
     """The reactor for a cell. Greedy is the sim `Coordinator`; vanilla is the LLM-backed
     `VanillaCoordinator` (persona + op-sheet [+ KB for a knowledge cell]). LLM/KB modules are
     lazy-imported so an L0 run (and test collection) never pays litellm's import cost."""
@@ -79,8 +89,9 @@ def _make_coordinator(cell: str, roster: tuple[str, ...], *, model: str | None,
             raise ValueError(f"cell {cell!r} (vanilla) requires a model")
         catalog = load_catalog(QUAL_ROOT / "catalogs" / "board-ops-v2.yaml")
         kb = load_kb(spec.knowledge) if spec.knowledge else None
-        return VanillaCoordinator("coordinator", llm=LLMClient(model), catalog=catalog,
-                                  persona=persona_blocks(), knowledge=kb,
+        return VanillaCoordinator("coordinator",
+                                  llm=LLMClient(model, **_sampling_kwargs(sampling)),
+                                  catalog=catalog, persona=persona_blocks(), knowledge=kb,
                                   max_llm_calls=max_llm_calls)
     raise ValueError(f"cell {cell!r} has unknown kind {spec.kind!r}")
 
@@ -89,8 +100,10 @@ def _make_coordinator(cell: str, roster: tuple[str, ...], *, model: str | None,
 
 def _run_coordinator(cell: str, run_id: str, roster: tuple[str, ...], url: str | None,
                      timeout: float, max_ops: int, model: str | None,
-                     max_llm_calls: int | None, report: mp.Queue) -> None:
-    coord = _make_coordinator(cell, roster, model=model, max_llm_calls=max_llm_calls)
+                     max_llm_calls: int | None, sampling: dict | None,
+                     report: mp.Queue) -> None:
+    coord = _make_coordinator(cell, roster, model=model, max_llm_calls=max_llm_calls,
+                              sampling=sampling)
     _board, stop = drive(coord, run_id, "coordinator", "coordinator",
                          url=url, is_terminal=_terminal, timeout=timeout, max_ops=max_ops)
     # the coordinator carries max_ops (stop attributes the cap) and its own LLM cost (0 for greedy)
@@ -174,7 +187,7 @@ def _spawn_and_collect(run_id: str, roster: tuple[str, ...], seed: int, url: str
 
 def run_seed(cell: str, seed: int, *, url: str | None = None, timeout: float = 60.0,
              max_ops: int = 2000, nonce: str | None = None, model: str | None = None,
-             max_llm_calls: int | None = None) -> LadderRow:
+             max_llm_calls: int | None = None, sampling: dict | None = None) -> LadderRow:
     # A fresh run id per sweep: reusing one would let actors re-observe a prior run's
     # history on their first (full-snapshot) read and re-emit against it.
     nonce = nonce or uuid.uuid4().hex[:8]
@@ -183,7 +196,7 @@ def run_seed(cell: str, seed: int, *, url: str | None = None, timeout: float = 6
     seed_fork_board(run_id, url=url, roster=sched.roster)
     events, stop_reason, cost = _spawn_and_collect(
         run_id, sched.roster, seed, url, timeout, _run_coordinator,
-        (cell, run_id, sched.roster, url, timeout, max_ops, model, max_llm_calls))
+        (cell, run_id, sched.roster, url, timeout, max_ops, model, max_llm_calls, sampling))
     return compute_row(events, sched, stop_reason=stop_reason,
                        cost_tokens=cost["tokens_in"] + cost["tokens_out"],
                        cost_tokens_in=cost["tokens_in"], cost_tokens_out=cost["tokens_out"],
@@ -191,7 +204,8 @@ def run_seed(cell: str, seed: int, *, url: str | None = None, timeout: float = 6
 
 
 def run_cell(cell: str, seeds: list[int], *, url: str | None = None, timeout: float = 60.0,
-             model: str | None = None, max_llm_calls: int | None = None) -> list[LadderRow]:
+             model: str | None = None, max_llm_calls: int | None = None,
+             sampling: dict | None = None) -> list[LadderRow]:
     nonce = uuid.uuid4().hex[:8]   # one fresh sweep id shared across its seeds
     return [run_seed(cell, s, url=url, timeout=timeout, nonce=nonce, model=model,
-                     max_llm_calls=max_llm_calls) for s in seeds]
+                     max_llm_calls=max_llm_calls, sampling=sampling) for s in seeds]

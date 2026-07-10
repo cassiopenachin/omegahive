@@ -21,14 +21,6 @@ import litellm
 # Keep litellm offline-safe and quiet inside the harness: no update pings, no banner.
 litellm.telemetry = False
 litellm.suppress_debug_info = True
-# The Anthropic 4.8-family (Opus 4.8, Sonnet 5, Fable 5) removed the sampling knobs:
-# temperature/top_p/top_k return 400. Anthropic exposes no seed or determinism control,
-# and even temperature=0 was only ever near-deterministic. litellm's documented remedy is
-# drop_params — an unsupported sampling param is dropped rather than raising
-# UnsupportedParamsError — so these models run at provider default while OpenRouter cells
-# still honor temperature=0. The frozen run-config's `sampling` pin records this asymmetry
-# (V4: strong-cell stochasticity is absorbed by 20-seed aggregation + §7 boundary-replication).
-litellm.drop_params = True
 
 log = logging.getLogger(__name__)
 
@@ -67,6 +59,14 @@ class LLMClient:
         self.mock_response = mock_response
 
     def complete(self, system: str, user: str) -> LLMResponse:
+        # drop_params is scoped to THIS call (not a litellm global): the Anthropic 4.8-family
+        # (Opus 4.8, Sonnet 5, Fable 5) removed temperature/top_p/top_k — they 400, and Anthropic
+        # exposes no seed/determinism control, so litellm's documented remedy drops the
+        # unsupported sampling param rather than raising, letting those models run at provider
+        # default while OpenRouter cells still honor temperature=0. Per-call keeps the drop from
+        # silently masking a genuinely-misconfigured param on some other future call site. The
+        # frozen run-config's `sampling` pin records this asymmetry (strong-cell stochasticity is
+        # absorbed by 20-seed aggregation + §7 boundary-replication).
         resp = litellm.completion(
             model=self.model,
             messages=[
@@ -77,6 +77,7 @@ class LLMClient:
             max_tokens=self.max_tokens,
             timeout=self.timeout,
             mock_response=self.mock_response,
+            drop_params=True,
         )
         # a moderation block / truncated error can surface as choices=[]; degrade to an empty
         # turn (parses to no ops) rather than an IndexError that aborts the whole seed.

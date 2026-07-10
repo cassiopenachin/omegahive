@@ -62,3 +62,23 @@ def test_l3_prompt_appends_the_kb_onto_the_identical_base():
     # the base (persona + op-sheet) is byte-identical to L2's; the KB is strictly appended,
     # so the L3-vs-L2 contrast isolates exactly the KB.
     assert l3.startswith(_system(knowledge=None))
+
+
+# --- sampling pin is load-bearing: threaded from the freeze into the LLM client, not decorative ---
+
+def test_sampling_kwargs_maps_the_pin_to_client_kwargs():
+    from ladder.runner import _sampling_kwargs
+    assert _sampling_kwargs({"temperature": 0.3, "max_output_tokens": 512}) == \
+        {"temperature": 0.3, "max_tokens": 512}
+    assert _sampling_kwargs(None) == {}                       # None → the client's own defaults
+    # a pin carrying only the provenance note still yields the client-default sampling
+    assert _sampling_kwargs({"unsupported_params": "x"}) == {"temperature": 0.0, "max_tokens": 1024}
+
+
+def test_make_coordinator_threads_sampling_into_the_client():
+    from ladder.runner import _make_coordinator
+    coord = _make_coordinator("L1", ("w1",), model="fake/model", max_llm_calls=5,
+                              sampling={"temperature": 0.3, "max_output_tokens": 512})
+    assert coord.llm.temperature == 0.3 and coord.llm.max_tokens == 512
+    default = _make_coordinator("L1", ("w1",), model="fake/model", max_llm_calls=5, sampling=None)
+    assert default.llm.temperature == 0.0 and default.llm.max_tokens == 1024

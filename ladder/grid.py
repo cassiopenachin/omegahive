@@ -60,7 +60,7 @@ def run_grid(config: dict, *, url: str | None = None, out: str | Path | None = N
         stamp = datetime.now(UTC).isoformat()
         row = run_seed(cell_name, seed, url=url, timeout=caps["timeout"],
                        max_ops=caps["max_ops"], model=model,
-                       max_llm_calls=caps["max_llm_calls"])
+                       max_llm_calls=caps["max_llm_calls"], sampling=config.get("sampling"))
         results[cell_name]["rows"].append(_reprice(row, model, table))
         results[cell_name]["stamps"].append(stamp)
         # Incremental persistence: rewrite this cell's records after every seed so a mid-run
