@@ -63,9 +63,12 @@ def run_grid(config: dict, *, url: str | None = None, out: str | Path | None = N
                        max_llm_calls=caps["max_llm_calls"])
         results[cell_name]["rows"].append(_reprice(row, model, table))
         results[cell_name]["stamps"].append(stamp)
-        # §7 calibration: commit L0 in full before any LLM cell result is examined.
-        if out is not None and cell_name == "L0" and seed == seed_set[-1]:
-            _write_cell(Path(out), "L0", results["L0"])
+        # Incremental persistence: rewrite this cell's records after every seed so a mid-run
+        # death (a killed process, a host reboot) salvages all completed seeds rather than
+        # losing the in-memory buffer. Also satisfies §7 calibration for free: grid_order runs
+        # every L0 seed before any LLM cell, so L0 is fully committed before an LLM result lands.
+        if out is not None:
+            _write_cell(Path(out), cell_name, results[cell_name])
 
     if out is not None:
         outp = Path(out)
