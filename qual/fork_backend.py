@@ -23,10 +23,12 @@ lines. Board-op events are not captured here (v0a has no board); `event_log_slic
 from __future__ import annotations
 
 import ast
+import contextlib
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
 
@@ -50,11 +52,13 @@ TEST_HOST = "host.containers.internal"
 
 # battery model id -> (fork provider flag, key env var). Model string is fixed per provider
 # in the fork registry (lib_llm_ext.py): OpenRouter→z-ai/glm-5.2, MiniMaxM3→minimax/minimax-m3,
-# Anthropic→claude-opus-4-8.
+# Anthropic→claude-opus-4-8. The local provider (Ollama-local) needs no key — it reaches a host
+# llama-server via the repointed nginx `/ollama-local/` upstream (see `_patched_nginx_template`).
 MODEL_PROVIDER: dict[str, tuple[str, str]] = {
     "glm-5.2": ("OpenRouter", "OPENROUTER_API_KEY"),
     "minimax-m3": ("MiniMaxM3", "OPENROUTER_API_KEY"),
     "claude-opus-4-8": ("Anthropic", "ANTHROPIC_API_KEY"),
+    "qwen3.6-local": ("Ollama-local", ""),
 }
 
 _RAW_RE = re.compile(r"\[LLM_RAW\] ts=(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d).* raw=(.*)$")
@@ -86,6 +90,24 @@ def _import_helper(fork_repo: str):
     return helper_mod
 
 
+def _patched_nginx_template(fork_repo: str, upstream: str) -> str:
+    """Copy the fork's nginx template, repointing the `/ollama-local/` upstream at `upstream`
+    (host:port of a llama-server), and return a world-readable temp path to bind-mount over
+    `/opt/nginx/nginx.conf.template` (nginx.sh envsubsts it at boot, running as www-data)."""
+    with open(os.path.join(fork_repo, "proxy", "nginx.conf.template")) as f:
+        text = f.read()
+    host = upstream.split(":", 1)[0]
+    text = text.replace(
+        "proxy_pass http://localhost:11434/v1/;", f"proxy_pass http://{upstream}/v1/;"
+    )
+    text = text.replace("proxy_set_header Host localhost;", f"proxy_set_header Host {host};", 1)
+    fd, path = tempfile.mkstemp(prefix="qual-nginx-", suffix=".template")
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.chmod(path, 0o644)  # nginx.sh runs as www-data; the mounted file must be world-readable
+    return path
+
+
 class ForkContainerCaptureBackend:
     """Boots the fork image with a real provider + mock channel and captures a graded bundle."""
 
@@ -98,6 +120,7 @@ class ForkContainerCaptureBackend:
         per_turn_wait: float = 8.0,
         settle: float = 6.0,
         ready_timeout: float = 150.0,
+        local_upstream: str = "host.containers.internal:8080",
     ) -> None:
         self.image_ref = image_ref
         self.image_id = ""
@@ -106,6 +129,7 @@ class ForkContainerCaptureBackend:
         self.per_turn_wait = per_turn_wait
         self.settle = settle
         self.ready_timeout = ready_timeout
+        self.local_upstream = local_upstream  # host llama-server the /ollama-local/ proxy hits
 
     def _podman(self, *args: str, timeout: int = 120, env: dict | None = None):
         return subprocess.run(
@@ -117,26 +141,36 @@ class ForkContainerCaptureBackend:
             raise ValueError(f"unknown model {model!r} (known: {sorted(MODEL_PROVIDER)})")
         provider, key_var = MODEL_PROVIDER[model]
         env = dict(os.environ)
-        env[key_var] = _load_key(self.secrets_file, key_var)
+        if key_var:
+            env[key_var] = _load_key(self.secrets_file, key_var)
 
         comm_mod = _import_comm(self.fork_repo)
         helper = _import_helper(self.fork_repo)
         container = f"qual-{model}-{rep}-{os.getpid()}".replace(".", "-")
         server = comm_mod.CommMockServer(("0.0.0.0", comm_mod.COMM_MOCK_PORT))
 
+        run_args = [
+            "run", "-d", "--name", container,
+            "--add-host", f"{TEST_HOST}:host-gateway",
+            "-e", f"TEST_SERVER_IP={TEST_HOST}",
+        ]
+        if key_var:
+            run_args += ["-e", key_var]  # value forwarded from env
+        nginx_override = ""
+        if provider == "Ollama-local":
+            # repoint the in-container /ollama-local/ nginx upstream at the host llama-server
+            nginx_override = _patched_nginx_template(self.fork_repo, self.local_upstream)
+            run_args += ["-v", f"{nginx_override}:/opt/nginx/nginx.conf.template:ro,Z"]
+        run_args += [
+            self.image_ref,
+            "commchannel=test", f"provider={provider}", "embeddingprovider=Local",
+            "securityPolicyPath=/PeTTa/repos/OmegaClaw-Core/profile/policy.yaml",
+            f"TEST_SERVER_IP={TEST_HOST}",
+        ]
+
         logs, history_text = "", ""
         try:
-            boot = self._podman(
-                "run", "-d", "--name", container,
-                "--add-host", f"{TEST_HOST}:host-gateway",
-                "-e", f"TEST_SERVER_IP={TEST_HOST}",
-                "-e", key_var,  # value forwarded from env below
-                self.image_ref,
-                "commchannel=test", f"provider={provider}", "embeddingprovider=Local",
-                "securityPolicyPath=/PeTTa/repos/OmegaClaw-Core/profile/policy.yaml",
-                f"TEST_SERVER_IP={TEST_HOST}",
-                env=env,
-            )
+            boot = self._podman(*run_args, env=env)
             if boot.returncode != 0:
                 raise RuntimeError(f"podman run failed: {boot.stderr.strip()}")
             self.image_id = self._podman(
@@ -161,6 +195,9 @@ class ForkContainerCaptureBackend:
         finally:
             self._podman("rm", "-f", container)
             server.stop(5)
+            if nginx_override:
+                with contextlib.suppress(OSError):
+                    os.unlink(nginx_override)
 
         cycles = _parse_cycles(logs)
         bundle = _build_bundle(loaded, model, rep, cycles, history_text, helper)
