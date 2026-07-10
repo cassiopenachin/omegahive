@@ -1,0 +1,7 @@
+[LLM_RAW] 'query user goal context\npin awaiting_user_input\nsend Initializing OmegaClaw... Please state your goal.\nremember OmegaClaw active loop initiated\nquery current session memory'
+[LLM_RAW] 'send Hello, I am OmegaClaw. How can I assist you?\npin user greeted and awaiting objective\nsend Please state your objective.\nremember OmegaClaw initialized\nquery session memory'
+[LLM_RAW] 'query user goal\npin awaiting goal definition\nsend Please provide your objective.\nremember OmegaClaw ready for input\npin current task status: idle'
+[LLM_RAW] "send Hello, I am OmegaClaw, a continuous-loop agentic harness designed to assist you with complex tasks.\npin Objective: Introduce myself and pin the user's goal (currently awaiting specific input).\nquery session memory\nremember OmegaClaw introduced and ready for user objectives.\nsend Please provide your objective or task so I can begin processing."
+[LLM_RAW] 'read-file /omegaclaw/memory.db\nread-file /omegaclaw/pinned_items.db\nquery "user objectives"\nquery "session history"\nsend "System initialized. Awaiting specific user objective or task details."'
+[LLM_RAW] 'query user current objective\nsend I am ready to assist. Please provide your specific goal or task.\npin awaiting user objective\nread-file /omegaclaw/pinned_items.db\nquery session memory'
+[LLM_RAW] 'query user current objective\npin awaiting user objective\nsend I am ready to assist. Please provide your specific goal or task.\nquery session memory\nread-file /omegaclaw/pinned_items.db'

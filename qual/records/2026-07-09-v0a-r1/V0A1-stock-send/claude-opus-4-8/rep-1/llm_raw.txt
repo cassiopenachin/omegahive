@@ -1,0 +1,6 @@
+[LLM_RAW] 'query user goals and preferences\nquery current pinned task state\nepisodes 2026-07-10 00:32:42\nquery active skills and context\nquery recent user messages'
+[LLM_RAW] 'query user identity and introduction context\nquery onboarding or first session notes\nepisodes 2026-07-09 00:00:00\nquery objective or mission statement\nquery communication style preferences'
+[LLM_RAW] 'My queries returned empty—no prior context exists. This is a fresh start.\n\nquery previous introductions or greetings sent to user\nquery defined objective or shared mission\nsend Hi, I am OmegaClaw, your agentic assistant—here to help pursue your goals continuously.\npin OBJECTIVE: Assist the user by understanding and advancing their goals (awaiting explicit objective from user).\nsend What objective should I pin as our primary mission?'
+[LLM_RAW] 'query pinned objective and task state\nquery introduction sent to user\nquery user goals or mission\nepisodes 2026-07-10 00:32:45\nquery awaiting user objective'
+[LLM_RAW] 'query current pinned objective state\nquery messages exchanged with user this session\nepisodes 2026-07-10 00:32:49'
+[LLM_RAW] 'query pinned objective and awaiting user input status\nquery introduction and questions sent to user\nepisodes 2026-07-10 00:32:54'

@@ -1,25 +1,25 @@
 {
   "hard_fail_flags": [],
   "metrics": {
-    "acting_turns": 3,
+    "acting_turns": 6,
     "batch_order_ok": true,
     "command_recognition": 1.0,
     "idle_junk_op_count": 0,
     "idle_ok": true,
     "legal_op_rate": 1.0,
-    "model": "glm-5.2",
+    "model": "claude-opus-4-8",
     "pin_discipline_ok": true,
     "post_repair_parse_rate": 1.0,
     "pre_repair_parse_rate": 0.0,
     "rejection_identical_retries": 0,
     "rejection_recovered": true,
-    "rep": 1,
+    "rep": 0,
     "repair_dependency": 1.0,
     "scenario_id": "V0A1-stock-send",
     "silent_unknown_count": 0,
-    "total_tokens": 4050,
+    "total_tokens": 13723,
     "total_usd": 0.0,
-    "total_wall_ms": 13000,
-    "turns_played": 3
+    "total_wall_ms": 20000,
+    "turns_played": 6
   }
 }

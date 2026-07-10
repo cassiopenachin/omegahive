@@ -1,13 +1,15 @@
 {
-  "hard_fail_flags": [],
+  "hard_fail_flags": [
+    "budget-cap-hit"
+  ],
   "metrics": {
-    "acting_turns": 3,
+    "acting_turns": 8,
     "batch_order_ok": true,
     "command_recognition": 1.0,
     "idle_junk_op_count": 0,
     "idle_ok": true,
     "legal_op_rate": 1.0,
-    "model": "glm-5.2",
+    "model": "qwen3.6-local",
     "pin_discipline_ok": true,
     "post_repair_parse_rate": 1.0,
     "pre_repair_parse_rate": 0.0,
@@ -17,9 +19,9 @@
     "repair_dependency": 1.0,
     "scenario_id": "V0A1-stock-send",
     "silent_unknown_count": 0,
-    "total_tokens": 4050,
+    "total_tokens": 11647,
     "total_usd": 0.0,
-    "total_wall_ms": 13000,
-    "turns_played": 3
+    "total_wall_ms": 18000,
+    "turns_played": 8
   }
 }
