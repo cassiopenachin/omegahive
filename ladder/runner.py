@@ -185,7 +185,9 @@ def run_seed(cell: str, seed: int, *, url: str | None = None, timeout: float = 6
         run_id, sched.roster, seed, url, timeout, _run_coordinator,
         (cell, run_id, sched.roster, url, timeout, max_ops, model, max_llm_calls))
     return compute_row(events, sched, stop_reason=stop_reason,
-                       cost_tokens=cost["tokens_in"] + cost["tokens_out"], cost_usd=cost["usd"])
+                       cost_tokens=cost["tokens_in"] + cost["tokens_out"],
+                       cost_tokens_in=cost["tokens_in"], cost_tokens_out=cost["tokens_out"],
+                       cost_usd=cost["usd"])
 
 
 def run_cell(cell: str, seeds: list[int], *, url: str | None = None, timeout: float = 60.0,

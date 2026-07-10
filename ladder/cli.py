@@ -110,6 +110,20 @@ def smoke_cmd(
     console.print(f"[bold]{verdict}[/]")
 
 
+@app.command("validate-config")
+def validate_config_cmd(
+    path: str = typer.Argument(..., help="frozen run-config JSON"),
+) -> None:
+    """The §8 freeze validity gate: print every problem (exit 1 if any), else 'frozen'."""
+    from .freeze import validate_config_file
+    problems = validate_config_file(path)
+    if problems:
+        for p in problems:
+            console.print(f"[bold]FAIL[/] {p}")
+        raise typer.Exit(1)
+    console.print("[bold]frozen[/] — run-config validates")
+
+
 def _write_record(path: Path, cell: str, seed_list: list[int], rows, agg,
                   model: str | None) -> None:
     path.mkdir(parents=True, exist_ok=True)

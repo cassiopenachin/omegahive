@@ -58,7 +58,9 @@ class LadderRow:
     false_prune: bool                   # pruned A in a recover seed
     premature_prune: bool               # pruned A before the evidence threshold
     time_to_prune: int | None           # event-count gap threshold→prune; None = censored
-    cost_tokens: int
+    cost_tokens: int                    # tokens_in + tokens_out (kept for back-compat)
+    cost_tokens_in: int                 # split kept so a dated price table can re-price post-hoc
+    cost_tokens_out: int
     cost_usd: float
     loss_bucket: str | None             # None if completed; else a mechanical LOSS_BUCKET
     unsatisfiable_joins: tuple[str, ...]  # evidence: joins flagged unsatisfiable (board_stalled)
@@ -66,6 +68,7 @@ class LadderRow:
 
 def compute_row(events: list[Event], schedule: SeedSchedule, *,
                 stop_reason: str | None = None, cost_tokens: int = 0,
+                cost_tokens_in: int = 0, cost_tokens_out: int = 0,
                 cost_usd: float = 0.0) -> LadderRow:
     """Project one seed's event log into a metrics row. `stop_reason` is the runner's
     mechanical attribution for a non-completion (a cap/error bucket); a `board_stalled`
@@ -104,7 +107,8 @@ def compute_row(events: list[Event], schedule: SeedSchedule, *,
         a_failed_attempts=a_failed, worker_attempts=worker_attempts,
         wasted_attempts_after_evidence=wasted, pruned_a=pruned_a,
         false_prune=false_prune, premature_prune=premature, time_to_prune=time_to_prune,
-        cost_tokens=cost_tokens, cost_usd=cost_usd,
+        cost_tokens=cost_tokens, cost_tokens_in=cost_tokens_in,
+        cost_tokens_out=cost_tokens_out, cost_usd=cost_usd,
         loss_bucket=_loss_bucket(completed, unsatisfiable, stop_reason),
         unsatisfiable_joins=unsatisfiable,
     )
@@ -140,6 +144,10 @@ def aggregate(rows: list[LadderRow]) -> dict:
         "time_to_prune_n": len(ttp),
         "time_to_prune_mean": (sum(ttp) / len(ttp)) if ttp else None,
         "loss_buckets": loss_buckets,   # mechanical-bucket histogram over non-completions
+        # §7 cost unit of account: summed USD across the whole seed set at the pinned price table.
+        "cost_usd_total": sum(r.cost_usd for r in rows),
+        "cost_usd_mean": sum(r.cost_usd for r in rows) / n,
+        "cost_tokens_total": sum(r.cost_tokens for r in rows),
     }
 
 
