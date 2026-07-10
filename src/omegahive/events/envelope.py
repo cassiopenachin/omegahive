@@ -9,8 +9,10 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 # "gateway" is the actor of gateway.rejected feedback events (§5) — the gateway
-# recording a refusal in the log, distinct from any agent role.
-Role = Literal["planner", "coordinator", "worker", "instrument", "gateway"]
+# recording a refusal in the log, distinct from any agent role. "human" is the
+# operator/design-partner tier — first-class per-person actors on the write path
+# (no shared actor), authorized in EMIT_AUTHORITY like any other role.
+Role = Literal["planner", "coordinator", "worker", "instrument", "gateway", "human"]
 
 
 class Actor(BaseModel):
