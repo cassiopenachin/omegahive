@@ -44,15 +44,19 @@ def load_fixture(path: str | Path) -> Fixture:
 class LoadedScenario:
     scenario: Scenario
     catalog: Catalog
-    fixture: Fixture
+    fixture: Fixture | None   # None for v0a stock probes (no board_fixture)
 
 
 def load_scenario_checked(path: str | Path) -> LoadedScenario:
-    """Load a scenario together with its catalog and fixture, enforcing cross-file
+    """Load a scenario together with its catalog and (if any) fixture, enforcing cross-file
     invariants. Raises ValueError on any violation."""
     scenario = load_scenario(path)
     catalog = load_catalog(_resolve(scenario.skills_catalog))
-    fixture = load_fixture(_resolve(scenario.board_fixture))
+    fixture = (
+        load_fixture(_resolve(scenario.board_fixture))
+        if scenario.board_fixture is not None
+        else None
+    )
 
     missing = [op for op in scenario.op_vocabulary if op not in catalog.heads]
     if missing:

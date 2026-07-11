@@ -12,6 +12,13 @@ from __future__ import annotations
 from ..board.reducer import Board
 from ..events.envelope import Event
 
+# Canonical human actor ids (the write path's per-person actors, UI spec §56). Two
+# distinct ids — never one shared "operator" actor — so the audit answers *who*.
+# Authority is role-level ("human"); these ids are the documented convention (CLI
+# help + workspace charter), not an enforced whitelist.
+OPERATOR_ACTOR_ID = "operator"
+DESIGN_PARTNER_ACTOR_ID = "design-partner"
+
 # role -> allowed event_types. The taxonomy's organizing principle (v0 §5): types
 # are grouped by emitter authority. PAYLOADS (events/types.py) must cover every
 # type listed here — guarded by tests/test_append.py.
@@ -27,10 +34,19 @@ EMIT_AUTHORITY: dict[str, set[str]] = {
     "worker": {
         "task.accepted", "task.rejected", "task.progress", "task.blocked", "task.unblocked",
         "task.result_posted", "task.failed", "question.asked",
+        # a session reports on its own work under its worker actor id (primary emitter).
+        "task.reported",
     },
     "instrument": {
         "promotion.created", "promotion.suppressed", "metric.threshold_crossed",
         "review.passed", "review.failed",
+    },
+    # the human tier (operator + design partner): reporting, plus the lifecycle ops it
+    # conceptually owns (create/escalate/override reuse the existing legality rows —
+    # their guards check board state, not actor role) and roster registration.
+    "human": {
+        "task.reported", "task.created", "task.escalated", "task.status_override",
+        "worker.registered",
     },
     # the gateway records its own refusals (§5); never emitted by an agent.
     "gateway": {"gateway.rejected"},
@@ -63,5 +79,8 @@ class Policy:
                 if ts is not None and ts.owner == agent_id:
                     return True  # own task
             return False
-        # planner and any other role: no read need in M1
+        # planner and any other role: no read need in M1. The human tier is write-only
+        # here by design — humans read via `report`/`board-view` (which fold the log
+        # directly), not through this port filter; port-side human read-visibility lands
+        # with the UI/read-path work (deferred per the bootstrap order's stop-line).
         return False

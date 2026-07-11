@@ -78,6 +78,23 @@ class PruneOp(_Op):
         return "task.pruned", {"reason": self.reason}, self.task_id
 
 
+@dataclass(frozen=True)
+class RawOp:
+    """A generic, already-canonicalized emit routed through the port — the escape hatch
+    for the human/CLI write path and any raw op outside the typed `Op` union. It carries
+    the same duck-typed contract the port consumes (`to_emit()` + `causation_id`), so the
+    port derives its idempotency key by the one content+basis rule (never hand-rolled).
+    Unlike the typed ops, `task_id` is optional (a report/note need not target a task)."""
+
+    event_type: str
+    payload: dict
+    task_id: str | None = None
+    causation_id: UUID | None = None
+
+    def to_emit(self) -> tuple[str, dict, str | None]:
+        return self.event_type, self.payload, self.task_id
+
+
 # The closed op vocabulary (plan ops stay behind a flag until needed — §2).
 Op = Annotated[
     AssignOp | ReassignOp | EscalateOp | CloseOp | ReopenOp | PruneOp,

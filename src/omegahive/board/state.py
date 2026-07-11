@@ -37,6 +37,12 @@ class TaskState:
     #                                        k requires (over-declared ready_when / dangling dep) —
     #                                        the join can never fire. Non-fatal: readiness stays
     #                                        fail-closed; surfaced for tooling (e.g. loss buckets).
+    # Operator-facing fields are derived from existing planner/worker events. They belong in this
+    # projection rather than in a UI-side event fold, so every port client sees one board truth.
+    title: str = ""
+    priority: str = "normal"
+    blocker_reason: str | None = None
+    blocker_needs: str | None = None
 
 
 @dataclass

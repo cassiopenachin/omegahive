@@ -33,7 +33,8 @@ from .metrics import MetricsRow, serialize
 
 # --- applicable metric sets (spec §7 two-image split) ------------------------
 
-# Emission-discipline metrics — computable on the base image (v0a).
+# Emission-discipline metrics — the v0a half. `total_tokens` is real whenever the run image
+# carries the usage-logging patch (the hive image does; a pre-patch base image would report 0).
 V0A_METRICS = [
     "pre_repair_parse_rate",
     "post_repair_parse_rate",
@@ -43,14 +44,14 @@ V0A_METRICS = [
     "pin_discipline_ok",
     "idle_ok",
     "idle_junk_op_count",
+    "total_tokens",
     "total_wall_ms",
 ]
-# Board-op + cost metrics — need the hive image (v0b).
+# Board-op metrics — need the hive board channel driven against a real board (v0b).
 V0B_EXTRA = [
     "legal_op_rate",
     "rejection_recovered",
     "rejection_identical_retries",
-    "total_tokens",
     "total_usd",
 ]
 # batch_order_ok is intentionally omitted from both: N/A for the as-shipped
@@ -202,8 +203,8 @@ def render_aggregate_md(distributions: list[MetricsDistribution], config: dict) 
     ]
     if role == "v0a":
         lines += [
-            "Emission-discipline subset (base image). Board-op and token/USD cost metrics "
-            "need the hive image and are omitted here.",
+            "Emission-discipline subset. Board-op metrics need the hive board channel driven "
+            "against a real board (v0b) and are omitted here.",
             "",
         ]
     by_scenario: dict[str, list[MetricsDistribution]] = {}
@@ -221,7 +222,7 @@ def render_aggregate_md(distributions: list[MetricsDistribution], config: dict) 
     return "\n".join(lines) + "\n"
 
 
-def _cost_summary(reps: list[RepRecord], image_role: str) -> dict:
+def _cost_summary(reps: list[RepRecord]) -> dict:
     per_rep = [
         {
             "scenario": r.row.scenario_id,
@@ -233,17 +234,20 @@ def _cost_summary(reps: list[RepRecord], image_role: str) -> dict:
         }
         for r in reps
     ]
-    summary = {
-        "per_rep": per_rep,
-        "totals": {
-            "tokens": sum(r.row.total_tokens for r in reps),
-            "usd": sum(r.row.total_usd for r in reps),
-            "wall_ms": sum(r.row.total_wall_ms for r in reps),
-        },
+    totals = {
+        "tokens": sum(r.row.total_tokens for r in reps),
+        "usd": sum(r.row.total_usd for r in reps),
+        "wall_ms": sum(r.row.total_wall_ms for r in reps),
     }
-    if image_role == "v0a":
+    summary: dict = {"per_rep": per_rep, "totals": totals}
+    if totals["tokens"] == 0:
         summary["note"] = (
-            "v0a/base image: tokens & USD are 0 (no usage-logging patch); wall-clock only."
+            "tokens are 0 — the run image has no usage-logging patch (pre-patch base image); "
+            "wall-clock only."
+        )
+    if totals["usd"] == 0:
+        summary["note_usd"] = (
+            "USD is 0 — token→USD pricing not yet applied (needs the price table)."
         )
     return summary
 
@@ -271,7 +275,7 @@ def write_record(
     _atomic_write_text(root / "aggregate.md", render_aggregate_md(distributions, config))
     _atomic_write_text(
         root / "cost.json",
-        json.dumps(_cost_summary(reps, config["image_role"]), indent=2, sort_keys=True) + "\n",
+        json.dumps(_cost_summary(reps), indent=2, sort_keys=True) + "\n",
     )
     return root
 

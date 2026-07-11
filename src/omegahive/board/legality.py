@@ -199,7 +199,7 @@ def _e_created(board: Board, ev: Event) -> None:
         return
     board.tasks[tid] = TaskState(
         task_id=tid, status="created", task_type=ev.payload.get("task_type"),
-        ready_when=ev.payload.get("ready_when"))
+        ready_when=ev.payload.get("ready_when"), title=ev.payload.get("title", ""))
     _change(board.tasks[tid], ev)
 
 
@@ -208,6 +208,14 @@ def _e_dependency_added(board: Board, ev: Event) -> None:
     if here is None:
         return
     here.depends_on.add(ev.payload["depends_on"])
+    _stamp(here, ev)
+
+
+def _e_priority_set(board: Board, ev: Event) -> None:
+    here = _task(board, ev.task_id)
+    if here is None:
+        return
+    here.priority = ev.payload["priority"]
     _stamp(here, ev)
 
 
@@ -222,6 +230,8 @@ def _e_assigned(board: Board, ev: Event) -> None:
     here.status = "assigned"
     here.owner = ev.payload["worker"]
     here.tried_by.add(ev.payload["worker"])
+    here.blocker_reason = None
+    here.blocker_needs = None
     _change(here, ev)
 
 
@@ -232,6 +242,8 @@ def _e_reassigned(board: Board, ev: Event) -> None:
     here.status = "assigned"
     here.owner = ev.payload["to"]
     here.tried_by.add(ev.payload["to"])
+    here.blocker_reason = None
+    here.blocker_needs = None
     _change(here, ev)
 
 
@@ -241,6 +253,8 @@ def _e_rejected(board: Board, ev: Event) -> None:
         return
     here.status = "ready"
     here.owner = None  # re-enters the pool; tried_by preserved
+    here.blocker_reason = None
+    here.blocker_needs = None
     _change(here, ev)
 
 
@@ -249,6 +263,8 @@ def _e_accepted(board: Board, ev: Event) -> None:
     if here is None or here.status != "assigned":
         return
     here.status = "in_progress"
+    here.blocker_reason = None
+    here.blocker_needs = None
     _change(here, ev)
 
 
@@ -257,6 +273,8 @@ def _e_blocked(board: Board, ev: Event) -> None:
     if here is None or here.status != "in_progress":
         return
     here.status = "blocked"
+    here.blocker_reason = ev.payload["reason"]
+    here.blocker_needs = ev.payload.get("needs")
     _change(here, ev)
 
 
@@ -265,6 +283,8 @@ def _e_unblocked(board: Board, ev: Event) -> None:
     if here is None or here.status != "blocked":
         return
     here.status = "in_progress"
+    here.blocker_reason = None
+    here.blocker_needs = None
     _change(here, ev)
 
 
@@ -274,6 +294,8 @@ def _e_result_posted(board: Board, ev: Event) -> None:
         return
     here.status = "in_review"
     here.latest_review = None  # a fresh result awaits a fresh verdict
+    here.blocker_reason = None
+    here.blocker_needs = None
     refs = ev.payload.get("artifact_refs") or []
     here.last_result_ref = refs[0]["ref"] if refs else None
     _change(here, ev)
@@ -300,6 +322,8 @@ def _e_done(board: Board, ev: Event) -> None:
     if here is None:
         return
     here.status = "done"
+    here.blocker_reason = None
+    here.blocker_needs = None
     _change(here, ev)
 
 
@@ -310,6 +334,8 @@ def _e_reopened(board: Board, ev: Event) -> None:
     here.status = "reopened"
     here.owner = None
     here.latest_review = None  # last_result_ref preserved (partial work kept)
+    here.blocker_reason = None
+    here.blocker_needs = None
     _change(here, ev)
 
 
@@ -318,6 +344,8 @@ def _e_failed(board: Board, ev: Event) -> None:
     if here is None or here.status not in ("in_progress", "blocked"):
         return
     here.status = "failed"
+    here.blocker_reason = None
+    here.blocker_needs = None
     _change(here, ev)
 
 
@@ -352,6 +380,7 @@ def _is(field: str, value: str) -> Callable[[dict], bool]:
 RULES: list[LegalityRule] = [
     LegalityRule("task.created", None, _g_created, _e_created),
     LegalityRule("dependency.added", None, _g_needs_task, _e_dependency_added),
+    LegalityRule("priority.set", None, _g_needs_task, _e_priority_set),
     LegalityRule("worker.registered", None, _g_worker_registered, _e_worker_registered),
     LegalityRule("task.assigned", None, _g_assigned, _e_assigned),
     LegalityRule("task.reassigned", None, _g_reassigned, _e_reassigned),
@@ -374,9 +403,13 @@ RULES: list[LegalityRule] = [
 # Non-board events: default-allow, no stateful effect. Everything stateful is
 # default-deny (no matching rule + not whitelisted -> refused).
 NON_BOARD_WHITELIST: set[str] = {
-    "goal.received", "priority.set", "note.posted", "task.progress",
+    "goal.received", "note.posted", "task.progress",
     "question.asked", "metric.threshold_crossed", "promotion.created", "promotion.suppressed",
     "gateway.rejected",  # recorded refusal feedback (§5); no board effect
+    # advisory report against a task (worker/human); no state effect, so no rule. Not in
+    # WORKER_OWNED_EMITS, so deliberately not owner-restricted — a `finding` may target a
+    # task the reporter does not own. kind + ref shape are validated at the payload model.
+    "task.reported",
 }
 
 # Worker emits whose legality additionally requires the worker to currently own the

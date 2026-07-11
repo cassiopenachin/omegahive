@@ -284,3 +284,35 @@ def test_pin_plan_revised_cancel_cancels_all(make_gateway):
     gateway.emit(actor=PLANNER, event_type="plan.revised",
                  payload={"action": "cancel", "reason": "scrapped"})
     assert all(s.status == "cancelled" for s in board_of(store).tasks.values())
+
+
+# --- task.reported: advisory, non-board, not owner-restricted ---------------
+
+_REF = "reports/pr.md@" + "abcdef12" * 5
+
+
+def test_pin_reported_is_inert_and_not_owner_restricted(make_gateway):
+    """An accepted report leaves every task's state exactly as it was (no fold branch on
+    kind), and a worker may report on a task it does not own (a finding)."""
+    gateway, store = make_gateway()
+    _plan(gateway)
+    _assign_accept(gateway)                        # t1 in_progress, owner w1
+    before = {tid: ts.status for tid, ts in board_of(store).tasks.items()}
+    res = attempt(gateway, actor=W2, event_type="task.reported", task_id="t1",
+                  payload={"ref": _REF, "kind": "finding"})   # w2 does not own t1
+    assert res is not None                         # accepted despite non-ownership
+    after = {tid: ts.status for tid, ts in board_of(store).tasks.items()}
+    assert after == before                         # inert: board unchanged
+
+
+def test_pin_unauthorized_report_is_recorded(make_gateway):
+    """A role without the grant (coordinator) is refused with a recorded gateway.rejected;
+    the report itself never lands."""
+    gateway, store = make_gateway()
+    _plan(gateway)
+    res = attempt(gateway, actor=COORD, event_type="task.reported", task_id="t1",
+                  payload={"ref": _REF, "kind": "progress"})
+    assert res is None
+    rejections = [e for e in store.read_run() if e.event_type == "gateway.rejected"]
+    assert any(r.payload.get("code") == "NOT_AUTHORIZED" for r in rejections)
+    assert "task.reported" not in [e.event_type for e in store.read_run()]

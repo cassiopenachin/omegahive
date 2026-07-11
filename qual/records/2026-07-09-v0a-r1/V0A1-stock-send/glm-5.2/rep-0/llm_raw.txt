@@ -1,0 +1,3 @@
+[LLM_RAW] 'query user goals\nquery OmegaClaw context\nquery ongoing tasks\npin Initialization: Ready for user instructions\nsend OmegaClaw online. Ready to assist.'
+[LLM_RAW] "query OmegaClaw identity\nquery user objective\npin Objective: Establish user goals and introduce OmegaClaw as agentic assistant\nsend Hi, I'm OmegaClaw — your autonomous agentic harness, ready to learn your goals and assist."
+[LLM_RAW] 'query pinned objective\nquery OmegaClaw context\nquery user goals\nquery ongoing tasks\nsend I have our initial objective pinned: "Establish user goals and introduce OmegaClaw as agentic assistant." No specific user goals or ongoing tasks recorded yet. Ready to learn what you\'d like to work on.'

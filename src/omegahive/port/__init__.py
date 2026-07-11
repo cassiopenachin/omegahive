@@ -8,6 +8,7 @@ from ..gateway import Accepted, Rejected
 from .errors import PortInfraError
 from .keys import BasisStore, derive_key
 from .port import HiveCoordinatorPort, open_run
+from .render import is_coordinator_rejection, render_view
 from .wire import (
     AssignOp,
     BatchOp,
@@ -16,6 +17,7 @@ from .wire import (
     Op,
     PortView,
     PruneOp,
+    RawOp,
     ReassignOp,
     ReopenOp,
 )
@@ -34,7 +36,10 @@ __all__ = [
     "CloseOp",
     "ReopenOp",
     "PruneOp",
+    "RawOp",
     "BatchOp",
     "derive_key",
     "BasisStore",
+    "render_view",
+    "is_coordinator_rejection",
 ]
