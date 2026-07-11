@@ -406,6 +406,10 @@ NON_BOARD_WHITELIST: set[str] = {
     "goal.received", "note.posted", "task.progress",
     "question.asked", "metric.threshold_crossed", "promotion.created", "promotion.suppressed",
     "gateway.rejected",  # recorded refusal feedback (§5); no board effect
+    # advisory report against a task (worker/human); no state effect, so no rule. Not in
+    # WORKER_OWNED_EMITS, so deliberately not owner-restricted — a `finding` may target a
+    # task the reporter does not own. kind + ref shape are validated at the payload model.
+    "task.reported",
 }
 
 # Worker emits whose legality additionally requires the worker to currently own the

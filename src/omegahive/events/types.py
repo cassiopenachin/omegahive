@@ -9,6 +9,7 @@ split. PAYLOADS must cover every event_type any role is authorized to emit;
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -58,6 +59,8 @@ class PrioritySet(BaseModel):
 class PlanRevised(BaseModel):
     action: Literal["cancel", "re_decompose"]
     reason: str | None = None
+    # Additive: the decision this plan mutation traces back to (recorded, never gated).
+    decision_ref: str | None = None
 
 
 # --- Shared nested ---
@@ -83,12 +86,16 @@ class TaskReassigned(BaseModel):
 
 class TaskEscalated(BaseModel):
     reason: str
+    # Additive: the decision this escalation traces back to (recorded, never gated).
+    decision_ref: str | None = None
 
 
 class TaskStatusOverride(BaseModel):
     # status stays a free str; the done-gate (gateway), not the model, constrains "done".
     status: str
     reason: str | None = None
+    # Additive: the decision this override traces back to (recorded, never gated).
+    decision_ref: str | None = None
 
 
 class NotePosted(BaseModel):
@@ -98,6 +105,8 @@ class NotePosted(BaseModel):
 class TaskPruned(BaseModel):
     # Coordinator early-stops a not-done branch before its join fires (§3).
     reason: str | None = None
+    # Additive: the decision this prune traces back to (recorded, never gated).
+    decision_ref: str | None = None
 
 
 # --- Worker payloads ---
@@ -119,6 +128,9 @@ class TaskProgress(BaseModel):
 class TaskBlocked(BaseModel):
     reason: str
     needs: str | None = None
+    # Additive: links this block to the question that caused it, as ReviewPassed.ref_result
+    # links a review to its result (recorded, never gated).
+    ref_report: str | None = None
 
 
 class TaskUnblocked(BaseModel):
@@ -136,6 +148,36 @@ class TaskFailed(BaseModel):
 
 class QuestionAsked(BaseModel):
     text: str  # recipient travels in the envelope, not the payload
+
+
+# --- Reporting payload (worker + human tiers) ---
+
+# A ref pins a workspace artifact to a pushed commit: `path@<git-sha>` with a
+# 7–40-char lowercase-hex sha (abbreviated or full). Shape is validated here at the
+# payload model — the store's structural validation is the enforcement point.
+# `.+` is greedy and excludes newlines, so it spans a path that itself contains `@`
+# (e.g. node_modules/@scope/x) and backtracks to the final `@<sha>`; fullmatch anchors
+# both ends, rejecting any embedded or trailing newline (`$` would allow a trailing one).
+_REF_SHAPE = re.compile(r".+@[0-9a-f]{7,40}")
+
+
+class TaskReported(BaseModel):
+    """An advisory report against a task, emitted by a worker (a session reporting on
+    its work) or a human (answer-reports, steering notes). Non-board: it carries no
+    state effect, so its `kind` is an advisory label only — nothing folds or gates on
+    it. `actor` and `task_id` travel in the envelope, not the payload."""
+
+    ref: str
+    kind: Literal["progress", "result", "question", "finding", "reflection"]
+
+    @field_validator("ref")
+    @classmethod
+    def _ref_shape(cls, v: str) -> str:
+        if not _REF_SHAPE.fullmatch(v):
+            raise ValueError(
+                f"ref must match 'path@<git-sha>' (7–40 hex chars), got {v!r}"
+            )
+        return v
 
 
 # --- Instrument payloads ---
@@ -205,6 +247,8 @@ PAYLOADS: dict[str, type[BaseModel]] = {
     "task.result_posted": TaskResultPosted,
     "task.failed": TaskFailed,
     "question.asked": QuestionAsked,
+    # reporting (worker + human)
+    "task.reported": TaskReported,
     # instrument
     "review.passed": ReviewPassed,
     "review.failed": ReviewFailed,
