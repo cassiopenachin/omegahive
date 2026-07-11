@@ -1,0 +1,73 @@
+{
+  "date": "2026-07-09",
+  "config_version": "v4-1",
+  "cells": {
+    "L0": {
+      "kind": "greedy",
+      "knowledge": null,
+      "model": null
+    },
+    "L1": {
+      "kind": "vanilla",
+      "knowledge": null,
+      "model": "anthropic/claude-opus-4-8"
+    },
+    "L2": {
+      "kind": "vanilla",
+      "knowledge": null,
+      "model": "openrouter/z-ai/glm-5.2"
+    },
+    "L3": {
+      "kind": "vanilla",
+      "knowledge": "coordination-kb-v1",
+      "model": "openrouter/z-ai/glm-5.2"
+    }
+  },
+  "seed_set": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19
+  ],
+  "seeds_sha": "899bcbac901eb4ea4dfc6020d2ba1e8039cf2c352f7367c60ca5028c51785758",
+  "caps": {
+    "timeout": 60,
+    "max_ops": 2000,
+    "max_llm_calls": 40
+  },
+  "sampling": {
+    "temperature": 0,
+    "max_output_tokens": 1024,
+    "unsupported_params": "dropped via litellm.drop_params; the Anthropic 4.8-family (L1 = Opus 4.8) rejects temperature and runs at provider default -> L1 is stochastic; OpenRouter cells (L2/L3 = GLM 5.2) honor temperature=0. Absorbed by 20-seed aggregation + the section-7 boundary-replication rule."
+  },
+  "kb_hash": "91cfdfca4d3e2d1ad34f42b136463dad7d10547042afbc572964577c9e506f86",
+  "persona_hash": "f3e557d43639707bbebe841110c01c308b6db002747946319062829476eb1200",
+  "catalog_hash": "3c0701dcf1f239793301dbb284a640ff8236c99d36e08234493786c965a80e06",
+  "price_table": {
+    "path": "ladder/pricing/price-table-2026-07-09.json",
+    "sha": "591eb29327185f8e2c0a8200aec081ec0f47a97340b01c2099daa18d5cd319bd",
+    "date": "2026-07-09"
+  },
+  "criteria": {
+    "delta_seeds": 2,
+    "cheaper": 0.8,
+    "cost_approx": 0.15,
+    "boundary_cost_pp": 5
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "n": 20,
+  "completion_rate": 1.0,
+  "prune_rate": 0.0,
+  "false_prunes": 0,
+  "premature_prunes": 0,
+  "wasted_after_evidence_mean": 1.95,
+  "wasted_after_evidence_median": 2.0,
+  "decisions_mean": 20.8,
+  "time_to_prune_n": 0,
+  "time_to_prune_mean": null,
+  "loss_buckets": {},
+  "cost_usd_total": 0.0,
+  "cost_usd_mean": 0.0,
+  "cost_tokens_total": 0
+}

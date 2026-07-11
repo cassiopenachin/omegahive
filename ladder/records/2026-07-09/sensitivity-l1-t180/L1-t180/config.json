@@ -1,0 +1,105 @@
+{
+  "cell": "L1",
+  "coordinator": "vanilla",
+  "knowledge": null,
+  "model": "anthropic/claude-opus-4-8",
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "schedules": [
+    {
+      "seed": 0,
+      "a_recovers": false,
+      "a_success_attempt": null,
+      "b_success_attempt": 3,
+      "evidence_k": 3,
+      "roster": [
+        "w1",
+        "w2",
+        "w3",
+        "w4",
+        "w5",
+        "w6",
+        "w7",
+        "w8",
+        "w9"
+      ]
+    },
+    {
+      "seed": 1,
+      "a_recovers": false,
+      "a_success_attempt": null,
+      "b_success_attempt": 2,
+      "evidence_k": 3,
+      "roster": [
+        "w1",
+        "w2",
+        "w3",
+        "w4",
+        "w5",
+        "w6",
+        "w7",
+        "w8",
+        "w9"
+      ]
+    },
+    {
+      "seed": 2,
+      "a_recovers": true,
+      "a_success_attempt": 9,
+      "b_success_attempt": 2,
+      "evidence_k": 3,
+      "roster": [
+        "w1",
+        "w2",
+        "w3",
+        "w4",
+        "w5",
+        "w6",
+        "w7",
+        "w8",
+        "w9"
+      ]
+    },
+    {
+      "seed": 3,
+      "a_recovers": false,
+      "a_success_attempt": null,
+      "b_success_attempt": 3,
+      "evidence_k": 3,
+      "roster": [
+        "w1",
+        "w2",
+        "w3",
+        "w4",
+        "w5",
+        "w6",
+        "w7",
+        "w8",
+        "w9"
+      ]
+    },
+    {
+      "seed": 4,
+      "a_recovers": false,
+      "a_success_attempt": null,
+      "b_success_attempt": 2,
+      "evidence_k": 3,
+      "roster": [
+        "w1",
+        "w2",
+        "w3",
+        "w4",
+        "w5",
+        "w6",
+        "w7",
+        "w8",
+        "w9"
+      ]
+    }
+  ]
+}

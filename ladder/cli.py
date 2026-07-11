@@ -55,7 +55,7 @@ def run_cmd(
     if seeds < 1:
         console.print("--seeds must be >= 1")
         raise typer.Exit(1)
-    if CELLS[cell] == "vanilla":
+    if CELLS[cell].kind == "vanilla":
         if model is None:
             console.print(f"cell {cell!r} (vanilla) needs --model")
             raise typer.Exit(1)
@@ -64,7 +64,7 @@ def run_cmd(
     rows = run_cell(cell, seed_list, timeout=timeout, model=model, max_llm_calls=max_llm_calls)
     agg = aggregate(rows)
 
-    table = Table(title=f"ladder {cell} ({CELLS[cell]}) — {len(rows)} seeds")
+    table = Table(title=f"ladder {cell} ({CELLS[cell].kind}) — {len(rows)} seeds")
     for col in ("seed", "done", "decisions", "A-fail", "wasted", "pruned", "cost$"):
         table.add_column(col, justify="right")
     for r in rows:
@@ -110,11 +110,77 @@ def smoke_cmd(
     console.print(f"[bold]{verdict}[/]")
 
 
+@app.command("grid")
+def grid_cmd(
+    config: str = typer.Option(..., "--config", help="frozen run-config JSON"),
+    out: str = typer.Option(..., "--out", help="records output dir"),
+) -> None:
+    """Run the funded vanilla grid (L0, then L1/L2/L3 seed-major interleaved) per a frozen
+    run-config. Refuses to run unless `validate-config` is clean."""
+    from .freeze import validate_config_file
+    problems = validate_config_file(config)
+    if problems:
+        for p in problems:
+            console.print(f"[bold]FAIL[/] {p}")
+        console.print("run-config does not validate; refusing to run")
+        raise typer.Exit(1)
+    cfg = json.loads(Path(config).read_text())
+    for cell in cfg["cells"].values():
+        if cell.get("kind") == "vanilla" and cell.get("model"):
+            _require_key(cell["model"])
+    from .grid import run_grid
+    results = run_grid(cfg, out=out)
+    aggs = {name: aggregate(res["rows"]) for name, res in results.items()}
+    for name, agg in aggs.items():
+        console.print(f"{name}: completion={agg.get('completion_rate', 0):.2f} "
+                      f"cost_usd={agg.get('cost_usd_total', 0):.4f} n={agg.get('n', 0)}")
+    record = _write_report(Path(out), cfg, aggs)
+    console.print(f"records + vanilla-half record ({record}) written to {out}")
+
+
+def _write_report(out: Path, cfg: dict, aggs: dict) -> Path:
+    """Render the §7 vanilla-half record + interim gate recommendation beside the records — the
+    deliverable, produced by the tool (not a side script), so a grid run always emits it."""
+    from .report import render
+    models = {name: c.get("model") for name, c in cfg["cells"].items()}
+    record = out / "vanilla-half-record.md"
+    record.write_text(render(aggs, models, cfg) + "\n")
+    return record
+
+
+@app.command("report")
+def report_cmd(
+    records: str = typer.Option(..., "--records", help="a grid records dir "
+                               "(holds run-config.json and <cell>/aggregate.json)"),
+) -> None:
+    """Regenerate the vanilla-half record + interim gate recommendation from a grid records dir."""
+    rec = Path(records)
+    cfg = json.loads((rec / "run-config.json").read_text())
+    aggs = {name: json.loads((rec / name / "aggregate.json").read_text())
+            for name in cfg["cells"] if (rec / name / "aggregate.json").exists()}
+    console.print(f"wrote {_write_report(rec, cfg, aggs)}")
+
+
+@app.command("validate-config")
+def validate_config_cmd(
+    path: str = typer.Argument(..., help="frozen run-config JSON"),
+) -> None:
+    """The §8 freeze validity gate: print every problem (exit 1 if any), else 'frozen'."""
+    from .freeze import validate_config_file
+    problems = validate_config_file(path)
+    if problems:
+        for p in problems:
+            console.print(f"[bold]FAIL[/] {p}")
+        raise typer.Exit(1)
+    console.print("[bold]frozen[/] — run-config validates")
+
+
 def _write_record(path: Path, cell: str, seed_list: list[int], rows, agg,
                   model: str | None) -> None:
     path.mkdir(parents=True, exist_ok=True)
     (path / "config.json").write_text(json.dumps({
-        "cell": cell, "coordinator": CELLS[cell], "model": model, "seeds": seed_list,
+        "cell": cell, "coordinator": CELLS[cell].kind, "knowledge": CELLS[cell].knowledge,
+        "model": model, "seeds": seed_list,
         "schedules": [asdict(schedule_for(s)) for s in seed_list],
     }, indent=2))
     (path / "rows.json").write_text(json.dumps([row_to_dict(r) for r in rows], indent=2))

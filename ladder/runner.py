@@ -16,6 +16,7 @@ from __future__ import annotations
 import multiprocessing as mp
 import queue as _queue
 import uuid
+from dataclasses import dataclass
 
 from omegahive.board.reducer import Board
 from omegahive.clock import LogicalClock
@@ -30,7 +31,23 @@ from .metrics import LadderRow, compute_row
 from .seeds import schedule_for
 from .workers import ScheduledWorker
 
-CELLS = {"L0": "greedy", "L1": "vanilla"}   # R0 greedy control; R1 vanilla LLM
+
+@dataclass(frozen=True)
+class Cell:
+    """A grid cell's *structural* identity (§5.3): rung kind + knowledge condition. The model
+    id is a run parameter (frozen run-config / --model override), not part of the cell code."""
+    kind: str                     # "greedy" | "vanilla"
+    knowledge: str | None = None  # KB name for a KB cell (e.g. "coordination-kb-v1")
+
+
+# The vanilla-half grid (§5.3): L0 greedy control; L1/L2 vanilla (strong/cheap, no KB);
+# L3 vanilla + KB in the system prompt. Model ids come from the frozen run-config at grid time.
+CELLS: dict[str, Cell] = {
+    "L0": Cell("greedy"),
+    "L1": Cell("vanilla"),
+    "L2": Cell("vanilla"),
+    "L3": Cell("vanilla", knowledge="coordination-kb-v1"),
+}
 
 _ZERO_COST = {"calls": 0, "tokens_in": 0, "tokens_out": 0, "usd": 0.0}
 
@@ -42,32 +59,51 @@ def _terminal(board: Board | None) -> bool:
     return tail is not None and tail.status == "done"
 
 
+def _sampling_kwargs(sampling: dict | None) -> dict:
+    """Map a frozen run-config `sampling` pin onto LLMClient kwargs so the pin is load-bearing
+    (not decorative). None → the client's own defaults. Unknown keys (e.g. the `unsupported_params`
+    provenance note) are ignored; the Anthropic 4.8-family drops temperature via litellm anyway."""
+    if not sampling:
+        return {}
+    return {"temperature": sampling.get("temperature", 0.0),
+            "max_tokens": sampling.get("max_output_tokens", 1024)}
+
+
 def _make_coordinator(cell: str, roster: tuple[str, ...], *, model: str | None,
-                      max_llm_calls: int | None):
+                      max_llm_calls: int | None, sampling: dict | None = None):
     """The reactor for a cell. Greedy is the sim `Coordinator`; vanilla is the LLM-backed
-    `VanillaCoordinator` (lazy-imported so litellm loads only for an L1 run)."""
-    kind = CELLS.get(cell)
-    if kind == "greedy":
+    `VanillaCoordinator` (persona + op-sheet [+ KB for a knowledge cell]). LLM/KB modules are
+    lazy-imported so an L0 run (and test collection) never pays litellm's import cost."""
+    spec = CELLS.get(cell)
+    if spec is None:
+        raise ValueError(f"cell {cell!r} has no coordinator")
+    if spec.kind == "greedy":
         return Coordinator("coordinator", workers=list(roster), thresholds={})
-    if kind == "vanilla":
+    if spec.kind == "vanilla":
         from qual.loader import QUAL_ROOT, load_catalog
 
+        from .knowledge import load_kb, persona_blocks
         from .llm import LLMClient
         from .vanilla import VanillaCoordinator
         if model is None:
             raise ValueError(f"cell {cell!r} (vanilla) requires a model")
         catalog = load_catalog(QUAL_ROOT / "catalogs" / "board-ops-v2.yaml")
-        return VanillaCoordinator("coordinator", llm=LLMClient(model), catalog=catalog,
+        kb = load_kb(spec.knowledge) if spec.knowledge else None
+        return VanillaCoordinator("coordinator",
+                                  llm=LLMClient(model, **_sampling_kwargs(sampling)),
+                                  catalog=catalog, persona=persona_blocks(), knowledge=kb,
                                   max_llm_calls=max_llm_calls)
-    raise ValueError(f"cell {cell!r} has no coordinator")
+    raise ValueError(f"cell {cell!r} has unknown kind {spec.kind!r}")
 
 
 # --- process entrypoints (module-level so they pickle under any start method) ---
 
 def _run_coordinator(cell: str, run_id: str, roster: tuple[str, ...], url: str | None,
                      timeout: float, max_ops: int, model: str | None,
-                     max_llm_calls: int | None, report: mp.Queue) -> None:
-    coord = _make_coordinator(cell, roster, model=model, max_llm_calls=max_llm_calls)
+                     max_llm_calls: int | None, sampling: dict | None,
+                     report: mp.Queue) -> None:
+    coord = _make_coordinator(cell, roster, model=model, max_llm_calls=max_llm_calls,
+                              sampling=sampling)
     _board, stop = drive(coord, run_id, "coordinator", "coordinator",
                          url=url, is_terminal=_terminal, timeout=timeout, max_ops=max_ops)
     # the coordinator carries max_ops (stop attributes the cap) and its own LLM cost (0 for greedy)
@@ -151,7 +187,7 @@ def _spawn_and_collect(run_id: str, roster: tuple[str, ...], seed: int, url: str
 
 def run_seed(cell: str, seed: int, *, url: str | None = None, timeout: float = 60.0,
              max_ops: int = 2000, nonce: str | None = None, model: str | None = None,
-             max_llm_calls: int | None = None) -> LadderRow:
+             max_llm_calls: int | None = None, sampling: dict | None = None) -> LadderRow:
     # A fresh run id per sweep: reusing one would let actors re-observe a prior run's
     # history on their first (full-snapshot) read and re-emit against it.
     nonce = nonce or uuid.uuid4().hex[:8]
@@ -160,13 +196,16 @@ def run_seed(cell: str, seed: int, *, url: str | None = None, timeout: float = 6
     seed_fork_board(run_id, url=url, roster=sched.roster)
     events, stop_reason, cost = _spawn_and_collect(
         run_id, sched.roster, seed, url, timeout, _run_coordinator,
-        (cell, run_id, sched.roster, url, timeout, max_ops, model, max_llm_calls))
+        (cell, run_id, sched.roster, url, timeout, max_ops, model, max_llm_calls, sampling))
     return compute_row(events, sched, stop_reason=stop_reason,
-                       cost_tokens=cost["tokens_in"] + cost["tokens_out"], cost_usd=cost["usd"])
+                       cost_tokens=cost["tokens_in"] + cost["tokens_out"],
+                       cost_tokens_in=cost["tokens_in"], cost_tokens_out=cost["tokens_out"],
+                       cost_usd=cost["usd"])
 
 
 def run_cell(cell: str, seeds: list[int], *, url: str | None = None, timeout: float = 60.0,
-             model: str | None = None, max_llm_calls: int | None = None) -> list[LadderRow]:
+             model: str | None = None, max_llm_calls: int | None = None,
+             sampling: dict | None = None) -> list[LadderRow]:
     nonce = uuid.uuid4().hex[:8]   # one fresh sweep id shared across its seeds
     return [run_seed(cell, s, url=url, timeout=timeout, nonce=nonce, model=model,
-                     max_llm_calls=max_llm_calls) for s in seeds]
+                     max_llm_calls=max_llm_calls, sampling=sampling) for s in seeds]
