@@ -222,9 +222,18 @@ def emit_cmd(
     """Emit one governed event through the port — the human/worker write path.
 
     Routed through the same gateway that governs every agent (no admin side-door). The
-    port derives the idempotency key by the standard content+basis rule, so re-emitting
-    an identical report is a no-op (one event). A rejection prints the gateway's code and
-    reason; a malformed payload (e.g. a bad task.reported ref) prints a validation error.
+    caller asserts its own --role; the gateway enforces per-role authority, but the CLI
+    does not authenticate identity — it is the trusted operator's tool on a loopback /
+    tailnet host, not an authenticated boundary.
+
+    The port derives the idempotency key by the standard content+basis rule with no prior
+    read, so an identical (run, actor, type, payload, task) emitted again returns the
+    original event — the CLI reports that as `already recorded (idempotent)`, never as a
+    fresh write, so a deduped no-op is never mistaken for a state change. A genuinely new
+    decision (e.g. a re-emit that should take effect) varies the payload.
+
+    A rejection prints the gateway's code and reason; a malformed payload (e.g. a bad
+    task.reported ref) prints a validation error.
 
     Session convention: every launched Code session is a registered worker — its actor id
     is stated in its work order — so it reports under `--role worker --actor <its-id>`.
@@ -245,6 +254,11 @@ def emit_cmd(
         raise typer.Exit(code=1)
 
     with connect() as conn:
+        # head before our emit, in its own committed transaction (a bare read would strand
+        # one and turn the emit's per-op commit into an uncommitted savepoint). Comparing
+        # the returned seq to it distinguishes a fresh append from an idempotent dedup.
+        with conn.transaction():
+            head_before = EventLog(conn, LogicalClock(0), run_id, server_time=True).head_seq()
         port = HiveCoordinatorPort(actor, run_id, conn)
         try:
             result = port.emit(RawOp(event_type, data, task_id))
@@ -261,7 +275,12 @@ def emit_cmd(
     if isinstance(result, Rejected):
         console.print(f"rejected: {result.code} · {result.reason}")
         raise typer.Exit(code=1)
-    console.print(f"emitted {event_type} · seq {result.event.seq}")
+    # a returned event at or below the pre-emit head is a content+basis dedup, not a new
+    # write — surface that so a repeat is never misread as a fresh state change.
+    deduped = (head_before is not None and result.event.seq is not None
+               and result.event.seq <= head_before)
+    verb = "already recorded (idempotent)" if deduped else "emitted"
+    console.print(f"{verb} · {event_type} · seq {result.event.seq}")
 
 
 @app.command("board-view")

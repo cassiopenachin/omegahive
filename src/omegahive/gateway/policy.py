@@ -79,5 +79,8 @@ class Policy:
                 if ts is not None and ts.owner == agent_id:
                     return True  # own task
             return False
-        # planner and any other role: no read need in M1
+        # planner and any other role: no read need in M1. The human tier is write-only
+        # here by design — humans read via `report`/`board-view` (which fold the log
+        # directly), not through this port filter; port-side human read-visibility lands
+        # with the UI/read-path work (deferred per the bootstrap order's stop-line).
         return False
