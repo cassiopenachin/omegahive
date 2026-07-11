@@ -55,7 +55,8 @@ Rationale: Beastie is NAT'd with no inbound, so the access tool must either hole
 From a phone hotspot (off-LAN, to prove no LAN-dependence):
 
 - [ ] `ssh <deployuser>@beastie.<tailnet-name>.ts.net` succeeds with key auth; password auth confirmed rejected
-- [ ] `git push`/`git pull` against a repo hosted on Beastie succeeds over the SSH transport above
+- [ ] `git push`/`git pull` against a repo hosted on Beastie succeeds over the SSH transport above (the project-workspace bare repo, per `omegahive_hive_native_ops.md` §3, is the real instance to test)
+- [ ] Session persistence: start a Claude Code session inside `tmux` on Beastie, kill the SSH connection, reconnect, `tmux attach` — session alive and resumable (sessions run Beastie-resident during the trip, hive-native-ops §9.1)
 - [ ] Reach the web-UI port (or a `python -m http.server 8443` placeholder) at `beastie.<tailnet-name>.ts.net:8443`
 - [ ] Confirm Postgres is **not** reachable over the tailnet: `nc -zv beastie.<tailnet-name>.ts.net 5432` fails/times out
 - [ ] Reboot Beastie remotely (`sudo reboot` over SSH); confirm tailnet reconnects, sshd comes back, compose stack (linger-enabled) restarts, backup timers are active (`systemctl --user list-timers`)
