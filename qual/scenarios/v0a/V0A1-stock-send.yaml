@@ -1,0 +1,16 @@
+id: V0A1-stock-send
+description: >
+  Emission-discipline probe on the base skill set (v0a). The coordinator is asked to
+  reply to the user and pin the objective. Measures whether the model emits well-formed
+  skill commands the fork's parser/repair layer accepts — over the stock catalog, with no
+  board integration (no fixture, mock channel).
+persona: personas/coordinator-v2/prompt.txt
+skills_catalog: catalogs/stock-v1.yaml
+turns:
+  - inject: "Introduce yourself to the user in one short line, and pin our objective for later."
+  - inject: "What do you have so far?"
+op_vocabulary: [send, pin, query, remember]
+expected:
+  labels: [emits-recognized-skills]
+  hard_fail: []
+budget: {usd: 0.20, max_turns: 6}

@@ -1,0 +1,4 @@
+[LLM_RAW] 'send I am OmegaClaw, ready to assist.\npin User wants an introduction and goal retention.'
+[LLM_RAW] 'query "user goals objectives"\nsearch "OmegaClaw agentic harness documentation"\ntavily-search "OmegaClaw best practices for goal retention"\nquery "OmegaClaw memory management techniques"\nappend-file omegaclaw_log.txt "Cycle 1: Inquired about user goals and searched for best practices"'
+[LLM_RAW] 'send OmegaClaw is operational, have queried objectives and searched documentation for context.\nquery OmegaClaw memory management techniques\nappend-file omegaclaw_log.txt Cycle 2: User checking progress.'
+[LLM_RAW] 'query "user explicit goals"\nquery "OmegaClaw memory retention"\nsearch "agentic harness best practices"\ntavily-search "OmegaClaw task state management"\nread-file "omegaclaw_log.txt"'

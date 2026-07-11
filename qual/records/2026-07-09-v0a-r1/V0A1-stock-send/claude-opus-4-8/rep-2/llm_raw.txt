@@ -1,0 +1,6 @@
+[LLM_RAW] 'query user goals and preferences\nquery current tasks and task state\nquery important skills and context\nepisodes 2026-07-10 00:33:11\npin Starting cycle: querying memory before any action'
+[LLM_RAW] "query user identity and introduction preferences\nquery prior introductions to user\nepisodes 2026-07-09 00:33:14\npin Objective: introduce self to user and keep this objective saved for later\nsend Hi, I'm OmegaClaw, your agentic assistant—here to understand your goals and help you achieve them."
+[LLM_RAW] 'query user long-term goals and recurring themes\nquery introduction message already sent status\nremember Introduced self to user on 2026-07-10 as OmegaClaw agentic assistant'
+[LLM_RAW] 'query user objective and current task state\nquery introduction status and recent progress\nepisodes 2026-07-10 00:33:17\npin Answering user query: What do you have so far?\nquery pinned objectives and goals'
+[LLM_RAW] 'query pinned objective and introduction task details\nquery any user-stated goals beyond introduction\nepisodes 2026-07-10 00:33:13'
+[LLM_RAW] 'query current pinned task state and progress\nquery introduction objective completion status\nsend So far: introduced myself as OmegaClaw and pinned our objective (introduce self, keep saved). Introduction sent and remembered. No further goals set yet—what would you like to work on?'

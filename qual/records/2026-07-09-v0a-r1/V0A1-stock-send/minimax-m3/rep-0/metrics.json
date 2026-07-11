@@ -1,0 +1,25 @@
+{
+  "hard_fail_flags": [],
+  "metrics": {
+    "acting_turns": 0,
+    "batch_order_ok": true,
+    "command_recognition": 1.0,
+    "idle_junk_op_count": 0,
+    "idle_ok": true,
+    "legal_op_rate": 1.0,
+    "model": "minimax-m3",
+    "pin_discipline_ok": false,
+    "post_repair_parse_rate": 1.0,
+    "pre_repair_parse_rate": 1.0,
+    "rejection_identical_retries": 0,
+    "rejection_recovered": true,
+    "rep": 0,
+    "repair_dependency": 0.0,
+    "scenario_id": "V0A1-stock-send",
+    "silent_unknown_count": 0,
+    "total_tokens": 0,
+    "total_usd": 0,
+    "total_wall_ms": 0,
+    "turns_played": 0
+  }
+}

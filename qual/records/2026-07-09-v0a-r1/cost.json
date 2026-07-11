@@ -1,0 +1,106 @@
+{
+  "note_usd": "USD is 0 \u2014 token\u2192USD pricing not yet applied (needs the price table).",
+  "per_rep": [
+    {
+      "model": "glm-5.2",
+      "rep": 0,
+      "scenario": "V0A1-stock-send",
+      "tokens": 4362,
+      "usd": 0.0,
+      "wall_ms": 8000
+    },
+    {
+      "model": "glm-5.2",
+      "rep": 1,
+      "scenario": "V0A1-stock-send",
+      "tokens": 4050,
+      "usd": 0.0,
+      "wall_ms": 13000
+    },
+    {
+      "model": "glm-5.2",
+      "rep": 2,
+      "scenario": "V0A1-stock-send",
+      "tokens": 4144,
+      "usd": 0.0,
+      "wall_ms": 14000
+    },
+    {
+      "model": "minimax-m3",
+      "rep": 0,
+      "scenario": "V0A1-stock-send",
+      "tokens": 0,
+      "usd": 0,
+      "wall_ms": 0
+    },
+    {
+      "model": "minimax-m3",
+      "rep": 1,
+      "scenario": "V0A1-stock-send",
+      "tokens": 1432,
+      "usd": 0.0,
+      "wall_ms": 0
+    },
+    {
+      "model": "minimax-m3",
+      "rep": 2,
+      "scenario": "V0A1-stock-send",
+      "tokens": 1488,
+      "usd": 0.0,
+      "wall_ms": 0
+    },
+    {
+      "model": "qwen3.6-local",
+      "rep": 0,
+      "scenario": "V0A1-stock-send",
+      "tokens": 11093,
+      "usd": 0.0,
+      "wall_ms": 18000
+    },
+    {
+      "model": "qwen3.6-local",
+      "rep": 1,
+      "scenario": "V0A1-stock-send",
+      "tokens": 11647,
+      "usd": 0.0,
+      "wall_ms": 18000
+    },
+    {
+      "model": "qwen3.6-local",
+      "rep": 2,
+      "scenario": "V0A1-stock-send",
+      "tokens": 5646,
+      "usd": 0.0,
+      "wall_ms": 20000
+    },
+    {
+      "model": "claude-opus-4-8",
+      "rep": 0,
+      "scenario": "V0A1-stock-send",
+      "tokens": 13723,
+      "usd": 0.0,
+      "wall_ms": 20000
+    },
+    {
+      "model": "claude-opus-4-8",
+      "rep": 1,
+      "scenario": "V0A1-stock-send",
+      "tokens": 14473,
+      "usd": 0.0,
+      "wall_ms": 18000
+    },
+    {
+      "model": "claude-opus-4-8",
+      "rep": 2,
+      "scenario": "V0A1-stock-send",
+      "tokens": 14639,
+      "usd": 0.0,
+      "wall_ms": 18000
+    }
+  ],
+  "totals": {
+    "tokens": 86697,
+    "usd": 0.0,
+    "wall_ms": 147000
+  }
+}

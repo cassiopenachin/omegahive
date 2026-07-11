@@ -220,3 +220,14 @@ def test_repair_dependency_surfaces_when_raw_fails_but_dispatch_succeeds():
     assert row.pre_repair_parse_rate == 0.0
     assert row.post_repair_parse_rate == 1.0
     assert row.repair_dependency == 1.0   # the repair layer carried the whole turn
+
+
+# --- empty run (regression: must not be certified as passing) -----------------
+
+def test_empty_run_is_hard_fail():
+    # A model that produced no loop cycles at all must fail, not ride the vacuous
+    # "no acting turns -> 1.0 rates" path (validity finding F3).
+    b = build("S1-happy-path-assign", [], turns_played=0)
+    row = _row(S1, b)
+    assert row.turns_played == 0
+    assert "empty-run" in hard_fail_flags(S1.scenario, row)
