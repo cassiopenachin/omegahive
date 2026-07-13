@@ -131,11 +131,25 @@ class NotifierService:
             log.info("sent %d notification(s); cursor -> %s", len(triggers), self._cursor)
         return len(triggers)
 
+    def baseline(self) -> None:
+        """First launch only (no persisted cursor): jump to the current head so the pager
+        fires only on attention events that occur *after* it comes online — it never dumps
+        the pre-existing backlog (a fresh notifier on a long run must not page every past
+        question). A restart carries a cursor and skips this, resuming where it left off."""
+        if self._cursor is not None:
+            return
+        view = self._reader.read(None)
+        self._cursor = view.cursor
+        self._generation = view.generation
+        self._store.save(self._cursor, self._generation)
+        log.info("first launch: baselined to head %s (backlog not replayed)", self._cursor)
+
     def run(self, interval: float, stop: Callable[[], bool] = lambda: False) -> None:
         """Poll forever (until `stop()`), sleeping `interval` seconds between ticks. A
         sender/read error is logged and retried next tick — the service does not die on a
         transient Telegram or DB blip."""
-        log.info("notifier started; resuming from cursor %s", self._cursor)
+        self.baseline()
+        log.info("notifier started; following from cursor %s", self._cursor)
         while not stop():
             try:
                 self.poll_once()

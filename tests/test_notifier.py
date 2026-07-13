@@ -212,6 +212,38 @@ def test_cursor_persists_and_restart_does_not_duplicate(tmp_path):
     assert sender2.sent == []
 
 
+def test_first_launch_baselines_to_head_without_paging_backlog(tmp_path):
+    # A fresh notifier on a run with pre-existing attention events must NOT dump the
+    # backlog — it starts from head and fires only on what happens after it comes online.
+    backlog = [
+        _ev(1, "task.blocked", {"reason": "old"}),
+        _ev(2, "task.reported", {"ref": GOOD_REF, "kind": "question"}),
+        _ev(3, "task.escalated", {"reason": "old"}),
+    ]
+    store = CursorStore(tmp_path / "cursor.json")
+    sender = FakeSender()
+    svc = NotifierService(FakeReader(backlog), sender, store, batch_threshold=3)
+    svc.baseline()
+    assert sender.sent == []               # nothing paged
+    assert store.load().cursor == 3        # jumped to head
+    assert svc.poll_once() == 0            # and there is nothing new to fire
+
+
+def test_restart_after_baseline_skips_baseline(tmp_path):
+    # A second launch (cursor present) does not re-baseline; it resumes and fires on new.
+    store = CursorStore(tmp_path / "cursor.json")
+    store.save(2, 1)  # as if we baselined at seq 2 last run
+    events = [
+        _ev(1, "task.blocked", {"reason": "pre-baseline"}),   # below cursor: never seen
+        _ev(3, "task.reported", {"ref": GOOD_REF, "kind": "question"}),  # new
+    ]
+    sender = FakeSender()
+    svc = NotifierService(FakeReader(events), sender, store, batch_threshold=3)
+    svc.baseline()                 # no-op: cursor already 2
+    assert svc.poll_once() == 1    # only the seq-3 question, not the seq-1 backlog
+    assert len(sender.sent) == 1
+
+
 def test_orphan_task_id_renders_and_never_crashes(tmp_path):
     # task.reported is not existence-gated: an unknown id must render as-is.
     events = [_ev(1, "task.reported", {"ref": GOOD_REF, "kind": "question"},
@@ -349,11 +381,12 @@ def test_token_never_appears_in_errors_or_logs(tmp_path, caplog):
     # and when the service catches + logs the failure, the token stays out of the log
     events = [_ev(1, "task.blocked", {"reason": "a"})]
     store = CursorStore(tmp_path / "cursor.json")
+    store.save(0, None)  # pre-seed a cursor so run() follows (not first-launch baseline)
     svc = NotifierService(FakeReader(events), client, store, batch_threshold=3)
     with caplog.at_level(logging.WARNING, logger="omegahive.notifier"):
         svc.run(interval=0.0, stop=_once())
     assert SENTINEL not in caplog.text
-    assert store.load().cursor is None  # failed send did not advance the cursor
+    assert store.load().cursor == 0  # failed send did not advance the cursor
 
 
 def _once():
