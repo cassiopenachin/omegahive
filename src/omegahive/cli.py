@@ -1,8 +1,10 @@
-"""typer CLI — db-migrate | run | report | emit."""
+"""typer CLI — db-migrate | run | report | emit | notify."""
 
 from __future__ import annotations
 
 import json
+import logging
+import os
 from uuid import uuid4
 
 import typer
@@ -294,6 +296,56 @@ def board_view_cmd(
             console.print(f"no board state for run_id: {run_id}")
             raise typer.Exit(code=1)
         render_board(view.board, console)
+
+
+@app.command("notify")
+def notify_cmd(
+    run_id: str = typer.Option(..., "--run-id", help="run to follow (its attention events)"),
+    interval: float = typer.Option(
+        10.0, "--interval", help="seconds between spine polls (the batch window)"
+    ),
+    batch_threshold: int = typer.Option(
+        3, "--batch-threshold", help=">= this many events in one poll -> a single summary"
+    ),
+    state_file: str = typer.Option(
+        "/var/lib/omegahive/notifier/cursor.json", "--state-file",
+        help="persisted read cursor (the notifier's own volume) — restart resumes here",
+    ),
+) -> None:
+    """Follow the spine's read path and ping Telegram on each attention event —
+    `task.reported(kind=question)`, `task.blocked`, `task.escalated`. Outbound only:
+    no inbound webhook, no ack path, no bot commands.
+
+    The bot token and chat id come from the environment (`TELEGRAM_BOT_TOKEN`,
+    `TELEGRAM_CHAT_ID`) — the per-service secrets env-file (`notifier.env`, deployment
+    spec §4), never a CLI argument (which would surface the token in the process list).
+    The token is never logged and never placed in a message.
+    """
+    from .notifier import CursorStore, NotifierService, PortSpineReader, TelegramClient
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        console.print(
+            "notifier: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set "
+            "(notifier.env in the secrets dir)"
+        )
+        raise typer.Exit(code=1)
+    api_base = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org")
+
+    store = CursorStore(state_file)
+    reader = PortSpineReader(
+        connect,  # a fresh connection per (re)build; the follower outlives a pg restart
+        Actor(role="instrument", id="notifier"),  # read-only observer: full-stream visibility
+        run_id,
+        generation=store.load().generation,
+    )
+    sender = TelegramClient(token, chat_id, api_base=api_base)
+    NotifierService(reader, sender, store, batch_threshold=batch_threshold).run(interval)
 
 
 if __name__ == "__main__":
