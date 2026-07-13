@@ -39,6 +39,12 @@ services:
 
   # --- one-shot tooling services (the omegahive image) ----------------------
 
+  # generic CLI entry: `docker compose run --rm cli <command …>` (the image ENTRYPOINT
+  # is `omegahive`). Alias for daily use: alias omegahive='docker compose run --rm cli'
+  cli:
+    <<: *omega
+    command: ["--help"]
+
   migrate:
     <<: *omega
     command: ["db-migrate"]
