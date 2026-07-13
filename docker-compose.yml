@@ -119,7 +119,10 @@ services:
       - path: ${OMEGAHIVE_SECRETS_DIR}/notifier.env   # TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
         required: false
     volumes:
-      - omegahive-notifier:/var/lib/omegahive/notifier   # persisted read cursor
+      # :z — shared SELinux label so the cursor survives container replacement. Without it,
+      # rootless Podman gives each container a unique MCS category and a *new* notifier
+      # instance is denied read/write to the previous one's cursor file (restart breaks).
+      - omegahive-notifier:/var/lib/omegahive/notifier:z   # persisted read cursor
 
   # Containerized backup: pg_dump of the log store from the pinned postgres image
   # (deployment spec §4/§5). `profiles: [ops]` keeps it out of a plain `up`; the
