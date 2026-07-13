@@ -101,6 +101,29 @@ services:
       - ANTHROPIC_API_KEY
     entrypoint: ["ladder"]
 
+  # The outbound attention-notifier (hive-native ops §2 item 4). A long-running follower
+  # of the spine's *read path* — it pings Telegram on question/blocked/escalated so a
+  # blocking question at 2am operator-time doesn't sit until the next manual check-in.
+  # Outbound only: no inbound port, no ack path. The bot token lives in its own secrets
+  # env-file (deployment spec §4), never in .env / the image / a log / a message. Its read
+  # cursor persists on its own named volume, so a restart resumes without replay or
+  # duplicate. Start it explicitly: `podman compose up -d notifier`.
+  notifier:
+    <<: *omega
+    command: ["notify", "--run-id", "${OMEGAHIVE_RUN_ID:-accept}"]
+    restart: unless-stopped
+    env_file:
+      - .env                                       # OMEGAHIVE_DATABASE_URL (the read path)
+      # required:false so an unconfigured host doesn't break `compose config`/other services;
+      # the notifier fails fast at startup if the token/chat are absent.
+      - path: ${OMEGAHIVE_SECRETS_DIR}/notifier.env   # TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
+        required: false
+    volumes:
+      # :z — shared SELinux label so the cursor survives container replacement. Without it,
+      # rootless Podman gives each container a unique MCS category and a *new* notifier
+      # instance is denied read/write to the previous one's cursor file (restart breaks).
+      - omegahive-notifier:/var/lib/omegahive/notifier:z   # persisted read cursor
+
   # Containerized backup: pg_dump of the log store from the pinned postgres image
   # (deployment spec §4/§5). `profiles: [ops]` keeps it out of a plain `up`; the
   # host systemd timer runs `compose run --rm backup`.
@@ -120,3 +143,4 @@ volumes:
   omegahive-pgdata:
   omegahive-basis:
   omegahive-backups:
+  omegahive-notifier:
