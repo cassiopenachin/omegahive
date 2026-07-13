@@ -44,7 +44,7 @@ hive emit --run-id "$RUN" --role worker --actor sess-demo-1 --type task.unblocke
 echo "== 4. result, review, close"
 RREF='projects/demo/reports/2026-07-10-notes.md@b52e77d1b52e77d1b52e77d1b52e77d1b52e77d1'
 hive emit --run-id "$RUN" --role worker --actor sess-demo-1 --type task.result_posted --task t1 \
-  --payload "{\"artifact_refs\": [{\"ref\": \"$RREF\"}]}"
+  --payload "{\"artifact_refs\": [{\"ref\": \"$RREF\", \"quality\": \"ok\"}]}"
 hive emit --run-id "$RUN" --role instrument --actor operator --type review.passed --task t1 \
   --payload "{\"ref_result\": \"$RREF\"}"
 hive emit --run-id "$RUN" --role coordinator --actor operator --type task.status_override --task t1 \

@@ -113,7 +113,7 @@ Board: `t1 blocked (needs decision)`. Your phone buzzes (the notifier fires on `
 
 ```bash
 omegahive emit --run-id demo --role worker --actor sess-demo-1 --type task.result_posted --task t1 \
-  --payload '{"artifact_refs": [{"ref": "projects/demo/reports/2026-07-10-notes.md@b52e77d"}]}'
+  --payload '{"artifact_refs": [{"ref": "projects/demo/reports/2026-07-10-notes.md@b52e77d", "quality": "ok"}]}'
 omegahive emit --run-id demo --role instrument --actor operator --type review.passed --task t1 \
   --payload '{"ref_result": "projects/demo/reports/2026-07-10-notes.md@b52e77d"}'
 omegahive emit --run-id demo --role coordinator --actor operator --type task.status_override --task t1 \
