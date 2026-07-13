@@ -14,6 +14,7 @@ fresh 2am alerts) and persists the new generation.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 from collections.abc import Callable
@@ -24,10 +25,10 @@ from psycopg import OperationalError
 from ..events.envelope import Actor
 from ..port import HiveCoordinatorPort
 from ..port.wire import PortView
-from .cursor import CursorState, CursorStore
+from .cursor import CursorStore
 from .events import Notification, notification_from
 from .format import render_batch, render_one
-from .telegram import Sender
+from .telegram import Sender, TelegramError
 
 log = logging.getLogger("omegahive.notifier")
 
@@ -57,6 +58,10 @@ class PortSpineReader:
         self._build()
 
     def _build(self) -> None:
+        old = getattr(self, "_conn", None)
+        if old is not None:
+            with contextlib.suppress(Exception):
+                old.close()  # don't leak the dead connection on reconnect
         self._conn = self._connect()
         self._port = HiveCoordinatorPort(
             self._actor, self._run_id, self._conn, generation=self._generation
@@ -89,7 +94,7 @@ class NotifierService:
         self._reader = reader
         self._sender = sender
         self._store = cursor_store
-        self._batch_threshold = batch_threshold
+        self._batch_threshold = max(1, batch_threshold)  # a burst is >= 1 event, never 0
         state = cursor_store.load()
         self._cursor = state.cursor
         self._generation = state.generation
@@ -115,21 +120,45 @@ class NotifierService:
             n for e in view.events if (n := notification_from(e)) is not None
         ]
 
-        if len(triggers) >= self._batch_threshold:
-            # One summary for the whole burst; advance past all of them together.
-            self._sender.send(render_batch(triggers))
-        else:
-            # One message each, advancing the cursor per delivered event so a failure
-            # partway through never re-sends the ones already delivered.
-            for n in triggers:
-                self._sender.send(render_one(n))
-                self._advance(n.seq)
+        if not triggers:
+            # Nothing to page; just record that we observed up to head.
+            self._advance(view.cursor)
+            return 0
 
-        # Advance to head so trailing non-trigger events aren't re-scanned next tick.
-        self._advance(view.cursor)
-        if triggers:
-            log.info("sent %d notification(s); cursor -> %s", len(triggers), self._cursor)
+        delivered = 0
+        if len(triggers) >= self._batch_threshold:
+            # One summary for the whole burst; advance past all of them together (a transient
+            # failure raises out and holds the cursor for a retry next tick).
+            if self._send(render_batch(triggers), what=f"summary of {len(triggers)} events"):
+                delivered = len(triggers)
+            self._advance(view.cursor)
+        else:
+            # One message each, advancing the cursor per delivered (or permanently-dropped)
+            # event so a failure partway through never re-sends what already went out.
+            for n in triggers:
+                if self._send(render_one(n), what=f"event seq {n.seq}"):
+                    delivered += 1
+                self._advance(n.seq)
+            self._advance(view.cursor)  # all handled: cover trailing non-triggers
+
+        log.info("delivered %d/%d notification(s); cursor -> %s",
+                 delivered, len(triggers), self._cursor)
         return len(triggers)
+
+    def _send(self, text: str, *, what: str) -> bool:
+        """Send one message. Returns True if it went out, False if it was permanently
+        undeliverable — a poison message (bad chat id, bot blocked, 4xx) is logged and
+        dropped either way so it never wedges the channel and silently buries every later
+        page. A transient failure (network, 5xx, 429) re-raises to the loop, which holds the
+        cursor and retries next tick."""
+        try:
+            self._sender.send(text)
+            return True
+        except TelegramError as exc:
+            if getattr(exc, "permanent", False):
+                log.warning("dropping undeliverable %s (permanent send failure): %s", what, exc)
+                return False
+            raise  # transient — propagate; the loop logs and retries next tick
 
     def baseline(self) -> None:
         """First launch only (no persisted cursor): jump to the current head so the pager
@@ -145,16 +174,20 @@ class NotifierService:
         log.info("first launch: baselined to head %s (backlog not replayed)", self._cursor)
 
     def run(self, interval: float, stop: Callable[[], bool] = lambda: False) -> None:
-        """Poll forever (until `stop()`), sleeping `interval` seconds between ticks. A
-        sender/read error is logged and retried next tick — the service does not die on a
-        transient Telegram or DB blip."""
-        self.baseline()
-        log.info("notifier started; following from cursor %s", self._cursor)
+        """Poll forever (until `stop()`), sleeping `interval` seconds between ticks. Every
+        tick's work — the first-launch baseline included — is inside the error guard, so the
+        service does not die on a transient Telegram or DB blip (a DB that is down at startup
+        just retries the baseline until it answers; nothing is paged until the cursor is
+        set, so no backlog is ever replayed)."""
+        log.info("notifier starting; interval %ss", interval)
         while not stop():
             try:
-                self.poll_once()
-            except Exception as exc:  # noqa: BLE001 — a poll error must not kill the loop
-                log.warning("poll failed, will retry next tick: %s", exc)
+                if self._cursor is None:
+                    self.baseline()  # first launch: set the cursor before any poll
+                else:
+                    self.poll_once()
+            except Exception as exc:  # noqa: BLE001 — a tick error must not kill the loop
+                log.warning("tick failed, will retry next tick: %s", exc)
             if stop():
                 break
             time.sleep(interval)
@@ -178,7 +211,3 @@ class NotifierService:
             "log generation changed (restore?); re-baselined to head %s without notifying",
             self._cursor,
         )
-
-
-def load_state(cursor_store: CursorStore) -> CursorState:
-    return cursor_store.load()

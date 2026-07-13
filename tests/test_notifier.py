@@ -103,8 +103,16 @@ class FakeSender:
     def send(self, text: str) -> None:
         if self._fail > 0:
             self._fail -= 1
-            raise TelegramError("simulated telegram failure")
+            raise TelegramError("simulated telegram failure")  # transient (permanent=False)
         self.sent.append(text)
+
+
+class RaisingSender:
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    def send(self, text: str) -> None:
+        raise self._exc
 
 
 # --- the trigger predicate -------------------------------------------------
@@ -305,6 +313,62 @@ def test_partial_burst_failure_does_not_resend_delivered(tmp_path):
     assert len(sender.sent) == 2
 
 
+def test_permanent_send_failure_is_dropped_so_channel_never_wedges(tmp_path):
+    # A permanent failure (bad chat id, bot blocked, 4xx) must NOT wedge the cursor and
+    # silently bury every later page: the poison message is dropped + logged, cursor moves on.
+    events = [
+        _ev(1, "task.blocked", {"reason": "poison"}),
+        _ev(2, "task.reported", {"ref": GOOD_REF, "kind": "question"}),
+    ]
+    store = CursorStore(tmp_path / "cursor.json")
+    store.save(0, None)
+    sender = RaisingSender(TelegramError("HTTP 400", permanent=True))
+    svc = NotifierService(FakeReader(events), sender, store, batch_threshold=99)  # individual
+    assert svc.poll_once() == 2          # both processed, no exception raised
+    assert store.load().cursor == 2      # advanced past the poison — channel keeps flowing
+
+
+def test_permanent_batch_failure_advances_past_the_burst(tmp_path):
+    events = [_ev(i, "task.blocked", {"reason": "x"}) for i in range(1, 5)]
+    store = CursorStore(tmp_path / "cursor.json")
+    store.save(0, None)
+    sender = RaisingSender(TelegramError("HTTP 403", permanent=True))
+    svc = NotifierService(FakeReader(events), sender, store, batch_threshold=3)  # summary path
+    svc.poll_once()
+    assert store.load().cursor == 4      # whole undeliverable burst dropped, not re-tried forever
+
+
+def test_transient_send_failure_holds_cursor_for_retry(tmp_path):
+    events = [_ev(1, "task.blocked", {"reason": "x"})]
+    store = CursorStore(tmp_path / "cursor.json")
+    store.save(0, None)
+    sender = RaisingSender(TelegramError("HTTP 503", permanent=False))  # transient
+    svc = NotifierService(FakeReader(events), sender, store, batch_threshold=99)
+    with pytest.raises(TelegramError):
+        svc.poll_once()
+    assert store.load().cursor == 0      # held — a transient blip is retried, not dropped
+
+
+def test_batch_threshold_zero_does_not_send_empty_summary(tmp_path):
+    events = [_ev(1, "task.accepted", {})]  # noise only, no triggers
+    store = CursorStore(tmp_path / "cursor.json")
+    store.save(0, None)
+    sender = FakeSender()
+    svc = NotifierService(FakeReader(events), sender, store, batch_threshold=0)  # clamped to 1
+    assert svc.poll_once() == 0
+    assert sender.sent == []             # no spurious "0 attention events" summary
+    assert store.load().cursor == 1      # advanced past the noise
+
+
+def test_render_batch_bounded_by_bytes_with_long_refs():
+    longref = "projects/omegahive/questions/" + "x" * 200 + ".md@" + "a" * 40
+    notifs = [notification_from(_ev(i, "task.reported", {"ref": longref, "kind": "question"},
+                                    task_id=f"t{i}")) for i in range(1, 20)]
+    text = render_batch(notifs)
+    assert len(text) < 4096              # never exceeds Telegram's hard limit
+    assert "more" in text                # tail spilled into a count
+
+
 def test_generation_mismatch_rebaselines_without_notifying(tmp_path):
     # persisted cursor from before a restore
     store = CursorStore(tmp_path / "cursor.json")
@@ -379,14 +443,16 @@ def test_token_never_appears_in_errors_or_logs(tmp_path, caplog):
     assert SENTINEL not in str(ei.value)
 
     # and when the service catches + logs the failure, the token stays out of the log
+    # (HTTP 401 is a permanent failure: dropped + logged, cursor advances past it)
     events = [_ev(1, "task.blocked", {"reason": "a"})]
     store = CursorStore(tmp_path / "cursor.json")
     store.save(0, None)  # pre-seed a cursor so run() follows (not first-launch baseline)
     svc = NotifierService(FakeReader(events), client, store, batch_threshold=3)
     with caplog.at_level(logging.WARNING, logger="omegahive.notifier"):
         svc.run(interval=0.0, stop=_once())
-    assert SENTINEL not in caplog.text
-    assert store.load().cursor == 0  # failed send did not advance the cursor
+    assert SENTINEL not in caplog.text            # token absent even in the drop-warning
+    assert "permanent send failure" in caplog.text
+    assert store.load().cursor == 1               # poison event dropped, channel keeps flowing
 
 
 def _once():

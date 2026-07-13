@@ -27,7 +27,23 @@ class Sender(Protocol):
 
 
 class TelegramError(RuntimeError):
-    """A send failure whose message is already token-scrubbed (safe to log)."""
+    """A send failure whose message is already token-scrubbed (safe to log).
+
+    `permanent` distinguishes a failure that retrying the *same* message cannot fix (a 4xx
+    that isn't rate-limiting: bad chat id, bot blocked, message rejected) from a transient
+    one (network error, 5xx, 429). The poll loop skips a permanent failure — with a loud
+    log — so one undeliverable message never wedges the channel and silently drops every
+    later page; a transient one holds the cursor and retries."""
+
+    def __init__(self, message: str, *, permanent: bool = False) -> None:
+        super().__init__(message)
+        self.permanent = permanent
+
+
+def _is_permanent(status: int) -> bool:
+    # 4xx (client error) is not fixable by re-sending the same request — except 429
+    # (rate-limited), which is transient and should be retried.
+    return 400 <= status < 500 and status != 429
 
 
 class TelegramClient:
@@ -66,14 +82,16 @@ class TelegramClient:
             try:
                 status = getattr(resp, "status", None)
                 if status is not None and status >= 400:
-                    raise TelegramError(f"telegram sendMessage returned HTTP {status}")
+                    raise TelegramError(f"telegram sendMessage returned HTTP {status}",
+                                        permanent=_is_permanent(status))
             finally:
                 close = getattr(resp, "close", None)
                 if callable(close):
                     close()
         except urllib.error.HTTPError as exc:
             # Do NOT include exc (its str/url may carry the token) — code only.
-            raise TelegramError(f"telegram sendMessage returned HTTP {exc.code}") from None
+            raise TelegramError(f"telegram sendMessage returned HTTP {exc.code}",
+                                permanent=_is_permanent(exc.code)) from None
         except urllib.error.URLError as exc:
             msg = self._redact(f"telegram sendMessage failed: {exc.reason}")
             raise TelegramError(msg) from None

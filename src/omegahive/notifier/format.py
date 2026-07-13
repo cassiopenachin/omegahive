@@ -10,9 +10,12 @@ from __future__ import annotations
 
 from .events import Notification
 
-# Telegram caps a message at 4096 chars; keep a summary well under that and spill the
-# tail into a count so a huge burst still sends as one valid message.
+# Telegram caps a message at 4096 chars. Bound the summary by BOTH a line count and a byte
+# budget: long ref paths mean line *count* alone doesn't bound length, and an over-limit
+# message is a hard 400 (which the poll loop would treat as a permanent, dropped send). The
+# tail spills into a `… and N more` so a huge burst still sends as one valid message.
 _MAX_SUMMARY_LINES = 25
+_MAX_SUMMARY_CHARS = 3800  # headroom under 4096 for the header + the "… and N more" line
 
 
 def _task(n: Notification) -> str:
@@ -34,14 +37,19 @@ def render_batch(notifs: list[Notification]) -> str:
     once in the header. Overflow past the line cap collapses into a `… and N more`."""
     run = notifs[0].run_id if notifs else "?"
     head = f"🐝 {run} · {len(notifs)} attention events"
-    shown = notifs[:_MAX_SUMMARY_LINES]
     lines = [head]
-    for n in shown:
+    used = len(head)
+    shown = 0
+    for n in notifs:
         line = f"{n.glyph} {n.label} · {_task(n)}"
         if n.ref:
             line += f" · {n.ref}"
+        if shown >= _MAX_SUMMARY_LINES or used + len(line) + 1 > _MAX_SUMMARY_CHARS:
+            break
         lines.append(line)
-    hidden = len(notifs) - len(shown)
+        used += len(line) + 1
+        shown += 1
+    hidden = len(notifs) - shown
     if hidden > 0:
         lines.append(f"… and {hidden} more")
     return "\n".join(lines)
