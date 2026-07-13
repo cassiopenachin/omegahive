@@ -30,7 +30,7 @@ docker compose run --rm migrate # applies migrations/ to the spine
 docker compose run --rm test    # full suite against live Postgres — your first health check
 ```
 
-Give it a heartbeat with the built-in demo: `docker compose run --rm seed` plans a small project, then the `coordinator` / `worker` / `review` services run it to completion while `board-view` shows the board evolving. The `backup` service plus the `deploy/systemd/` timer units cover scheduled dumps; run `omegahive deploy-checks` after any environment change (it verifies credential scope and structural security facts).
+Give it a heartbeat with the built-in demo: `docker compose run --rm seed` plans a small project (under run id `accept`), then `docker compose up coordinator worker review` runs it to completion — three independent processes coordinating only through the log — while `docker compose run --rm board-view` shows the board evolving; `docker compose run --rm cli report accept --board` renders the finished run. The `backup` service plus the `deploy/systemd/` timer units cover scheduled dumps; run `omegahive deploy-checks` after any environment change (it verifies credential scope and structural security facts).
 
 For a real deployment — the secrets layout (per-service env files, never in images or logs), the key-isolation proxy for LLM provider keys, remote access over Tailscale, and recovery/restore discipline — read [docs/omegahive_deployment_spec.md](docs/omegahive_deployment_spec.md) and [docs/omegahive_remote_access_spec.md](docs/omegahive_remote_access_spec.md) before trusting it with anything you'd miss.
 
@@ -41,9 +41,11 @@ There is a read-only operator web UI (FastAPI, `src/omegahive/ui/`) — board la
 **Where the `omegahive` command comes from.** The deployment stance is *no host runtimes*: the image's entrypoint is the CLI, and the `cli` compose service exposes it generically —
 
 ```bash
-docker compose run --rm cli report demo --board
+docker compose run --rm cli --help
 alias omegahive='docker compose run --rm cli'   # after which every example below reads literally
 ```
+
+(`report` and `board-view` need a run that exists: the built-in demo lives under run id `accept` — `omegahive report accept --board` after seeding it — and the walkthrough below creates run `demo` from scratch. Asking for a run with no events exits 1 by design.)
 
 For hacking on the code itself there's a host path too: `uv sync`, then `uv run omegahive …` with `OMEGAHIVE_DATABASE_URL` pointed at `localhost:5432` (the composed Postgres publishes on loopback; note `.env.example`'s DSN uses the in-network host `postgres`, which is right for containers and wrong for your shell).
 
@@ -82,16 +84,19 @@ omegahive emit --run-id demo --role planner --actor operator --type dependency.a
 
 `omegahive report demo --board` now shows (abbreviated): `t1 ready · t2 created (waiting on t1) · workers: sess-demo-1 idle`. t2 will become ready on its own the moment t1 is done — that's the fold, not anybody's bookkeeping.
 
-**2. Assign** (coordinator hat), and the worker takes it:
+**2. Assign** (coordinator hat) — but fat-finger the worker id first, to see the gateway answer:
 
 ```bash
 omegahive emit --run-id demo --role coordinator --actor operator --type task.assigned --task t1 \
+  --payload '{"worker": "sess-typo-9"}'
+# rejected: UNKNOWN_WORKER · … — recorded in the log as a gateway.rejected event, and
+# t1 is still unowned: nothing silently succeeded. Now for real, and the worker takes it:
+omegahive emit --run-id demo --role coordinator --actor operator --type task.assigned --task t1 \
   --payload '{"worker": "sess-demo-1"}'
-# the session, under its own worker id:
 omegahive emit --run-id demo --role worker --actor sess-demo-1 --type task.accepted --task t1
 ```
 
-Board: `t1 in_progress @ sess-demo-1`. If you'd fat-fingered the worker id, the assign would not have silently succeeded — unregistered workers get `rejected: UNKNOWN_WORKER · …`, recorded in the log as a `gateway.rejected` event.
+Board: `t1 in_progress @ sess-demo-1`.
 
 **3. The worker hits a question.** It writes `projects/demo/questions/2026-07-10-tone.md` in the workspace, commits (say the commit is `9d01c4e`), then:
 
@@ -118,6 +123,8 @@ omegahive emit --run-id demo --role coordinator --actor operator --type task.sta
 Board: `t1 done · t2 ready · workers: sess-demo-1 idle`. Try to close t2 the same way right now and the gateway answers for the board: `rejected: ILLEGAL_TRANSITION · …` — no review has passed; nothing reaches `done` around the gate. Re-run any command above verbatim and you get `already recorded (idempotent) · seq <n>` — retries are safe by construction, and a no-op is never dressed up as a state change.
 
 The whole run is now a replayable trace: `omegahive report demo` renders every event in order — including the rejections — and `--human` gives the promoted summary view. That's the loop: **files carry content, events carry facts, views are folds, refusals are answers.**
+
+This entire sequence is committed as `scripts/readme_demo.sh` (fresh run id per invocation; it also *asserts* the promises above — the rejections must reject, the re-emit must dedupe). Run it after any deployment change: if the script passes, this section of the README is still true.
 
 ## What we learned before building this way
 
