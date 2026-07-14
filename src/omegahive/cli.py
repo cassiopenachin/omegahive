@@ -51,6 +51,33 @@ def db_migrate() -> None:
         console.print("no pending migrations")
 
 
+@app.command("bump-generation")
+def bump_generation_cmd(
+    run_id: str = typer.Option(..., "--run-id", help="run whose log-generation to bump"),
+) -> None:
+    """Bump a run's log-generation token — the cursor-invalidation step of a restore
+    (deployment spec §5 / port spec §2).
+
+    A restore rewinds the log; sequence values are reused past the restore point, so a
+    client holding a stale cursor would silently skip events. Bumping the generation makes
+    the port answer any stale-cursor read with a distinguishable `GENERATION_MISMATCH`
+    instead of a silent skip: the client drops its cursor, re-snapshots, and adopts the new
+    generation. Run this AFTER restoring the dump and BEFORE restarting clients.
+
+    Refuses an unregistered run (generation `None`) rather than fabricating one — a run
+    carries a generation only after it is opened by its first emit.
+    """
+    with connect() as conn:
+        store = EventLog(conn, LogicalClock(0), run_id)
+        current = store.generation()
+        if current is None:
+            console.print(f"run not registered (no generation): {run_id!r}")
+            raise typer.Exit(code=1)
+        store.bump_generation()
+        conn.commit()
+        console.print(f"generation bumped for {run_id!r}: {current} -> {current + 1}")
+
+
 @app.command("run")
 def run(
     scenario_path: str = typer.Argument(..., help="path to a scenario YAML"),
