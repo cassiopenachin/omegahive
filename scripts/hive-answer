@@ -31,8 +31,12 @@ if ! grep -qxF '## Answers' "$FILE"; then
 fi
 printf -- '- %s — %s\n' "$TODAY" "$TEXT" >> "$FILE"
 
-git -C "$OPS_WS" add -- "$REL"
-git -C "$OPS_WS" commit --quiet -m "answer: $TASK" || die "nothing to commit for $REL"
+# Commit only the order file (pathspec), so any unrelated staged changes in the
+# operator's workspace clone are never swept into the answer commit. A line was
+# just appended, so an empty commit is impossible — a failure here is a real git
+# error (identity unset, a hook, an index lock), reported as such.
+git -C "$OPS_WS" commit --quiet -m "answer: $TASK" -- "$REL" \
+  || die "git commit failed for $REL (git identity unset, a commit hook, or an index lock?)"
 if ! git -C "$OPS_WS" push --quiet 2>/dev/null; then
   git -C "$OPS_WS" pull --rebase --quiet || die "push failed and rebase failed; resolve $OPS_WS by hand"
   git -C "$OPS_WS" push --quiet || die "push failed for $OPS_WS; answer committed locally but not on the hub"

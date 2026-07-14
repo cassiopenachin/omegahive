@@ -31,16 +31,20 @@ done
 [ -n "$TASK" ] || usage
 
 # 1. The board must be in_review — refuse otherwise, printing the actual status.
-STATUS=$(board_status "$TASK")
-[ -n "$STATUS" ] || die "task '$TASK' is not on the board for run '$RUN'"
+#    board_status returns non-zero on an empty board (board-view exits 1); the
+#    `|| STATUS=""` keeps that from aborting under `set -e` so the die below is
+#    what the operator actually sees.
+STATUS=""; STATUS=$(board_status "$TASK") || STATUS=""
+[ -n "$STATUS" ] || die "task '$TASK' is not on the board for run '$RUN' (wrong task or HIVE_RUN_ID?)"
 [ "$STATUS" = "in_review" ] || die "task '$TASK' is '$STATUS', not 'in_review'; refusing to close"
 
 # 2. Read the newest task.result_posted for this task and take its first artifact
-#    ref (read-only access to the spine — no new write surface).
-REF=$( hive report "$RUN" --json 2>/dev/null | jq -r --arg t "$TASK" '
+#    ref (read-only access to the spine — no new write surface). Guarded so a
+#    spine read error surfaces the friendly die below, not a bare set -e abort.
+REF=""; REF=$( hive report "$RUN" --json 2>/dev/null | jq -r --arg t "$TASK" '
   [ .[] | select(.event_type == "task.result_posted" and .task_id == $t) ]
-  | last | .payload.artifact_refs[0].ref // empty' )
-[ -n "$REF" ] || die "no task.result_posted with an artifact ref found for '$TASK' on '$RUN'"
+  | last | .payload.artifact_refs[0].ref // empty' ) || REF=""
+[ -n "$REF" ] || die "the newest task.result_posted for '$TASK' has no artifact ref; review.passed needs a ref to certify — the worker's result is malformed, close by hand or ask for a proper result"
 
 echo "hive-close: task=$TASK  result=$REF"
 

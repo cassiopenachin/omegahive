@@ -42,11 +42,26 @@ fi
 TASK=$(task_from_order "$REL")
 [ -n "$WORKER" ] || WORKER="sess-${TASK}-$(date +%m%d)"
 
+# Both ids flow into a generated shell wrapper (baked identity), tmux window
+# names, and filesystem paths. Constrain them to a safe charset so a stray
+# metacharacter can neither break nor hijack the worker's write path.
+SAFE='^[A-Za-z0-9._-]+$'
+[[ "$TASK" =~ $SAFE ]]   || die "unsafe task id derived from order name: '$TASK' (allowed: A-Za-z0-9._-)"
+[[ "$WORKER" =~ $SAFE ]] || die "unsafe --worker id: '$WORKER' (allowed: A-Za-z0-9._-)"
+
 WS_ROOT="$WORK_ROOT/$WORKER/hive"
 CODE_ROOT="$WORK_ROOT/$WORKER/omegahive"
 WRAPPER="$WRAPPER_DIR/$WORKER.sh"
 
-# --- refuse foreseeable clobber before we emit anything ------------------------
+# --- refuse before we change anything -----------------------------------------
+# Board-existence guard: hive-launch creates a NEW task. Relaunching one that is
+# already on the board would re-emit task.created, which the reducer applies
+# wholesale — silently regressing an owned/in_review/done task to fresh. Recovery
+# from a dead worker is the manual task.reassigned path (RUNBOOK), not relaunch.
+EXISTING=""; EXISTING=$(board_status "$TASK") || EXISTING=""
+[ -z "$EXISTING" ] || die "task '$TASK' is already on run '$RUN' (status: $EXISTING); relaunch is not recovery — use task.reassigned (RUNBOOK)"
+
+# Clobber guards: never overwrite an existing clone or a same-named live pane.
 [ ! -e "$WS_ROOT" ]   || die "$WS_ROOT already exists; pick a fresh --worker id or clear it"
 [ ! -e "$CODE_ROOT" ] || die "$CODE_ROOT already exists; pick a fresh --worker id or clear it"
 if tmux has-session -t "$HIVE_TMUX_SESSION" 2>/dev/null \
@@ -65,21 +80,24 @@ echo "hive-launch: task=$TASK worker=$WORKER"
 echo "  order:  $REL@$SHA"
 echo "  run:    $RUN"
 
-created_payload=$(jq -cn --arg t "$TITLE" --arg ty "$TASK_TYPE" --arg a "$ACCEPTANCE" \
-  '{title:$t, task_type:$ty, acceptance:$a}')
-assigned_payload=$(jq -cn --arg w "$WORKER" '{worker:$w}')
-registered_payload=$(jq -cn --arg w "$WORKER" '{worker_id:$w}')
+# --- provision first, emit second ---------------------------------------------
+# The failure-prone work (clones) runs BEFORE any board write, so a clone failure
+# leaves NO orphaned board state: clear the partial clone and re-run cleanly.
+# hive clone: from the local hub. omegahive clone: from the local canonical repo
+# (hardlinked objects, no network, any size), then re-point origin at github so
+# PR pushes land there; `git pull` inside still fetches main correctly.
+mkdir -p "$WORK_ROOT/$WORKER"
+git clone --quiet "$WS_HUB" "$WS_ROOT"       || die "failed to clone workspace from $WS_HUB"
+git clone --quiet "$CANON_CODE" "$CODE_ROOT" || die "failed to clone code from $CANON_CODE"
+CODE_ORIGIN=$(git -C "$CANON_CODE" remote get-url origin) \
+  || die "canonical code repo $CANON_CODE has no 'origin' remote to copy"
+git -C "$CODE_ROOT" remote set-url origin "$CODE_ORIGIN"
+echo "  clones: $WS_ROOT  +  $CODE_ROOT (origin -> $CODE_ORIGIN)"
 
-# Order matters: created -> ready, registered -> roster, assigned -> owned.
-emit human "$OPERATOR_ACTOR" task.created     --task "$TASK" --payload "$created_payload"    >/dev/null
-emit human "$OPERATOR_ACTOR" worker.registered              --payload "$registered_payload" >/dev/null
-emit coordinator "$OPERATOR_ACTOR" task.assigned --task "$TASK" --payload "$assigned_payload" >/dev/null
-echo "  seeded: task.created + worker.registered + task.assigned"
-
-# --- issue the per-seat emit wrapper (proto-credential) -----------------------
-# One file per identity, issued at launch, revocable by deletion. Role and actor
-# are baked in, not parameters — swapping this for a real per-seat key later
-# changes nothing worker-facing (OPERATIONS.md Phase 2 gate).
+# Issue the per-seat emit wrapper (proto-credential): one file per identity,
+# issued at launch, revocable by deletion; role and actor baked in, not
+# parameters — swapping this for a real per-seat key later changes nothing
+# worker-facing (OPERATIONS.md Phase 2 gate). WORKER/RUN are charset-validated.
 mkdir -p "$WRAPPER_DIR"
 cat > "$WRAPPER" <<WRAP
 #!/usr/bin/env bash
@@ -93,16 +111,16 @@ WRAP
 chmod +x "$WRAPPER"
 echo "  wrapper: $WRAPPER"
 
-# --- provision the worker's isolated working trees ----------------------------
-# hive: from the local hub. omegahive: from the local canonical repo (hardlinked
-# objects, no network, any repo size), then re-point origin at github so PR
-# pushes land there; `git pull` inside still fetches main correctly.
-mkdir -p "$WORK_ROOT/$WORKER"
-git clone --quiet "$WS_HUB" "$WS_ROOT"       || die "failed to clone workspace from $WS_HUB"
-git clone --quiet "$CANON_CODE" "$CODE_ROOT" || die "failed to clone code from $CANON_CODE"
-CODE_ORIGIN=$(git -C "$CANON_CODE" remote get-url origin)
-git -C "$CODE_ROOT" remote set-url origin "$CODE_ORIGIN"
-echo "  clones: $WS_ROOT  +  $CODE_ROOT (origin -> $CODE_ORIGIN)"
+created_payload=$(jq -cn --arg t "$TITLE" --arg ty "$TASK_TYPE" --arg a "$ACCEPTANCE" \
+  '{title:$t, task_type:$ty, acceptance:$a}')
+assigned_payload=$(jq -cn --arg w "$WORKER" '{worker:$w}')
+registered_payload=$(jq -cn --arg w "$WORKER" '{worker_id:$w}')
+
+# Order matters: created -> ready, registered -> roster, assigned -> owned.
+emit human "$OPERATOR_ACTOR" task.created     --task "$TASK" --payload "$created_payload"    >/dev/null
+emit human "$OPERATOR_ACTOR" worker.registered              --payload "$registered_payload" >/dev/null
+emit coordinator "$OPERATOR_ACTOR" task.assigned --task "$TASK" --payload "$assigned_payload" >/dev/null
+echo "  seeded: task.created + worker.registered + task.assigned"
 
 # --- kickoff --------------------------------------------------------------------
 # The WORKER.md launch template with clone paths filled, plus the one line that

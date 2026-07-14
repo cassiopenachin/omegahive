@@ -38,10 +38,14 @@ hive() { ( cd "$OMEGA_DIR" && podman compose run --rm -T cli "$@" ); }
 emit() {  # emit <role> <actor> <type> [--task <t>] [--payload <json>]
   local role="$1" actor="$2" type="$3"; shift 3
   local out
+  # Capture stderr too: a stack/DB outage is a podman failure whose error only
+  # goes to stderr — swallowing it would misreport an outage as a governance
+  # refusal. On failure we surface the full output (podman error or the CLI's
+  # `rejected: <CODE>` line) so the operator sees the real cause.
   if ! out=$( cd "$OMEGA_DIR" && podman compose run --rm -T cli \
-      emit --run-id "$RUN" --role "$role" --actor "$actor" --type "$type" "$@" 2>/dev/null ); then
+      emit --run-id "$RUN" --role "$role" --actor "$actor" --type "$type" "$@" 2>&1 ); then
     echo "$out" >&2
-    die "emit refused: $type (role=$role actor=$actor)"
+    die "emit failed: $type (role=$role actor=$actor) — see output above (rejected, or the stack is down?)"
   fi
   echo "$out"
 }
@@ -56,15 +60,20 @@ task_from_order() {  # task_from_order <filename-or-path>
   printf '%s\n' "$base"
 }
 
-# Resolve <task> to its unique order file (workspace-relative path). Refuse if
-# zero or more than one order matches -<task>.md.
+# Resolve <task> to its unique order file (workspace-relative path). The match is
+# the exact inverse of task_from_order — a file counts iff its own derived task
+# equals <task> — so it resolves the same file hive-launch derived the task from,
+# whether the name is dated (<date>-<task>.md) or bare (<task>.md), and never
+# collides on a suffix (task 'heartbeat' does not match 'notifier-heartbeat.md').
 find_order() {  # find_order <task>  -> prints workspace-relative path
-  local task="$1" dir="$OPS_WS/$ORDERS_SUBDIR"
+  local task="$1" dir="$OPS_WS/$ORDERS_SUBDIR" f
   [ -d "$dir" ] || die "orders dir not found: $dir"
-  local -a m
-  mapfile -t m < <(find "$dir" -maxdepth 1 -type f -name "*-${task}.md" -printf '%f\n' 2>/dev/null | sort)
+  local -a m=()
+  while IFS= read -r f; do
+    [ "$(task_from_order "$f")" = "$task" ] && m+=("$f")
+  done < <(find "$dir" -maxdepth 1 -type f -name '*.md' -printf '%f\n' 2>/dev/null | sort)
   [ "${#m[@]}" -eq 1 ] \
-    || die "expected exactly one order matching -${task}.md, found ${#m[@]}: ${m[*]-}"
+    || die "expected exactly one order deriving task '$task', found ${#m[@]}: ${m[*]-}"
   printf '%s/%s\n' "$ORDERS_SUBDIR" "${m[0]}"
 }
 

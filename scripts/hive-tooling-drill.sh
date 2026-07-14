@@ -164,6 +164,35 @@ printf '# b\n' > "$WS/$ORDERS_REL/2026-07-99-amb.md"
 git -C "$WS" add -A && git -C "$WS" commit --quiet -m "drill: ambiguous"
 expect_fail "answer refuses an ambiguous task" "$SCRIPT_DIR/hive-answer" "amb" "hi"
 
+# (e) relaunch guard — drill-demo is already on the board (done); a relaunch with
+#     a FRESH worker id (so the clone/pane clobber checks do not fire first) must
+#     still be refused by the board-existence guard.
+expect_fail "launch refuses relaunch of an existing task" \
+  "$SCRIPT_DIR/hive-launch" "$ORDER" --worker "sess-relaunch-${STAMP}"
+check "no board state emitted for the refused relaunch" "[ ! -e '$WORK/sess-relaunch-${STAMP}' ]"
+
+# (f) exact order resolution — a task id that is a SUFFIX of another order's task
+#     must resolve uniquely, not collide. heartbeat vs notifier-heartbeat.
+printf '# Order: heartbeat\n' > "$WS/$ORDERS_REL/2026-07-13-heartbeat.md"
+printf '# Order: notifier heartbeat\n' > "$WS/$ORDERS_REL/2026-07-13-notifier-heartbeat.md"
+git -C "$WS" add -A && git -C "$WS" commit --quiet -m "drill: suffix orders"
+"$SCRIPT_DIR/hive-answer" "heartbeat" "resolves uniquely" >/dev/null 2>&1 || true
+check "suffix task resolves to its own order"   "grep -q 'resolves uniquely' '$WS/$ORDERS_REL/2026-07-13-heartbeat.md'"
+check "suffix task does not touch the longer order" "! grep -q 'resolves uniquely' '$WS/$ORDERS_REL/2026-07-13-notifier-heartbeat.md'"
+
+# (g) empty-ref close — a result posted with no artifact ref is valid on the
+#     board (in_review) but cannot be certified; close must refuse, not abort.
+printf '# Order: drill empty\n' > "$WS/$ORDERS_REL/2026-07-13-drill-empty.md"
+git -C "$WS" add -A && git -C "$WS" commit --quiet -m "drill: empty-result order"
+git -C "$WS" push --quiet origin HEAD:main
+EWORKER="sess-empty-${STAMP}"
+"$SCRIPT_DIR/hive-launch" "$ORDERS_REL/2026-07-13-drill-empty.md" --worker "$EWORKER" >/dev/null 2>&1
+EWRAP="$WRAPPERS/$EWORKER.sh"
+"$EWRAP" --type task.accepted --task drill-empty >/dev/null 2>&1
+"$EWRAP" --type task.result_posted --task drill-empty --payload "$(jq -cn '{artifact_refs:[]}')" >/dev/null 2>&1
+check "empty-result task reached in_review" "[ \"\$(board_status drill-empty)\" = in_review ]"
+expect_fail "close refuses a result with no artifact ref" "$SCRIPT_DIR/hive-close" "drill-empty"
+
 # (c) close on a task that is not in_review (drill-demo is already done).
 expect_fail "close refuses when board is not in_review" "$SCRIPT_DIR/hive-close" "$TASK"
 
