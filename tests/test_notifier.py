@@ -1,14 +1,18 @@
 """The outbound attention-notifier (hive-native ops §2 item 4 / §4).
 
 Poll loop over the read path: fire a Telegram message on `task.reported(kind=question)`,
-`task.blocked`, `task.escalated`; silence on everything else. The cursor is the dedupe —
-a restart resumes from it and never re-sends. Bursts fold into one summary. Orphan task
-ids render (report is not existence-gated). The bot token never reaches a log or a message.
+`task.blocked`, `task.escalated`, `task.result_posted`; silence on everything else. The
+cursor is the dedupe — a restart resumes from it and never re-sends. Bursts fold into one
+summary. Orphan task ids render (report is not existence-gated). Messages are HTML
+sentences (who + what + about-what, sha dropped, path fragments escaped in <code>). One
+unconditional daily heartbeat carries a liveness summary derived only from the cursor
+stream + state (head delta, per-type attention counts, open blocks). The bot token never
+reaches a log or a message.
 
 Most tests drive the service with a fake reader + fake sender (no DB) — the logic under
-test is the poll/filter/batch/cursor machinery. Two tests touch real infrastructure: the
-Telegram client against a stdlib mock endpoint, and the port read path against the test DB
-(confirming the `instrument` reader actually sees the full stream).
+test is the poll/filter/batch/cursor/heartbeat machinery. Two tests touch real
+infrastructure: the Telegram client against a stdlib mock endpoint, and the port read path
+against the test DB (confirming the `instrument` reader actually sees the full stream).
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ from __future__ import annotations
 import logging
 import threading
 import urllib.error
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from uuid import uuid4
 
@@ -27,27 +32,41 @@ from omegahive.events.log import EventLog
 from omegahive.notifier import (
     CursorState,
     CursorStore,
+    HeartbeatState,
     NotifierService,
     TelegramClient,
     TelegramError,
     notification_from,
     render_batch,
+    render_heartbeat,
     render_one,
 )
 from omegahive.port import HiveCoordinatorPort, PortView
 
 GOOD_REF = "projects/omegahive/questions/2026-07-13-q.md@" + "a1b2c3d4" * 5
+RESULT_REF = "projects/omegahive/reports/2026-07-13-t1-result.md@" + "b1b2c3d4" * 5
 
 
 # --- helpers ---------------------------------------------------------------
 
 def _ev(seq: int, event_type: str, payload: dict, task_id: str | None = "t1",
-        role: str = "worker", actor_id: str = "w1") -> Event:
+        role: str = "worker", actor_id: str = "w1",
+        wall_ts: datetime | None = None) -> Event:
     return Event(
         event_id=uuid4(), run_id="omegahive", logical_ts=seq,
         actor=Actor(role=role, id=actor_id), event_type=event_type,
-        task_id=task_id, payload=payload, seq=seq,
+        task_id=task_id, payload=payload, seq=seq, wall_ts=wall_ts,
     )
+
+
+def _result(seq: int, refs: list[str], task_id: str = "t1", actor_id: str = "w1") -> Event:
+    return _ev(seq, "task.result_posted",
+               {"artifact_refs": [{"ref": r, "quality": "ok"} for r in refs]},
+               task_id=task_id, actor_id=actor_id)
+
+
+def _fixed(instant: datetime):
+    return lambda: instant
 
 
 class FakeReader:
@@ -117,17 +136,28 @@ class RaisingSender:
 
 # --- the trigger predicate -------------------------------------------------
 
-def test_fires_on_the_three_types_and_is_silent_otherwise():
+def test_fires_on_the_four_types_and_is_silent_otherwise():
     assert notification_from(_ev(1, "task.blocked", {"reason": "stuck"})) is not None
     assert notification_from(_ev(2, "task.escalated", {"reason": "reroute"})) is not None
     assert notification_from(_ev(3, "task.reported", {"ref": GOOD_REF, "kind": "question"})) \
         is not None
+    assert notification_from(_result(4, [RESULT_REF])) is not None  # fourth trigger
     # silence: other reported kinds and unrelated lifecycle events
     for kind in ("progress", "result", "finding", "reflection"):
-        assert notification_from(_ev(4, "task.reported", {"ref": GOOD_REF, "kind": kind})) is None
+        assert notification_from(_ev(5, "task.reported", {"ref": GOOD_REF, "kind": kind})) is None
     for et in ("task.accepted", "task.assigned", "task.progress", "task.unblocked",
-               "task.result_posted", "review.passed", "note.posted"):
-        assert notification_from(_ev(5, et, {})) is None
+               "review.passed", "note.posted"):
+        assert notification_from(_ev(6, et, {})) is None
+
+
+def test_result_ref_and_extra_count():
+    n = notification_from(_result(1, [RESULT_REF]))
+    assert n is not None and n.label == "result" and n.ref == RESULT_REF and n.extra_refs == 0
+    multi = notification_from(_result(2, [RESULT_REF, GOOD_REF, GOOD_REF]))
+    assert multi is not None and multi.ref == RESULT_REF and multi.extra_refs == 2
+    # degenerate payloads render, never crash
+    assert notification_from(_ev(3, "task.result_posted", {"artifact_refs": []})).ref is None
+    assert notification_from(_ev(4, "task.result_posted", {})).ref is None
 
 
 def test_ref_extracted_per_type():
@@ -143,10 +173,30 @@ def test_ref_extracted_per_type():
 
 # --- rendering -------------------------------------------------------------
 
-def test_render_one_carries_pointers_not_content():
+def test_render_one_is_a_sentence_without_the_sha():
     n = notification_from(_ev(1, "task.reported", {"ref": GOOD_REF, "kind": "question"}))
     text = render_one(n)
-    assert "question" in text and "t1" in text and "omegahive" in text and GOOD_REF in text
+    # who + what + about-what: actor, verb, task, ref basename (topic) — no sha, no content.
+    assert "w1" in text and "asks on" in text and "t1" in text
+    assert "2026-07-13-q" in text                       # basename (extension stripped)
+    assert "a1b2c3d4" not in text                       # the sha is dropped entirely
+    assert ".md" not in text                            # extension stripped
+    assert "<code>2026-07-13-q</code>" in text          # path fragment wrapped for HTML
+
+
+def test_render_one_result_shows_extra_count():
+    n = notification_from(_result(1, [RESULT_REF, GOOD_REF]))
+    text = render_one(n)
+    assert "posted a result on" in text and "2026-07-13-t1-result" in text
+    assert "(+1 more)" in text
+
+
+def test_render_blocked_shows_reason_and_escapes_html():
+    n = notification_from(_ev(1, "task.blocked", {"reason": "cursor & <baseline> stuck"}))
+    text = render_one(n)
+    assert "is blocked on" in text and "t1" in text
+    assert "cursor &amp; &lt;baseline&gt; stuck" in text  # full HTML escaping of the reason
+    assert "<baseline>" not in text
 
 
 def test_render_batch_summarizes():
@@ -447,7 +497,10 @@ def test_token_never_appears_in_errors_or_logs(tmp_path, caplog):
     events = [_ev(1, "task.blocked", {"reason": "a"})]
     store = CursorStore(tmp_path / "cursor.json")
     store.save(0, None)  # pre-seed a cursor so run() follows (not first-launch baseline)
-    svc = NotifierService(FakeReader(events), client, store, batch_threshold=3)
+    # hold now() before the heartbeat hour so this test exercises only the trigger drop path
+    before = datetime(2026, 7, 14, 3, 0, tzinfo=UTC)
+    svc = NotifierService(FakeReader(events), client, store, batch_threshold=3,
+                          heartbeat_hour=6, now=_fixed(before))
     with caplog.at_level(logging.WARNING, logger="omegahive.notifier"):
         svc.run(interval=0.0, stop=_once())
     assert SENTINEL not in caplog.text            # token absent even in the drop-warning
@@ -464,6 +517,243 @@ def _once():
         return calls["n"] > 1
 
     return stop
+
+
+# --- the fourth trigger in the poll loop -----------------------------------
+
+def test_result_trigger_fires_individually(tmp_path):
+    events = [_ev(1, "task.accepted", {}), _result(2, [RESULT_REF])]
+    svc, sender, _ = _service(events, tmp_path=tmp_path)
+    assert svc.poll_once() == 1
+    assert len(sender.sent) == 1 and "posted a result on" in sender.sent[0]
+    assert "2026-07-13-t1-result" in sender.sent[0] and "b1b2c3d4" not in sender.sent[0]
+
+
+def test_result_trigger_participates_in_batch(tmp_path):
+    events = [
+        _ev(1, "task.blocked", {"reason": "a"}),
+        _ev(2, "task.escalated", {"reason": "b"}),
+        _result(3, [RESULT_REF, GOOD_REF]),
+    ]
+    svc, sender, _ = _service(events, tmp_path=tmp_path, threshold=3)
+    assert svc.poll_once() == 3
+    assert len(sender.sent) == 1
+    assert "3 attention events" in sender.sent[0] and "posted a result on" in sender.sent[0]
+    assert "(+1 more)" in sender.sent[0]
+
+
+# --- the daily heartbeat ---------------------------------------------------
+
+_AT6 = datetime(2026, 7, 14, 6, 0, tzinfo=UTC)
+
+
+def _hb_service(events, store, *, now, sender=None, hour=6, threshold=99):
+    sender = sender or FakeSender()
+    svc = NotifierService(FakeReader(events), sender, store, run_id="omegahive",
+                          heartbeat_hour=hour, now=now, batch_threshold=threshold)
+    return svc, sender
+
+
+def test_heartbeat_sends_on_an_empty_day(tmp_path):
+    events = [_ev(1, "task.accepted", {}), _ev(2, "task.assigned", {})]  # noise only
+    store = CursorStore(tmp_path / "cursor.json")
+    svc, sender = _hb_service(events, store, now=_fixed(_AT6))
+    svc.baseline()
+    svc.poll_once()  # nothing to page
+    assert sender.sent == []
+    assert svc.maybe_heartbeat() is True
+    assert len(sender.sent) == 1
+    msg = sender.sent[0]
+    assert "omegahive daily · 2026-07-14 06:00Z" in msg
+    assert "spine head 2 (+0/24h) · cursor lag 0" in msg
+    assert "attention last 24h: 0 question, 0 blocked, 0 escalated, 0 result" in msg
+    assert "open blocks: none" in msg
+    assert store.load_heartbeat().last_date == "2026-07-14"  # persisted
+
+
+def test_heartbeat_exactly_once_per_day(tmp_path):
+    store = CursorStore(tmp_path / "cursor.json")
+    svc, sender = _hb_service([_ev(1, "task.accepted", {})], store, now=_fixed(_AT6))
+    svc.baseline()
+    assert svc.maybe_heartbeat() is True
+    assert svc.maybe_heartbeat() is False   # same day: no second send
+    assert len(sender.sent) == 1
+
+
+def test_no_heartbeat_before_the_configured_hour(tmp_path):
+    store = CursorStore(tmp_path / "cursor.json")
+    at3 = datetime(2026, 7, 14, 3, 0, tzinfo=UTC)
+    svc, sender = _hb_service([_ev(1, "task.accepted", {})], store, now=_fixed(at3), hour=6)
+    svc.baseline()
+    assert svc.maybe_heartbeat() is False
+    assert sender.sent == []
+
+
+def test_no_heartbeat_on_restart_after_a_send(tmp_path):
+    store = CursorStore(tmp_path / "cursor.json")
+    store.save(10, 1, HeartbeatState(last_date="2026-07-14", last_hour=6, head=10))
+    at7 = datetime(2026, 7, 14, 7, 0, tzinfo=UTC)
+    svc, sender = _hb_service([_ev(10, "task.accepted", {})], store, now=_fixed(at7))
+    svc.baseline()  # no-op: cursor present
+    assert svc.maybe_heartbeat() is False   # already sent today, even across a restart
+    assert sender.sent == []
+
+
+def test_heartbeat_fires_once_after_a_missed_boundary(tmp_path):
+    store = CursorStore(tmp_path / "cursor.json")
+    store.save(20, 1, HeartbeatState(last_date="2026-07-12", last_hour=6, head=5))  # 2 days stale
+    at8 = datetime(2026, 7, 14, 8, 0, tzinfo=UTC)
+    svc, sender = _hb_service([_ev(20, "task.accepted", {})], store, now=_fixed(at8))
+    svc.baseline()
+    assert svc.maybe_heartbeat() is True     # one catch-up send across the missed boundary
+    assert svc.maybe_heartbeat() is False    # and only one
+    assert len(sender.sent) == 1
+    assert "(+15/24h)" in sender.sent[0]     # head 20 vs previous-heartbeat head 5
+
+
+def test_head_delta_across_two_heartbeats(tmp_path):
+    store = CursorStore(tmp_path / "cursor.json")
+    sender = FakeSender()
+    day1 = datetime(2026, 7, 14, 6, 0, tzinfo=UTC)
+    svc1, _ = _hb_service([_ev(100, "task.accepted", {})], store, now=_fixed(day1), sender=sender)
+    svc1.baseline()          # head 100 recorded at launch
+    svc1.maybe_heartbeat()
+    assert "spine head 100 (+0/24h)" in sender.sent[-1]
+
+    day2 = datetime(2026, 7, 15, 6, 0, tzinfo=UTC)
+    svc2, _ = _hb_service([_ev(130, "task.accepted", {})], store, now=_fixed(day2), sender=sender)
+    svc2.poll_once()         # head advances to 130
+    assert svc2.maybe_heartbeat() is True
+    assert "spine head 130 (+30/24h)" in sender.sent[-1]   # growth since the day-1 heartbeat
+
+
+def test_heartbeat_counts_reflect_observed_attention(tmp_path):
+    store = CursorStore(tmp_path / "cursor.json")
+    store.save(0, None)
+    events = [
+        _ev(1, "task.reported", {"ref": GOOD_REF, "kind": "question"}),
+        _result(2, [RESULT_REF]),
+        _ev(3, "task.reported", {"ref": GOOD_REF, "kind": "progress"}),  # silent, not counted
+        _ev(4, "task.accepted", {}),
+    ]
+    svc, sender = _hb_service(events, store, now=_fixed(_AT6))
+    svc.poll_once()
+    assert svc.maybe_heartbeat() is True
+    assert "attention last 24h: 1 question, 0 blocked, 0 escalated, 1 result" in sender.sent[-1]
+    # the window resets after the heartbeat
+    assert store.load_heartbeat().counts == dict.fromkeys(
+        ("question", "blocked", "escalated", "result"), 0
+    )
+
+
+def test_open_blocks_track_clear_and_survive_restart(tmp_path):
+    store = CursorStore(tmp_path / "cursor.json")
+    store.save(0, None)
+    wall = datetime(2026, 7, 13, 4, 0, tzinfo=UTC)  # 26h before _AT6
+    events = [
+        _ev(1, "task.blocked", {"reason": "needs baseline"}, task_id="port-sha", wall_ts=wall),
+        _ev(2, "task.accepted", {}, task_id="other"),
+    ]
+    svc, sender = _hb_service(events, store, now=_fixed(_AT6))
+    svc.poll_once()  # observes the block (and pages it)
+    assert "port-sha" in store.load_heartbeat().open_blocks   # persisted -> survives restart
+    svc.maybe_heartbeat()
+    assert "open blocks: <code>port-sha</code> (26h)" in sender.sent[-1]
+
+    # a fresh process reads the block from the file, then an unblock clears it
+    events2 = events + [_ev(3, "task.unblocked", {}, task_id="port-sha")]
+    svc2, _ = _hb_service(events2, store, now=_fixed(_AT6))
+    assert "port-sha" in svc2._hb.open_blocks   # loaded across the restart
+    svc2.poll_once()
+    assert "port-sha" not in store.load_heartbeat().open_blocks
+
+
+def test_old_cursor_only_state_loads_clean(tmp_path):
+    p = tmp_path / "cursor.json"
+    p.write_text('{"cursor": 42, "generation": 3}')  # pre-heartbeat file format
+    store = CursorStore(p)
+    assert store.load() == CursorState(42, 3)         # cursor still loads
+    hb = store.load_heartbeat()
+    assert hb.last_date is None and hb.head is None and hb.open_blocks == {}
+    assert hb.counts == {"question": 0, "blocked": 0, "escalated": 0, "result": 0}
+    # a service builds over the old file without error
+    svc, _ = _hb_service([_ev(42, "task.accepted", {})], store, now=_fixed(_AT6))
+    assert svc.cursor == 42
+
+
+def test_heartbeat_send_failure_leaves_event_cursor_untouched(tmp_path):
+    store = CursorStore(tmp_path / "cursor.json")
+    store.save(5, 1, HeartbeatState(head=5))   # cursor at 5, no heartbeat sent yet
+    events = [_ev(5, "task.accepted", {})]
+
+    # transient failure: raises, day NOT advanced (retry next tick), cursor untouched
+    transient = RaisingSender(TelegramError("HTTP 503", permanent=False))
+    svc, _ = _hb_service(events, store, now=_fixed(_AT6), sender=transient)
+    with pytest.raises(TelegramError):
+        svc.maybe_heartbeat()
+    assert store.load().cursor == 5
+    assert store.load_heartbeat().last_date is None
+
+    # permanent failure: dropped + logged, day advanced (no all-day retry), cursor untouched
+    permanent = RaisingSender(TelegramError("HTTP 400", permanent=True))
+    svc2, _ = _hb_service(events, store, now=_fixed(_AT6), sender=permanent)
+    assert svc2.maybe_heartbeat() is True
+    assert store.load().cursor == 5
+    assert store.load_heartbeat().last_date == "2026-07-14"
+
+
+def test_heartbeat_retries_after_transient_failure(tmp_path):
+    store = CursorStore(tmp_path / "cursor.json")
+    store.save(5, 1, HeartbeatState(head=5))
+    sender = FakeSender(fail_first=1)  # first send raises (transient), then succeeds
+    svc, _ = _hb_service([_ev(5, "task.accepted", {})], store, now=_fixed(_AT6), sender=sender)
+    with pytest.raises(TelegramError):
+        svc.maybe_heartbeat()
+    assert store.load_heartbeat().last_date is None   # not marked sent
+    assert svc.maybe_heartbeat() is True              # retry succeeds
+    assert len(sender.sent) == 1
+    assert store.load_heartbeat().last_date == "2026-07-14"
+
+
+def test_render_heartbeat_lists_open_blocks_oldest_first():
+    now = datetime(2026, 7, 14, 6, 0, tzinfo=UTC)
+    hb = HeartbeatState(
+        head=1000, counts={"question": 1, "blocked": 2, "escalated": 0, "result": 1}
+    )
+    hb.open_blocks = {
+        "recent": datetime(2026, 7, 14, 3, 0, tzinfo=UTC).isoformat(),  # 3h
+        "old": datetime(2026, 7, 13, 4, 0, tzinfo=UTC).isoformat(),      # 26h
+    }
+    ages = hb.open_block_ages(now)
+    text = render_heartbeat("omegahive", "2026-07-14", 6, 1042, 1042, hb, ages)
+    assert "spine head 1042 (+42/24h) · cursor lag 0" in text
+    assert "attention last 24h: 1 question, 2 blocked, 0 escalated, 1 result" in text
+    assert text.index("old") < text.index("recent")   # oldest first
+    assert "(26h)" in text and "(3h)" in text
+
+
+def test_heartbeat_still_fires_when_a_trigger_send_is_wedged(tmp_path):
+    # A permanently-wedged trigger send must not suppress the liveness heartbeat.
+    store = CursorStore(tmp_path / "cursor.json")
+    store.save(0, None)
+
+    class WedgeThenHeartbeat:
+        """Raises a transient error on the trigger page, delivers the heartbeat."""
+        def __init__(self):
+            self.sent = []
+        def send(self, text):
+            if "daily" in text:
+                self.sent.append(text)
+                return
+            raise TelegramError("HTTP 503", permanent=False)  # trigger send wedged
+
+    sender = WedgeThenHeartbeat()
+    svc = NotifierService(FakeReader([_ev(1, "task.blocked", {"reason": "x"})]),
+                          sender, store, run_id="omegahive", heartbeat_hour=6,
+                          now=_fixed(_AT6), batch_threshold=99)
+    svc.run(interval=0.0, stop=_once())
+    assert any("daily" in m for m in sender.sent)   # heartbeat got through
+    assert store.load().cursor == 0                 # wedged trigger held the cursor
 
 
 # --- the port read path (real DB) ------------------------------------------

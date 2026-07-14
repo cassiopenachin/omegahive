@@ -340,13 +340,15 @@ def notify_cmd(
     ),
 ) -> None:
     """Follow the spine's read path and ping Telegram on each attention event —
-    `task.reported(kind=question)`, `task.blocked`, `task.escalated`. Outbound only:
-    no inbound webhook, no ack path, no bot commands.
+    `task.reported(kind=question)`, `task.blocked`, `task.escalated`, `task.result_posted` —
+    plus one unconditional daily heartbeat at `HEARTBEAT_HOUR_UTC` (default 06:00Z). Outbound
+    only: no inbound webhook, no ack path, no bot commands.
 
     The bot token and chat id come from the environment (`TELEGRAM_BOT_TOKEN`,
     `TELEGRAM_CHAT_ID`) — the per-service secrets env-file (`notifier.env`, deployment
     spec §4), never a CLI argument (which would surface the token in the process list).
-    The token is never logged and never placed in a message.
+    The token is never logged and never placed in a message. `HEARTBEAT_HOUR_UTC` is config
+    (compose environment), not a secret.
     """
     from .notifier import CursorStore, NotifierService, PortSpineReader, TelegramClient
 
@@ -363,6 +365,11 @@ def notify_cmd(
         )
         raise typer.Exit(code=1)
     api_base = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org")
+    try:
+        heartbeat_hour = int(os.environ.get("HEARTBEAT_HOUR_UTC", "6"))
+    except ValueError:
+        heartbeat_hour = 6
+    heartbeat_hour = min(23, max(0, heartbeat_hour))
 
     store = CursorStore(state_file)
     reader = PortSpineReader(
@@ -372,7 +379,10 @@ def notify_cmd(
         generation=store.load().generation,
     )
     sender = TelegramClient(token, chat_id, api_base=api_base)
-    NotifierService(reader, sender, store, batch_threshold=batch_threshold).run(interval)
+    NotifierService(
+        reader, sender, store, run_id=run_id,
+        batch_threshold=batch_threshold, heartbeat_hour=heartbeat_hour,
+    ).run(interval)
 
 
 if __name__ == "__main__":
