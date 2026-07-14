@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# hive-answer <task> <text...>
+#
+# The answer bookend of the Phase 1 loop (OPERATIONS.md pain 1): the ~5-step
+# clerical answer path collapsed to one SSH-friendly command —
+#   ssh beastie 'hive-answer port-sha "use event time"'
+#
+# Appends the answer to the order's `## Answers` section (append-only; the order
+# body is never touched), commits + pushes, then nudges the worker's pane to
+# pull and re-read at HEAD.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/hive-common.sh
+source "$SCRIPT_DIR/hive-common.sh"
+
+usage() { echo "usage: hive-answer <task> <text...>" >&2; exit 2; }
+
+[ $# -ge 2 ] || usage
+TASK="$1"; shift
+TEXT="$*"
+[ -n "$TEXT" ] || usage
+
+REL=$(find_order "$TASK")
+FILE="$OPS_WS/$REL"
+TODAY=$(date +%F)
+
+# Append-only: add the `## Answers` header if it is not already present, then the
+# dated line. We never edit the body above it.
+if ! grep -qxF '## Answers' "$FILE"; then
+  printf '\n## Answers\n' >> "$FILE"
+fi
+printf -- '- %s — %s\n' "$TODAY" "$TEXT" >> "$FILE"
+
+# Commit only the order file (pathspec), so any unrelated staged changes in the
+# operator's workspace clone are never swept into the answer commit. A line was
+# just appended, so an empty commit is impossible — a failure here is a real git
+# error (identity unset, a hook, an index lock), reported as such.
+git -C "$OPS_WS" commit --quiet -m "answer: $TASK" -- "$REL" \
+  || die "git commit failed for $REL (git identity unset, a commit hook, or an index lock?)"
+if ! git -C "$OPS_WS" push --quiet 2>/dev/null; then
+  git -C "$OPS_WS" pull --rebase --quiet || die "push failed and rebase failed; resolve $OPS_WS by hand"
+  git -C "$OPS_WS" push --quiet || die "push failed for $OPS_WS; answer committed locally but not on the hub"
+fi
+echo "hive-answer: appended to $REL and pushed"
+
+# Nudge the pane named <task>. The answer is already durable on the hub, so a
+# missing pane is a warning, not a failure — the worker (or a relaunch) will read
+# the order at HEAD regardless.
+NUDGE="answer landed; pull and re-read your order at HEAD; emit task.unblocked only if it answers your question"
+if tmux has-session -t "$HIVE_TMUX_SESSION" 2>/dev/null \
+   && tmux list-windows -t "$HIVE_TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qxF "$TASK"; then
+  tmux send-keys -t "$HIVE_TMUX_SESSION:$TASK" "$NUDGE" Enter
+  echo "hive-answer: nudged pane $HIVE_TMUX_SESSION:$TASK"
+else
+  echo "hive-answer: WARNING no pane '$TASK' in session '$HIVE_TMUX_SESSION' — answer is on the hub; nudge the worker by hand" >&2
+fi

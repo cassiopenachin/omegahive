@@ -97,6 +97,20 @@ OMEGAHIVE_RUN_ID=omegahive docker compose up -d notifier
 
 **Run-id caveat.** The compose default `--run-id` is `accept` (the acceptance run); the durable project spine is `omegahive`. Set `OMEGAHIVE_RUN_ID=omegahive` in the shell or `.env`, or the notifier follows — and pages on — the wrong run.
 
+### Operator tooling: the launch / answer / close loop
+
+The worked example below spells out the raw emits per hat. Day to day the operator drives three shell wrappers in `scripts/` — one command per judgment (launch, answer, close), which is the whole point of the loop the hive is built around. They are thin front-ends over `emit` / `board-view` / `report`; the same trust model applies (loopback tool, authority not identity). Put `scripts/` on `PATH` (or symlink the three commands into `~/bin`).
+
+| Command | The one judgment | What it does |
+|---|---|---|
+| `hive-launch <order-file> [--worker <id>]` | *the order is ready* | pins the order (refuses dirty/unpushed), seeds `task.created` + `worker.registered` + `task.assigned`, issues the worker a per-seat **emit wrapper**, provisions its isolated clones (`~/work/<worker>/{hive,omegahive}`), and opens a tmux pane named after the task with the kickoff pre-filled |
+| `hive-answer <task> <text…>` | *here is the answer* | appends `- <date> — <text>` to the order's `## Answers` section (append-only; body untouched), commits + pushes to the hub, and nudges the worker's pane to re-read at HEAD. SSH-friendly: `ssh beastie 'hive-answer port-sha "use event time"'` |
+| `hive-close <task> [--reason <text>]` | *the result holds* | verifies the board is `in_review` (refuses otherwise), reads the newest `task.result_posted`'s first ref off the spine, and emits `review.passed` + `status_override(done)`. Never merges — merging is a separate act in the GitHub app |
+
+The **emit wrapper** (`~/work/hive-wrappers/<worker>.sh`) is the worker's whole write path: `--run-id`/`--role worker`/`--actor <id>` are baked in, so a worker cannot emit as anyone else. It is shaped as a proto-credential — one file per identity, issued at launch, revocable by deletion — so swapping the assertion for a real per-seat key later changes nothing worker-facing.
+
+Config is env-overridable (defaults are the operator-host layout: `OMEGA_DIR`, `WS_HUB`, `OPS_WS`, `CANON_CODE`, `WORK_ROOT`, `WRAPPER_DIR`, `HIVE_RUN_ID`, `HIVE_TMUX_SESSION`, `HIVE_WORKER_CMD` — see `scripts/hive-common.sh`). `scripts/hive-tooling-drill.sh` exercises the full lifecycle and every refusal path against a throwaway sandbox and a scratch run id — run it after changing any of these scripts; never point `HIVE_RUN_ID` at the durable `omegahive` run.
+
 ## A worked example: one tiny project, end to end
 
 Two tasks — draft release notes, then publish them — one session-agent as the worker, one blocking question along the way. Events are run-scoped, so everything carries `--run-id demo`. The operator wears each governance hat explicitly via `--role` (seeding is planner work, assignment is coordinator work); the gateway checks authority per role either way.
@@ -166,6 +180,7 @@ docs/            the documentation set — specs are authoritative; code follows
 qual/            model-qualification battery: catalogs, scenarios, personas, records
 ladder/          archived stage-2 experiment harness + its frozen run records
 scenarios/       scripted simulation scenarios (deterministic, CI-run)
+scripts/         operator tooling (hive-launch/answer/close + drill), deploy + backup checks
 deploy/          systemd/quadlet units
 tests/           full suite; DB-dependent tests need a live Postgres
 ```

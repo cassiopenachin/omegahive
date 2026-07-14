@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# hive-launch <order-file> [--worker <id>]
+#
+# The launch bookend of the Phase 1 loop (OPERATIONS.md): one judgment — the
+# order is ready — collapsed to one command. It seeds the board (task.created +
+# worker.registered + task.assigned), issues the worker a per-seat emit wrapper,
+# provisions its isolated working trees, and opens a named tmux pane running the
+# session with the kickoff pre-filled.
+#
+# <order-file> may be a bare filename, a path relative to the workspace root, or
+# a path under the orders dir. The task id is derived from the filename; the
+# worker id defaults to sess-<task>-<MMDD>.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/hive-common.sh
+source "$SCRIPT_DIR/hive-common.sh"
+
+usage() { echo "usage: hive-launch <order-file> [--worker <id>]" >&2; exit 2; }
+
+ORDER_ARG=""
+WORKER=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --worker) shift; [ $# -gt 0 ] || usage; WORKER="$1" ;;
+    -h|--help) usage ;;
+    -*) usage ;;
+    *) [ -z "$ORDER_ARG" ] || usage; ORDER_ARG="$1" ;;
+  esac
+  shift
+done
+[ -n "$ORDER_ARG" ] || usage
+
+# --- resolve the order file to a workspace-relative path -----------------------
+if [ -f "$OPS_WS/$ORDER_ARG" ]; then
+  REL="$ORDER_ARG"
+elif [ -f "$OPS_WS/$ORDERS_SUBDIR/$(basename "$ORDER_ARG")" ]; then
+  REL="$ORDERS_SUBDIR/$(basename "$ORDER_ARG")"
+else
+  die "order file not found under $OPS_WS: $ORDER_ARG"
+fi
+
+TASK=$(task_from_order "$REL")
+[ -n "$WORKER" ] || WORKER="sess-${TASK}-$(date +%m%d)"
+
+# Both ids flow into a generated shell wrapper (baked identity), tmux window
+# names, and filesystem paths. Constrain them to a safe charset so a stray
+# metacharacter can neither break nor hijack the worker's write path.
+SAFE='^[A-Za-z0-9._-]+$'
+[[ "$TASK" =~ $SAFE ]]   || die "unsafe task id derived from order name: '$TASK' (allowed: A-Za-z0-9._-)"
+[[ "$WORKER" =~ $SAFE ]] || die "unsafe --worker id: '$WORKER' (allowed: A-Za-z0-9._-)"
+
+WS_ROOT="$WORK_ROOT/$WORKER/hive"
+CODE_ROOT="$WORK_ROOT/$WORKER/omegahive"
+WRAPPER="$WRAPPER_DIR/$WORKER.sh"
+
+# --- refuse before we change anything -----------------------------------------
+# Board-existence guard: hive-launch creates a NEW task. Relaunching one that is
+# already on the board would re-emit task.created, which the reducer applies
+# wholesale — silently regressing an owned/in_review/done task to fresh. Recovery
+# from a dead worker is the manual task.reassigned path (RUNBOOK), not relaunch.
+EXISTING=""; EXISTING=$(board_status "$TASK") || EXISTING=""
+[ -z "$EXISTING" ] || die "task '$TASK' is already on run '$RUN' (status: $EXISTING); relaunch is not recovery — use task.reassigned (RUNBOOK)"
+
+# Clobber guards: never overwrite an existing clone or a same-named live pane.
+[ ! -e "$WS_ROOT" ]   || die "$WS_ROOT already exists; pick a fresh --worker id or clear it"
+[ ! -e "$CODE_ROOT" ] || die "$CODE_ROOT already exists; pick a fresh --worker id or clear it"
+if tmux has-session -t "$HIVE_TMUX_SESSION" 2>/dev/null \
+   && tmux list-windows -t "$HIVE_TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qxF "$TASK"; then
+  die "a tmux window named '$TASK' already exists in session '$HIVE_TMUX_SESSION' (the pane is the registry)"
+fi
+
+# --- pin the order and build the seed payloads --------------------------------
+SHA=$(order_pin "$REL")
+ACCEPTANCE="per $REL@$SHA"
+TITLE=$(grep -m1 -E '^# ' "$OPS_WS/$REL" | sed -E 's/^# +//; s/^Order: *//')
+[ -n "$TITLE" ] || TITLE="$TASK"
+TASK_TYPE="task"   # advisory label only; not gated (events/types.py). Edit freely.
+
+echo "hive-launch: task=$TASK worker=$WORKER"
+echo "  order:  $REL@$SHA"
+echo "  run:    $RUN"
+
+# --- provision first, emit second ---------------------------------------------
+# The failure-prone work (clones) runs BEFORE any board write, so a clone failure
+# leaves NO orphaned board state: clear the partial clone and re-run cleanly.
+# hive clone: from the local hub. omegahive clone: from the local canonical repo
+# (hardlinked objects, no network, any size), then re-point origin at github so
+# PR pushes land there; `git pull` inside still fetches main correctly.
+mkdir -p "$WORK_ROOT/$WORKER"
+git clone --quiet "$WS_HUB" "$WS_ROOT"       || die "failed to clone workspace from $WS_HUB"
+git clone --quiet "$CANON_CODE" "$CODE_ROOT" || die "failed to clone code from $CANON_CODE"
+CODE_ORIGIN=$(git -C "$CANON_CODE" remote get-url origin) \
+  || die "canonical code repo $CANON_CODE has no 'origin' remote to copy"
+git -C "$CODE_ROOT" remote set-url origin "$CODE_ORIGIN"
+echo "  clones: $WS_ROOT  +  $CODE_ROOT (origin -> $CODE_ORIGIN)"
+
+# Issue the per-seat emit wrapper (proto-credential): one file per identity,
+# issued at launch, revocable by deletion; role and actor baked in, not
+# parameters — swapping this for a real per-seat key later changes nothing
+# worker-facing (OPERATIONS.md Phase 2 gate). WORKER/RUN are charset-validated.
+mkdir -p "$WRAPPER_DIR"
+cat > "$WRAPPER" <<WRAP
+#!/usr/bin/env bash
+# Emit wrapper for worker $WORKER on run $RUN (proto-credential — issued by
+# hive-launch, revoke by deleting this file). --run-id/--role/--actor are baked
+# in; pass only --type/--task/--payload. Never emit as another actor.
+set -euo pipefail
+exec env -C "${OMEGA_DIR}" podman compose run --rm -T cli \\
+  emit --run-id "$RUN" --role worker --actor "$WORKER" "\$@"
+WRAP
+chmod +x "$WRAPPER"
+echo "  wrapper: $WRAPPER"
+
+created_payload=$(jq -cn --arg t "$TITLE" --arg ty "$TASK_TYPE" --arg a "$ACCEPTANCE" \
+  '{title:$t, task_type:$ty, acceptance:$a}')
+assigned_payload=$(jq -cn --arg w "$WORKER" '{worker:$w}')
+registered_payload=$(jq -cn --arg w "$WORKER" '{worker_id:$w}')
+
+# Order matters: created -> ready, registered -> roster, assigned -> owned.
+emit human "$OPERATOR_ACTOR" task.created     --task "$TASK" --payload "$created_payload"    >/dev/null
+emit human "$OPERATOR_ACTOR" worker.registered              --payload "$registered_payload" >/dev/null
+emit coordinator "$OPERATOR_ACTOR" task.assigned --task "$TASK" --payload "$assigned_payload" >/dev/null
+echo "  seeded: task.created + worker.registered + task.assigned"
+
+# --- kickoff --------------------------------------------------------------------
+# The WORKER.md launch template with clone paths filled, plus the one line that
+# points the worker at its wrapper: everywhere WORKER.md shows
+# `hive emit --run-id $RUN --role worker --actor $WORKER ...`, the worker calls
+# its wrapper with just the remaining flags.
+read -r -d '' KICKOFF <<KICK || true
+You are hive worker $WORKER on task $TASK (run: $RUN).
+Your clones: workspace $WS_ROOT · code $CODE_ROOT.
+First: git -C $WS_ROOT pull
+Your order: $REL in your workspace clone.
+Protocol: read projects/omegahive/WORKER.md there first and follow it exactly.
+Your emit command is your wrapper: $WRAPPER
+It bakes in --run-id/--role worker/--actor $WORKER. Everywhere WORKER.md writes
+'hive emit --run-id \$RUN --role worker --actor \$WORKER ...', run '$WRAPPER ...'
+with only the remaining flags (--type/--task/--payload). Never use raw hive emit.
+Container tooling is podman (not docker). Begin by reading both files, then emit
+task.accepted and start.
+KICK
+
+# Open the pane. The kickoff travels as an env var (HIVE_KICKOFF) so no multi-line
+# text is ever quoted onto a command line; the window runs the worker command with
+# it as the initial prompt. The pane NAME is the registry — no registry file.
+launch_cmd="$HIVE_WORKER_CMD \"\$HIVE_KICKOFF\""
+if tmux has-session -t "$HIVE_TMUX_SESSION" 2>/dev/null; then
+  tmux new-window -t "$HIVE_TMUX_SESSION" -n "$TASK" -c "$WS_ROOT" \
+    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd"
+else
+  tmux new-session -d -s "$HIVE_TMUX_SESSION" -n "$TASK" -c "$WS_ROOT" \
+    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd"
+fi
+echo "  pane:   $HIVE_TMUX_SESSION:$TASK  (attach: tmux attach -t $HIVE_TMUX_SESSION)"
+echo "hive-launch: done."
