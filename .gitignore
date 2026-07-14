@@ -6,3 +6,6 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+# dev-default bind-mount target for `compose --profile ops run --rm backup` when
+# OMEGAHIVE_BACKUP_DIR is unset; production points that var outside the repo tree.
+backups/

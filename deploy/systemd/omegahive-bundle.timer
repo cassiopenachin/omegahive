@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily OmegaHive workspace bundle
+
+[Timer]
+# 15 min after the pg dump (03:00) so the two backups don't contend, and both land in
+# the same directory within the same window.
+OnCalendar=*-*-* 03:15:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
