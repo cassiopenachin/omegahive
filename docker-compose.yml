@@ -130,21 +130,29 @@ services:
 
   # Containerized backup: pg_dump of the log store from the pinned postgres image
   # (deployment spec §4/§5). `profiles: [ops]` keeps it out of a plain `up`; the
-  # host systemd timer runs `compose run --rm backup`.
+  # host systemd timer runs `compose run --rm backup`. /backups is a HOST bind mount
+  # (${OMEGAHIVE_BACKUP_DIR} — the pointer var, no absolute host path in the committed
+  # file, per deployment spec §4) so the dumps sit on the host filesystem where the
+  # operator pulls them over the tailnet SSH path; the workspace git bundles land in the
+  # same directory (deploy/git_bundle.sh) so one directory restores both stores.
+  # OMEGAHIVE_BACKUP_KEEP bounds retention (default 14; disk is finite, operator remote).
   backup:
     image: postgres:16@sha256:1570e4013933875bf54995e9010e31420b5e21dd5f2524e5395089d480cc2df1
     profiles: ["ops"]
     env_file: [.env]
+    environment:
+      - OMEGAHIVE_BACKUP_KEEP
     depends_on:
       postgres:
         condition: service_healthy
     volumes:
-      - omegahive-backups:/backups
+      # :z — shared SELinux label; the deploy user (rootless: container root maps to it)
+      # owns the dumps, so `rsync beastie:...` reads them without a relabel dance.
+      - ${OMEGAHIVE_BACKUP_DIR:-./backups}:/backups:z
       - ./scripts:/scripts:ro,Z
     entrypoint: ["sh", "/scripts/pg_backup.sh"]
 
 volumes:
   omegahive-pgdata:
   omegahive-basis:
-  omegahive-backups:
   omegahive-notifier:

@@ -1,0 +1,11 @@
+[Unit]
+Description=OmegaHive workspace backup (git bundle of the bare hub)
+
+[Service]
+Type=oneshot
+# Host-side: git bundles the bare hub repo into the shared backup dir (deploy/git_bundle.sh,
+# installed to ~/.local/bin — see deployments record). Defaults suit Beastie; override per host.
+Environment=OMEGAHIVE_HUB_REPO=%h/repos/hive-workspace.git
+Environment=OMEGAHIVE_BACKUP_DIR=%h/omegahive-backups
+Environment=OMEGAHIVE_BACKUP_KEEP=14
+ExecStart=%h/.local/bin/omegahive-git-bundle

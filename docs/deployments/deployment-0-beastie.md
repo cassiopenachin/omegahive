@@ -50,20 +50,46 @@ and the deployment-#0 substrate slice needs far less.
 
 ## Backup
 
-- Containerized `pg_dump` from the pinned postgres image (`compose --profile ops run --rm backup` → `scripts/pg_backup.sh` → timestamped SQL in the `omegahive-backups` volume). **Drilled once** (Jul 7 2026: `omegahive-20260707T194853Z.sql`).
-- Scheduled via a **systemd user timer** (`deploy/systemd/omegahive-backup.{service,timer}`, daily 03:00, `Persistent=true`) — **enabled and active** on Beastie (linger on, so it runs without a login session). To reinstall on another host:
-  ```sh
-  cp deploy/systemd/omegahive-backup.* ~/.config/systemd/user/
-  systemctl --user daemon-reload
-  systemctl --user enable --now omegahive-backup.timer
-  ```
+Both stores, one host directory (`~/omegahive-backups`, bind-mounted at `/backups`), so
+one directory restores both and the operator pulls it over the tailnet
+(`rsync beastie:omegahive-backups/ …`). Both families rotate to the newest
+`OMEGAHIVE_BACKUP_KEEP` (default 14).
+
+- **Log store:** containerized `pg_dump` from the pinned postgres image
+  (`compose --profile ops run --rm backup` → `scripts/pg_backup.sh`). Scheduled by
+  `omegahive-backup.timer` (daily 03:00, `Persistent=true`). Originally drilled Jul 7 2026;
+  switched from the `omegahive-backups` named volume to the host bind mount + rotation
+  Jul 13 2026.
+- **Workspace:** `git bundle --all` of the bare hub (`deploy/git_bundle.sh`, installed to
+  `~/.local/bin/omegahive-git-bundle`). Scheduled by `omegahive-bundle.timer` (daily 03:15).
+  The Mac clone is the live mirror; the bundle is the offline belt to it.
+
+Both timers are **systemd user timers** (linger on, so they run without a login session).
+To (re)install on a host:
+```sh
+cp deploy/systemd/omegahive-backup.* deploy/systemd/omegahive-bundle.* ~/.config/systemd/user/
+install -m 755 deploy/git_bundle.sh ~/.local/bin/omegahive-git-bundle
+mkdir -p ~/omegahive-backups
+systemctl --user daemon-reload
+systemctl --user enable --now omegahive-backup.timer omegahive-bundle.timer
+```
 
 ## Restore drill
 
 The snapshot+restore path is exercised by deployment check 3 (dump → restore into a
-scratch DB → event-level equality of the replayed log). Full procedure in the recovery
-runbook. Interim cursor rule until the generation-token bump is wired into a live run:
-**restore ⇒ restart every client, no exceptions.**
+scratch DB → event-level equality of the replayed log). **Re-drilled against current
+content Jul 13 2026** — a full-DB dump of the live `omegahive` run restored into a scratch
+DB replays byte-identical (md5 of ordered events, 29 events); the `bump-generation` CLI
+signals `GENERATION_MISMATCH` to a stale-cursor port client, which re-snapshots to the new
+generation; and `deploy/phantom_ahead.sh` detected a deliberately-created phantom-ahead
+workspace commit. Transcript: `hive-workspace: projects/omegahive/reports/2026-07-13-backups-restore-drill-evidence.md`.
+
+**Open item — generation token not wired to the live run.** The `omegahive` run is not in
+the `runs` registry (the `hive emit` write path never calls `open_run`), so a real restore's
+generation bump is inert and the **interim floor governs: restore ⇒ restart every client, no
+exceptions.** Registering the run (`omegahive.port.open_run`) activates the durable path; the
+deeper fix is to open the run at project seed / in the emit path. Full restore + phantom-ahead
+procedure: ops RUNBOOK (`hive-workspace: projects/omegahive/RUNBOOK.md`).
 
 ## Forward notes (arrive with later stages, not #0)
 

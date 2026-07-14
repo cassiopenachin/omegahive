@@ -7,6 +7,11 @@ After=podman.socket
 Type=oneshot
 # rootless Podman socket + the compose v2 binary; the backup service is profile "ops".
 Environment=DOCKER_HOST=unix://%t/podman/podman.sock
+# Where the dumps land (host bind mount) and how many to keep. compose reads these from
+# the service environment (${OMEGAHIVE_BACKUP_DIR} / OMEGAHIVE_BACKUP_KEEP) — the same dir
+# the workspace bundle uses, so one directory restores both stores. Defaults suit Beastie.
+Environment=OMEGAHIVE_BACKUP_DIR=%h/omegahive-backups
+Environment=OMEGAHIVE_BACKUP_KEEP=14
 # Beastie's checkout (deployment #0); adjust WorkingDirectory per host.
 WorkingDirectory=%h/src/SNET/omegahive
 ExecStart=%h/.local/bin/docker-compose --profile ops run --rm backup

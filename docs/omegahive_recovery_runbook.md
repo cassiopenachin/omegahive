@@ -42,18 +42,25 @@ container socket — control is entirely operator-side.
 ## 3. Backup
 
 Backups are a containerized `pg_dump` of the log store (the source of truth for all
-coordination history) into the `omegahive-backups` volume.
+coordination history) plus a `git bundle` of the workspace hub, landing in ONE host
+directory (`${OMEGAHIVE_BACKUP_DIR}`, e.g. `~/omegahive-backups`) so one directory
+restores both stores. The dir is a host bind mount, so the operator pulls it over the
+tailnet SSH path (`rsync beastie:omegahive-backups/ …`). Both families rotate to the
+newest `OMEGAHIVE_BACKUP_KEEP` (default 14).
 
 ```sh
 # run one now
-docker compose --profile ops run --rm backup      # -> /backups/omegahive-<UTC>.sql
+OMEGAHIVE_BACKUP_DIR=$HOME/omegahive-backups \
+  docker compose --profile ops run --rm backup    # -> ${OMEGAHIVE_BACKUP_DIR}/omegahive-<UTC>.sql
+~/.local/bin/omegahive-git-bundle                 # -> ${OMEGAHIVE_BACKUP_DIR}/hive-workspace-<UTC>.bundle
 
 # list backups
-docker compose --profile ops run --rm --entrypoint sh backup -c 'ls -la /backups'
+ls -la $HOME/omegahive-backups
 ```
 
-Scheduled daily by the systemd user timer `omegahive-backup.timer`
-(`deploy/systemd/`). Check it: `systemctl --user list-timers omegahive-backup.timer`.
+Scheduled daily by two systemd user timers, `omegahive-backup.timer` (03:00, pg_dump) and
+`omegahive-bundle.timer` (03:15, git bundle) — both in `deploy/systemd/`. Check them:
+`systemctl --user list-timers 'omegahive-*'`.
 
 ## 4. Restore from a dump
 
@@ -74,14 +81,30 @@ silently skip events. Follow the ordering exactly.
        -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;' && \
      psql \"\$OMEGAHIVE_DATABASE_URL\" -v ON_ERROR_STOP=1 -q -f $DUMP"
    ```
-3. **Invalidate stale cursors.** The durable fix is the log-generation token (port
-   spec §2): bump it so clients holding a stale generation receive a distinguishable
-   mismatch signal, drop their cursors, and re-snapshot. **Until that bump is wired
-   into a live run, apply the interim floor: restart *every* client, no exceptions.**
+3. **Invalidate stale cursors — do both:**
+   - **Bump the log generation** (durable signal, port spec §2): a stale cursor then gets
+     `GENERATION_MISMATCH`, drops, and re-snapshots.
+     ```sh
+     docker compose run --rm cli bump-generation --run-id <run>
+     ```
+     The bump only works on a *registered* run; it refuses one that was never opened
+     (`run not registered`). The durable `omegahive` project run is currently unregistered
+     — the `hive emit` write path never opens runs — so the bump is inert until the run is
+     registered out of band (`omegahive.port.open_run`). See the ops RUNBOOK for the
+     one-liner; until then the restart floor below is the operative path.
+   - **Restart *every* client** — the always-safe interim floor, independent of the token.
 4. **Restart** coordinators/workers; each re-snapshots through the port.
 
 Verify a restore reproduces the board: deployment check 3 (`scripts/deploy_checks.sh`)
-dumps, restores into a scratch database, and asserts the replayed log is identical.
+dumps, restores into a scratch database, and asserts the replayed log is identical. The
+generation-bump + stale-cursor-mismatch path was drilled against live content on 2026-07-13
+(deployment-0 record, Restore drill).
+
+**Phantom-ahead.** A log restore rewinds only the log; the workspace (hub + Mac clone) is
+restored separately and is not rewound. Workspace commits newer than the restored log's
+newest ref are *phantom-ahead* — unreferenced by any surviving event, suspect until a human
+reconciles. List them with `deploy/phantom_ahead.sh <referenced-shas> <hub>`; reconciliation
+is human judgment, never automation. Full procedure in the ops RUNBOOK.
 
 ## 5. Drain-before-migrate
 
