@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# hive-close <task> [--reason <text>]
+#
+# The close bookend of the Phase 1 loop (OPERATIONS.md): one judgment — the
+# result holds — after the PR is merged in the GitHub app. Verifies the board is
+# in_review, pulls the result ref from the spine's own task.result_posted, then
+# emits review.passed + status_override(done).
+#
+# review.passed here certifies exactly what OPERATIONS.md pain 6 says it does:
+# the operator read the result report and saw no red flags — not artifact
+# correctness. Merging is a separate human act (the GitHub app); hive-close never
+# merges.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/hive-common.sh
+source "$SCRIPT_DIR/hive-common.sh"
+
+usage() { echo "usage: hive-close <task> [--reason <text>]" >&2; exit 2; }
+
+TASK=""
+REASON="operator read the result report; no red flags (hive-close)"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --reason) shift; [ $# -gt 0 ] || usage; REASON="$1" ;;
+    -h|--help) usage ;;
+    -*) usage ;;
+    *) [ -z "$TASK" ] || usage; TASK="$1" ;;
+  esac
+  shift
+done
+[ -n "$TASK" ] || usage
+
+# 1. The board must be in_review — refuse otherwise, printing the actual status.
+STATUS=$(board_status "$TASK")
+[ -n "$STATUS" ] || die "task '$TASK' is not on the board for run '$RUN'"
+[ "$STATUS" = "in_review" ] || die "task '$TASK' is '$STATUS', not 'in_review'; refusing to close"
+
+# 2. Read the newest task.result_posted for this task and take its first artifact
+#    ref (read-only access to the spine — no new write surface).
+REF=$( hive report "$RUN" --json 2>/dev/null | jq -r --arg t "$TASK" '
+  [ .[] | select(.event_type == "task.result_posted" and .task_id == $t) ]
+  | last | .payload.artifact_refs[0].ref // empty' )
+[ -n "$REF" ] || die "no task.result_posted with an artifact ref found for '$TASK' on '$RUN'"
+
+echo "hive-close: task=$TASK  result=$REF"
+
+# 3. review.passed (instrument — blessed human-tier borrowing), then
+#    status_override(done). The done-gate requires latest review == passed, so
+#    this order is load-bearing.
+passed_payload=$(jq -cn --arg r "$REF" '{ref_result:$r}')
+done_payload=$(jq -cn --arg s 'done' --arg r "$REASON" '{status:$s, reason:$r}')
+
+emit instrument "$OPERATOR_ACTOR" review.passed --task "$TASK" --payload "$passed_payload" >/dev/null
+emit human "$OPERATOR_ACTOR" task.status_override --task "$TASK" --payload "$done_payload" >/dev/null
+
+# 4. Certify what happened, in plain terms.
+echo "hive-close: certified"
+echo "  review.passed  ref_result = $REF"
+echo "  status_override done       reason = $REASON"
+echo "  NOTE review.passed = the operator read the result report (not artifact correctness)."
