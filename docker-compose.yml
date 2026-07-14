@@ -112,6 +112,10 @@ services:
     <<: *omega
     command: ["notify", "--run-id", "${OMEGAHIVE_RUN_ID:-accept}"]
     restart: unless-stopped
+    environment:
+      # Daily-heartbeat hour (UTC, integer). Config, not a secret — so it rides the compose
+      # environment here, never notifier.env. Declared in secrets-manifest.yaml (notifier row).
+      HEARTBEAT_HOUR_UTC: ${HEARTBEAT_HOUR_UTC:-6}
     env_file:
       - .env                                       # OMEGAHIVE_DATABASE_URL (the read path)
       # required:false so an unconfigured host doesn't break `compose config`/other services;

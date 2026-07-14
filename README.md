@@ -63,6 +63,40 @@ Day-to-day operation is mostly: seed tasks from work orders (`emit --type task.c
 
 Two sibling CLIs ship in the repo: `qual` (the model-qualification battery — can a given LLM drive an agent loop and board ops with discipline; [docs/omegahive_c2_battery_spec.md](docs/omegahive_c2_battery_spec.md)) and `ladder` (the archived stage-2 experiment harness, kept for record reproducibility — see below).
 
+## The notifier: attention pager + daily heartbeat
+
+A small long-running service (`omegahive notify`, the compose `notifier` service) follows the spine's **read path** and sends Telegram messages so the operator doesn't have to poll the board. It is **outbound only** — one POST to `sendMessage`, no `getUpdates`, no webhook, no ack path, no bot commands — so it adds no inbound trust surface. It carries **refs, never file content**; messages are a lossy phone-glance *render* of an event (the audit home is the spine), rendered as HTML with full escaping.
+
+It pages on four attention events — `task.reported(kind=question)`, `task.blocked`, `task.escalated`, and `task.result_posted` (the result that prompts your close action) — folding a burst in one poll interval into a single summary. Everything else is silence, by design.
+
+On top of the pages it sends **one unconditional daily heartbeat** at `HEARTBEAT_HOUR_UTC` (default `06:00Z`) — even, and especially, when nothing happened:
+
+```
+omegahive daily · 2026-07-14 06:00Z
+spine head 1042 (+17/24h) · cursor lag 0
+attention last 24h: 1 question, 0 blocked, 0 escalated, 1 result
+open blocks: port-sha (26h)
+```
+
+The heartbeat makes silence informative: for a long unattended window, a missing heartbeat means the stack or host is down (SSH and check), not that the hive is quiet. It is derived **only** from the notifier's own cursor stream and state file — no board fold, no extra read scope.
+
+**Setup.** Create a bot with [@BotFather](https://t.me/BotFather) (`/newbot`), then put the token and your chat id in a per-service secrets env-file — never in the repo, an image, or a log:
+
+```bash
+install -m600 /dev/null "$OMEGAHIVE_SECRETS_DIR/notifier.env"   # then edit — see notifier.env.example
+# TELEGRAM_BOT_TOKEN=…   TELEGRAM_CHAT_ID=…
+```
+
+`HEARTBEAT_HOUR_UTC` is config, not a secret: it rides the compose environment (`environment: HEARTBEAT_HOUR_UTC=${HEARTBEAT_HOUR_UTC:-6}`), not `notifier.env`.
+
+**Run it persistently** (survives reboot via `restart: unless-stopped`; its read cursor + heartbeat state persist on the `omegahive-notifier` volume, so a restart resumes without replay or a double heartbeat):
+
+```bash
+OMEGAHIVE_RUN_ID=omegahive docker compose up -d notifier
+```
+
+**Run-id caveat.** The compose default `--run-id` is `accept` (the acceptance run); the durable project spine is `omegahive`. Set `OMEGAHIVE_RUN_ID=omegahive` in the shell or `.env`, or the notifier follows — and pages on — the wrong run.
+
 ### Operator tooling: the launch / answer / close loop
 
 The worked example below spells out the raw emits per hat. Day to day the operator drives three shell wrappers in `scripts/` — one command per judgment (launch, answer, close), which is the whole point of the loop the hive is built around. They are thin front-ends over `emit` / `board-view` / `report`; the same trust model applies (loopback tool, authority not identity). Put `scripts/` on `PATH` (or symlink the three commands into `~/bin`).
