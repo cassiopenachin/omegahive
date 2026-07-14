@@ -54,6 +54,7 @@ class TelegramClient:
         *,
         api_base: str = "https://api.telegram.org",
         timeout: float = 10.0,
+        parse_mode: str = "HTML",
         urlopen: Callable[..., object] = urllib.request.urlopen,
     ) -> None:
         if not token:
@@ -64,6 +65,7 @@ class TelegramClient:
         self._chat_id = chat_id
         self._api_base = api_base.rstrip("/")
         self._timeout = timeout
+        self._parse_mode = parse_mode
         self._urlopen = urlopen
 
     def _redact(self, text: str) -> str:
@@ -75,7 +77,12 @@ class TelegramClient:
     def send(self, text: str) -> None:
         # The token lives only in this URL path; it is constructed here and never logged.
         url = f"{self._api_base}/bot{self._token}/sendMessage"
-        body = urllib.parse.urlencode({"chat_id": self._chat_id, "text": text}).encode()
+        fields = {"chat_id": self._chat_id, "text": text}
+        if self._parse_mode:
+            # HTML parse mode: render_* escapes all dynamic values and wraps path fragments
+            # in <code> so bare *.md filenames (`.md` is a TLD) can't autolink or misrender.
+            fields["parse_mode"] = self._parse_mode
+        body = urllib.parse.urlencode(fields).encode()
         req = urllib.request.Request(url, data=body, method="POST")
         try:
             resp = self._urlopen(req, timeout=self._timeout)
