@@ -102,3 +102,17 @@ board_status() {  # board_status <task>  -> prints status
       if (s2 == t) { print s3; exit }
     }'
 }
+
+# Read a task's owner off the folded board (render_board column 4). Empty if the
+# task is absent or unowned. Used with board_status to enforce the adopt guard's
+# (ready, unowned) precondition literally: a `ready` row always renders a blank
+# owner cell (the owner is set only on assignment), so no cell-wrap handling is
+# needed for the one case this feeds.
+board_owner() {  # board_owner <task>  -> prints owner (may be empty)
+  hive board-view "$RUN" 2>/dev/null | awk -F'│' -v t="$1" '
+    NF >= 4 {
+      s2 = $2; gsub(/^[ \t]+|[ \t]+$/, "", s2)
+      s4 = $4; gsub(/^[ \t]+|[ \t]+$/, "", s4)
+      if (s2 == t) { print s4; exit }
+    }'
+}
