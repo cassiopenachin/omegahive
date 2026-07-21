@@ -97,6 +97,7 @@ class NotifierService:
         run_id: str = "omegahive",
         batch_threshold: int = 3,
         heartbeat_hour: int = 6,
+        ui_base_url: str | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._reader = reader
@@ -105,6 +106,9 @@ class NotifierService:
         self._run_id = run_id
         self._batch_threshold = max(1, batch_threshold)  # a burst is >= 1 event, never 0
         self._hb_hour = heartbeat_hour
+        # External UI base URL for deep links (config, not a secret). None/empty = no links,
+        # render byte-identical to before. The render layer normalizes the trailing slash.
+        self._ui_base_url = ui_base_url or None
         self._now = now or _utcnow
         state = cursor_store.load()
         self._cursor = state.cursor
@@ -145,14 +149,15 @@ class NotifierService:
         if len(triggers) >= self._batch_threshold:
             # One summary for the whole burst; advance past all of them together (a transient
             # failure raises out and holds the cursor for a retry next tick).
-            if self._send(render_batch(triggers), what=f"summary of {len(triggers)} events"):
+            if self._send(render_batch(triggers, self._ui_base_url),
+                          what=f"summary of {len(triggers)} events"):
                 delivered = len(triggers)
             self._commit(view.cursor, events)
         else:
             # One message each, advancing the cursor per delivered (or permanently-dropped)
             # event so a failure partway through never re-sends what already went out.
             for n in triggers:
-                if self._send(render_one(n), what=f"event seq {n.seq}"):
+                if self._send(render_one(n, self._ui_base_url), what=f"event seq {n.seq}"):
                     delivered += 1
                 self._commit(n.seq, events)
             self._commit(view.cursor, events)  # all handled: cover trailing non-triggers
@@ -178,7 +183,8 @@ class NotifierService:
 
         ages = self._hb.open_block_ages(now)
         text = render_heartbeat(
-            self._run_id, today, self._hb_hour, self._head, self._cursor, self._hb, ages
+            self._run_id, today, self._hb_hour, self._head, self._cursor, self._hb, ages,
+            self._ui_base_url,
         )
         sent = self._send(text, what="daily heartbeat")  # raises on transient -> retry next tick
         # delivered OR permanently dropped: advance the day and reset the window.
