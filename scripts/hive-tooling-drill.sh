@@ -26,6 +26,15 @@ bad()  { FAIL=$((FAIL+1)); echo "  FAIL  $*"; }
 check(){ if eval "$2"; then ok "$1"; else bad "$1  [cond: $2]"; fi; }
 # expect_fail <desc> <cmd...>: passes iff the command exits non-zero.
 expect_fail(){ local d="$1"; shift; if "$@" >/dev/null 2>&1; then bad "$d (expected refusal, got success)"; else ok "$d"; fi; }
+# expect_fail_msg <desc> <needle> <cmd...>: passes iff the command fails AND its
+# combined output contains <needle> — so a refusal's per-state message is asserted,
+# not just its exit code.
+expect_fail_msg(){
+  local d="$1" needle="$2"; shift 2; local out
+  if out=$("$@" 2>&1); then bad "$d (expected refusal, got success)"
+  elif printf '%s' "$out" | grep -qF -- "$needle"; then ok "$d"
+  else bad "$d (refused, but message missing '$needle')"; fi
+}
 
 cleanup() {
   tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
@@ -103,6 +112,11 @@ board_status() {  # read the scratch board through the stack cli
     | awk -F'│' -v t="$1" 'NF>=3 { s=$2; gsub(/^[ \t]+|[ \t]+$/,"",s); v=$3; gsub(/^[ \t]+|[ \t]+$/,"",v); if (s==t){print v; exit} }'
 }
 
+raw_emit() {  # raw_emit <role> <actor> <type> [extra emit args...] — seed the scratch board directly
+  ( cd "${OMEGA_DIR:-$HOME/src/SNET/omegahive}" && podman compose run --rm -T cli \
+      emit --run-id "$RUN_ID" --role "$1" --actor "$2" --type "$3" "${@:4}" ) >/dev/null 2>&1
+}
+
 echo
 echo "== launch =="
 "$SCRIPT_DIR/hive-launch" "$ORDER" --worker "$WORKER"
@@ -147,6 +161,48 @@ CLOSE_OUT="$("$SCRIPT_DIR/hive-close" "$TASK" --reason "drill close")"
 printf '%s\n' "$CLOSE_OUT"
 check "close -> done"                  "[ \"\$(board_status '$TASK')\" = done ]"
 check "close certified the result ref" "printf '%s' \"\$CLOSE_OUT\" | grep -qF '$RESULT_REF'"
+
+echo
+echo "== adopt a pre-seeded ready task =="
+# The pre-tooling backlog was seeded as unowned `ready` tasks via raw task.created.
+# hive-launch must ADOPT such a task: register + assign only, no second task.created.
+AORDER="$ORDERS_REL/2026-07-13-drill-adopt.md"
+cat > "$WS/$AORDER" <<'EOF'
+# Order: drill adopt — a pre-seeded ready task the launcher must adopt
+
+## Scope
+Seeded via raw task.created (like the pre-tooling backlog); hive-launch adopts it.
+EOF
+git -C "$WS" add -A && git -C "$WS" commit --quiet -m "drill: adopt order"
+git -C "$WS" push --quiet origin HEAD:main
+ATASK="drill-adopt"
+AWORKER="sess-adopt-${STAMP}"
+AWRAP="$WRAPPERS/$AWORKER.sh"
+# Seed exactly like the backlog: a raw task.created, unowned -> ready. No assign.
+raw_emit human operator task.created --task "$ATASK" \
+  --payload "$(jq -cn '{title:"drill adopt", task_type:"task", acceptance:"seeded pin"}')"
+check "pre-seeded task is ready" "[ \"\$(board_status '$ATASK')\" = ready ]"
+
+ADOPT_OUT="$("$SCRIPT_DIR/hive-launch" "$AORDER" --worker "$AWORKER")"
+printf '%s\n' "$ADOPT_OUT"
+check "adopt announced (skips task.created)" "printf '%s' \"\$ADOPT_OUT\" | grep -qi adopt"
+check "adopt notes the stale-pin caveat"     "printf '%s' \"\$ADOPT_OUT\" | grep -qi stale"
+check "adopt moves board to assigned"        "[ \"\$(board_status '$ATASK')\" = assigned ]"
+check "adopt issues the emit wrapper"        "[ -x '$AWRAP' ]"
+check "adopt provisions worker clones"       "[ -d '$WORK/$AWORKER/hive/.git' ]"
+# The adopted seat must actually work: its wrapper drives the accept transition.
+"$AWRAP" --type task.accepted --task "$ATASK" >/dev/null
+check "adopt: wrapper accept -> in_progress" "[ \"\$(board_status '$ATASK')\" = in_progress ]"
+
+echo
+echo "== adopt refuses every non-(ready,unowned) state, with per-state messages =="
+# drill-adopt is now owned/in_progress -> refuse and point at task.reassigned.
+expect_fail_msg "launch refuses an owned/in-flight task (suggests reassign)" "task.reassigned" \
+  "$SCRIPT_DIR/hive-launch" "$AORDER" --worker "sess-adopt-owned-${STAMP}"
+# drill-demo is done -> refuse as not launchable.
+expect_fail_msg "launch refuses a done task (not launchable)" "not launchable" \
+  "$SCRIPT_DIR/hive-launch" "$ORDER" --worker "sess-adopt-done-${STAMP}"
+check "adopt refusal emitted no board state" "[ ! -e '$WORK/sess-adopt-done-${STAMP}' ]"
 
 echo
 echo "== refusal paths =="
