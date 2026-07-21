@@ -53,13 +53,41 @@ WS_ROOT="$WORK_ROOT/$WORKER/hive"
 CODE_ROOT="$WORK_ROOT/$WORKER/omegahive"
 WRAPPER="$WRAPPER_DIR/$WORKER.sh"
 
-# --- refuse before we change anything -----------------------------------------
-# Board-existence guard: hive-launch creates a NEW task. Relaunching one that is
-# already on the board would re-emit task.created, which the reducer applies
-# wholesale — silently regressing an owned/in_review/done task to fresh. Recovery
-# from a dead worker is the manual task.reassigned path (RUNBOOK), not relaunch.
+# --- decide before we change anything: create, adopt, or refuse ---------------
+# hive-launch normally creates a NEW task. Re-emitting task.created for one that
+# already exists would be applied wholesale by the reducer — silently regressing
+# an owned/in_review/done task to fresh. So an existing task is handled by state:
+#
+#   absent                        -> create  (seed task.created + register + assign)
+#   ready, unowned                -> ADOPT   (register + assign only; NO task.created)
+#   assigned|blocked|in_progress  -> refuse; owned/in-flight, recover via task.reassigned (RUNBOOK)
+#   in_review|done                -> refuse; already awaiting close / closed — not launchable
+#   any other existing state      -> refuse; not launchable
+#
+# Adopt exists because the entire pre-tooling backlog was seeded (2026-07-10) as
+# unowned `ready` tasks via raw task.created — without it, hive-launch could only
+# ever launch tasks it created itself. Adopt is the ONE existing-state that
+# proceeds, and only from exactly (ready, unowned): it reuses the seeded
+# task.created instead of re-emitting one. Recovery of an owned/dead task stays
+# the manual task.reassigned path (RUNBOOK) — never a relaunch.
+ADOPT=""
 EXISTING=""; EXISTING=$(board_status "$TASK") || EXISTING=""
-[ -z "$EXISTING" ] || die "task '$TASK' is already on run '$RUN' (status: $EXISTING); relaunch is not recovery — use task.reassigned (RUNBOOK)"
+if [ -n "$EXISTING" ]; then
+  case "$EXISTING" in
+    ready)
+      OWNER=""; OWNER=$(board_owner "$TASK") || OWNER=""
+      [ -z "$OWNER" ] || die "task '$TASK' is 'ready' but owned by '$OWNER' on run '$RUN' — not adoptable; recover via task.reassigned (RUNBOOK)"
+      ADOPT=1 ;;
+    assigned|blocked|in_progress)
+      die "task '$TASK' is already owned/in-flight on run '$RUN' (status: $EXISTING); relaunch is not recovery — use task.reassigned (RUNBOOK)" ;;
+    in_review)
+      die "task '$TASK' is already awaiting close on run '$RUN' (status: in_review) — not launchable" ;;
+    done)
+      die "task '$TASK' is already closed on run '$RUN' (status: done) — not launchable" ;;
+    *)
+      die "task '$TASK' already exists on run '$RUN' (status: $EXISTING) — not launchable" ;;
+  esac
+fi
 
 # Clobber guards: never overwrite an existing clone or a same-named live pane.
 [ ! -e "$WS_ROOT" ]   || die "$WS_ROOT already exists; pick a fresh --worker id or clear it"
@@ -70,13 +98,17 @@ if tmux has-session -t "$HIVE_TMUX_SESSION" 2>/dev/null \
 fi
 
 # --- pin the order and build the seed payloads --------------------------------
+# The pin is required in BOTH modes: the worker's fresh clone comes from the hub,
+# so the order must be committed+pushed there for it to be readable — create and
+# adopt alike. In adopt mode SHA is the order at HEAD, not the acceptance ref: the
+# adopted task keeps its original (seeded) task.created acceptance pin.
 SHA=$(order_pin "$REL")
 ACCEPTANCE="per $REL@$SHA"
 TITLE=$(grep -m1 -E '^# ' "$OPS_WS/$REL" | sed -E 's/^# +//; s/^Order: *//')
 [ -n "$TITLE" ] || TITLE="$TASK"
 TASK_TYPE="task"   # advisory label only; not gated (events/types.py). Edit freely.
 
-echo "hive-launch: task=$TASK worker=$WORKER"
+echo "hive-launch: task=$TASK worker=$WORKER${ADOPT:+  (adopting existing ready task)}"
 echo "  order:  $REL@$SHA"
 echo "  run:    $RUN"
 
@@ -111,16 +143,28 @@ WRAP
 chmod +x "$WRAPPER"
 echo "  wrapper: $WRAPPER"
 
-created_payload=$(jq -cn --arg t "$TITLE" --arg ty "$TASK_TYPE" --arg a "$ACCEPTANCE" \
-  '{title:$t, task_type:$ty, acceptance:$a}')
 assigned_payload=$(jq -cn --arg w "$WORKER" '{worker:$w}')
 registered_payload=$(jq -cn --arg w "$WORKER" '{worker_id:$w}')
 
-# Order matters: created -> ready, registered -> roster, assigned -> owned.
-emit human "$OPERATOR_ACTOR" task.created     --task "$TASK" --payload "$created_payload"    >/dev/null
-emit human "$OPERATOR_ACTOR" worker.registered              --payload "$registered_payload" >/dev/null
-emit coordinator "$OPERATOR_ACTOR" task.assigned --task "$TASK" --payload "$assigned_payload" >/dev/null
-echo "  seeded: task.created + worker.registered + task.assigned"
+# Two seeding modes. Create: task.created -> ready, then register + assign.
+# Adopt: the task is ALREADY `ready` (unowned) from its seeded task.created —
+# re-emitting one would regress it, so we emit ONLY register + assign. Order
+# matters in both: registered -> roster (assign's target must be registered),
+# assigned -> owned.
+if [ -n "$ADOPT" ]; then
+  emit human "$OPERATOR_ACTOR" worker.registered              --payload "$registered_payload" >/dev/null
+  emit coordinator "$OPERATOR_ACTOR" task.assigned --task "$TASK" --payload "$assigned_payload" >/dev/null
+  echo "  adopted: existing ready task -> worker.registered + task.assigned (no task.created)"
+  echo "  caveat: acceptance stays the seeded task.created pin, which may be STALE against $REL@$SHA at HEAD;"
+  echo "          the worker reads the order at HEAD (WORKER.md), so this is protocol-consistent — just be aware."
+else
+  created_payload=$(jq -cn --arg t "$TITLE" --arg ty "$TASK_TYPE" --arg a "$ACCEPTANCE" \
+    '{title:$t, task_type:$ty, acceptance:$a}')
+  emit human "$OPERATOR_ACTOR" task.created     --task "$TASK" --payload "$created_payload"    >/dev/null
+  emit human "$OPERATOR_ACTOR" worker.registered              --payload "$registered_payload" >/dev/null
+  emit coordinator "$OPERATOR_ACTOR" task.assigned --task "$TASK" --payload "$assigned_payload" >/dev/null
+  echo "  seeded: task.created + worker.registered + task.assigned"
+fi
 
 # --- kickoff --------------------------------------------------------------------
 # The WORKER.md launch template with clone paths filled, plus the one line that
