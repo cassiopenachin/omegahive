@@ -40,6 +40,16 @@ _TEMPLATES.env.globals["event_sentence"] = event_sentence
 _UI_ACTOR = Actor(role="coordinator", id="ui-read")
 
 
+def _normalize_base_path(value: str | None) -> str:
+    """A path prefix for serving behind a reverse proxy. Empty (default) = today's behavior.
+
+    Normalizes to a leading-slash, no-trailing-slash form so `/omegahive`, `omegahive/`, and
+    `/omegahive/` all mean the same mount. Empty stays empty so the unset path is byte-identical.
+    """
+    raw = (value or "").strip().strip("/")
+    return f"/{raw}" if raw else ""
+
+
 class ReadPort(Protocol):
     def read(self, cursor: int | None = None) -> PortView: ...
 
@@ -85,12 +95,14 @@ def _page_context(
     actor: str | None = None,
     event_type: str | None = None,
     generation_notice: bool = False,
+    base_path: str = "",
 ) -> dict:
     board = view.board or Board(tasks={})
     selected_events = filter_events(events, actor, event_type)
     return {
         "request": request,
         "run_id": run_id,
+        "base_path": base_path,
         "cursor": view.cursor or 0,
         "generation": view.generation,
         "generation_notice": generation_notice,
@@ -125,6 +137,7 @@ def create_app(
     port_factory: PortFactory | None = None,
     default_run: str | None = None,
     poll_seconds: float = 1.5,
+    base_path: str | None = None,
 ) -> FastAPI:
     """Create an injectable app: local visual work uses `DemoPort`; production uses Port."""
     demo_mode = os.environ.get("OMEGAHIVE_UI_DEMO") == "1"
@@ -136,8 +149,14 @@ def create_app(
     home_run = default_run or os.environ.get(
         "OMEGAHIVE_UI_DEFAULT_RUN", DEMO_RUN_ID if demo_mode else "accept"
     )
+    # Serve behind the house Caddy at a path prefix (e.g. /omegahive). `root_path` makes
+    # Starlette strip the prefix before routing and makes `url_for` re-add it, so the app
+    # stays base-aware without any absolute-path assumption. Empty = today's direct serving.
+    base_path = _normalize_base_path(
+        base_path if base_path is not None else os.environ.get("OMEGAHIVE_UI_BASE_PATH", "")
+    )
 
-    app = FastAPI(title="OmegaHive", docs_url=None, redoc_url=None)
+    app = FastAPI(title="OmegaHive", docs_url=None, redoc_url=None, root_path=base_path)
     app.mount("/static", StaticFiles(directory=str(_ROOT / "static")), name="static")
 
     def snapshot(run_id: str) -> PortView:
@@ -152,7 +171,8 @@ def create_app(
     ) -> HTMLResponse:
         view = snapshot(run_id)
         context = _page_context(
-            request, run_id, view, view.events, actor=actor, event_type=event_type
+            request, run_id, view, view.events, actor=actor, event_type=event_type,
+            base_path=base_path,
         )
         context["page"] = page
         context["stream_url"] = request.url_for("stream", run_id=run_id)
@@ -160,7 +180,7 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     def home() -> RedirectResponse:
-        return RedirectResponse(url=f"/run/{home_run}/board", status_code=307)
+        return RedirectResponse(url=f"{base_path}/run/{home_run}/board", status_code=307)
 
     @app.get("/run/{run_id}/board", response_class=HTMLResponse)
     def board(request: Request, run_id: str) -> HTMLResponse:
@@ -207,6 +227,7 @@ def create_app(
                         actor=actor,
                         event_type=event_type,
                         generation_notice=True,
+                        base_path=base_path,
                     )
                     yield _sse("fragments", _fragments(page, context))
                     continue
@@ -216,7 +237,8 @@ def create_app(
                     fresh = await asyncio.to_thread(snapshot, run_id)
                     seen_cursor, seen_generation = fresh.cursor, fresh.generation
                     context = _page_context(
-                        request, run_id, fresh, fresh.events, actor=actor, event_type=event_type
+                        request, run_id, fresh, fresh.events, actor=actor, event_type=event_type,
+                        base_path=base_path,
                     )
                     yield _sse("fragments", _fragments(page, context))
                 else:

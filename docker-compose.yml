@@ -9,6 +9,11 @@ x-omega: &omega
   image: omegahive:dev
   build: .
   env_file: [.env]
+  environment:
+    # port-library provenance passthrough (qual record pin). Empty default so a plain
+    # deploy is unaffected; a deploy script injects the real commit sha at build/run
+    # time. In-container with no override the pin falls back to the image:<id> sentinel.
+    OMEGAHIVE_PORT_LIBRARY_SHA: ${OMEGAHIVE_PORT_LIBRARY_SHA:-}
   depends_on:
     postgres:
       condition: service_healthy
@@ -72,6 +77,27 @@ services:
   board-view:
     <<: *omega
     command: ["board-view", "${OMEGAHIVE_RUN_ID:-accept}"]
+
+  # The read-only operator web UI (ui spec §5). A long-running uvicorn server on the
+  # omegahive image, reading the spine over the compose network (board/events/metrics
+  # screens; no write path). NOT a front door: the *host* publish is loopback-only, so the
+  # house Caddy on :8443 is the sole ingress, reverse-proxying https://<host>:8443/omegahive/
+  # here. Never publish this on 0.0.0.0. `--host 0.0.0.0` (ui-serve default) binds only the
+  # container's own netns — the loopback host-publish below is the real boundary (same shape
+  # postgres uses). OMEGAHIVE_UI_BASE_PATH is the serving prefix (config, not a secret) and
+  # MUST match the Caddy handle block; empty would serve at the root. Container listens on
+  # 8000; the app trusts proxy headers so url_for reflects the external https origin.
+  ui:
+    <<: *omega
+    command: ["ui-serve"]
+    environment:
+      - OMEGAHIVE_UI_BASE_PATH=${OMEGAHIVE_UI_BASE_PATH:-/omegahive}
+      - OMEGAHIVE_UI_DEFAULT_RUN=${OMEGAHIVE_RUN_ID:-accept}
+    ports:
+      # host loopback only -> container 8000. Change the host port via OMEGAHIVE_UI_HOST_PORT
+      # (must match the Caddy reverse_proxy target). Never 0.0.0.0 (deployment posture).
+      - "127.0.0.1:${OMEGAHIVE_UI_HOST_PORT:-8811}:8000"
+    restart: unless-stopped
 
   # Full suite in-container (deployment spec §4: no host pytest).
   test:

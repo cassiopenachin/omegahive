@@ -9,15 +9,15 @@
   </head>
   <body data-stream-url="{{ stream_url }}?page={{ page }}&cursor={{ cursor }}&generation={{ generation if generation is not none else '' }}{% if selected_actor %}&actor={{ selected_actor }}{% endif %}{% if selected_type %}&type={{ selected_type }}{% endif %}">
     <header class="site-header">
-      <a class="brand" href="/run/{{ run_id }}/board" aria-label="OmegaHive board">
+      <a class="brand" href="{{ base_path }}/run/{{ run_id }}/board" aria-label="OmegaHive board">
         <span class="brand-mark" aria-hidden="true">Ω</span>
         <span>OmegaHive</span>
       </a>
       <div class="run-context"><span class="live-dot" aria-hidden="true"></span> Run <strong>{{ run_id }}</strong></div>
       <nav aria-label="Run views">
-        <a href="/run/{{ run_id }}/board" {% if page == 'board' %}aria-current="page"{% endif %}>Board</a>
-        <a href="/run/{{ run_id }}/events" {% if page == 'events' %}aria-current="page"{% endif %}>Events</a>
-        <a href="/run/{{ run_id }}/metrics" {% if page == 'metrics' %}aria-current="page"{% endif %}>Metrics</a>
+        <a href="{{ base_path }}/run/{{ run_id }}/board" {% if page == 'board' %}aria-current="page"{% endif %}>Board</a>
+        <a href="{{ base_path }}/run/{{ run_id }}/events" {% if page == 'events' %}aria-current="page"{% endif %}>Events</a>
+        <a href="{{ base_path }}/run/{{ run_id }}/metrics" {% if page == 'metrics' %}aria-current="page"{% endif %}>Metrics</a>
       </nav>
       {% include "fragments/freshness.html" %}
     </header>

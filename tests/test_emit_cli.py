@@ -9,12 +9,14 @@ from __future__ import annotations
 import os
 
 import pytest
+from pydantic import ValidationError
 from typer.testing import CliRunner
 
 from omegahive import cli
 from omegahive.clock import LogicalClock
 from omegahive.db import connect
 from omegahive.events.log import EventLog
+from omegahive.events.types import TaskResultPosted
 
 TEST_DATABASE_URL = os.environ.get(
     "OMEGAHIVE_TEST_DATABASE_URL",
@@ -78,6 +80,27 @@ def test_malformed_ref_exits_nonzero(cli_db):
     assert r.exit_code == 1
     assert "rejected" in r.output.lower()
     assert _events("task.reported") == []
+
+
+def test_missing_field_prints_field_path(cli_db):
+    # the paper cut this closes: a bare `Field required` cost a grep to learn WHICH
+    # field. The printed error now names the location — here the omitted `kind`.
+    r = _emit("--payload", f'{{"ref": "{REF}"}}')
+    assert r.exit_code == 1
+    assert "kind: Field required" in r.output
+    assert _events("task.reported") == []
+
+
+def test_payload_error_names_nested_field():
+    # the motivating case from the operator's first session: a task.result_posted whose
+    # artifact_refs element omits `quality`. The formatter resolves the pydantic loc to
+    # the dotted path an operator can act on directly.
+    try:
+        TaskResultPosted(artifact_refs=[{"ref": "some/path@abc1234"}])
+    except ValidationError as e:
+        assert cli._payload_error(e) == "artifact_refs.0.quality: Field required"
+    else:
+        raise AssertionError("expected a ValidationError for the missing quality field")
 
 
 def test_unauthorized_actor_exits_nonzero(cli_db):

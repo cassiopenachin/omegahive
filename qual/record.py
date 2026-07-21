@@ -123,16 +123,30 @@ def persona_hashes(loaded: list[LoadedScenario]) -> dict[str, str]:
     return out
 
 
-def port_library_sha() -> str:
-    """The repo commit the port client is built from (config pin)."""
+def port_library_sha(image_id: str) -> str:
+    """Provenance of the port client build (config pin) — a resolver chain, never empty.
+
+    Most-to-least precise, first non-empty wins:
+      1. ``git rev-parse HEAD`` — a repo is present (dev/CI on host).
+      2. ``OMEGAHIVE_PORT_LIBRARY_SHA`` — injected by a deploy script at build/run time.
+      3. ``image:<image_id>`` sentinel — in-container there is no ``.git`` and no env
+         override, but the image digest already uniquely identifies the code, so it is
+         honest provenance for that environment.
+    """
     try:
         out = subprocess.run(
             ["git", "-C", str(QUAL_ROOT), "rev-parse", "HEAD"],
             capture_output=True, text=True, check=True,
         )
-        return out.stdout.strip()
+        sha = out.stdout.strip()
+        if sha:
+            return sha
     except (subprocess.CalledProcessError, FileNotFoundError, OSError):
-        return ""
+        pass
+    env = os.environ.get("OMEGAHIVE_PORT_LIBRARY_SHA", "").strip()
+    if env:
+        return env
+    return f"image:{image_id}"
 
 
 def build_config(
@@ -155,7 +169,7 @@ def build_config(
         "reps": reps,
         "model_profiles": list(models),
         "scenario_set_sha": scenario_set_sha(loaded),
-        "port_library_sha": port_library_sha(),
+        "port_library_sha": port_library_sha(image_id),
         "persona_hashes": persona_hashes(loaded),
     }
 
