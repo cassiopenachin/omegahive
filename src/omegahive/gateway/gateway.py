@@ -94,6 +94,14 @@ class Gateway:
         conn = self._store.conn
         try:
             with conn.transaction():
+                # 0. register the run (idempotent, no-op when present) FIRST — in the same
+                # transaction as the event insert below — so EVERY run touched by an emit
+                # carries a generation token from its first event: a fresh accept, a gate
+                # rejection (still an appended gateway.rejected event), AND a replay that
+                # dedups at step 1 (a run may have events but no registry row — the exact
+                # state this change exists to close). It writes nothing when present, so it
+                # never re-gates a committed op.
+                self._store.open_run()
                 # 1. idempotency lookup FIRST — a replay returns the existing event
                 # before any fold or gate, so a committed op is never re-gated.
                 if idempotency_key is not None:
