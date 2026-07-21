@@ -370,7 +370,10 @@ def notify_cmd(
     `TELEGRAM_CHAT_ID`) — the per-service secrets env-file (`notifier.env`, deployment
     spec §4), never a CLI argument (which would surface the token in the process list).
     The token is never logged and never placed in a message. `HEARTBEAT_HOUR_UTC` is config
-    (compose environment), not a secret.
+    (compose environment), not a secret. `OMEGAHIVE_UI_BASE_URL` (also config) is the external
+    origin+prefix the operator's phone uses (e.g. https://host:8443/omegahive); when set, the
+    task id in each message deep-links to the run's board view over the tailnet. Unset, the
+    render is unchanged.
     """
     from .notifier import CursorStore, NotifierService, PortSpineReader, TelegramClient
 
@@ -392,6 +395,10 @@ def notify_cmd(
     except ValueError:
         heartbeat_hour = 6
     heartbeat_hour = min(23, max(0, heartbeat_hour))
+    # Optional deep-link base: the external origin+prefix the operator's phone uses (e.g.
+    # https://host:8443/omegahive). Config, not a secret. Unset -> links absent, render
+    # unchanged. Trailing slash is normalized in the render layer.
+    ui_base_url = os.environ.get("OMEGAHIVE_UI_BASE_URL", "").strip() or None
 
     store = CursorStore(state_file)
     reader = PortSpineReader(
@@ -404,6 +411,7 @@ def notify_cmd(
     NotifierService(
         reader, sender, store, run_id=run_id,
         batch_threshold=batch_threshold, heartbeat_hour=heartbeat_hour,
+        ui_base_url=ui_base_url,
     ).run(interval)
 
 
