@@ -88,10 +88,19 @@ silently skip events. Follow the ordering exactly.
      docker compose run --rm cli bump-generation --run-id <run>
      ```
      The bump requires a *registered* run; it refuses one that was never opened
-     (`run not registered`), never fabricating a generation. The `emit` write path opens a
-     run idempotently on its first event, so every run that has been emitted to —
-     `omegahive` included — carries a generation token and accepts the bump.
-   - **Restart *every* client** — the always-safe floor, independent of the token.
+     (`run not registered`) rather than fabricating a generation. The `emit` write path
+     opens a run idempotently on its first event, so a run under active write traffic —
+     `omegahive` included — stays registered and accepts the bump. During a restore writers
+     are drained, so if the bump reports `run not registered` (e.g. restoring a dump that
+     predates the run's registration) register the run first, then bump:
+     ```sh
+     docker compose run --rm --entrypoint python cli -c \
+       "from omegahive.db import connect; from omegahive.port import open_run
+     c=connect(); open_run(c,'<run>'); c.commit()"
+     ```
+   - **Restart *every* client** — the always-safe floor, independent of the token. It also
+     covers any client that snapshotted the run *before* it was registered: such a client
+     holds no generation and so would never see the bump on its own.
 4. **Restart** coordinators/workers; each re-snapshots through the port.
 
 Verify a restore reproduces the board: deployment check 3 (`scripts/deploy_checks.sh`)

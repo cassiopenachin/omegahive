@@ -94,6 +94,14 @@ class Gateway:
         conn = self._store.conn
         try:
             with conn.transaction():
+                # 0. register the run (idempotent, no-op when present) FIRST — in the same
+                # transaction as the event insert below — so EVERY run touched by an emit
+                # carries a generation token from its first event: a fresh accept, a gate
+                # rejection (still an appended gateway.rejected event), AND a replay that
+                # dedups at step 1 (a run may have events but no registry row — the exact
+                # state this change exists to close). It writes nothing when present, so it
+                # never re-gates a committed op.
+                self._store.open_run()
                 # 1. idempotency lookup FIRST — a replay returns the existing event
                 # before any fold or gate, so a committed op is never re-gated.
                 if idempotency_key is not None:
@@ -102,12 +110,6 @@ class Gateway:
                         return Accepted(existing)
                 # 2. serialize per run: advisory lock keyed in Postgres (never Python hash()).
                 conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (self._store.run_id,))
-                # 2a. register the run (idempotent, no-op when present) in the SAME
-                # transaction as the event insert below, so every run touched by an emit
-                # carries a generation token from its first event — accept or rejection both
-                # persist one. Placed under the lock and before the gate so a first emit that
-                # the gate rejects (still an appended gateway.rejected event) registers too.
-                self._store.open_run()
                 # 3. fold + gate against the run prefix under the lock.
                 board = fold(self._store.read_run())
                 rej = self._gate(board, actor, event_type, payload, task_id)

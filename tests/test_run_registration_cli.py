@@ -119,6 +119,35 @@ def test_bump_generation_succeeds_after_first_emit(cli_db):
     assert _generation() == 2
 
 
+def _deregister() -> None:
+    c = connect(TEST_DATABASE_URL)
+    try:
+        with c.transaction():
+            c.execute("DELETE FROM runs WHERE run_id = %s", (RUN,))
+    finally:
+        c.close()
+
+
+def test_replay_emit_registers_a_run_with_events_but_no_row(cli_db):
+    # the state this change exists to close: a run with log events but no registry row
+    # (omegahive today — its events predate registration on the write path).
+    r1 = _emit("--payload", PAYLOAD)
+    assert r1.exit_code == 0, r1.output
+    _deregister()
+    assert _generation() is None
+
+    # the next emit is a content+basis replay that dedups at the idempotency check — it
+    # must STILL register the run, or bump-generation stays inert exactly where it matters
+    r2 = _emit("--payload", PAYLOAD)
+    assert r2.exit_code == 0, r2.output
+    assert "already recorded" in r2.output.lower()
+    assert _generation() == 1
+
+    r3 = runner.invoke(cli.app, ["bump-generation", "--run-id", RUN])
+    assert r3.exit_code == 0, r3.output
+    assert _generation() == 2
+
+
 def test_already_registered_run_is_unchanged(cli_db):
     # pre-register and advance the generation out of band, as a live restore would
     _register()
