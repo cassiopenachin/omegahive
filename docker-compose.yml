@@ -9,6 +9,11 @@ x-omega: &omega
   image: omegahive:dev
   build: .
   env_file: [.env]
+  environment:
+    # port-library provenance passthrough (qual record pin). Empty default so a plain
+    # deploy is unaffected; a deploy script injects the real commit sha at build/run
+    # time. In-container with no override the pin falls back to the image:<id> sentinel.
+    OMEGAHIVE_PORT_LIBRARY_SHA: ${OMEGAHIVE_PORT_LIBRARY_SHA:-}
   depends_on:
     postgres:
       condition: service_healthy
