@@ -98,6 +98,16 @@ LIMIT 1
 
 _SELECT_RUN_IDS = "SELECT DISTINCT run_id FROM events WHERE run_id LIKE %(prefix)s ORDER BY run_id"
 
+# Per-run rollup for the `runs` listing: id, event count, first/last wall-clock time.
+# wall_ts is NULL for the sim binding (§6), so min/max come back NULL for pure-sim runs;
+# NULLS LAST floats those below live runs, most-recently-active run first.
+_SELECT_RUN_SUMMARIES = """
+SELECT run_id, count(*) AS events, min(wall_ts) AS first_ts, max(wall_ts) AS last_ts
+FROM events
+GROUP BY run_id
+ORDER BY max(wall_ts) DESC NULLS LAST, run_id
+"""
+
 _SELECT_RECENT_REJECTION = """
 SELECT event_id, (payload->>'coalesced_count')::int
 FROM events
@@ -122,6 +132,15 @@ def read_run_ids(conn, prefix: str) -> list[str]:
     with conn.cursor() as cur:
         cur.execute(_SELECT_RUN_IDS, {"prefix": prefix + "%"})
         return [r[0] for r in cur.fetchall()]
+
+
+def read_run_summaries(conn) -> list[dict]:
+    """Every run in the log with its event count and first/last wall-clock time —
+    the `runs` listing, so discovering run ids needs no SQL. `first_ts`/`last_ts`
+    are aware datetimes, or None for a run whose events all carry a NULL wall_ts."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(_SELECT_RUN_SUMMARIES)
+        return cur.fetchall()
 
 
 def _row_to_event(row: dict) -> Event:
