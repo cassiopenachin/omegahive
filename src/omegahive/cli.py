@@ -407,5 +407,35 @@ def notify_cmd(
     ).run(interval)
 
 
+@app.command("ui-serve")
+def ui_serve_cmd(
+    host: str = typer.Option(
+        "0.0.0.0", "--host", envvar="OMEGAHIVE_UI_HOST",  # noqa: S104
+        help="container listen address; the host publish is loopback-only via compose",
+    ),
+    port: int = typer.Option(
+        8000, "--port", envvar="OMEGAHIVE_UI_PORT", help="container listen port"
+    ),
+) -> None:
+    """Serve the read-only operator UI (uvicorn).
+
+    The app self-configures its serving path from `OMEGAHIVE_UI_BASE_PATH` (empty = serve at
+    the root, today's behavior; `/omegahive` = serve behind the house Caddy at that prefix).
+    `--host 0.0.0.0` binds only the container's own network namespace; the host front door is
+    the loopback publish (`127.0.0.1:<port>`) in compose, with Caddy the only client. Proxy
+    headers are trusted (`forwarded_allow_ips="*"`) so `url_for` reflects the external
+    https origin and Host — the port is unreachable except through Caddy over loopback.
+    """
+    import uvicorn
+
+    uvicorn.run(
+        "omegahive.ui.app:app",
+        host=host,
+        port=port,
+        proxy_headers=True,
+        forwarded_allow_ips="*",
+    )
+
+
 if __name__ == "__main__":
     app()
