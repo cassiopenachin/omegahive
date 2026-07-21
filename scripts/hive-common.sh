@@ -20,6 +20,7 @@ set -euo pipefail
 : "${HIVE_TMUX_SESSION:=hive}"                     # tmux session that holds the worker panes
 : "${HIVE_WORKER_CMD:=claude}"                     # session launcher; the drill overrides to a no-op
 : "${ORDERS_SUBDIR:=projects/omegahive/orders}"    # order files, relative to a workspace clone root
+: "${HIVE_WIP_REVIEW_MAX:=3}"                       # hive-launch refuses at this many in_review tasks (review debt); --anyway overrides
 
 RUN="$HIVE_RUN_ID"
 # Used by the sourcing scripts (hive-launch/hive-close), not within this file.
@@ -93,26 +94,31 @@ order_pin() {  # order_pin <workspace-relative-path>  -> prints sha
   printf '%s\n' "$sha"
 }
 
-# Read a task's status off the folded board. Empty if the task is absent.
-board_status() {  # board_status <task>  -> prints status
-  hive board-view "$RUN" 2>/dev/null | awk -F'│' -v t="$1" '
-    NF >= 3 {
-      s2 = $2; gsub(/^[ \t]+|[ \t]+$/, "", s2)
-      s3 = $3; gsub(/^[ \t]+|[ \t]+$/, "", s3)
-      if (s2 == t) { print s3; exit }
-    }'
+# The folded board as a JSON array (board-view --json): the machine projection —
+# one object per task with task/status/owner/depends_on/review. This is the read
+# path the tooling parses instead of the rendered table: a task id wider than the
+# table's column wraps across lines, which no awk fragment survives (the bug that
+# broke the first wrapped-id close). `--json` prints `[]` and exits 0 on an empty
+# board, so callers get a well-formed empty array, never a parse error.
+board_json() {  # board_json  -> prints the board as a JSON array (or `[]`)
+  hive board-view "$RUN" --json 2>/dev/null
 }
 
-# Read a task's owner off the folded board (render_board column 4). Empty if the
-# task is absent or unowned. Used with board_status to enforce the adopt guard's
-# (ready, unowned) precondition literally: a `ready` row always renders a blank
-# owner cell (the owner is set only on assignment), so no cell-wrap handling is
-# needed for the one case this feeds.
+# Read a task's status off the folded board. Empty if the task is absent.
+board_status() {  # board_status <task>  -> prints status
+  board_json | jq -r --arg t "$1" '.[] | select(.task == $t) | .status' 2>/dev/null
+}
+
+# Read a task's owner off the folded board. Empty if the task is absent or unowned
+# (owner is JSON null -> `// empty` prints nothing). Used with board_status to
+# enforce the adopt guard's (ready, unowned) precondition.
 board_owner() {  # board_owner <task>  -> prints owner (may be empty)
-  hive board-view "$RUN" 2>/dev/null | awk -F'│' -v t="$1" '
-    NF >= 4 {
-      s2 = $2; gsub(/^[ \t]+|[ \t]+$/, "", s2)
-      s4 = $4; gsub(/^[ \t]+|[ \t]+$/, "", s4)
-      if (s2 == t) { print s4; exit }
-    }'
+  board_json | jq -r --arg t "$1" '.[] | select(.task == $t) | .owner // empty' 2>/dev/null
+}
+
+# List the in_review task ids, one per line (empty if none). The review-debt
+# signal the launch throttle paces against: `blocked` tasks are answer debt, not
+# review debt, so they are deliberately excluded.
+board_in_review() {  # board_in_review  -> prints in_review task ids, one per line
+  board_json | jq -r '.[] | select(.status == "in_review") | .task' 2>/dev/null
 }
