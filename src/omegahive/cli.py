@@ -24,7 +24,7 @@ from .metrics import compute
 from .metrics.distribution import aggregate
 from .metrics.promotion import score
 from .port import HiveCoordinatorPort, RawOp
-from .report.board import render_board
+from .report.board import board_to_json, render_board
 from .report.distribution import render_distribution, render_promotion_distribution
 from .report.human import render_human
 from .report.metrics import render_metrics
@@ -337,14 +337,29 @@ def emit_cmd(
 @app.command("board-view")
 def board_view_cmd(
     run_id: str = typer.Argument(..., help="run_id to read through the port and print"),
+    as_json: bool = typer.Option(
+        False, "--json", help="emit the board as a JSON array (machine projection), not a table"
+    ),
 ) -> None:
-    """Read the board through the port (read surface) and render it."""
+    """Read the board through the port (read surface) and render it.
+
+    `--json` emits the same folded board as a JSON array (task/status/owner/depends_on/
+    review) for tooling that must not parse the rendered table — a long task id wraps the
+    table's column across lines, which no awk fragment survives. An empty board prints `[]`
+    and exits 0 (empty is a valid machine result, not an error); the human table still
+    exits 1 with a message so an interactive miss is loud."""
     with connect() as conn:
         view = HiveCoordinatorPort(Actor(role="coordinator", id="board-view"), run_id, conn).read()
         if view.board is None or not view.board.tasks:
+            if as_json:
+                print("[]")
+                return
             console.print(f"no board state for run_id: {run_id}")
             raise typer.Exit(code=1)
-        render_board(view.board, console)
+        if as_json:
+            print(board_to_json(view.board))
+        else:
+            render_board(view.board, console)
 
 
 @app.command("notify")

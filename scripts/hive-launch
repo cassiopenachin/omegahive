@@ -15,13 +15,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/hive-common.sh
 source "$SCRIPT_DIR/hive-common.sh"
 
-usage() { echo "usage: hive-launch <order-file> [--worker <id>]" >&2; exit 2; }
+usage() { echo "usage: hive-launch <order-file> [--worker <id>] [--anyway]" >&2; exit 2; }
 
 ORDER_ARG=""
 WORKER=""
+ANYWAY=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --worker) shift; [ $# -gt 0 ] || usage; WORKER="$1" ;;
+    --anyway) ANYWAY=1 ;;
     -h|--help) usage ;;
     -*) usage ;;
     *) [ -z "$ORDER_ARG" ] || usage; ORDER_ARG="$1" ;;
@@ -52,6 +54,27 @@ SAFE='^[A-Za-z0-9._-]+$'
 WS_ROOT="$WORK_ROOT/$WORKER/hive"
 CODE_ROOT="$WORK_ROOT/$WORKER/omegahive"
 WRAPPER="$WRAPPER_DIR/$WORKER.sh"
+
+# --- review WIP throttle: pace launches to the operator's review debt ---------
+# Review is the quality gate; launching faster than results are reviewed just
+# grows an unreviewed backlog that no one is reading. Refuse once HIVE_WIP_REVIEW_MAX
+# tasks sit in_review, listing them so the operator knows what to drain. `blocked`
+# tasks are deliberately NOT counted — that is answer debt (a question awaiting a
+# decision), not review debt. `--anyway` overrides for the deliberate exception.
+if [ -z "$ANYWAY" ]; then
+  IN_REVIEW=""; IN_REVIEW=$(board_in_review) || IN_REVIEW=""
+  N_REVIEW=0
+  if [ -n "$IN_REVIEW" ]; then N_REVIEW=$(printf '%s\n' "$IN_REVIEW" | grep -c .); fi
+  if [ "$N_REVIEW" -ge "$HIVE_WIP_REVIEW_MAX" ]; then
+    {
+      echo "hive-launch: refusing to launch '$TASK' — $N_REVIEW task(s) awaiting review (limit HIVE_WIP_REVIEW_MAX=$HIVE_WIP_REVIEW_MAX):"
+      printf '%s\n' "$IN_REVIEW" | sed 's/^/    - /'
+      echo "  review is the quality gate; launches must not outrun it."
+      echo "  close reviewed work (hive-close) to drain, or override with --anyway."
+    } >&2
+    exit 1
+  fi
+fi
 
 # --- decide before we change anything: create, adopt, or refuse ---------------
 # hive-launch normally creates a NEW task. Re-emitting task.created for one that
