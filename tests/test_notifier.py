@@ -218,6 +218,74 @@ def test_render_batch_caps_overflow():
     assert len(text) < 4096  # stays a valid single Telegram message
 
 
+# --- deep links (optional UI base URL) -------------------------------------
+
+BASE = "https://beastie.tail-scale.ts.net:8443/omegahive"
+
+
+def test_render_one_links_task_when_base_url_set():
+    n = notification_from(_ev(1, "task.reported", {"ref": GOOD_REF, "kind": "question"}))
+    text = render_one(n, BASE)
+    # the task id becomes an <a href> into the run's board view; the id stays the anchor text.
+    assert f'<a href="{BASE}/run/omegahive/board">t1</a>' in text
+    # the rest of the sentence is unchanged — the link is additive, not structural.
+    assert "asks on" in text and "<code>2026-07-13-q</code>" in text
+
+
+def test_render_byte_identical_without_base_url():
+    # Every render is byte-for-byte the same as today when no base URL is configured.
+    n = notification_from(_ev(1, "task.reported", {"ref": GOOD_REF, "kind": "question"}))
+    b = notification_from(_ev(2, "task.blocked", {"reason": "stuck"}))
+    assert render_one(n, None) == render_one(n) and "<a " not in render_one(n)
+    batch = render_batch([n, b], None)
+    assert batch == render_batch([n, b]) and "<a " not in batch
+    hb = render_heartbeat("omegahive", "2026-07-14", 6, 10, 10, HeartbeatState(),
+                          [("t1", 5)], None)
+    assert hb == render_heartbeat("omegahive", "2026-07-14", 6, 10, 10, HeartbeatState(),
+                                  [("t1", 5)])
+    assert "<a " not in hb and "<code>t1</code>" in hb  # open block still <code>-wrapped
+
+
+def test_render_batch_links_each_task():
+    notifs = [
+        notification_from(_ev(1, "task.blocked", {"reason": "a"}, task_id="alpha")),
+        notification_from(_ev(2, "task.escalated", {"reason": "b"}, task_id="beta")),
+    ]
+    text = render_batch(notifs, BASE)
+    assert f'<a href="{BASE}/run/omegahive/board">alpha</a>' in text
+    assert f'<a href="{BASE}/run/omegahive/board">beta</a>' in text
+
+
+def test_heartbeat_open_blocks_link_when_base_url_set():
+    hb = render_heartbeat("omegahive", "2026-07-14", 6, 10, 10, HeartbeatState(),
+                          [("port-sha", 26)], BASE)
+    assert f'<a href="{BASE}/run/omegahive/board">port-sha</a> (26h)' in hb
+    assert "<code>port-sha</code>" not in hb  # the <a> replaces the <code> wrap when linked
+
+
+def test_base_url_trailing_slash_normalized():
+    n = notification_from(_ev(1, "task.blocked", {"reason": "x"}, task_id="t1"))
+    text = render_one(n, BASE + "/")   # a trailing slash must not double up before /run
+    assert f'<a href="{BASE}/run/omegahive/board">t1</a>' in text
+    assert "board//run" not in text and "omegahive//run" not in text
+
+
+def test_link_href_is_html_escaped():
+    # Escaping stays sound with a link present: the reason is still escaped, and the anchor
+    # is well-formed (task ids are charset-constrained upstream; escaping is the whole defence).
+    n = notification_from(_ev(1, "task.blocked", {"reason": "a & <b>"}, task_id="t1"))
+    text = render_one(n, BASE)
+    assert 'href="' in text and "</a>" in text
+    assert "a &amp; &lt;b&gt;" in text and "<b>" not in text
+
+
+def test_orphan_task_id_is_not_linked():
+    # No task id -> nothing to point at: the placeholder renders plain, never a dead link.
+    n = notification_from(_ev(1, "task.blocked", {"reason": "x"}, task_id=None))
+    text = render_one(n, BASE)
+    assert "<a " not in text and "—" in text
+
+
 # --- the poll loop ---------------------------------------------------------
 
 def _service(events, sender=None, store=None, tmp_path=None, threshold=3):
@@ -251,6 +319,17 @@ def test_batches_a_burst_into_one_summary(tmp_path):
     assert svc.poll_once() == 4
     assert len(sender.sent) == 1  # one summary for the whole burst
     assert "4 attention events" in sender.sent[0]
+
+
+def test_service_threads_ui_base_url_into_the_render(tmp_path):
+    # End-to-end wiring: a configured base URL reaches both the per-event and the batch render.
+    events = [_ev(1, "task.blocked", {"reason": "stuck"})]
+    store = CursorStore(tmp_path / "cursor.json")
+    svc = NotifierService(FakeReader(events), (sender := FakeSender()), store,
+                          batch_threshold=3, ui_base_url=BASE)
+    svc.poll_once()
+    assert len(sender.sent) == 1
+    assert f'<a href="{BASE}/run/omegahive/board">t1</a>' in sender.sent[0]
 
 
 def test_cursor_persists_and_restart_does_not_duplicate(tmp_path):

@@ -89,6 +89,8 @@ install -m600 /dev/null "$OMEGAHIVE_SECRETS_DIR/notifier.env"   # then edit — 
 
 `HEARTBEAT_HOUR_UTC` is config, not a secret: it rides the compose environment (`environment: HEARTBEAT_HOUR_UTC=${HEARTBEAT_HOUR_UTC:-6}`), not `notifier.env`.
 
+**Deep links (optional).** Set `OMEGAHIVE_UI_BASE_URL` to the external origin+prefix your phone already uses to reach the web UI (the same `:8443` origin plus the serving prefix, e.g. `https://<host>:8443/omegahive`) and every task id in a message — page or heartbeat open-block — becomes a tap-through link to that run's board view (`…/run/<run>/board`; the UI serves no per-task page, so the board is the target). It is config, not a secret, and rides the compose environment (`OMEGAHIVE_UI_BASE_URL=${OMEGAHIVE_UI_BASE_URL:-}`) beside `HEARTBEAT_HOUR_UTC`, not `notifier.env`. Leave it unset and messages render exactly as before — the link is purely additive. **Tailnet-only, by design:** the links resolve only on devices inside the tailnet (your phone runs Tailscale; that is why they open at all). That is the point, not a bug — the UI is never exposed off the tailnet, so a link that only works there is the whole security posture, not a limitation.
+
 **Run it persistently** (survives reboot via `restart: unless-stopped`; its read cursor + heartbeat state persist on the `omegahive-notifier` volume, so a restart resumes without replay or a double heartbeat):
 
 ```bash
