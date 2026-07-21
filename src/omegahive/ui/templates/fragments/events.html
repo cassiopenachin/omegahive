@@ -12,7 +12,7 @@
         {% for item in event_types %}<option value="{{ item }}" {% if item == selected_type %}selected{% endif %}>{{ item }}</option>{% endfor %}
       </select>
     </label>
-    {% if selected_actor or selected_type %}<a class="clear-filter" href="/run/{{ run_id }}/events">Clear filters</a>{% endif %}
+    {% if selected_actor or selected_type %}<a class="clear-filter" href="{{ base_path }}/run/{{ run_id }}/events">Clear filters</a>{% endif %}
   </form>
   <div class="event-list">
     {% for event in events %}
