@@ -107,9 +107,27 @@ TASK="drill-demo"
 WORKER="sess-drill-${STAMP}"
 WRAP="$WRAPPERS/$WORKER.sh"
 
-board_status() {  # read the scratch board through the stack cli
-  ( cd "${OMEGA_DIR:-$HOME/src/SNET/omegahive}" && podman compose run --rm -T cli board-view "$RUN_ID" ) 2>/dev/null \
-    | awk -F'│' -v t="$1" 'NF>=3 { s=$2; gsub(/^[ \t]+|[ \t]+$/,"",s); v=$3; gsub(/^[ \t]+|[ \t]+$/,"",v); if (s==t){print v; exit} }'
+board_status() {  # read the scratch board through the stack cli (JSON path — wrap-proof)
+  ( cd "${OMEGA_DIR:-$HOME/src/SNET/omegahive}" && podman compose run --rm -T cli board-view "$RUN_ID" --json ) 2>/dev/null \
+    | jq -r --arg t "$1" '.[] | select(.task == $t) | .status'
+}
+
+board_in_review_count() {  # count in_review tasks on the scratch board (throttle signal)
+  ( cd "${OMEGA_DIR:-$HOME/src/SNET/omegahive}" && podman compose run --rm -T cli board-view "$RUN_ID" --json ) 2>/dev/null \
+    | jq -r '[.[] | select(.status == "in_review")] | length'
+}
+
+# Drive a task to in_review via raw emits (no launch/clones) — cheap fixture for the
+# WIP throttle: created -> registered -> assigned -> accepted -> result_posted.
+seed_in_review() {  # seed_in_review <task> <worker>
+  local t="$1" w="$2"
+  raw_emit human operator task.created --task "$t" \
+    --payload "$(jq -cn '{title:"seed", task_type:"task", acceptance:"seed"}')"
+  raw_emit human operator worker.registered --payload "$(jq -cn --arg w "$w" '{worker_id:$w}')"
+  raw_emit coordinator operator task.assigned --task "$t" --payload "$(jq -cn --arg w "$w" '{worker:$w}')"
+  raw_emit worker "$w" task.accepted --task "$t"
+  raw_emit worker "$w" task.result_posted --task "$t" \
+    --payload "$(jq -cn --arg r "projects/omegahive/reports/2026-07-13-$t-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')"
 }
 
 raw_emit() {  # raw_emit <role> <actor> <type> [extra emit args...] — seed the scratch board directly
@@ -161,6 +179,78 @@ CLOSE_OUT="$("$SCRIPT_DIR/hive-close" "$TASK" --reason "drill close")"
 printf '%s\n' "$CLOSE_OUT"
 check "close -> done"                  "[ \"\$(board_status '$TASK')\" = done ]"
 check "close certified the result ref" "printf '%s' \"\$CLOSE_OUT\" | grep -qF '$RESULT_REF'"
+
+echo
+echo "== long task id: launch -> close (wrap-proof JSON read path) =="
+# The bug this whole PR closes: a task id wider than the rendered board column
+# wraps across lines, so the old awk table-parse never matched it (the first
+# wrapped-id close failed with 'not on the board' while board-view showed it
+# in_review). Run the full lifecycle on a deliberately over-wide id: every
+# board_status/board_owner read (launch's existence check, close's in_review
+# verification) must resolve it through the JSON projection.
+LTASK="drill-a-very-long-task-id-that-would-wrap-the-narrow-rendered-task-column"
+LORDER="$ORDERS_REL/2026-07-13-$LTASK.md"
+printf '# Order: long id\n\n## Scope\nExercise the wrap-proof read path.\n' > "$WS/$LORDER"
+git -C "$WS" add -A && git -C "$WS" commit --quiet -m "drill: long-id order"
+git -C "$WS" push --quiet origin HEAD:main
+LWORKER="sess-longid-${STAMP}"
+LWRAP="$WRAPPERS/$LWORKER.sh"
+"$SCRIPT_DIR/hive-launch" "$LORDER" --worker "$LWORKER" >/dev/null
+check "long id: launch -> assigned (JSON read, not table)" "[ \"\$(board_status '$LTASK')\" = assigned ]"
+"$LWRAP" --type task.accepted --task "$LTASK" >/dev/null
+LRESULT_REF="projects/omegahive/reports/2026-07-13-$LTASK-result.md@0123456789abcdef0123456789abcdef01234567"
+"$LWRAP" --type task.result_posted --task "$LTASK" \
+  --payload "$(jq -cn --arg r "$LRESULT_REF" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
+check "long id: result -> in_review" "[ \"\$(board_status '$LTASK')\" = in_review ]"
+"$SCRIPT_DIR/hive-close" "$LTASK" --reason "long-id drill close" >/dev/null
+check "long id: close -> done (in_review verified past the wrap)" "[ \"\$(board_status '$LTASK')\" = done ]"
+
+echo
+echo "== review WIP throttle: refuse at the limit, --anyway override, drain-by-close =="
+# Launches are paced to review debt: at HIVE_WIP_REVIEW_MAX in_review tasks,
+# hive-launch refuses (listing them) unless --anyway. blocked tasks are answer
+# debt, not review debt, so they never count. Scoped to a low limit here; unset
+# after so later sections see the default.
+export HIVE_WIP_REVIEW_MAX=2
+seed_in_review "drill-review-a" "sess-rev-a-${STAMP}"
+seed_in_review "drill-review-b" "sess-rev-b-${STAMP}"
+check "two tasks seeded to in_review" "[ \"\$(board_in_review_count)\" = 2 ]"
+
+# A blocked task must NOT count toward the limit (answer debt, not review debt).
+raw_emit human operator task.created --task drill-review-blk \
+  --payload "$(jq -cn '{title:"blk", task_type:"task", acceptance:"seed"}')"
+raw_emit human operator worker.registered --payload "$(jq -cn '{worker_id:"sess-blk-'"$STAMP"'"}')"
+raw_emit coordinator operator task.assigned --task drill-review-blk --payload "$(jq -cn '{worker:"sess-blk-'"$STAMP"'"}')"
+raw_emit worker "sess-blk-${STAMP}" task.accepted --task drill-review-blk
+raw_emit worker "sess-blk-${STAMP}" task.blocked --task drill-review-blk \
+  --payload "$(jq -cn '{reason:"seed block", needs:"decision"}')"
+check "blocked task did not raise the in_review count" "[ \"\$(board_in_review_count)\" = 2 ]"
+
+# A fresh order to launch against — refused while at the limit.
+TORDER="$ORDERS_REL/2026-07-13-drill-throttled.md"
+printf '# Order: throttled\n\n## Scope\nBlocked by the WIP throttle.\n' > "$WS/$TORDER"
+git -C "$WS" add -A && git -C "$WS" commit --quiet -m "drill: throttle order"
+git -C "$WS" push --quiet origin HEAD:main
+expect_fail_msg "launch refused at the review limit (lists a task awaiting review)" "drill-review-a" \
+  "$SCRIPT_DIR/hive-launch" "$TORDER" --worker "sess-throttled-${STAMP}"
+expect_fail_msg "throttle refusal states the quality-gate rationale" "review is the quality gate" \
+  "$SCRIPT_DIR/hive-launch" "$TORDER" --worker "sess-throttled-${STAMP}"
+check "throttle refusal provisioned nothing" "[ ! -e '$WORK/sess-throttled-${STAMP}' ]"
+
+# --anyway overrides the throttle.
+"$SCRIPT_DIR/hive-launch" "$TORDER" --worker "sess-anyway-${STAMP}" --anyway >/dev/null
+check "--anyway overrides the throttle -> assigned" "[ \"\$(board_status drill-throttled)\" = assigned ]"
+
+# Drain by closing one in_review task; a plain launch then succeeds (1 < 2).
+"$SCRIPT_DIR/hive-close" drill-review-a --reason "drain" >/dev/null
+check "drain-by-close dropped the in_review count to 1" "[ \"\$(board_in_review_count)\" = 1 ]"
+DORDER="$ORDERS_REL/2026-07-13-drill-drained.md"
+printf '# Order: drained\n\n## Scope\nLaunchable once the queue drains below the limit.\n' > "$WS/$DORDER"
+git -C "$WS" add -A && git -C "$WS" commit --quiet -m "drill: drained order"
+git -C "$WS" push --quiet origin HEAD:main
+"$SCRIPT_DIR/hive-launch" "$DORDER" --worker "sess-drained-${STAMP}" >/dev/null
+check "launch succeeds once drained below the limit" "[ \"\$(board_status drill-drained)\" = assigned ]"
+unset HIVE_WIP_REVIEW_MAX
 
 echo
 echo "== adopt a pre-seeded ready task =="
