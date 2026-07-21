@@ -139,8 +139,9 @@ def grid_cmd(
 
 
 def _write_report(out: Path, cfg: dict, aggs: dict) -> Path:
-    """Render the §7 vanilla-half record + interim gate recommendation beside the records — the
-    deliverable, produced by the tool (not a side script), so a grid run always emits it."""
+    """Render the vanilla-half record's descriptive per-cell table beside the records — produced
+    by the tool (not a side script), so a grid run always emits it. The §7 decision layer it once
+    also rendered was retired with the ladder's closure (see ladder/README.md)."""
     from .report import render
     models = {name: c.get("model") for name, c in cfg["cells"].items()}
     record = out / "vanilla-half-record.md"
@@ -153,7 +154,7 @@ def report_cmd(
     records: str = typer.Option(..., "--records", help="a grid records dir "
                                "(holds run-config.json and <cell>/aggregate.json)"),
 ) -> None:
-    """Regenerate the vanilla-half record + interim gate recommendation from a grid records dir."""
+    """Regenerate the vanilla-half record's descriptive tables from a grid records dir."""
     rec = Path(records)
     cfg = json.loads((rec / "run-config.json").read_text())
     aggs = {name: json.loads((rec / name / "aggregate.json").read_text())
