@@ -17,7 +17,7 @@ from .board import fold
 from .clock import LogicalClock
 from .db import connect, migrate
 from .events.envelope import Actor
-from .events.log import EventLog, UnknownEventType, read_run_ids
+from .events.log import EventLog, UnknownEventType, read_run_ids, read_run_summaries
 from .gateway import Gateway, Policy, Rejected
 from .gateway.policy import DESIGN_PARTNER_ACTOR_ID, OPERATOR_ACTOR_ID
 from .metrics import compute
@@ -29,6 +29,7 @@ from .report.distribution import render_distribution, render_promotion_distribut
 from .report.human import render_human
 from .report.metrics import render_metrics
 from .report.promotions import render_promotions
+from .report.runs import render_runs
 from .report.trace import render_table, to_json
 from .sim.engine.assembly import build_engine
 from .sim.engine.simulate import simulate
@@ -40,6 +41,15 @@ console = Console()
 PLANNER = Actor(role="planner", id="planner")
 
 
+def _payload_error(exc: ValidationError) -> str:
+    """First validation error as `field.path: msg`. The location saved a grep the
+    first time an emit failed on a missing nested field — `artifact_refs.0.quality:
+    Field required` names the culprit that a bare `Field required` did not."""
+    err = exc.errors()[0]
+    loc = ".".join(str(p) for p in err["loc"])
+    return f"{loc}: {err['msg']}" if loc else err["msg"]
+
+
 @app.command("db-migrate")
 def db_migrate() -> None:
     """Apply migrations/*.sql in order."""
@@ -49,6 +59,18 @@ def db_migrate() -> None:
         console.print(f"applied {len(applied)} migration(s): {', '.join(applied)}")
     else:
         console.print("no pending migrations")
+
+
+@app.command("runs")
+def runs_cmd() -> None:
+    """List every run in the log with its event count and first/last event time —
+    so discovering a run_id never needs a psql detour into the container."""
+    with connect() as conn:
+        summaries = read_run_summaries(conn)
+    if not summaries:
+        console.print("no runs in the log")
+        return
+    render_runs(summaries, console)
 
 
 @app.command("bump-generation")
@@ -293,7 +315,7 @@ def emit_cmd(
             result = port.emit(RawOp(event_type, data, task_id))
         except ValidationError as e:
             # structural payload validation (shape, e.g. task.reported ref) — no event lands.
-            console.print(f"rejected: INVALID_PAYLOAD · {e.errors()[0]['msg']}")
+            console.print(f"rejected: INVALID_PAYLOAD · {_payload_error(e)}")
             raise typer.Exit(code=1) from e
         except UnknownEventType as e:
             # an event_type with no registered payload model — no event lands.
@@ -383,6 +405,36 @@ def notify_cmd(
         reader, sender, store, run_id=run_id,
         batch_threshold=batch_threshold, heartbeat_hour=heartbeat_hour,
     ).run(interval)
+
+
+@app.command("ui-serve")
+def ui_serve_cmd(
+    host: str = typer.Option(
+        "0.0.0.0", "--host", envvar="OMEGAHIVE_UI_HOST",  # noqa: S104
+        help="container listen address; the host publish is loopback-only via compose",
+    ),
+    port: int = typer.Option(
+        8000, "--port", envvar="OMEGAHIVE_UI_PORT", help="container listen port"
+    ),
+) -> None:
+    """Serve the read-only operator UI (uvicorn).
+
+    The app self-configures its serving path from `OMEGAHIVE_UI_BASE_PATH` (empty = serve at
+    the root, today's behavior; `/omegahive` = serve behind the house Caddy at that prefix).
+    `--host 0.0.0.0` binds only the container's own network namespace; the host front door is
+    the loopback publish (`127.0.0.1:<port>`) in compose, with Caddy the only client. Proxy
+    headers are trusted (`forwarded_allow_ips="*"`) so `url_for` reflects the external
+    https origin and Host — the port is unreachable except through Caddy over loopback.
+    """
+    import uvicorn
+
+    uvicorn.run(
+        "omegahive.ui.app:app",
+        host=host,
+        port=port,
+        proxy_headers=True,
+        forwarded_allow_ips="*",
+    )
 
 
 if __name__ == "__main__":
