@@ -87,12 +87,11 @@ silently skip events. Follow the ordering exactly.
      ```sh
      docker compose run --rm cli bump-generation --run-id <run>
      ```
-     The bump only works on a *registered* run; it refuses one that was never opened
-     (`run not registered`). The durable `omegahive` project run is currently unregistered
-     — the `hive emit` write path never opens runs — so the bump is inert until the run is
-     registered out of band (`omegahive.port.open_run`). See the ops RUNBOOK for the
-     one-liner; until then the restart floor below is the operative path.
-   - **Restart *every* client** — the always-safe interim floor, independent of the token.
+     The bump requires a *registered* run; it refuses one that was never opened
+     (`run not registered`), never fabricating a generation. The `emit` write path opens a
+     run idempotently on its first event, so every run that has been emitted to —
+     `omegahive` included — carries a generation token and accepts the bump.
+   - **Restart *every* client** — the always-safe floor, independent of the token.
 4. **Restart** coordinators/workers; each re-snapshots through the port.
 
 Verify a restore reproduces the board: deployment check 3 (`scripts/deploy_checks.sh`)
