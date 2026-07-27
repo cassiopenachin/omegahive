@@ -1,0 +1,505 @@
+#!/usr/bin/env bash
+# hive-metrics <project> [--run <run-id>] [--upto <seq>] [--stdout]
+#
+# Per-closed-task operational metrics, extracted read-only from the spine and
+# written as a regenerable workspace artifact:
+#
+#   projects/<project>/metrics/tasks.md    the rendered artifact (the improver reads this)
+#   projects/<project>/metrics/tasks.csv   the same numbers, one row per task, in seconds
+#
+# It measures; it never judges. Trend reading is the improver seat's job
+# (projects/<project>/seats/improver/PROTOCOL.md), which is why there is no
+# comparison against a previous artifact anywhere in here.
+#
+# CLOCK OWNERSHIP is the organising idea. A hive task's elapsed time is split
+# across two very different owners, and mixing them produces a number that means
+# nothing: the operator's latency (how long an order waited to be launched, how
+# long a question waited for an answer, how long a result waited for review) is
+# portfolio reality for the automation lane — never worker-performance signal.
+# The artifact therefore reports the two clocks in separate tables, plus a third
+# for the genuinely mixed spans, and every summary row carries its clock label.
+#
+# READ-ONLY, ALWAYS. This tool issues no events and holds no write path to the
+# spine: it shells out to `omegahive report <run> --json` and nothing else. It
+# also never commits — it writes two files and prints their paths; committing
+# them is the operator's act.
+#
+# DETERMINISM. The same spine prefix always renders the same bytes: no clock
+# reading, no hostname, no "generated at", and a total order on every list. The
+# artifact records the head seq it was built from, and `--upto <that seq>`
+# reproduces it byte for byte from a later, longer spine — which is what makes a
+# historical regeneration (and the improver's retro-over-retro comparison)
+# meaningful rather than approximate.
+#
+# TIME. Durations come from `logical_ts`, which under server time (events/log.py
+# §6) is `GREATEST(epoch_now, prev_max + 1)` — i.e. epoch seconds, assigned
+# DB-side under the emit's advisory lock, monotonic per run and immune to client
+# clock skew. Two caveats, both recorded in the artifact's Method section:
+# events emitted inside the same wall second are pushed forward one second each,
+# so a burst inflates by up to (burst size) seconds; and `wall_ts` is not on the
+# `report --json` read path, so nothing here depends on it.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/hive-common.sh
+source "$SCRIPT_DIR/hive-common.sh"
+
+usage() {
+  echo "usage: hive-metrics <project> [--run <run-id>] [--upto <seq>] [--stdout]" >&2
+  exit 2
+}
+
+PROJECT=""
+RUN_OVERRIDE=""
+UPTO=""
+TO_STDOUT=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --run)    shift; [ $# -gt 0 ] || usage; RUN_OVERRIDE="$1" ;;
+    --upto)   shift; [ $# -gt 0 ] || usage; UPTO="$1" ;;
+    --stdout) TO_STDOUT=1 ;;
+    -h|--help) usage ;;
+    -*) usage ;;
+    *) [ -z "$PROJECT" ] || usage; PROJECT="$1" ;;
+  esac
+  shift
+done
+[ -n "$PROJECT" ] || usage
+case "$PROJECT" in */*|.|..) die "project must be a bare directory name, got '$PROJECT'" ;; esac
+
+# Project -> run id, from the project's committed identity
+# (projects/<name>/project.conf: RUN_ID) — never the project name by convention. A
+# misconfigured run id is the tooling's most recurrent bug class, which is exactly
+# why identity is a committed fact rather than a default. A project with no conf is
+# refused by load_project_conf, and that is right: a project whose identity is not
+# committed has nothing well-defined to measure.
+#
+# `--run` maps onto HIVE_RUN_ID, the tooling's documented run escape hatch, so
+# there is one precedence rule (env > conf > default) rather than a second one here.
+if [ -n "$RUN_OVERRIDE" ]; then export HIVE_RUN_ID="$RUN_OVERRIDE"; fi
+load_project_conf "$PROJECT"
+
+[ -n "${UPTO}" ] && case "$UPTO" in ''|*[!0-9]*) die "--upto takes a seq number, got '$UPTO'" ;; esac
+
+command -v jq >/dev/null 2>&1 || die "jq is required"
+
+# --- the spine read -----------------------------------------------------------
+# One read path: `report <run> --json`. HIVE_SPINE_JSON substitutes a frozen dump
+# for it — used by the drill (hermetic, no stack, no DB) and usable by hand to
+# regenerate an artifact from a backup dump. Either way this is read-only.
+if [ -n "${HIVE_SPINE_JSON:-}" ]; then
+  [ -f "$HIVE_SPINE_JSON" ] || die "HIVE_SPINE_JSON is set but not a file: $HIVE_SPINE_JSON"
+  EVENTS=$(cat "$HIVE_SPINE_JSON")
+else
+  # `</dev/null` is load-bearing: `hive` is `podman compose run`, which consumes
+  # stdin. Without it, calling this tool inside a `while read` loop (exactly how a
+  # backfill over many tasks is written) silently eats the loop's input after the
+  # first iteration.
+  EVENTS=$( hive report "$RUN" --json 2>/dev/null </dev/null ) || EVENTS=""
+fi
+# `report` prints a human line and exits 1 on an empty run; either way what we
+# have is not a JSON array, and that is the same operator error (wrong run id).
+printf '%s' "$EVENTS" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1 \
+  || die "no events for run '$RUN' (wrong run id, or the stack is down?)"
+
+# ------------------------------------------------------------------------------
+# Extraction: events -> one record per task, plus run-level meta. Pure jq, so the
+# arithmetic is inspectable and the same program serves both the .md and the .csv.
+# ------------------------------------------------------------------------------
+read -r -d '' EXTRACT <<'JQ' || true
+def nn($a; $b): if $a == null or $b == null then null else ($b - $a) end;
+
+# First/last logical_ts of an event type within a task's slice (input is seq-ordered).
+def first_ts($t): [ .[] | select(.event_type == $t) | .logical_ts ] | first;
+def last_ts($t):  [ .[] | select(.event_type == $t) | .logical_ts ] | last;
+
+# Blocked time: sum over blocked -> unblocked episodes. A block still open at the
+# end of the slice is charged to a fallback rather than dropped — an unterminated
+# block is answer debt that really was paid, just never stamped. The fallback is
+# the result only when the result actually comes after the block opened; otherwise
+# the terminal event. A block opened *after* the last result (a post-result
+# question the operator closed by hand) would otherwise be charged a negative
+# duration, which then makes the "net" worker span exceed the gross one.
+# Nested/duplicate blocks collapse into the outermost episode.
+def blocked($result; $terminal):
+  ( reduce .[] as $e ({open: null, total: 0, episodes: 0};
+      if $e.event_type == "task.blocked" then
+        (if .open == null then .open = $e.logical_ts | .episodes += 1 else . end)
+      elif $e.event_type == "task.unblocked" then
+        (if .open != null then {open: null, total: (.total + $e.logical_ts - .open),
+                                episodes: .episodes} else . end)
+      else . end) ) as $r
+  | if $r.open == null then {total: $r.total, episodes: $r.episodes, open: false}
+    else ( if $result != null and $result > $r.open then $result else $terminal end ) as $end
+    | { total: ($r.total + (if $end != null and $end > $r.open then $end - $r.open else 0 end)),
+        episodes: $r.episodes, open: true }
+    end;
+
+# A task's terminal event, scanning its slice in seq order. The legality table
+# (board/legality.py) admits exactly three ways to reach a terminal state, and
+# `status_override` is only registered for `done` and `reopened` — a
+# status_override(cancelled|failed) is gateway-refused and can never appear in a
+# log, so matching on those would be dead code while the real terminal events went
+# unseen. `reopened` un-terminates: a task reopened out of review is back in
+# flight until it closes again.
+#   task.status_override(done)  -> done
+#   task.failed                 -> failed   (worker-emitted, from in_progress/blocked)
+#   plan.revised(action=cancel) -> cancelled (run-scoped: no task_id, cancels the board)
+# $cancel_ts is the run-level plan cancel, applied only to a task that both exists
+# by then and has not already reached a terminal event of its own. That last part
+# is a deliberate divergence from the board fold, which overwrites every task's
+# status unconditionally: a task that really was delivered and reviewed should be
+# measured as delivered, not relabelled by a later whole-plan abort. Recorded in
+# the artifact's Method section.
+def terminal($created; $cancel_ts):
+  ( reduce .[] as $e (null;
+      if $e.event_type == "task.status_override" and $e.payload.status == "done"
+        then {status: "done", ts: $e.logical_ts}
+      elif $e.event_type == "task.status_override" and $e.payload.status == "reopened"
+        then null
+      elif $e.event_type == "task.failed"
+        then {status: "failed", ts: $e.logical_ts}
+      else . end) ) as $t
+  | if $t != null then $t
+    elif $cancel_ts != null and $created != null and $created <= $cancel_ts
+      then {status: "cancelled", ts: $cancel_ts}
+    else null end;
+
+# --- run-level window ---------------------------------------------------------
+( if $upto == "" then . else map(select(.seq <= ($upto | tonumber))) end ) as $evs
+| ($evs | map(.seq) | max) as $head
+| ($evs | map(.task_id) | map(select(. != null)) | unique) as $ids
+| ( [ $evs[] | select(.event_type == "task.created") | .task_id ] | unique ) as $known
+| ( [ $evs[] | select(.event_type == "plan.revised")
+      | select(.payload.action == "cancel") | .logical_ts ] | first ) as $cancel_ts
+
+# --- per-task records ---------------------------------------------------------
+| [ $known[] as $t
+  | ( [ $evs[] | select(.task_id == $t) ] ) as $slice
+  | ($slice | first_ts("task.created"))       as $created
+  | ($slice | terminal($created; $cancel_ts)) as $close
+  | select($close != null)                       # closed tasks only — work in flight is not measured
+  | ($slice | first_ts("task.assigned"))      as $assigned
+  | ($slice | first_ts("task.accepted"))      as $accepted
+  | ($slice | last_ts("task.result_posted"))  as $result
+  | ($slice | last_ts("review.passed"))       as $review
+  | ($close.ts)                               as $closed
+  | ($slice | blocked($result; $closed))      as $blk
+  | ( [ $slice[] | select(.event_type == "task.accepted") | .actor.id ] | last ) as $acceptor
+  | ( [ $slice[] | select(.event_type == "task.reassigned") | .payload.to ] | last ) as $reassigned_to
+  | ( [ $slice[] | select(.event_type == "task.assigned") | .payload.worker ] | last ) as $assignee
+  | {
+      task: $t,
+      shape: (if $accepted != null and $result != null then "worked"
+              elif $accepted != null then "abandoned"
+              else "retired" end),
+      worker: ($reassigned_to // $acceptor // $assignee // ""),
+      final_status: $close.status,
+      created_ts: $created, accepted_ts: $accepted, closed_ts: $closed,
+
+      # operator clock
+      created_to_assigned_s: nn($created; $assigned),
+      result_to_review_s:    nn($result; $review),
+      review_to_close_s:     nn($review; $closed),
+      result_to_close_s:     nn($result; $closed),
+      blocked_s:             (if $accepted == null then null else $blk.total end),
+      blocked_episodes:      $blk.episodes,
+      blocked_open:          $blk.open,
+      reassignments:         ( [ $slice[] | select(.event_type == "task.reassigned") ] | length ),
+
+      # worker clock
+      accepted_to_result_net_s: ( nn($accepted; $result) as $g
+                                  | if $g == null then null else $g - $blk.total end ),
+      questions: ( [ $slice[] | select(.event_type == "task.reported")
+                     | select(.payload.kind == "question") ] | length ),
+      # Sum of coalesced_count, NOT the event count: the gateway folds a burst of
+      # identical (actor, op, code) refusals inside its coalesce window into one
+      # event whose coalesced_count carries the real number (gateway.py
+      # _record_rejection). Counting rows would report a worker that hit the
+      # gateway four times as having hit it once — in the one metric whose whole
+      # purpose is surfacing protocol friction.
+      rejections: ( [ $slice[] | select(.event_type == "gateway.rejected")
+                      | (.payload.coalesced_count // 1) ] | add // 0 ),
+      rejections_worker: ( [ $slice[] | select(.event_type == "gateway.rejected")
+                             | select(.payload.original_actor_role == "worker")
+                             | (.payload.coalesced_count // 1) ] | add // 0 ),
+
+      # mixed
+      assigned_to_accepted_s: nn($assigned; $accepted),
+      created_to_accepted_s:  nn($created; $accepted),
+      accepted_to_result_s:   nn($accepted; $result),
+
+      review_failed: ( [ $slice[] | select(.event_type == "review.failed") ] | length )
+    }
+  ]
+# Total order, independent of spine iteration: creation time, then task id.
+| sort_by(.created_ts, .task) as $tasks
+
+| {
+    meta: {
+      run: $run,
+      events: ($evs | length),
+      head_seq: $head,
+      first_ts: ($evs | map(.logical_ts) | min),
+      last_ts:  ($evs | map(.logical_ts) | max),
+      tasks_total: ($known | length),
+      tasks_closed: ($tasks | length)
+    },
+    tasks: $tasks,
+    # Same terminal predicate as the table, so a task can never be both measured
+    # and listed as open (nor fall through both).
+    open: ( [ $known[] as $t
+              | ( [ $evs[] | select(.task_id == $t) ] ) as $s
+              | select( ($s | terminal(($s | first_ts("task.created")); $cancel_ts)) == null )
+              | $t ] | sort ),
+    # Reports filed against a task id that was never created: the count would
+    # otherwise silently vanish from every per-task number. Real occurrence:
+    # two question reports filed against ad-hoc probe ids in July 2026.
+    unattributed: ( [ $ids[] as $t | select( ($known | index($t)) == null )
+                      | { task_id: $t,
+                          events: ( [ $evs[] | select(.task_id == $t) ] | length ),
+                          kinds: ( [ $evs[] | select(.task_id == $t) | .event_type ] | unique ) } ]
+                    | sort_by(.task_id) )
+  }
+JQ
+
+DATA=$(printf '%s' "$EVENTS" | jq -c --arg run "$RUN" --arg upto "$UPTO" "$EXTRACT")
+
+# An --upto below the run's first seq leaves an empty window, which would render a
+# `seq null` skeleton over a good committed artifact and exit 0 — a typo'd or
+# stale seq silently destroying the file it was meant to reproduce. Refuse instead.
+if [ "$(printf '%s' "$DATA" | jq -r '.meta.head_seq')" = "null" ]; then
+  die "--upto $UPTO selects no events on run '$RUN' (its first seq is above that); nothing written"
+fi
+
+# ------------------------------------------------------------------------------
+# Render. Both outputs come from the same record set, so the .md can never drift
+# from the .csv.
+# ------------------------------------------------------------------------------
+read -r -d '' RENDER_CSV <<'JQ' || true
+[ "task","shape","worker","final_status","created","closed",
+  "created_to_assigned_s","assigned_to_accepted_s","created_to_accepted_s",
+  "accepted_to_result_s","blocked_s","accepted_to_result_net_s",
+  "result_to_review_s","review_to_close_s","result_to_close_s",
+  "questions","blocked_episodes","rejections","rejections_worker",
+  "reassignments","review_failed" ] as $h
+| ( [ $h | @csv ]
+    + [ .tasks[] as $t
+        | [ $t.task, $t.shape, $t.worker, $t.final_status,
+            ($t.created_ts | todate), ($t.closed_ts | todate),
+            $t.created_to_assigned_s, $t.assigned_to_accepted_s, $t.created_to_accepted_s,
+            $t.accepted_to_result_s, $t.blocked_s, $t.accepted_to_result_net_s,
+            $t.result_to_review_s, $t.review_to_close_s, $t.result_to_close_s,
+            $t.questions, $t.blocked_episodes, $t.rejections, $t.rejections_worker,
+            $t.reassignments, $t.review_failed ]
+        | map(if . == null then "" else . end) | @csv ] )
+| join("\n")
+JQ
+
+read -r -d '' RENDER_MD <<'JQ' || true
+# Round to whole minutes ONCE, then split into h/m. Rounding the remainder
+# independently of the hour floor prints impossible clocks: 3599s came out as
+# "60m" and 7199s as "1h60m".
+def d: if . == null then "—"
+       elif . < 60 then "\(. | round)s"
+       else ((. / 60) | round) as $m
+            | if $m < 60 then "\($m)m"
+              else "\(($m / 60) | floor)h\($m % 60)m" end
+       end;
+def n: if . == null then "—" else tostring end;
+def day: if . == null then "—" else (. | strftime("%Y-%m-%d")) end;
+
+# Task ids, worker ids and event-type names reach the artifact straight off the
+# spine, where task_id is an arbitrary string. An unescaped `|` invents a column
+# and shifts every later cell; an embedded newline terminates the table mid-row.
+def cell: if . == null then "" else tostring | gsub("\\|"; "\\\\|") | gsub("[\n\r]+"; " ") end;
+
+def median: if length == 0 then null
+            else sort as $s
+            | if (length % 2) == 1 then $s[(length / 2) | floor]
+              else (($s[length / 2 - 1] + $s[length / 2]) / 2) | floor end end;
+
+# One summary row: label, clock, then n/median/min/max over the non-null values.
+def stat($label; $clock; $rows; $field):
+  ( [ $rows[] | .[$field] | select(. != null) ] ) as $v
+  | "| \($label) | \($clock) | \($v | length) | \($v | median | d) | "
+    + "\(if ($v|length) == 0 then "—" else ($v | min | d) end) | "
+    + "\(if ($v|length) == 0 then "—" else ($v | max | d) end) |";
+
+def countstat($label; $clock; $rows; $field):
+  ( [ $rows[] | .[$field] | select(. != null) ] ) as $v
+  | "| \($label) | \($clock) | \($v | length) | \($v | median | n) | "
+    + "\(if ($v|length) == 0 then "—" else ($v | min | tostring) end) | "
+    + "\(if ($v|length) == 0 then "—" else ($v | max | tostring) end) |";
+
+. as $r
+| ($r.tasks | map(select(.shape != "retired"))) as $worked
+| ($r.tasks | map(select(.shape == "retired"))) as $retired
+| [
+"# Task metrics — \($r.meta.run)",
+"",
+"**GENERATED FILE — do not edit by hand.** Every number below is derived from the",
+"spine; edits here are lost on the next regeneration and are invisible to the log.",
+"",
+"| | |",
+"|---|---|",
+"| Run | `\($r.meta.run)` |",
+"| Window | seq \($r.meta.head_seq) · \($r.meta.events) events · \($r.meta.first_ts | day) → \($r.meta.last_ts | day) |",
+"| Tasks | \($r.meta.tasks_closed) closed of \($r.meta.tasks_total) · \($worked | length) worked, \($retired | length) closed without a work cycle |",
+"| Regenerate | `hive-metrics \($r.meta.run)` |",
+"| Reproduce this exact file | `hive-metrics \($r.meta.run) --upto \($r.meta.head_seq)` |",
+"",
+"Durations are grouped by **clock ownership**. Operator-clock spans are the hive's",
+"own latency — how long an order waited to be launched, a question waited for an",
+"answer, a result waited for review. They are portfolio reality for the automation",
+"lane and **never worker-performance signal**. Worker-clock spans are the session's",
+"own time. Mixed spans belong to neither cleanly and are labeled as such.",
+"",
+"## Operator clock — the hive's latency",
+"",
+"| task | closed | create→launch | answer wait | result→review | review→close | result→close | reassigns |",
+"|---|---|---|---|---|---|---|---|"
+]
++ [ $worked[] | "| \(.task | cell) | \(.closed_ts | day) | \(.created_to_assigned_s | d) | "
+    + "\(.blocked_s | d)\(if .blocked_open then " (unclosed)" else "" end) | "
+    + "\(.result_to_review_s | d) | \(.review_to_close_s | d) | \(.result_to_close_s | d) | "
+    + "\(.reassignments) |" ]
++ [
+"",
+"## Worker clock — the session's own time",
+"",
+"| task | worker | accept→result (net of blocked) | questions | rejections | review.failed |",
+"|---|---|---|---|---|---|"
+]
++ [ $worked[] | "| \(.task | cell) | `\(.worker | cell)` | \(.accepted_to_result_net_s | d) | "
+    + "\(.questions) | \(.rejections)\(if .rejections != .rejections_worker then " (\(.rejections_worker) worker)" else "" end) | \(.review_failed) |" ]
++ [
+"",
+"## Mixed clock — spans with two owners",
+"",
+"`launch→accept` is the session's start-up plus whatever the operator did between",
+"emitting the assignment and the session reading its kickoff. `accept→result` is the",
+"worker's span *including* any answer wait inside it — which is why the worker-clock",
+"table above reports the net figure instead.",
+"",
+"| task | create→accept | launch→accept | accept→result (gross) |",
+"|---|---|---|---|"
+]
++ [ $worked[] | "| \(.task | cell) | \(.created_to_accepted_s | d) | \(.assigned_to_accepted_s | d) | \(.accepted_to_result_s | d) |" ]
++ [
+"",
+"## Summary",
+"",
+"Position statistics over the \($worked | length) worked task(s) in this window. No",
+"comparison against any earlier artifact is made here: reading a trend is the",
+"improver seat's act, not this tool's.",
+"",
+"| metric | clock | n | median | min | max |",
+"|---|---|---|---|---|---|",
+stat("create→launch";  "operator"; $worked; "created_to_assigned_s"),
+stat("answer wait";    "operator"; $worked; "blocked_s"),
+stat("result→review";  "operator"; $worked; "result_to_review_s"),
+stat("review→close";   "operator"; $worked; "review_to_close_s"),
+stat("result→close";   "operator"; $worked; "result_to_close_s"),
+stat("accept→result (net)"; "worker"; $worked; "accepted_to_result_net_s"),
+countstat("questions"; "worker"; $worked; "questions"),
+countstat("rejections"; "worker"; $worked; "rejections"),
+countstat("review.failed"; "operator"; $worked; "review_failed"),
+countstat("reassignments"; "operator"; $worked; "reassignments"),
+stat("create→accept";  "mixed"; $worked; "created_to_accepted_s"),
+stat("launch→accept";  "mixed"; $worked; "assigned_to_accepted_s"),
+stat("accept→result (gross)"; "mixed"; $worked; "accepted_to_result_s")
+]
++ (if ($retired | length) == 0 then [] else [
+"",
+"## Closed without a work cycle",
+"",
+"Tasks closed with no `task.accepted` (debris retired by decision, duplicates",
+"superseded). They are real closes, so they are listed; they carry no worker span,",
+"so they are excluded from every statistic above. Their rejection counts are shown",
+"because a refusal against a task nobody ever worked is still a refusal the hive",
+"produced — it would otherwise be the one number with nowhere to go.",
+"",
+"| task | created | closed | final status | rejections |",
+"|---|---|---|---|---|"
+] + [ $retired[] | "| \(.task | cell) | \(.created_ts | day) | \(.closed_ts | day) | \(.final_status | cell) | \(.rejections) |" ] end)
++ (if ($r.open | length) == 0 then [] else [
+"",
+"## Open at this window",
+"",
+"Not measured (a task is measured only once it is closed): "
+  + ($r.open | map("`\(.)`") | join(", ")) + "."
+] end)
++ (if ($r.unattributed | length) == 0 then [] else [
+"",
+"## Unattributed events",
+"",
+"Events filed against a task id that has no `task.created` in this window. They",
+"belong to no task's numbers, so they are accounted for here rather than dropped —",
+"a question reported under an ad-hoc id is still a question the hive had to answer.",
+"",
+"| task id on the event | events | types |",
+"|---|---|---|"
+] + [ $r.unattributed[] | "| `\(.task_id | cell)` | \(.events) | \(.kinds | map(cell) | join(", ")) |" ] end)
++ [
+"",
+"## Method",
+"",
+"- **Source.** `omegahive report \($r.meta.run) --json`, read-only. This tool emits",
+"  nothing, writes nothing to the spine, and commits nothing.",
+"- **Clock.** Durations are differences of `logical_ts`, which under server time is",
+"  epoch seconds assigned DB-side under the emit's advisory lock (monotonic per run,",
+"  immune to client clock skew). `wall_ts` is not on the JSON read path and is not used.",
+"- **Approximation.** When several events land inside the same wall second, each is",
+"  pushed one second past the last, so a burst of *n* events can inflate a span by up",
+"  to *n* seconds. Immaterial at minute-and-hour scale; it means sub-minute figures",
+"  should be read as \"about a minute\", never as precision.",
+"- **`review→close` is one command, not a wait.** `hive-close` emits `review.passed`",
+"  and `status_override(done)` back to back, so this span is normally a second or two",
+"  and measures nothing about the operator. The operator's real review latency is",
+"  `result→review`. A large `review→close` means the two halves were emitted by hand,",
+"  separately — worth noticing for that reason alone.",
+"- **Elapsed, not effort.** `accept→result` is wall-clock elapsed between two emits.",
+"  A session that idles overnight and one that works straight through look the same.",
+"  It is the best available proxy for worker effort and it is only a proxy.",
+"- **Answer wait** pairs each `task.blocked` with the next `task.unblocked`. A block",
+"  never closed by an unblock is charged to the result (or the close) and marked",
+"  *unclosed* — worth reading as a protocol miss as much as a duration.",
+"- **Attribution.** `worker` is the last reassignment target, else the last accepting",
+"  actor. For a reassigned task the whole span is attributed to the final worker; the",
+"  reassignment count is the flag that the span is not one session's.",
+"- **Closed only.** A task enters this table at its terminal event, and work in flight",
+"  is never measured. There are three terminal events, matching the legality table:",
+"  `task.status_override(done)`, `task.failed` (worker-emitted — failed work is",
+"  counted, not hidden), and a run-scoped `plan.revised(action=cancel)`.",
+"  `task.status_override(reopened)` un-terminates a task: it is back in flight until",
+"  it closes again, and only the final close is measured.",
+"- **One divergence from the board fold**, deliberate: a whole-plan cancel relabels",
+"  *every* task `cancelled` on the board, including tasks already delivered and",
+"  reviewed. Here a plan cancel is applied only to tasks that had not already reached",
+"  a terminal event of their own, so work that really was delivered is measured as",
+"  delivered rather than retroactively renamed by a later abort."
+]
+| join("\n") + "\n"
+JQ
+
+MD=$(printf '%s' "$DATA" | jq -r "$RENDER_MD")
+CSV=$(printf '%s' "$DATA" | jq -r "$RENDER_CSV")
+
+# `$(...)` strips trailing newlines, so both writes re-add exactly one — these are
+# committed text files, and a missing final newline is a diff-noise generator.
+if [ "$TO_STDOUT" -eq 1 ]; then
+  printf '%s\n' "$MD"
+  exit 0
+fi
+
+OUT_DIR="$OPS_WS/projects/$PROJECT/metrics"
+mkdir -p "$OUT_DIR"
+printf '%s\n' "$MD"  > "$OUT_DIR/tasks.md"
+printf '%s\n' "$CSV" > "$OUT_DIR/tasks.csv"
+
+CLOSED=$(printf '%s' "$DATA" | jq -r '.meta.tasks_closed')
+HEAD=$(printf '%s' "$DATA" | jq -r '.meta.head_seq')
+echo "hive-metrics: run=$RUN  head seq=$HEAD  closed tasks=$CLOSED"
+echo "  $OUT_DIR/tasks.md"
+echo "  $OUT_DIR/tasks.csv"
+echo "hive-metrics: not committed — review the diff and commit it yourself."

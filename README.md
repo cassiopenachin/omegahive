@@ -129,6 +129,29 @@ CODE_REPO=git@github.com:<owner>/<repo>.git     # origin the worker's code clone
 
 `scripts/hive-tooling-drill.sh` exercises the full lifecycle and every refusal path (including a second project's end-to-end lifecycle, cross-project ambiguity refusal, the global review-WIP throttle summed across projects, a wrapping long id, and the `HIVE_RUN_ID` override) against a throwaway sandbox and scratch run ids — run it after changing any of these scripts; never point a drill run id at the durable `omegahive` run.
 
+### Instruments: metrics and prediction scoring
+
+Two more `scripts/` commands, read-only over the spine. They exist because "the hive gets better over time" is a claim that needs instruments rather than anecdotes: the spine already holds every task's full history, and until something extracts it, nothing consumes it.
+
+| Command | What it produces |
+|---|---|
+| `hive-metrics <project> [--run <id>] [--upto <seq>]` | `projects/<project>/metrics/tasks.{md,csv}` — one row per **closed** task: create→launch, launch→accept, accept→result, answer wait, result→review, review→close, plus question / rejection / reassignment counts, and position statistics over the set |
+| `hive-score <task> [--project <name>] [--review <verdict>] [--note <text>] [--again]` | one entry appended to `projects/<project>/metrics/calibration.md` — the order's `## Predictions` quoted verbatim beside the spine's outcome, with a verdict |
+
+**Clock ownership is the whole design.** A task's elapsed time is split between two owners whose numbers mean opposite things, and averaging them produces a figure that means nothing. How long an order waited to be launched, a question waited for an answer, a result waited for review — that is **operator clock**: portfolio reality for the automation lane, and *never* worker-performance signal. The session's own span is **worker clock**. Spans with two owners are labeled *mixed*. `tasks.md` reports the three in separate tables and every summary row carries its label.
+
+**Project identity comes from `project.conf`, like every other command.** `hive-metrics <project>` resolves the run through `load_project_conf`, so the run is the project's committed `RUN_ID` — never the project name by convention. `hive-score <task>` goes one step further: it resolves the order first (searching every project, refusing cross-project ambiguity) and takes the project from the order's own path, exactly as `hive-launch` does; `--project` is needed only for a task with no order file. `--run` on either maps onto `HIVE_RUN_ID`, so precedence stays the tooling's single rule: env → conf → default. A project with no committed conf is refused rather than guessed at — a project whose identity is not committed has nothing well-defined to measure.
+
+**They measure; they do not judge.** No trends, no plots, no comparison against a previous artifact — reading trends is the improver seat's act (`projects/<project>/seats/improver/PROTOCOL.md`), and a tool that pre-chewed the verdict would take that judgment away from the seat that owns it.
+
+**Regeneration is deterministic.** No clock reading, no hostname, no "generated at" — the same spine prefix always renders the same bytes. `tasks.md` records the head seq it was built from, and `hive-metrics <project> --upto <that seq>` reproduces it byte for byte from a later, longer spine. That is what makes a historical regeneration exact rather than approximate, and it is how one retro compares against the last.
+
+**Durations come from `logical_ts`**, which under server time is epoch seconds assigned DB-side under the emit's advisory lock (`events/log.py` §6) — monotonic per run and immune to client clock skew. Events landing in the same wall second are pushed forward one second each, so a burst can inflate a span by up to that many seconds; sub-minute figures should be read as "about a minute", never as precision. `tasks.md` carries this and the rest of the caveats in its own Method section, so the artifact travels with them.
+
+`hive-score` records the *absence* of a prediction as loudly as a wrong one: no `## Predictions` section is an entry marked **unpredicted**, a section missing fields is **partial**. The gap is itself the metric — predictions are honest guesses, never commitments, and calibration is the product rather than any single verdict. Review outcome is never inferred: the spine records `review.failed`, not whether a PR needed another round of comments, so that verdict stays `unscored` until a human passes `--review`.
+
+Neither tool emits, and neither commits — they write files and print the paths; committing them is the operator's act. Both accept `HIVE_SPINE_JSON=<dump>` in place of the live read, which is how `scripts/hive-metrics-drill.sh` drives them: a frozen fixture covering a clean cycle, a messy one (question, block/unblock, a coalesced rejection burst, reassignment), a task retired without ever being worked, one closed by `task.failed`, one closed-reopened-reclosed, one still in flight, and a report filed against a task id that never existed. Its scratch project deliberately carries a `RUN_ID` that differs from the project name, so a tool that guessed the run would find nothing. The drill needs neither the stack nor the database and issues no events at all — run it after changing either script.
+
 ## A worked example: one tiny project, end to end
 
 Two tasks — draft release notes, then publish them — one session-agent as the worker, one blocking question along the way. Events are run-scoped, so everything carries `--run-id demo`. The operator wears each governance hat explicitly via `--role` (seeding is planner work, assignment is coordinator work); the gateway checks authority per role either way.
@@ -198,7 +221,7 @@ docs/            the documentation set — specs are authoritative; code follows
 qual/            model-qualification battery: catalogs, scenarios, personas, records
 ladder/          archived stage-2 experiment harness + its frozen run records
 scenarios/       scripted simulation scenarios (deterministic, CI-run)
-scripts/         operator tooling (hive-launch/answer/close + drill), deploy + backup checks
+scripts/         operator tooling (hive-launch/answer/close, hive-metrics/score + drills), deploy + backup checks
 deploy/          systemd/quadlet units
 tests/           full suite; DB-dependent tests need a live Postgres
 ```
