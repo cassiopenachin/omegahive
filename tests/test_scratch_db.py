@@ -120,11 +120,29 @@ def test_sweep_reaps_the_restore_sibling(throwaway):
 
 
 def test_sweep_never_touches_names_outside_the_grammar(throwaway):
-    """An operator-pinned OMEGAHIVE_TEST_DB is not a scratch database, at any age."""
+    """An operator-pinned OMEGAHIVE_TEST_DB is not a scratch database, at any age.
+
+    Note the threshold: every sweep in this file stays far above the age of a database a
+    concurrently running suite could own. A short threshold here would reap the other
+    suite's spine mid-run — which is precisely the collision this module prevents.
+    """
     pinned = throwaway(f"{scratch_db.PREFIX}operator_pinned")
+    assert scratch_db._SCRATCH_NAME.match(pinned) is None      # no epoch: not scratch
     assert scratch_db._SCRATCH_NAME.match("omegahive_test") is None  # the legacy shared DB
-    assert pinned not in _sweep(1)
+    assert pinned not in _sweep(3600)
     assert _exists(pinned)
+
+
+def test_sweep_spares_a_database_that_is_in_use(throwaway):
+    """Age alone cannot tell an abandoned database from a live long-running suite's."""
+    name = throwaway(f"{scratch_db.PREFIX}{int(time.time()) - 86400}_999996_dead")
+    live = psycopg.connect(scratch_db.with_database(scratch_db.base_url(), name))
+    try:
+        assert name not in _sweep(3600)
+        assert _exists(name)
+    finally:
+        live.close()
+    assert name in _sweep(3600)  # once nothing is connected, it is an orphan again
 
 
 def test_sweep_disabled_by_a_zero_threshold(throwaway):
