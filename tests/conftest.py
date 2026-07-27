@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 from uuid import uuid4
 
+import psycopg
 import pytest
 
 import scratch_db
@@ -34,8 +35,16 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     """
     global _SCRATCH
     name, url, ephemeral = scratch_db.resolve()
-    scratch_db.create(url)
+    # Publish before creating. If the server is unreachable, the DSN must still point at this
+    # run's own database and never be left naming the shared one -- a partial failure that
+    # silently reroutes the suite back onto shared state is the bug, not the outage.
     os.environ[scratch_db.BASE_URL_ENV] = url
+    try:
+        scratch_db.create(url)
+    except psycopg.OperationalError:
+        # No reachable Postgres: the DB-free modules still run, and the DB-bound ones fail on
+        # their own connect with the real error rather than on a hook nobody asked for.
+        return
     _SCRATCH = (name, ephemeral)
     scratch_db.sweep(keep=(name,))  # opportunistic: reap orphans from killed runs
 

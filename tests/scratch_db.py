@@ -66,7 +66,14 @@ def base_url() -> str:
 
 def with_database(url: str, dbname: str) -> str:
     """The same DSN pointed at a different database."""
-    return urlunsplit(urlsplit(url)._replace(path=f"/{dbname}"))
+    parts = urlsplit(url)
+    if not parts.scheme or not parts.netloc:
+        # libpq also accepts "host=… dbname=…" and socket-only URIs; rewriting those by URL
+        # surgery silently produces a corrupt DSN, so refuse them by name instead.
+        raise ValueError(
+            f"{BASE_URL_ENV} must be a postgresql://host/db URL, got {url!r}"
+        )
+    return urlunsplit(parts._replace(path=f"/{dbname}"))
 
 
 def database_of(url: str) -> str:
@@ -74,12 +81,15 @@ def database_of(url: str) -> str:
 
 
 def unique_name() -> str:
-    return f"{PREFIX}{int(time.time())}_{os.getpid()}_{secrets.token_hex(2)}"
+    """The random tail carries the real uniqueness: in a container every run is pid 1, so
+    `<epoch>_<pid>` alone collides between two runs starting in the same second — and a
+    collision silently recreates the shared-database bug this module removes."""
+    return f"{PREFIX}{int(time.time())}_{os.getpid()}_{secrets.token_hex(8)}"
 
 
 def max_age_s() -> int:
-    raw = os.environ.get(MAX_AGE_ENV)
-    return DEFAULT_MAX_AGE_S if raw is None else int(raw)
+    # `or`, not `is None`: compose and .env deliver a declared-but-empty variable as "".
+    return int(os.environ.get(MAX_AGE_ENV) or DEFAULT_MAX_AGE_S)
 
 
 def resolve(url: str | None = None) -> tuple[str, str, bool]:
@@ -94,12 +104,15 @@ def resolve(url: str | None = None) -> tuple[str, str, bool]:
 
 
 def _admin(url: str) -> psycopg.Connection:
-    """An autocommit connection able to CREATE/DROP DATABASE (never to the target itself)."""
-    try:
-        return psycopg.connect(with_database(url, MAINTENANCE_DB), autocommit=True)
-    except psycopg.OperationalError:
-        # Instance without a `postgres` database: fall back to the base DSN's own.
-        return psycopg.connect(url, autocommit=True)
+    """An autocommit connection able to CREATE/DROP DATABASE.
+
+    Always the maintenance database, never the target: you cannot drop the database you are
+    connected to. `postgres` is created by initdb on every instance, so if it is missing that
+    deserves an error naming it — a fallback here would connect to the target and turn every
+    drop into `cannot drop the currently open database`, and would also swallow the ordinary
+    wrong-host / wrong-password failures behind a misleading message.
+    """
+    return psycopg.connect(with_database(url, MAINTENANCE_DB), autocommit=True)
 
 
 def create(url: str) -> str:
@@ -180,7 +193,9 @@ def sweep(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="per-run scratch test databases")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("new", help="create a unique ephemeral scratch database; print its DSN")
+    sub.add_parser("new", help="create a unique ephemeral scratch database; print 'name DSN'")
+    urler = sub.add_parser("url", help="print the DSN for a database name on this server")
+    urler.add_argument("name")
     dropper = sub.add_parser("drop", help="drop one scratch database by name")
     dropper.add_argument("name")
     sweeper = sub.add_parser("sweep", help="drop scratch databases older than the threshold")
@@ -190,9 +205,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "new":
         # Always ephemeral, never the pinned OMEGAHIVE_TEST_DB: the shell caller drops what
         # this hands back, and a pinned name is the operator's to keep, not ours to destroy.
+        # Name and DSN are printed together so no caller has to parse a database name out of
+        # a URL -- a base DSN carrying query parameters defeats a naive `${url##*/}`.
         url = with_database(base_url(), unique_name())
-        create(url)
-        print(url)
+        print(f"{create(url)} {url}")
+    elif args.cmd == "url":
+        print(with_database(base_url(), args.name))
     elif args.cmd == "drop":
         drop(args.name)
     else:
