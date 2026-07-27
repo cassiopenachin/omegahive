@@ -34,9 +34,11 @@ access-layer changes and (b) irreversible cutovers without a standing rollback
 
 **Stop-lines that hold across every part of this document.** Nothing here touches sshd's
 configuration, tailscaled, the firewall, or the operator's own account beyond *reading* a
-public key. The house Caddy is untouched: the hive UI keeps its loopback port (8811), so the
-`:8443/omegahive` ingress needs no edit and no reload. No step opens a network port to
-anything but 127.0.0.1.
+public key. Where sshd's policy is a precondition for something (§1, A4), it is **named and
+never scripted** — access-layer changes are the operator's own act, deliberately outside the
+reach of any procedure written here. The house Caddy is untouched: the hive UI keeps its
+loopback port (8811), so the `:8443/omegahive` ingress needs no edit and no reload. No step
+opens a network port to anything but 127.0.0.1.
 
 ## 1. Host facts this assumes
 
@@ -54,6 +56,7 @@ starting; the shapes matter more than the values.
 | Backups | `~cassio/omegahive-backups/` — daily `omegahive-<UTC>.sql` (03:00) + `hive-workspace-<UTC>.bundle` (03:15), two systemd **user** timers | The rehearsal's input; the timers migrate in Part E |
 | Workspace hub | `~cassio/repos/hive-workspace.git` (bare) | Stays put through the cutover; moving it is a Part E follow-up |
 | Secrets | `${OMEGAHIVE_SECRETS_DIR}` = `~cassio/.config/omegahive/secrets`, mode 0700, holding `notifier.env` 0600 | Must be re-created under `hive` before its notifier can start |
+| sshd access control | `AllowUsers` restricted to the operator account | **An operator-only precondition, named here and never scripted.** A new account is not reachable over ssh at all until the operator chooses to permit it — an access-layer decision, outside any migration script's authority. Until that decision, `hive` is driven with `sudo machinectl shell hive@`, and an `authorized_keys` file for `hive` is staged but inert. |
 
 ## 2. The tooling in this repo
 
@@ -120,31 +123,47 @@ sudo install -m 600 -o hive -g hive \
      /home/cassio/.ssh/authorized_keys /home/hive/.ssh/authorized_keys
 ```
 
-Verify from the operator's session:
+**This step is necessary but not sufficient, and the gap is deliberate.** sshd's `AllowUsers`
+governs whether `hive` may log in *at all*, before any key is consulted (§1). Where it is
+restricted to the operator, the file above is staged and inert until the operator extends
+access — an access-layer decision that is theirs alone and is never scripted, here or
+anywhere else in this repo. Until then, drive the account with `sudo machinectl shell hive@`,
+which needs no key and yields a proper logind session (`XDG_RUNTIME_DIR` set), which is what
+rootless podman requires.
 
-```sh
-ssh hive@localhost true && echo "hive login OK"
-loginctl show-user hive --property=Linger      # expect Linger=yes
-```
+Two distinct login paths, once access is permitted:
+
+- **`ssh hive@<host>` from the operator's device — the primary form.** This is the path that
+  matters: it is how tooling and agent sessions on the operator's machine reach the hive
+  account (Part E, follow-up 1). The key copied above is that device's key.
+- **`ssh hive@localhost` from a shell already on the host** — a convenience, and it needs a
+  *host-local* keypair authorized for both accounts, because the operator's device key has no
+  private half on the host. Set that up, or use the primary form, or use `machinectl`.
 
 ### A5 — a compose v2 binary for the account
 
-The compose binary lives in the operator's `~/.local/bin`, which is inside a 0700 home and so
-invisible to `hive`. Give the account its own copy:
+The compose binary lives in the operator's `~/.local/bin`. That directory sits under a home
+whose `.local` is mode 0700, so `hive` cannot read it. Give the account its own copy:
 
 ```sh
-sudo install -d -m 755 -o hive -g hive /home/hive/.local/bin
+sudo install -d -m 755 -o hive -g hive /home/hive/.local /home/hive/.local/bin
 sudo install -m 755 -o hive -g hive \
      /home/cassio/.local/bin/docker-compose /home/hive/.local/bin/docker-compose
 ```
 
-(Installing it to `/usr/local/bin` instead would work and would serve both accounts, but it
-is a system-wide change where a per-account one suffices.)
+**Name both directories.** `install -d` applies `-o`/`-g` only to the *final* component, so
+`install -d -o hive /home/hive/.local/bin` creates `.local` itself owned by **root** — after
+which rootless podman cannot create `~/.local/share/containers` and `podman info` fails. This
+is not hypothetical; it happened on the first run of this procedure. If you hit it after the
+fact: `sudo chown hive:hive /home/hive/.local`.
+
+(Installing to `/usr/local/bin` instead would work and would serve both accounts, but it is a
+system-wide change where a per-account one suffices.)
 
 Then, as `hive`, enable the API socket the compose binary talks to:
 
 ```sh
-ssh hive@localhost 'systemctl --user enable --now podman.socket'
+sudo machinectl shell hive@ /usr/bin/systemctl --user enable --now podman.socket
 ```
 
 ### Verifying Part A
@@ -157,10 +176,31 @@ the account report `SKIP` elsewhere, so the full picture is two invocations:
 <clone>/deploy/hive-user/precheck.sh
 
 # as hive — its ssh key, its rootless podman, its user socket, its compose binary
-ssh hive@localhost '<hive-clone>/deploy/hive-user/precheck.sh'
+ssh hive@<host> '<hive-clone>/deploy/hive-user/precheck.sh'     # from the operator's device
+sudo machinectl shell hive@ <hive-clone>/deploy/hive-user/precheck.sh   # from a host shell
 ```
 
-Exit 0 means every executed check passed. A `FAIL` names the step to re-run.
+Exit 0 means every executed check passed. A `FAIL` names the step to re-run. Expected output
+from the operator-side run, on a host where Part A has landed:
+
+```
+PASS  user 'hive' exists (home /home/hive)
+PASS  linger enabled for 'hive'
+PASS  /etc/subuid: hive 589824-655359 (65536 ids)     # adjacent to, never overlapping, the operator's
+PASS  scratch port 5433 is free
+```
+
+### Troubleshooting Part A
+
+- **`podman info` fails inside the account** — almost always a root-owned intermediate
+  directory under `/home/hive/.local` (see A5). `precheck.sh` prints podman's own stderr, which
+  names the path.
+- **Pubkey auth is refused with no explanation.** First confirm sshd permits the account at all
+  (§1) — that is the common cause, and no amount of key fiddling fixes it. Only if access *is*
+  permitted and auth still fails is SELinux labelling worth suspecting: files created under a
+  new home by `sudo install` take the parent's type rather than `ssh_home_t`, and
+  `sudo restorecon -RvF /home/hive/.ssh` corrects it. This was *not* needed on Beastie — login
+  worked with no relabel — so treat it as a diagnosis of last resort, not a step.
 
 ## 4. Part B — the parallel scratch stack (as `hive`, no sudo)
 
@@ -171,7 +211,7 @@ podman works in the new namespace.
 ### B1 — clone the repo into the account
 
 ```sh
-ssh hive@localhost
+ssh hive@<host>                     # from the operator's device; or: sudo machinectl shell hive@
 git clone --no-hardlinks /home/cassio/src/SNET/omegahive ~/src/SNET/omegahive
 cd ~/src/SNET/omegahive
 ```
@@ -320,8 +360,17 @@ OMEGAHIVE_BACKUP_DIR=$HOME/omegahive-backups podman compose --profile ops run --
      -v run=omegahive -v maxseq=<MAXSEQ> -f /scripts/replay_identity.sql'
 ```
 
-The two lines must match character for character. A mismatch means the backup does not
-faithfully represent the log — stop and investigate before going anywhere near a cutover.
+The `<count>|<maxseq>|<md5>` values must match — the rehearsal prefixes its own with a
+`replay identity:` label, so compare the values, not the whole lines. A mismatch means the
+backup does not faithfully represent the log — stop and investigate before going anywhere
+near a cutover.
+
+The form above is the one to use: it reads `replay_identity.sql` from the canonical
+checkout's `./scripts`, which the `backup` service already mounts at `/scripts`. If you ever
+need to run it against a copy of the query that is not yet on `main`, the `-v` bind mount
+belongs on the `compose … run` invocation (before `--entrypoint`), never inside the `sh -c`
+string — and it must use `:ro,z`, the *shared* relabel, since `:Z` would revoke the mounted
+path's accessibility from any other container using it (§4.4).
 
 ### C3 — what the workspace-bundle phase tells you
 
@@ -351,7 +400,7 @@ short — the work is a dump, a copy, and a restore.
 - No worker sessions running; no launches queued. The board should be quiet.
 - Telegram secrets staged under `hive`, before the window opens:
   ```sh
-  ssh hive@localhost 'install -d -m 700 ~/.config/omegahive/secrets'
+  ssh hive@<host> 'install -d -m 700 ~/.config/omegahive/secrets'
   sudo install -m 600 -o hive -g hive \
        /home/cassio/.config/omegahive/secrets/notifier.env \
        /home/hive/.config/omegahive/secrets/notifier.env
@@ -423,7 +472,7 @@ As `hive`. Note there is **no scratch overlay** here: the migrated stack is the 
 the real ports, in `hive`'s namespace.
 
 ```sh
-ssh hive@localhost
+ssh hive@<host>                     # or: sudo machinectl shell hive@
 cd ~/src/SNET/omegahive && git checkout main && git pull
 export DOCKER_HOST="unix://$XDG_RUNTIME_DIR/podman/podman.sock"
 
@@ -502,7 +551,7 @@ The old stack is stopped, not deleted; its volumes hold the pre-cutover log. Res
 a full revert:
 
 ```sh
-ssh hive@localhost 'cd ~/src/SNET/omegahive && docker-compose down'   # free the ports
+ssh hive@<host> 'cd ~/src/SNET/omegahive && docker-compose down'   # free the ports
 cd ~/src/SNET/omegahive
 OMEGAHIVE_RUN_ID=omegahive podman compose up -d postgres notifier ui
 systemctl --user start omegahive-backup.timer omegahive-bundle.timer
@@ -529,6 +578,16 @@ None of these belong in the cutover window; each becomes possible only after it.
    hub, worker clones, emit wrappers) or is *pointed at* by an env override (the operator's
    own workspace clone, which is the operator's editing surface and has no business moving).
    The seam is already env-overridable, so this is configuration, not code.
+
+   The **entry point** this serves is `ssh hive@<host>` from the operator's device: tooling
+   and agent sessions running on the operator's machine driving hive commands on the host
+   directly, as the hive account. That is why A4 stages a key at all. It is gated on the
+   access-layer decision named in §1 — until then the same sessions reach the account through
+   the operator's own login plus `sudo machinectl shell hive@`, which works today and changes
+   nothing about what the *stack* runs as. Worth being precise about what each buys: the
+   account boundary is what gate item 2 is for, and it holds either way; the direct ssh path
+   additionally keeps an agent's transport out of the operator's account, which is a separate
+   (and smaller) property.
 2. **Worker permission posture.** Auto mode plus committed deny pins was justified explicitly
    by "Beastie is a shared host — other deployed projects, same user, same rootless-podman
    namespace" (decisions.md 2026-07-13). After the migration that premise is false: the
@@ -562,4 +621,9 @@ None of these belong in the cutover window; each becomes possible only after it.
 ## Revision record
 
 - 2026-07-27 — created (task `hive-user-prep`). Parts A–C are the additive prep, drilled
-  against the scratch stack; Part D is written but deliberately unexecuted.
+  against the scratch stack; Part D is written but deliberately unexecuted. Parts A–C were
+  then executed live on Beastie by the operator, and this document corrected from what that
+  run found: `install -d` ownership of intermediate directories (A5), sshd `AllowUsers` as a
+  named-never-scripted precondition (§1, A4), the two distinct ssh login paths (A4), and the
+  SELinux `.ssh` relabel demoted from a step to a last-resort diagnosis after it proved
+  unnecessary on this host.

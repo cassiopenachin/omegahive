@@ -43,9 +43,10 @@ while [ $# -gt 0 ]; do
 done
 
 fails=0
+skips=0
 pass() { printf 'PASS  %s\n' "$*"; }
 fail() { printf 'FAIL  %s\n' "$*"; fails=$((fails + 1)); }
-skip() { printf 'SKIP  %s\n' "$*"; }
+skip() { printf 'SKIP  %s\n' "$*"; skips=$((skips + 1)); }
 note() { printf '      %s\n' "$*"; }
 
 am_target() { [ "$(id -un)" = "${TARGET_USER}" ]; }
@@ -163,11 +164,19 @@ if am_target; then
     else
         fail "no XDG_RUNTIME_DIR — linger/session is not set up for this account"
     fi
-    if rootless=$(podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null) && [ "${rootless}" = "true" ]; then
+    # Capture stderr, do not discard it. `podman info` failing here is the single most
+    # informative failure this script can hit — its message names the real cause (a
+    # root-owned intermediate directory under ~/.local, a missing subid range, no runtime
+    # dir). Printing "got <error>" instead of that message wastes the diagnosis.
+    if rootless=$(podman info --format '{{.Host.Security.Rootless}}' 2>"${TMPDIR:-/tmp}/precheck.podman.$$") \
+       && [ "${rootless}" = "true" ]; then
         pass "podman runs rootless in this account's namespace"
     else
-        fail "podman info failed or is not rootless here (got '${rootless:-<error>}')"
+        fail "podman info failed or is not rootless here (got '${rootless:-<no output>}')"
+        while IFS= read -r line; do note "podman: ${line}"; done \
+            < "${TMPDIR:-/tmp}/precheck.podman.$$"
     fi
+    rm -f "${TMPDIR:-/tmp}/precheck.podman.$$"
     if [ -S "${XDG_RUNTIME_DIR:-}/podman/podman.sock" ]; then
         pass "podman API socket present (compose v2 can drive it)"
     else
@@ -186,9 +195,11 @@ fi
 check_ports
 
 echo
-if [ "${fails}" -eq 0 ]; then
-    echo "precheck: all executed checks passed (SKIPs need a run inside '${TARGET_USER}')"
-else
+if [ "${fails}" -ne 0 ]; then
     echo "precheck: ${fails} check(s) FAILED"
+elif [ "${skips}" -ne 0 ]; then
+    echo "precheck: all executed checks passed; ${skips} skipped — re-run inside '${TARGET_USER}' for those"
+else
+    echo "precheck: all checks passed"
 fi
 exit $(( fails > 0 ))
