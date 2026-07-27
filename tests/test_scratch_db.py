@@ -1,9 +1,15 @@
 """The per-run test database mechanism (tests/scratch_db.py) — naming, lifecycle, sweep.
 
 These run against the live Postgres the rest of the suite already needs, creating and
-dropping throwaway databases of their own. Every sweep here goes through `_sweep`, which
-spares the database this very session is running on — a test that reaped its own spine
-would take the suite down with it.
+dropping throwaway databases of their own. Two rules keep them honest under the very
+concurrency they exist to defend, since another copy of this suite may be running against
+the same server at the same instant:
+
+  * every sweep here is scoped to PROBE, a prefix unique to this process, so these tests
+    and a concurrent copy cannot see each other's fixtures. A production sweep ignores
+    PROBE names too — `probe<hex>` is where it expects the epoch.
+  * every sweep here uses a threshold far above the age any live run's database could
+    have reached. A short one would reap a running suite's spine — this module's own bug.
 """
 
 from __future__ import annotations
@@ -11,6 +17,7 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import Iterable
+from secrets import token_hex
 
 import psycopg
 import pytest
@@ -22,8 +29,17 @@ def _session_db() -> str:
     return scratch_db.database_of(os.environ[scratch_db.BASE_URL_ENV])
 
 
+# This process's private corner of the shared server (see the module docstring).
+PROBE = f"{scratch_db.PREFIX}probe{token_hex(3)}_"
+
+
 def _sweep(max_age: int, keep: Iterable[str] = ()) -> list[str]:
-    return scratch_db.sweep(max_age=max_age, keep=(_session_db(), *keep))
+    return scratch_db.sweep(max_age=max_age, keep=(_session_db(), *keep), prefix=PROBE)
+
+
+def _aged(seconds_ago: int) -> str:
+    """A PROBE-scoped scratch name that looks `seconds_ago` old."""
+    return f"{PROBE}{int(time.time()) - seconds_ago}_{os.getpid()}_{token_hex(2)}"
 
 
 def _exists(name: str) -> bool:
@@ -99,9 +115,9 @@ def test_drop_forces_off_a_straggler_connection(throwaway):
 
 
 def test_sweep_reaps_aged_orphans_only(throwaway):
-    old = throwaway(f"{scratch_db.PREFIX}{int(time.time()) - 86400}_999999_dead")
-    young = throwaway()
-    spared = throwaway()
+    old = throwaway(_aged(86400))
+    young = throwaway(_aged(0))
+    spared = throwaway(_aged(86400))
 
     dropped = _sweep(3600, keep=(spared,))
 
@@ -113,29 +129,31 @@ def test_sweep_reaps_aged_orphans_only(throwaway):
 
 def test_sweep_reaps_the_restore_sibling(throwaway):
     """scripts/pg_restore_check.sh derives <scratch>_restore; the sweep must reap it too."""
-    stem = f"{scratch_db.PREFIX}{int(time.time()) - 86400}_999997_dead"
-    restore = throwaway(f"{stem}_restore")
+    restore = throwaway(f"{_aged(86400)}_restore")
     assert restore in _sweep(3600)
     assert not _exists(restore)
 
 
 def test_sweep_never_touches_names_outside_the_grammar(throwaway):
-    """An operator-pinned OMEGAHIVE_TEST_DB is not a scratch database, at any age.
-
-    Note the threshold: every sweep in this file stays far above the age of a database a
-    concurrently running suite could own. A short threshold here would reap the other
-    suite's spine mid-run — which is precisely the collision this module prevents.
-    """
-    pinned = throwaway(f"{scratch_db.PREFIX}operator_pinned")
-    assert scratch_db._SCRATCH_NAME.match(pinned) is None      # no epoch: not scratch
-    assert scratch_db._SCRATCH_NAME.match("omegahive_test") is None  # the legacy shared DB
+    """An operator-pinned OMEGAHIVE_TEST_DB is not a scratch database, at any age."""
+    pinned = throwaway(f"{PROBE}pinned_{os.getpid()}_{token_hex(2)}")
+    assert scratch_db._name_re(PROBE).match(pinned) is None           # no epoch: not scratch
+    assert scratch_db._SCRATCH_NAME.match("omegahive_test") is None   # the legacy shared DB
     assert pinned not in _sweep(3600)
     assert _exists(pinned)
 
 
+def test_a_production_sweep_ignores_this_file_s_probe_databases(throwaway):
+    """The scoping cuts both ways: PROBE names are invisible to the default sweep."""
+    probe = throwaway(_aged(86400))
+    assert scratch_db._SCRATCH_NAME.match(probe) is None
+    assert probe not in scratch_db.sweep(max_age=3600, keep=(_session_db(),))
+    assert _exists(probe)
+
+
 def test_sweep_spares_a_database_that_is_in_use(throwaway):
     """Age alone cannot tell an abandoned database from a live long-running suite's."""
-    name = throwaway(f"{scratch_db.PREFIX}{int(time.time()) - 86400}_999996_dead")
+    name = throwaway(_aged(86400))
     live = psycopg.connect(scratch_db.with_database(scratch_db.base_url(), name))
     try:
         assert name not in _sweep(3600)
@@ -146,7 +164,7 @@ def test_sweep_spares_a_database_that_is_in_use(throwaway):
 
 
 def test_sweep_disabled_by_a_zero_threshold(throwaway):
-    old = throwaway(f"{scratch_db.PREFIX}{int(time.time()) - 86400}_999998_dead")
+    old = throwaway(_aged(86400))
     assert _sweep(0) == []
     assert _exists(old)
 
