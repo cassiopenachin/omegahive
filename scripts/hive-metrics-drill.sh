@@ -225,6 +225,9 @@ col() { # col <task> <header>  -> that task's value from the CSV ("«missing»" 
 }
 
 check "generated marker present"      "grep -qi 'GENERATED' '$MD'"
+# Both are committed text files; a missing final newline is permanent diff noise.
+check "tasks.md ends with a newline"  "[ -z \"\$(tail -c 1 '$MD')\" ]"
+check "tasks.csv ends with a newline" "[ -z \"\$(tail -c 1 '$CSV')\" ]"
 check "alpha row present"             "grep -q 'alpha' '$MD'"
 check "gamma listed as retired"       "grep -q 'gamma' '$MD'"
 check "delta (in flight) not measured" "[ \"\$(col delta shape)\" = '«missing»' ]"

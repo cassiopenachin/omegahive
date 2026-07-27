@@ -84,7 +84,11 @@ if [ -n "${HIVE_SPINE_JSON:-}" ]; then
   [ -f "$HIVE_SPINE_JSON" ] || die "HIVE_SPINE_JSON is set but not a file: $HIVE_SPINE_JSON"
   EVENTS=$(cat "$HIVE_SPINE_JSON")
 else
-  EVENTS=$( hive report "$RUN" --json 2>/dev/null ) || EVENTS=""
+  # `</dev/null` is load-bearing: `hive` is `podman compose run`, which consumes
+  # stdin. Without it, calling this tool inside a `while read` loop (exactly how a
+  # backfill over many tasks is written) silently eats the loop's input after the
+  # first iteration.
+  EVENTS=$( hive report "$RUN" --json 2>/dev/null </dev/null ) || EVENTS=""
 fi
 # `report` prints a human line and exits 1 on an empty run; either way what we
 # have is not a JSON array, and that is the same operator error (wrong run id).
@@ -405,14 +409,16 @@ JQ
 MD=$(printf '%s' "$DATA" | jq -r "$RENDER_MD")
 CSV=$(printf '%s' "$DATA" | jq -r "$RENDER_CSV")
 
+# `$(...)` strips trailing newlines, so both writes re-add exactly one — these are
+# committed text files, and a missing final newline is a diff-noise generator.
 if [ "$TO_STDOUT" -eq 1 ]; then
-  printf '%s' "$MD"
+  printf '%s\n' "$MD"
   exit 0
 fi
 
 OUT_DIR="$OPS_WS/projects/$PROJECT/metrics"
 mkdir -p "$OUT_DIR"
-printf '%s' "$MD"   > "$OUT_DIR/tasks.md"
+printf '%s\n' "$MD"  > "$OUT_DIR/tasks.md"
 printf '%s\n' "$CSV" > "$OUT_DIR/tasks.csv"
 
 CLOSED=$(printf '%s' "$DATA" | jq -r '.meta.tasks_closed')

@@ -60,7 +60,9 @@ if [ -n "${HIVE_SPINE_JSON:-}" ]; then
   [ -f "$HIVE_SPINE_JSON" ] || die "HIVE_SPINE_JSON is set but not a file: $HIVE_SPINE_JSON"
   EVENTS=$(cat "$HIVE_SPINE_JSON")
 else
-  EVENTS=$( hive report "$RUN" --json 2>/dev/null ) || EVENTS=""
+  # `</dev/null`: `hive` is `podman compose run`, which consumes stdin — without
+  # it, scoring many tasks from a `while read` loop eats the loop's own input.
+  EVENTS=$( hive report "$RUN" --json 2>/dev/null </dev/null ) || EVENTS=""
 fi
 printf '%s' "$EVENTS" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1 \
   || die "no events for run '$RUN' (wrong run id, or the stack is down?)"
