@@ -1,0 +1,281 @@
+#!/usr/bin/env bash
+# hive-score <task> [--project <name>] [--run <run-id>] [--review <verdict>]
+#                   [--note <text>] [--again]
+#
+# Scores a closed task's order-file predictions against what actually happened,
+# appending one entry to projects/<project>/metrics/calibration.md.
+#
+# The product is calibration, not the number (coordinator PROTOCOL): a prediction
+# that was wrong and recorded as wrong is worth more than one quietly dropped. So:
+#
+#   * a task whose order has no `## Predictions` section is recorded anyway, as
+#     **unpredicted** — the gap is itself the metric;
+#   * a section that predicts some fields and not others is recorded as
+#     **partial**, with the missing fields marked *not predicted*;
+#   * predictions are quoted verbatim next to the outcome, so a reader can
+#     disagree with the verdict without re-deriving anything.
+#
+# Intended call time is at or after close, and it works retroactively: every
+# outcome comes from the spine, so scoring a task closed weeks ago gives the same
+# answer it would have given on the day.
+#
+# READ-ONLY over the spine, like hive-metrics: one `report <run> --json` read, no
+# emits, no commits. Appending to calibration.md is the only write.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/hive-common.sh
+source "$SCRIPT_DIR/hive-common.sh"
+
+usage() {
+  echo "usage: hive-score <task> [--project <name>] [--run <run-id>] [--review <verdict>] [--note <text>] [--again]" >&2
+  exit 2
+}
+
+TASK=""
+RUN_OVERRIDE=""
+REVIEW_VERDICT=""
+NOTE=""
+AGAIN=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --project) shift; [ $# -gt 0 ] || usage; HIVE_PROJECT="$1"; ORDERS_SUBDIR="projects/$1/orders" ;;
+    --run)     shift; [ $# -gt 0 ] || usage; RUN_OVERRIDE="$1" ;;
+    --review)  shift; [ $# -gt 0 ] || usage; REVIEW_VERDICT="$1" ;;
+    --note)    shift; [ $# -gt 0 ] || usage; NOTE="$1" ;;
+    --again)   AGAIN=1 ;;
+    -h|--help) usage ;;
+    -*) usage ;;
+    *) [ -z "$TASK" ] || usage; TASK="$1" ;;
+  esac
+  shift
+done
+[ -n "$TASK" ] || usage
+
+PROJECT="$HIVE_PROJECT"
+RUN="${RUN_OVERRIDE:-$PROJECT}"
+command -v jq >/dev/null 2>&1 || die "jq is required"
+
+# --- the spine read (identical path to hive-metrics) ---------------------------
+if [ -n "${HIVE_SPINE_JSON:-}" ]; then
+  [ -f "$HIVE_SPINE_JSON" ] || die "HIVE_SPINE_JSON is set but not a file: $HIVE_SPINE_JSON"
+  EVENTS=$(cat "$HIVE_SPINE_JSON")
+else
+  EVENTS=$( hive report "$RUN" --json 2>/dev/null ) || EVENTS=""
+fi
+printf '%s' "$EVENTS" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1 \
+  || die "no events for run '$RUN' (wrong run id, or the stack is down?)"
+
+read -r -d '' OUTCOME_JQ <<'JQ' || true
+def first_ts($t): [ .[] | select(.event_type == $t) | .logical_ts ] | first;
+def last_ts($t):  [ .[] | select(.event_type == $t) | .logical_ts ] | last;
+def blocked($fallback):
+  ( reduce .[] as $e ({open: null, total: 0};
+      if $e.event_type == "task.blocked" then (if .open == null then .open = $e.logical_ts else . end)
+      elif $e.event_type == "task.unblocked" then
+        (if .open != null then {open: null, total: (.total + $e.logical_ts - .open)} else . end)
+      else . end) ) as $r
+  | if $r.open != null and $fallback != null then $r.total + $fallback - $r.open else $r.total end;
+
+( [ .[] | select(.task_id == $task) ] ) as $slice
+| ( map(.seq) | max ) as $head
+| ( [ $slice[] | select(.event_type == "task.created") ] | length > 0 ) as $exists
+| ( [ $slice[] | select(.event_type == "task.status_override")
+      | select(.payload.status == "done" or .payload.status == "cancelled"
+               or .payload.status == "failed") ] | last ) as $close
+| ($slice | first_ts("task.accepted"))     as $accepted
+| ($slice | last_ts("task.result_posted")) as $result
+| ($slice | blocked($result // ($close.logical_ts? // null))) as $blk
+| {
+    head_seq: $head,
+    exists: $exists,
+    closed: ($close != null),
+    closed_day: (if $close == null then null else ($close.logical_ts | strftime("%Y-%m-%d")) end),
+    final_status: ($close.payload.status? // null),
+    worker: ( [ $slice[] | select(.event_type == "task.reassigned") | .payload.to ] | last )
+            // ( [ $slice[] | select(.event_type == "task.accepted") | .actor.id ] | last )
+            // "",
+    # Elapsed worker span net of answer wait — the closest the spine gets to effort.
+    net_s: (if $accepted == null or $result == null then null
+            else ($result - $accepted - $blk) end),
+    blocked_s: (if $accepted == null then null else $blk end),
+    questions: ( [ $slice[] | select(.event_type == "task.reported")
+                   | select(.payload.kind == "question") ] | length ),
+    review_failed: ( [ $slice[] | select(.event_type == "review.failed") ] | length ),
+    reassignments: ( [ $slice[] | select(.event_type == "task.reassigned") ] | length )
+  }
+JQ
+
+OUT=$(printf '%s' "$EVENTS" | jq -c --arg task "$TASK" "$OUTCOME_JQ")
+g() { printf '%s' "$OUT" | jq -r --arg k "$1" '.[$k] // empty'; }
+
+[ "$(g exists)" = "true" ] || die "task '$TASK' is not on the board for run '$RUN' (wrong task or --run?)"
+[ "$(g closed)" = "true" ] \
+  || die "task '$TASK' is not closed on run '$RUN'; hive-score scores outcomes, so it runs at or after close"
+
+HEAD_SEQ=$(g head_seq)
+CLOSED_DAY=$(g closed_day)
+FINAL_STATUS=$(g final_status)
+ACT_QUESTIONS=$(g questions)
+ACT_REVIEW_FAILED=$(g review_failed)
+NET_S=$(g net_s)
+
+if [ -n "$NET_S" ]; then
+  ACT_EFFORT=$(awk -v s="$NET_S" 'BEGIN { printf "%.1fh", s / 3600 }')
+  ACT_EFFORT_H=$(awk -v s="$NET_S" 'BEGIN { printf "%.4f", s / 3600 }')
+else
+  ACT_EFFORT="no work cycle (never accepted, or no result posted)"
+  ACT_EFFORT_H=""
+fi
+
+# --- the order's Predictions section -------------------------------------------
+# find_order resolves <task> to its single order file exactly as hive-launch
+# derived the task id from it. A closed task with no order file at all is a real
+# (and interesting) case: score it as unpredicted rather than refusing.
+PRED_BLOCK=""
+ORDER_REL=""
+if ORDER_REL=$(find_order "$TASK" 2>/dev/null); then
+  ORDER_FILE="$OPS_WS/$ORDER_REL"
+  # From the `## Predictions` heading to the next heading of any level, exclusive.
+  PRED_BLOCK=$(awk '
+    /^##[ \t]*Predictions[ \t]*$/ { inblock = 1; next }
+    inblock && /^#/                { inblock = 0 }
+    inblock                        { print }
+  ' "$ORDER_FILE")
+else
+  ORDER_REL="(no order file found)"
+fi
+
+# parse_range <text> -> "lo hi"; accepts "2", "1-2", "1–2" (en dash), "1—2".
+parse_range() {
+  printf '%s' "$1" | sed -E 's/[–—]/-/g' | awk -F- '
+    { lo = $1 + 0; hi = (NF > 1 ? $2 + 0 : lo); printf "%s %s", lo, hi }'
+}
+
+# Verbatim slices of the prediction text; empty when the field was not predicted
+# (a no-match grep is the *expected* partial-prediction case, not an error — hence
+# the `|| true` guards under `set -o pipefail`).
+PRED_EFFORT_TXT=$( { printf '%s' "$PRED_BLOCK" \
+  | grep -oiE 'Expected effort:[[:space:]]*[0-9][0-9.–—-]*[[:space:]]*worker-hours?' \
+  | head -1 | sed -E 's/^[Ee]xpected effort:[[:space:]]*//'; } || true )
+PRED_QUESTIONS_TXT=$( { printf '%s' "$PRED_BLOCK" \
+  | grep -oiE 'Expected questions:[[:space:]]*[0-9][0-9–—-]*' \
+  | head -1 | sed -E 's/^[Ee]xpected questions:[[:space:]]*//'; } || true )
+PRED_REVIEW_TXT=$( { printf '%s' "$PRED_BLOCK" \
+  | grep -oiE 'Expected review outcome:[[:space:]]*[^.]+' \
+  | head -1 | sed -E 's/^[Ee]xpected review outcome:[[:space:]]*//'; } || true )
+
+NOT_PREDICTED='*not predicted*'
+
+# --- verdicts -----------------------------------------------------------------
+# Effort tolerance is stated in the file header, not hidden here: a prediction
+# counts as a hit within the wider of ±0.5h and ±25% of the predicted low bound.
+# Anything tighter would manufacture precision the underlying elapsed-time proxy
+# does not have.
+if [ -n "$PRED_EFFORT_TXT" ]; then
+  read -r EFF_LO EFF_HI <<<"$(parse_range "$(printf '%s' "$PRED_EFFORT_TXT" | grep -oE '^[0-9][0-9.–—-]*')")"
+  PRED_EFFORT="$PRED_EFFORT_TXT"
+  if [ -n "$ACT_EFFORT_H" ]; then
+    V_EFFORT=$(awk -v a="$ACT_EFFORT_H" -v lo="$EFF_LO" -v hi="$EFF_HI" 'BEGIN {
+      tol = 0.25 * lo; if (tol < 0.5) tol = 0.5;
+      if (a < lo - tol)      print "under";
+      else if (a > hi + tol) print "over";
+      else                   print "hit";
+    }')
+  else
+    V_EFFORT="unscorable (no work cycle)"
+  fi
+else
+  PRED_EFFORT="$NOT_PREDICTED"; V_EFFORT="unpredicted"
+fi
+
+if [ -n "$PRED_QUESTIONS_TXT" ]; then
+  read -r Q_LO Q_HI <<<"$(parse_range "$PRED_QUESTIONS_TXT")"
+  PRED_QUESTIONS="$PRED_QUESTIONS_TXT"
+  if   [ "$ACT_QUESTIONS" -lt "${Q_LO%.*}" ]; then V_QUESTIONS="under"
+  elif [ "$ACT_QUESTIONS" -gt "${Q_HI%.*}" ]; then V_QUESTIONS="over"
+  else V_QUESTIONS="hit"; fi
+else
+  PRED_QUESTIONS="$NOT_PREDICTED"; V_QUESTIONS="unpredicted"
+fi
+
+# The spine records review.failed; it does not record "the PR needed two rounds of
+# comments". So the review-outcome verdict is a human's to give (--review), and is
+# left explicitly unscored otherwise rather than inferred from silence.
+ACT_REVIEW="review.failed x$ACT_REVIEW_FAILED on the spine (PR-level rework is not an event)"
+if [ -n "$PRED_REVIEW_TXT" ]; then
+  PRED_REVIEW="$PRED_REVIEW_TXT"
+  V_REVIEW="${REVIEW_VERDICT:-unscored (needs a human verdict: --review)}"
+else
+  PRED_REVIEW="$NOT_PREDICTED"
+  V_REVIEW="${REVIEW_VERDICT:-unpredicted}"
+fi
+
+# Coverage: how much of the section was there at all — the calibration-gap metric.
+FIELDS=0
+for t in "$PRED_EFFORT_TXT" "$PRED_QUESTIONS_TXT" "$PRED_REVIEW_TXT"; do
+  if [ -n "$t" ]; then FIELDS=$((FIELDS + 1)); fi
+done
+case "$FIELDS" in
+  0) COVERAGE="unpredicted (no usable \`## Predictions\` section)" ;;
+  3) COVERAGE="full" ;;
+  *) COVERAGE="partial ($FIELDS of 3 fields predicted)" ;;
+esac
+
+# --- append --------------------------------------------------------------------
+OUT_DIR="$OPS_WS/projects/$PROJECT/metrics"
+CAL="$OUT_DIR/calibration.md"
+mkdir -p "$OUT_DIR"
+
+if [ ! -f "$CAL" ]; then
+  cat > "$CAL" <<EOF
+# Prediction calibration — $PROJECT
+
+Append-only. One entry per scoring act (\`hive-score <task>\`), newest at the bottom.
+Predictions are quoted verbatim from the task's order file; outcomes are read from
+the spine, so an entry says the same thing whether it was written on the day of the
+close or months later.
+
+Predictions are honest guesses, never commitments — the product here is the
+calibration trend, not any single verdict. Reading that trend is the improver
+seat's act; this file only records.
+
+**Verdict rules.** *effort* — \`hit\` when the actual elapsed worker span (net of
+answer wait) falls within the predicted range widened by the greater of 0.5h and
+25% of its low bound; otherwise \`under\`/\`over\`. *questions* — \`hit\` when the
+count falls inside the predicted range, exactly. *review outcome* — never inferred:
+the spine records \`review.failed\`, not whether a PR needed another round, so the
+verdict stays \`unscored\` until a human supplies one with \`--review\`.
+
+Actual effort is elapsed wall-clock between \`task.accepted\` and \`task.result_posted\`
+minus recorded blocked time. A session that idles looks like a session that works;
+it is a proxy, and predictions should be read against it as one.
+
+EOF
+fi
+
+if grep -q "^### $TASK — " "$CAL" && [ "$AGAIN" -eq 0 ]; then
+  die "task '$TASK' is already scored in $CAL; pass --again to record a second entry"
+fi
+
+{
+  echo "### $TASK — closed $CLOSED_DAY"
+  echo
+  echo "| field | predicted | actual | verdict |"
+  echo "|---|---|---|---|"
+  echo "| effort | $PRED_EFFORT | $ACT_EFFORT | $V_EFFORT |"
+  echo "| questions | $PRED_QUESTIONS | $ACT_QUESTIONS | $V_QUESTIONS |"
+  echo "| review outcome | $PRED_REVIEW | $ACT_REVIEW | $V_REVIEW |"
+  echo
+  echo "- coverage: $COVERAGE"
+  echo "- order: \`$ORDER_REL\`"
+  echo "- outcome source: run \`$RUN\` at seq $HEAD_SEQ · final status \`$FINAL_STATUS\`"
+  if [ -n "$NOTE" ]; then echo "- note: $NOTE"; fi
+  echo "- scored: $(date +%F)"
+  echo
+} >> "$CAL"
+
+echo "hive-score: $TASK — coverage: $COVERAGE"
+echo "  effort     predicted $PRED_EFFORT · actual $ACT_EFFORT · $V_EFFORT"
+echo "  questions  predicted $PRED_QUESTIONS · actual $ACT_QUESTIONS · $V_QUESTIONS"
+echo "  review     predicted $PRED_REVIEW · $V_REVIEW"
+echo "  appended to $CAL (not committed)"
