@@ -234,9 +234,14 @@ also gives that harness its own spine so it no longer seeds `checks-*` runs into
 
 **Orphans.** A run killed before it can drop its database leaves one behind, so the name
 carries the epoch it was created at: every suite start opportunistically drops scratch
-databases older than the threshold *and with no connected backend* — age alone cannot tell
-an abandoned database from a long-running suite's. Nothing outside that name grammar is ever
-touched — not a pinned `OMEGAHIVE_TEST_DB`, not the durable databases. To sweep by hand:
+databases older than the threshold. What keeps that from reaping a *live* run is the margin —
+hours of threshold against a suite measured in seconds — so **do not lower the threshold
+below the longest run you expect**. A database with a connected backend is skipped as a
+second line of defence, but it is only that: connections come and go between tests, so a live
+run is not continuously covered by it. Nothing outside the generated name grammar is ever
+touched, including the durable databases. (A pinned `OMEGAHIVE_TEST_DB` is safe for the same
+reason — unless you pin a name that mimics the generated `<prefix>_<epoch>_<pid>_<rand>`
+shape, which puts it back in scope. Don't.) To sweep by hand:
 
 ```bash
 docker compose run --rm --no-deps --entrypoint python cli /app/tests/scratch_db.py sweep
