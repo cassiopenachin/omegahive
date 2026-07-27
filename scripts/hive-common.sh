@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # hive-common.sh — shared plumbing for the operator tooling (hive-launch /
-# hive-answer / hive-close). Sourced, never executed directly.
+# hive-answer / hive-close) and the read-only instruments (hive-metrics /
+# hive-score). Sourced, never executed directly.
 #
 # Two config layers, kept deliberately apart (the project-vs-deployment fact
 # boundary, decisions.md 2026-07-21):

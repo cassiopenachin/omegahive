@@ -344,11 +344,13 @@ stat("accept→result (gross)"; "mixed"; $worked; "accepted_to_result_s")
 "",
 "Tasks closed with no `task.accepted` (debris retired by decision, duplicates",
 "superseded). They are real closes, so they are listed; they carry no worker span,",
-"so they are excluded from every statistic above.",
+"so they are excluded from every statistic above. Their rejection counts are shown",
+"because a refusal against a task nobody ever worked is still a refusal the hive",
+"produced — it would otherwise be the one number with nowhere to go.",
 "",
-"| task | created | closed | final status |",
-"|---|---|---|---|"
-] + [ $retired[] | "| \(.task) | \(.created_ts | day) | \(.closed_ts | day) | \(.final_status) |" ] end)
+"| task | created | closed | final status | rejections |",
+"|---|---|---|---|---|"
+] + [ $retired[] | "| \(.task) | \(.created_ts | day) | \(.closed_ts | day) | \(.final_status) | \(.rejections) |" ] end)
 + (if ($r.open | length) == 0 then [] else [
 "",
 "## Open at this window",
@@ -380,6 +382,11 @@ stat("accept→result (gross)"; "mixed"; $worked; "accepted_to_result_s")
 "  pushed one second past the last, so a burst of *n* events can inflate a span by up",
 "  to *n* seconds. Immaterial at minute-and-hour scale; it means sub-minute figures",
 "  should be read as \"about a minute\", never as precision.",
+"- **`review→close` is one command, not a wait.** `hive-close` emits `review.passed`",
+"  and `status_override(done)` back to back, so this span is normally a second or two",
+"  and measures nothing about the operator. The operator's real review latency is",
+"  `result→review`. A large `review→close` means the two halves were emitted by hand,",
+"  separately — worth noticing for that reason alone.",
 "- **Elapsed, not effort.** `accept→result` is wall-clock elapsed between two emits.",
 "  A session that idles overnight and one that works straight through look the same.",
 "  It is the best available proxy for worker effort and it is only a proxy.",
