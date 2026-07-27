@@ -66,11 +66,17 @@ done
 [ -n "$PROJECT" ] || usage
 case "$PROJECT" in */*|.|..) die "project must be a bare directory name, got '$PROJECT'" ;; esac
 
-# Project -> run id. Today the mapping is the identity (decisions.md 2026-07-21:
-# one run per project), so the project name IS the run id unless --run says
-# otherwise. If a project-config file later carries an explicit mapping, this is
-# the one line that consults it; --run keeps working either way.
-RUN="${RUN_OVERRIDE:-$PROJECT}"
+# Project -> run id, from the project's committed identity
+# (projects/<name>/project.conf: RUN_ID) — never the project name by convention. A
+# misconfigured run id is the tooling's most recurrent bug class, which is exactly
+# why identity is a committed fact rather than a default. A project with no conf is
+# refused by load_project_conf, and that is right: a project whose identity is not
+# committed has nothing well-defined to measure.
+#
+# `--run` maps onto HIVE_RUN_ID, the tooling's documented run escape hatch, so
+# there is one precedence rule (env > conf > default) rather than a second one here.
+if [ -n "$RUN_OVERRIDE" ]; then export HIVE_RUN_ID="$RUN_OVERRIDE"; fi
+load_project_conf "$PROJECT"
 
 [ -n "${UPTO}" ] && case "$UPTO" in ''|*[!0-9]*) die "--upto takes a seq number, got '$UPTO'" ;; esac
 

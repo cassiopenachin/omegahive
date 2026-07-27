@@ -49,6 +49,15 @@ ORDERS="$WS/projects/$PROJECT/orders"
 METRICS="$WS/projects/$PROJECT/metrics"
 mkdir -p "$ORDERS"
 
+# The scratch project's committed identity. Both tools resolve the run through
+# load_project_conf, so the project name is NOT assumed to be the run id — this
+# conf deliberately names a run that differs from the project name, which is what
+# makes the drill prove the conf is consulted rather than guessed at.
+cat > "$WS/projects/$PROJECT/project.conf" <<'EOF'
+RUN_ID=metrics-drill
+CODE_REPO=git@example.invalid:drill/drill.git
+EOF
+
 # --- 1. the frozen spine fixture ----------------------------------------------
 # One scratch run covering every shape the tools must survive:
 #   alpha  — a clean cycle: create → launch → accept → result → review → close
@@ -259,7 +268,6 @@ EOF
 export HIVE_SPINE_JSON="$FIXTURE"
 export OPS_WS="$WS"
 export OMEGA_DIR="$EMPTY"
-export HIVE_PROJECT="$PROJECT"
 
 M="$SCRIPT_DIR/hive-metrics"
 S="$SCRIPT_DIR/hive-score"
@@ -268,7 +276,7 @@ S="$SCRIPT_DIR/hive-score"
 echo
 echo "metrics drill: hive-metrics"
 
-"$M" "$PROJECT" --run metrics-drill >/dev/null
+"$M" "$PROJECT" >/dev/null
 check "tasks.md written"  "[ -s '$METRICS/tasks.md' ]"
 check "tasks.csv written" "[ -s '$METRICS/tasks.csv' ]"
 
@@ -340,23 +348,23 @@ check "no unescaped pipe in probe row"  "! grep -qF '| \`probe|x\`' '$MD'"
 
 # Deterministic regeneration: same spine in, byte-identical artifact out.
 cp "$MD" "$SANDBOX/first.md"; cp "$CSV" "$SANDBOX/first.csv"
-"$M" "$PROJECT" --run metrics-drill >/dev/null
+"$M" "$PROJECT" >/dev/null
 check "tasks.md regeneration is byte-identical"  "cmp -s '$SANDBOX/first.md' '$MD'"
 check "tasks.csv regeneration is byte-identical" "cmp -s '$SANDBOX/first.csv' '$CSV'"
 
 # --upto <head seq> must reproduce the same artifact (the pin the artifact records).
 HEAD_SEQ=$(jq -r 'map(.seq) | max' "$FIXTURE")
 check "artifact records its head seq" "grep -q 'seq $HEAD_SEQ' '$MD'"
-"$M" "$PROJECT" --run metrics-drill --upto "$HEAD_SEQ" >/dev/null
+"$M" "$PROJECT" --upto "$HEAD_SEQ" >/dev/null
 check "--upto head reproduces the artifact" "cmp -s '$SANDBOX/first.md' '$MD'"
 
 # Truncating before beta's close must drop beta from the closed set — the property
 # that makes a historical regeneration meaningful.
 BETA_CLOSE_SEQ=$(jq -r '[.[] | select(.task_id=="beta" and .event_type=="task.status_override") | .seq] | first' "$FIXTURE")
-"$M" "$PROJECT" --run metrics-drill --upto "$((BETA_CLOSE_SEQ - 1))" >/dev/null
+"$M" "$PROJECT" --upto "$((BETA_CLOSE_SEQ - 1))" >/dev/null
 check "--upto before beta close drops beta" "[ \"\$(col beta shape)\" = '«missing»' ]"
 check "--upto before beta close keeps alpha" "[ \"\$(col alpha shape)\" = worked ]"
-"$M" "$PROJECT" --run metrics-drill >/dev/null   # restore the full artifact
+"$M" "$PROJECT" >/dev/null   # restore the full artifact
 
 # Without the fixture the tool goes to the real read path — which, with OMEGA_DIR
 # pointed at an empty dir, cannot reach any stack. The refusal must name the run,
@@ -367,7 +375,7 @@ expect_fail_msg "unreachable/empty run refused" "no events for run" \
 # An --upto below the run's first seq must refuse, not overwrite the good artifact
 # with an empty `seq null` skeleton and exit 0.
 expect_fail_msg "--upto below the first seq refused" "selects no events" \
-  "$M" "$PROJECT" --run metrics-drill --upto 0
+  "$M" "$PROJECT" --upto 0
 check "refused --upto left the artifact intact" "cmp -s '$SANDBOX/first.md' '$MD'"
 
 # --- 4. hive-score ------------------------------------------------------------
@@ -392,7 +400,7 @@ row() { entry "$1" | grep -F "| $2 |" | head -1; }   # one field's row from an e
 # verdict <task> <field> -> the last cell of that row (the verdict column)
 verdict() { row "$1" "$2" | awk -F'|' '{ gsub(/^ +| +$/, "", $(NF-1)); print $(NF-1) }'; }
 
-"$S" alpha --run metrics-drill >/dev/null
+"$S" alpha >/dev/null
 check "calibration.md written"        "[ -s '$CAL' ]"
 check "alpha entry recorded"          "[ -n \"\$(entry alpha)\" ]"
 check "alpha predicted effort quoted" "entry alpha | grep -q '1 worker-hour'"
@@ -404,31 +412,36 @@ check "alpha questions verdict = hit" "[ \"\$(verdict alpha questions)\" = hit ]
 check "alpha review left unscored"    "verdict alpha 'review outcome' | grep -q '^unscored'"
 check "alpha coverage full"           "entry alpha | grep -q '^- coverage: full$'"
 
-expect_fail_msg "re-scoring refused"  "already scored" "$S" alpha --run metrics-drill
-"$S" alpha --run metrics-drill --again >/dev/null
+expect_fail_msg "re-scoring refused"  "already scored" "$S" alpha
+"$S" alpha --again >/dev/null
 check "--again re-scores"             "[ \"\$(grep -c '^### alpha — ' '$CAL')\" = 2 ]"
 
-"$S" epsilon --run metrics-drill >/dev/null
+"$S" epsilon >/dev/null
 check "epsilon effort verdict = over" "[ \"\$(verdict epsilon effort)\" = over ]"
 check "epsilon scorable (task.failed closed it)" "entry epsilon | grep -q 'final status .failed.'"
 
-"$S" zeta --run metrics-drill >/dev/null
+"$S" zeta >/dev/null
 check "zeta effort verdict = under"      "[ \"\$(verdict zeta effort)\" = under ]"
 check "zeta questions verdict = under"   "[ \"\$(verdict zeta questions)\" = under ]"
 check "zeta predicted range quoted"      "entry zeta | grep -q '1-2'"
 
-"$S" beta --run metrics-drill >/dev/null
+"$S" beta >/dev/null
 check "beta recorded as partial"      "entry beta | grep -q '^- coverage: partial'"
 check "beta effort prediction quoted" "entry beta | grep -q '4 worker-hours'"
 check "beta absent fields marked"     "entry beta | grep -q 'not predicted'"
 check "beta absent field unpredicted" "[ \"\$(verdict beta questions)\" = unpredicted ]"
 
-"$S" gamma --run metrics-drill >/dev/null
+"$S" gamma >/dev/null
 check "gamma recorded as unpredicted" "entry gamma | grep -q '^- coverage: unpredicted'"
 check "gamma effort unpredicted"      "[ \"\$(verdict gamma effort)\" = unpredicted ]"
 
-expect_fail_msg "scoring an open task refused" "not closed" "$S" delta --run metrics-drill
-expect_fail_msg "scoring an unknown task refused" "not on the board" "$S" nosuch --run metrics-drill
+expect_fail_msg "scoring an open task refused" "not closed" "$S" delta
+# A task with no order file cannot name its project, and guessing one is exactly
+# what project_from_order refuses to do — so this asks for --project by name.
+expect_fail_msg "un-inferable project refused" "pass --project" "$S" nosuch
+# Given the project explicitly, the refusal is the board's, not the resolver's.
+expect_fail_msg "scoring an unknown task refused" "not on the board" \
+  "$S" nosuch --project "$PROJECT"
 
 # find_order refuses on two different things. "found 0" is legitimate (the
 # hand-seeded 2026-07-13 ids do not invert to their filenames) and scores as
@@ -436,15 +449,28 @@ expect_fail_msg "scoring an unknown task refused" "not on the board" "$S" nosuch
 # would append a permanent entry claiming the operator predicted nothing.
 printf '# Order: alpha (duplicate)\n' > "$ORDERS/alpha.md"
 expect_fail_msg "ambiguous order refused, not scored as unpredicted" \
-  "cannot resolve the order" "$S" alpha --run metrics-drill --again
+  "cannot resolve the order" "$S" alpha --again
 rm -f "$ORDERS/alpha.md"
 
 # PROJECT is interpolated into a path under $OPS_WS/projects/.
 expect_fail_msg "traversal in --project refused" "bare directory name" \
-  "$S" alpha --project ../../escaped --run metrics-drill
-expect_fail_msg "unknown --project refused" "no project directory" \
-  "$S" alpha --project drll --run metrics-drill
+  "$S" alpha --project ../../escaped
+expect_fail_msg "unknown --project refused" "no project.conf for project 'drll'" \
+  "$S" alpha --project drll
 check "no escaped calibration file written" "[ ! -e '$SANDBOX/../escaped' ]"
+
+# Project identity comes from the committed conf, never from the project name:
+# the scratch project is `drill` and its run is `metrics-drill`, so a tool that
+# guessed the run from the name would have found no events at all.
+check "run resolved from project.conf, not the name" "grep -qF '| Run | \`metrics-drill\`' '$MD'"
+check "entries cite the conf's run"                  "entry alpha | grep -qF 'run \`metrics-drill\`'"
+# ...and HIVE_RUN_ID / --run still win over the conf (the documented escape hatch).
+expect_fail_msg "--run overrides the conf" "no events for run 'other-run'" \
+  env -u HIVE_SPINE_JSON "$M" "$PROJECT" --run other-run
+# A project with no committed conf has no well-defined run to measure.
+mkdir -p "$WS/projects/confless/orders"
+expect_fail_msg "project without a conf refused" "no project.conf for project 'confless'" \
+  "$M" confless
 
 # --- 5. the stop-line: read-only, no emits ------------------------------------
 echo

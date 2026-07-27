@@ -32,13 +32,14 @@ usage() {
 }
 
 TASK=""
+PROJECT_OVERRIDE=""
 RUN_OVERRIDE=""
 REVIEW_VERDICT=""
 NOTE=""
 AGAIN=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --project) shift; [ $# -gt 0 ] || usage; HIVE_PROJECT="$1"; ORDERS_SUBDIR="projects/$1/orders" ;;
+    --project) shift; [ $# -gt 0 ] || usage; PROJECT_OVERRIDE="$1" ;;
     --run)     shift; [ $# -gt 0 ] || usage; RUN_OVERRIDE="$1" ;;
     --review)  shift; [ $# -gt 0 ] || usage; REVIEW_VERDICT="$1" ;;
     --note)    shift; [ $# -gt 0 ] || usage; NOTE="$1" ;;
@@ -51,15 +52,48 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$TASK" ] || usage
 
-PROJECT="$HIVE_PROJECT"
-# Same guard hive-metrics applies: PROJECT is interpolated into a path under
-# $OPS_WS/projects/, so a traversal would write calibration.md outside the
-# workspace, where git never sees it and the operator never commits it.
-case "$PROJECT" in */*|.|..) die "project must be a bare directory name, got '$PROJECT'" ;; esac
-[ -d "$OPS_WS/projects/$PROJECT" ] \
-  || die "no project directory $OPS_WS/projects/$PROJECT (typo in --project/HIVE_PROJECT?)"
-RUN="${RUN_OVERRIDE:-$PROJECT}"
 command -v jq >/dev/null 2>&1 || die "jq is required"
+
+# --- resolve the order, then the project, then the run -------------------------
+# Order first, because the order's PATH is what names the project — the same
+# inference hive-launch makes (projects/<name>/orders/<file>.md). find_order
+# searches every project and refuses cross-project ambiguity.
+#
+# find_order refuses on two very different things, and they must not be conflated:
+# "no order deriving task" is a legitimate outcome (the 2026-07-13 hand-seeded task
+# ids do not invert to their filenames, and never will) and scores as unpredicted.
+# Anything else — an ambiguous task across projects — is the shared guard doing its
+# job, and swallowing it would append a permanent, committed calibration entry
+# asserting the operator predicted nothing when they did.
+# `2>&1` merges the streams: on success stdout carries the path and stderr is
+# empty; on failure `die` has written only to stderr and stdout is empty.
+ORDER_REL=""
+if ! ORDER_REL=$(find_order "$TASK" 2>&1); then
+  case "$ORDER_REL" in
+    *"no order deriving task"*) ORDER_REL="" ;;
+    *) die "cannot resolve the order for '$TASK': ${ORDER_REL#hive: }" ;;
+  esac
+fi
+
+# --project wins; otherwise the order's path names the project. A task with no
+# order file (the hand-seeded ids) cannot name one, so it must be given — guessing
+# is exactly what project_from_order refuses to do.
+if [ -n "$PROJECT_OVERRIDE" ]; then
+  PROJECT="$PROJECT_OVERRIDE"
+elif [ -n "$ORDER_REL" ]; then
+  PROJECT=$(project_from_order "$ORDER_REL")
+else
+  die "no order file derives task '$TASK', so its project cannot be inferred; pass --project <name>"
+fi
+# PROJECT is interpolated into a path under $OPS_WS/projects/, so a traversal
+# would write calibration.md outside the workspace, where git never sees it and
+# the operator never commits it.
+case "$PROJECT" in */*|.|..) die "project must be a bare directory name, got '$PROJECT'" ;; esac
+
+# Run id from the project's committed identity; --run maps onto HIVE_RUN_ID so the
+# precedence rule (env > conf) is the tooling's one rule, not a second one here.
+if [ -n "$RUN_OVERRIDE" ]; then export HIVE_RUN_ID="$RUN_OVERRIDE"; fi
+load_project_conf "$PROJECT"
 
 # --- the spine read (identical path to hive-metrics) ---------------------------
 if [ -n "${HIVE_SPINE_JSON:-}" ]; then
@@ -164,33 +198,18 @@ else
 fi
 
 # --- the order's Predictions section -------------------------------------------
-# find_order resolves <task> to its single order file exactly as hive-launch
-# derived the task id from it. A closed task with no order file at all is a real
-# (and interesting) case: score it as unpredicted rather than refusing.
-#
-# find_order refuses on two very different things, and they must not be conflated:
-# "found 0" is a legitimate outcome (the 2026-07-13 hand-seeded task ids do not
-# invert to their filenames, and never will) and scores as unpredicted. Anything
-# else — an ambiguous pair of order files, a missing orders dir — is the shared
-# guard doing its job, and swallowing it would append a permanent, committed
-# calibration entry asserting the operator predicted nothing when they did.
-# `2>&1` merges the streams: on success stdout carries the path and stderr is
-# empty; on failure `die` has written only to stderr and stdout is empty.
+# The order was resolved up front (it names the project). A closed task with no
+# order file at all is a real, and interesting, case: it scores as unpredicted.
 PRED_BLOCK=""
-ORDER_REL=""
-if ORDER_REL=$(find_order "$TASK" 2>&1); then
-  ORDER_FILE="$OPS_WS/$ORDER_REL"
+if [ -n "$ORDER_REL" ]; then
   # From the `## Predictions` heading to the next heading of any level, exclusive.
   PRED_BLOCK=$(awk '
     /^##[ \t]*Predictions[ \t]*$/ { inblock = 1; next }
     inblock && /^#/                { inblock = 0 }
     inblock                        { print }
-  ' "$ORDER_FILE")
+  ' "$OPS_WS/$ORDER_REL")
 else
-  case "$ORDER_REL" in
-    *"found 0"*) ORDER_REL="(no order file found)" ;;
-    *) die "cannot resolve the order for '$TASK': ${ORDER_REL#hive: }" ;;
-  esac
+  ORDER_REL="(no order file found)"
 fi
 
 # parse_range <text> -> "lo hi"; accepts "2", "1-2", "1–2" (en dash), "1—2".
