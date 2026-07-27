@@ -49,6 +49,7 @@ PREFIX = "omegahive_test_"
 # from even on a host where the base DSN's database does not exist yet.
 MAINTENANCE_DB = "postgres"
 
+
 def _name_re(prefix: str = PREFIX) -> re.Pattern[str]:
     """The names a sweep is allowed to reap: this module's grammar, plus the `_restore`
     sibling scripts/pg_restore_check.sh derives from it. Anything else — a pinned
@@ -179,7 +180,7 @@ def sweep(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="per-run scratch test databases")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("new", help="create a unique scratch database; print its DSN")
+    sub.add_parser("new", help="create a unique ephemeral scratch database; print its DSN")
     dropper = sub.add_parser("drop", help="drop one scratch database by name")
     dropper.add_argument("name")
     sweeper = sub.add_parser("sweep", help="drop scratch databases older than the threshold")
@@ -187,7 +188,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.cmd == "new":
-        _, url, _ = resolve()
+        # Always ephemeral, never the pinned OMEGAHIVE_TEST_DB: the shell caller drops what
+        # this hands back, and a pinned name is the operator's to keep, not ours to destroy.
+        url = with_database(base_url(), unique_name())
         create(url)
         print(url)
     elif args.cmd == "drop":

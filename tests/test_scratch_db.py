@@ -169,6 +169,19 @@ def test_sweep_disabled_by_a_zero_threshold(throwaway):
     assert _exists(old)
 
 
+def test_cli_new_ignores_a_pinned_name(monkeypatch, capsys):
+    """deploy_checks.sh drops whatever `new` hands back, so it must never hand back the
+    operator's pinned database."""
+    monkeypatch.setenv(scratch_db.NAME_ENV, "my_own_test_db")
+    assert scratch_db.main(["new"]) == 0
+    name = scratch_db.database_of(capsys.readouterr().out.strip())
+    try:
+        assert name != "my_own_test_db"
+        assert scratch_db._SCRATCH_NAME.match(name)
+    finally:
+        scratch_db.drop(name)
+
+
 def test_max_age_reads_the_environment(monkeypatch):
     monkeypatch.delenv(scratch_db.MAX_AGE_ENV, raising=False)
     assert scratch_db.max_age_s() == scratch_db.DEFAULT_MAX_AGE_S
