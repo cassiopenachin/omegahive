@@ -211,8 +211,9 @@ also gives that harness its own spine so it no longer seeds `checks-*` runs into
 
 **Orphans.** A run killed before it can drop its database leaves one behind, so the name
 carries the epoch it was created at: every suite start opportunistically drops scratch
-databases older than the threshold. Nothing outside that name grammar is ever touched — not
-a pinned `OMEGAHIVE_TEST_DB`, not the durable databases. To sweep by hand:
+databases older than the threshold *and with no connected backend* — age alone cannot tell
+an abandoned database from a long-running suite's. Nothing outside that name grammar is ever
+touched — not a pinned `OMEGAHIVE_TEST_DB`, not the durable databases. To sweep by hand:
 
 ```bash
 docker compose run --rm --no-deps --entrypoint python cli /app/tests/scratch_db.py sweep

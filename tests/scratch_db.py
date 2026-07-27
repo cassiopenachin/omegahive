@@ -125,8 +125,13 @@ def sweep(
     keep: Iterable[str] = (),
 ) -> list[str]:
     """Drop scratch databases older than `max_age` seconds — the orphans left by runs that
-    were killed before their own drop. Best-effort: a database another run is still using,
-    or has already dropped, is skipped rather than failing the sweep."""
+    were killed before their own drop.
+
+    A database with a connected backend is never reaped, however old: age alone cannot tell
+    an abandoned database from a long-running suite's, and reaping a live run's spine is the
+    very failure this whole mechanism exists to prevent. Best-effort otherwise — a database
+    another run has already dropped is skipped rather than failing the sweep.
+    """
     age = max_age_s() if max_age is None else max_age
     if age <= 0:
         return []
@@ -137,9 +142,17 @@ def sweep(
         rows = conn.execute(
             "SELECT datname FROM pg_database WHERE datname LIKE %s", (f"{PREFIX}%",)
         ).fetchall()
+        in_use = {
+            r[0]
+            for r in conn.execute(
+                "SELECT DISTINCT datname FROM pg_stat_activity WHERE datname IS NOT NULL"
+            ).fetchall()
+        }
         for (name,) in rows:
             match = _SCRATCH_NAME.match(name)
-            if match is None or name in spared or int(match.group(1)) >= cutoff:
+            if match is None or name in spared or name in in_use:
+                continue
+            if int(match.group(1)) >= cutoff:
                 continue
             try:
                 conn.execute(
