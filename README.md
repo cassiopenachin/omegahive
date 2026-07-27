@@ -228,7 +228,7 @@ also gives that harness its own spine so it no longer seeds `checks-*` runs into
 
 | Variable | Effect |
 |---|---|
-| `OMEGAHIVE_TEST_DATABASE_URL` | the **base** DSN — server, credentials, fallback maintenance database. Its database component no longer names what tests use; the per-run name replaces it. |
+| `OMEGAHIVE_TEST_DATABASE_URL` | the **base** DSN — server and credentials. Its database component no longer names what tests use; the per-run name replaces it. `CREATE`/`DROP DATABASE` run from the `postgres` maintenance database on the same server. |
 | `OMEGAHIVE_TEST_DB` | pin the database name. You then own its lifecycle: created if absent, never dropped — the way to keep a run's data for inspection. |
 | `OMEGAHIVE_TEST_DB_MAX_AGE_S` | orphan sweep threshold, default `21600` (6h); `0` disables it. |
 
