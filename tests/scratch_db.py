@@ -11,9 +11,9 @@ Naming: `omegahive_test_<epoch>_<pid>_<rand>`. The epoch is what `sweep` reads, 
 killed before its drop leaves a self-dating scratch database the next run can reap.
 
 Environment:
-  OMEGAHIVE_TEST_DATABASE_URL  base DSN — server, credentials, and the fallback
-                               maintenance database. Its database component is no longer
-                               what tests use; the per-run name replaces it.
+  OMEGAHIVE_TEST_DATABASE_URL  base DSN — server and credentials. Its database component is
+                               no longer what tests use; the per-run name replaces it, and
+                               CREATE/DROP run from the `postgres` maintenance database.
   OMEGAHIVE_TEST_DB            pin the database name. Then the caller owns the lifecycle:
                                it is created if absent and never dropped.
   OMEGAHIVE_TEST_DB_MAX_AGE_S  orphan sweep threshold in seconds (default 6h; 0 disables).
@@ -45,8 +45,8 @@ MAX_AGE_ENV = "OMEGAHIVE_TEST_DB_MAX_AGE_S"
 DEFAULT_BASE_URL = "postgresql://omegahive:omegahive@localhost:5432/omegahive_test"
 DEFAULT_MAX_AGE_S = 6 * 60 * 60
 PREFIX = "omegahive_test_"
-# Always present on a Postgres instance, so CREATE/DROP DATABASE has somewhere to run
-# from even on a host where the base DSN's database does not exist yet.
+# initdb creates this on every instance, so CREATE/DROP DATABASE always has somewhere to run
+# from — including on a host where the base DSN's own database does not exist yet.
 MAINTENANCE_DB = "postgres"
 
 
