@@ -39,7 +39,18 @@ def _sweep(max_age: int, keep: Iterable[str] = ()) -> list[str]:
 
 def _aged(seconds_ago: int) -> str:
     """A PROBE-scoped scratch name that looks `seconds_ago` old."""
-    return f"{PROBE}{int(time.time()) - seconds_ago}_{os.getpid()}_{token_hex(2)}"
+    # Narrower tail than unique_name()'s: PROBE already spends 27 of the 63 bytes Postgres
+    # allows an identifier, and these names must still fit with `_restore` appended.
+    return f"{PROBE}{int(time.time()) - seconds_ago}_{os.getpid()}_{token_hex(4)}"
+
+
+def throwaway_db(name: str | None = None) -> str:
+    """Create a PROBE-scoped database; the caller drops it. Never the production namespace:
+    a name from unique_name() could collide with this very session's spine, and the drop
+    would then take the running suite's own database with it."""
+    name = name or _aged(0)
+    scratch_db.create(scratch_db.with_database(scratch_db.base_url(), name))
+    return name
 
 
 def _exists(name: str) -> bool:
@@ -55,10 +66,9 @@ def throwaway():
     made: list[str] = []
 
     def _make(name: str | None = None) -> str:
-        name = name or scratch_db.unique_name()
+        name = name or _aged(0)
         made.append(name)
-        scratch_db.create(scratch_db.with_database(scratch_db.base_url(), name))
-        return name
+        return throwaway_db(name)
 
     yield _make
     for name in made:
@@ -69,7 +79,9 @@ def test_unique_name_is_per_run_and_parseable():
     a, b = scratch_db.unique_name(), scratch_db.unique_name()
     assert a != b
     assert a.startswith(scratch_db.PREFIX)
-    assert len(a) <= 63  # Postgres identifier limit
+    # Postgres silently truncates identifiers at 63 bytes, and pg_restore_check.sh appends
+    # `_restore` -- a name that fits but whose sibling does not is a truncated, unreapable DB.
+    assert len(f"{a}_restore") <= 63
     match = scratch_db._SCRATCH_NAME.match(a)
     assert match is not None
     assert abs(int(match.group(1)) - time.time()) < 60  # the epoch the sweep reads
@@ -82,6 +94,15 @@ def test_resolve_defaults_to_a_unique_ephemeral_database(monkeypatch):
     assert ephemeral
     assert name.startswith(scratch_db.PREFIX)
     assert url == f"postgresql://u:p@h:5432/{name}"
+
+
+def test_resolve_gives_every_run_a_different_name(monkeypatch):
+    """The whole point. If resolve() ever returned a stable name, two concurrent runs would
+    share one database and each would drop it under the other — silently, since every other
+    assertion in this file still passes."""
+    monkeypatch.delenv(scratch_db.NAME_ENV, raising=False)
+    monkeypatch.setenv(scratch_db.BASE_URL_ENV, "postgresql://u:p@h:5432/base")
+    assert scratch_db.resolve()[0] != scratch_db.resolve()[0]
 
 
 def test_resolve_honours_the_name_override_and_leaves_it_to_the_caller(monkeypatch):
@@ -144,10 +165,15 @@ def test_sweep_never_touches_names_outside_the_grammar(throwaway):
 
 
 def test_a_production_sweep_ignores_this_file_s_probe_databases(throwaway):
-    """The scoping cuts both ways: PROBE names are invisible to the default sweep."""
+    """The scoping cuts both ways: PROBE names are outside the default grammar.
+
+    Asserted against the matcher, deliberately NOT by running a default-prefix sweep. Such a
+    sweep reaches into databases other runs own, and at any threshold short enough to be a
+    useful assertion it would reap a live run's spine — the collision this file exists to
+    prove impossible. No test here may sweep the production namespace.
+    """
     probe = throwaway(_aged(86400))
     assert scratch_db._SCRATCH_NAME.match(probe) is None
-    assert probe not in scratch_db.sweep(max_age=3600, keep=(_session_db(),))
     assert _exists(probe)
 
 
@@ -174,10 +200,12 @@ def test_cli_new_ignores_a_pinned_name(monkeypatch, capsys):
     operator's pinned database."""
     monkeypatch.setenv(scratch_db.NAME_ENV, "my_own_test_db")
     assert scratch_db.main(["new"]) == 0
-    name = scratch_db.database_of(capsys.readouterr().out.strip())
+    name, url = capsys.readouterr().out.split()
     try:
         assert name != "my_own_test_db"
         assert scratch_db._SCRATCH_NAME.match(name)
+        assert scratch_db.database_of(url) == name  # the shell relies on these agreeing
+        assert _exists(name)
     finally:
         scratch_db.drop(name)
 
@@ -187,6 +215,35 @@ def test_max_age_reads_the_environment(monkeypatch):
     assert scratch_db.max_age_s() == scratch_db.DEFAULT_MAX_AGE_S
     monkeypatch.setenv(scratch_db.MAX_AGE_ENV, "42")
     assert scratch_db.max_age_s() == 42
+    monkeypatch.setenv(scratch_db.MAX_AGE_ENV, "")  # compose delivers unset vars as ""
+    assert scratch_db.max_age_s() == scratch_db.DEFAULT_MAX_AGE_S
+
+
+def test_with_database_refuses_a_dsn_it_cannot_rewrite():
+    """Silently corrupting a keyword/value DSN would point the whole suite somewhere else."""
+    for bad in ("host=localhost dbname=omegahive_test", "postgresql:///db?host=/var/run"):
+        with pytest.raises(ValueError):
+            scratch_db.with_database(bad, "x")
+
+
+def test_sessionfinish_drops_an_ephemeral_database_and_keeps_a_pinned_one(monkeypatch):
+    """conftest's two hooks are the entire lifecycle for the pytest paths, and both halves of
+    the ephemeral gate matter: dropping nothing leaks, dropping everything destroys the
+    database an operator pinned precisely to keep."""
+    import conftest
+
+    ephemeral = throwaway_db()
+    monkeypatch.setattr(conftest, "_SCRATCH", (ephemeral, True))
+    conftest.pytest_sessionfinish(None, 0)
+    assert not _exists(ephemeral)
+
+    pinned = throwaway_db()
+    try:
+        monkeypatch.setattr(conftest, "_SCRATCH", (pinned, False))
+        conftest.pytest_sessionfinish(None, 0)
+        assert _exists(pinned)
+    finally:
+        scratch_db.drop(pinned)
 
 
 def test_this_session_runs_on_its_own_database():
