@@ -33,13 +33,27 @@ done
 [ -n "$ORDER_ARG" ] || usage
 
 # --- resolve the order file to a workspace-relative path -----------------------
-if [ -f "$OPS_WS/$ORDER_ARG" ]; then
+# A full workspace-relative path (or a bare filename) is accepted; a bare filename
+# is resolved by searching EVERY project's orders dir, refusing cross-project
+# collisions. The path must be projects/<name>/orders/<file>.md — that is where the
+# project name is read from.
+if [ -f "$OPS_WS/$ORDER_ARG" ] && [ "$ORDER_ARG" != "$(basename "$ORDER_ARG")" ]; then
   REL="$ORDER_ARG"
-elif [ -f "$OPS_WS/$ORDERS_SUBDIR/$(basename "$ORDER_ARG")" ]; then
-  REL="$ORDERS_SUBDIR/$(basename "$ORDER_ARG")"
 else
-  die "order file not found under $OPS_WS: $ORDER_ARG"
+  base=$(basename "$ORDER_ARG")
+  hits=()
+  while IFS= read -r f; do hits+=("${f#"$OPS_WS"/}"); done \
+    < <(find "$OPS_WS/projects" -mindepth 3 -maxdepth 3 -type f -path '*/orders/*' -name "$base" 2>/dev/null | sort)
+  [ "${#hits[@]}" -ne 0 ] || die "order file not found under any projects/*/orders in $OPS_WS: $ORDER_ARG"
+  [ "${#hits[@]}" -eq 1 ] || die "order file '$base' is ambiguous across projects: ${hits[*]}. Name the full path projects/<name>/orders/$base."
+  REL="${hits[0]}"
 fi
+
+# Infer the project from the path and load its committed identity (RUN_ID,
+# CODE_REPO -> RUN, CANON_CODE). Everything downstream — throttle, board reads,
+# wrapper, kickoff, clones — acts on THIS project's run, never a global default.
+PROJECT=$(project_from_order "$REL")
+load_project_conf "$PROJECT"
 
 TASK=$(task_from_order "$REL")
 [ -n "$WORKER" ] || WORKER="sess-${TASK}-$(date +%m%d)"
@@ -52,7 +66,7 @@ SAFE='^[A-Za-z0-9._-]+$'
 [[ "$WORKER" =~ $SAFE ]] || die "unsafe --worker id: '$WORKER' (allowed: A-Za-z0-9._-)"
 
 WS_ROOT="$WORK_ROOT/$WORKER/hive"
-CODE_ROOT="$WORK_ROOT/$WORKER/omegahive"
+CODE_ROOT="$WORK_ROOT/$WORKER/$PROJECT"   # code clone named after the project (omegahive keeps its historical dir)
 WRAPPER="$WRAPPER_DIR/$WORKER.sh"
 
 # --- review WIP throttle: pace launches to the operator's review debt ---------
@@ -62,12 +76,15 @@ WRAPPER="$WRAPPER_DIR/$WORKER.sh"
 # tasks are deliberately NOT counted — that is answer debt (a question awaiting a
 # decision), not review debt. `--anyway` overrides for the deliberate exception.
 if [ -z "$ANYWAY" ]; then
-  IN_REVIEW=""; IN_REVIEW=$(board_in_review) || IN_REVIEW=""
+  # Global across every project with a conf: the limit is the operator's review
+  # bandwidth, not any single project's, so an in_review backlog anywhere throttles
+  # launches everywhere (OPERATIONS.md; decisions.md 2026-07-21).
+  IN_REVIEW=""; IN_REVIEW=$(global_in_review) || IN_REVIEW=""
   N_REVIEW=0
   if [ -n "$IN_REVIEW" ]; then N_REVIEW=$(printf '%s\n' "$IN_REVIEW" | grep -c .); fi
   if [ "$N_REVIEW" -ge "$HIVE_WIP_REVIEW_MAX" ]; then
     {
-      echo "hive-launch: refusing to launch '$TASK' — $N_REVIEW task(s) awaiting review (limit HIVE_WIP_REVIEW_MAX=$HIVE_WIP_REVIEW_MAX):"
+      echo "hive-launch: refusing to launch '$TASK' — $N_REVIEW task(s) awaiting review across all projects (limit HIVE_WIP_REVIEW_MAX=$HIVE_WIP_REVIEW_MAX):"
       printf '%s\n' "$IN_REVIEW" | sed 's/^/    - /'
       echo "  review is the quality gate; launches must not outrun it."
       echo "  close reviewed work (hive-close) to drain, or override with --anyway."
@@ -131,23 +148,23 @@ TITLE=$(grep -m1 -E '^# ' "$OPS_WS/$REL" | sed -E 's/^# +//; s/^Order: *//')
 [ -n "$TITLE" ] || TITLE="$TASK"
 TASK_TYPE="task"   # advisory label only; not gated (events/types.py). Edit freely.
 
-echo "hive-launch: task=$TASK worker=$WORKER${ADOPT:+  (adopting existing ready task)}"
+echo "hive-launch: task=$TASK worker=$WORKER  project=$PROJECT${ADOPT:+  (adopting existing ready task)}"
 echo "  order:  $REL@$SHA"
 echo "  run:    $RUN"
 
 # --- provision first, emit second ---------------------------------------------
 # The failure-prone work (clones) runs BEFORE any board write, so a clone failure
 # leaves NO orphaned board state: clear the partial clone and re-run cleanly.
-# hive clone: from the local hub. omegahive clone: from the local canonical repo
-# (hardlinked objects, no network, any size), then re-point origin at github so
-# PR pushes land there; `git pull` inside still fetches main correctly.
+# hive clone: from the local hub. code clone: from the project's local canonical
+# checkout CANON_CODE (hardlinked objects, no network, any size), then re-point
+# origin at the project's CODE_REPO (the committed conf fact) so PR pushes land
+# there; `git pull` inside still fetches main correctly.
+[ -d "$CANON_CODE" ] || die "canonical code checkout for '$PROJECT' not found on this host: $CANON_CODE (set CANON_CODE or CANON_ROOT)"
 mkdir -p "$WORK_ROOT/$WORKER"
 git clone --quiet "$WS_HUB" "$WS_ROOT"       || die "failed to clone workspace from $WS_HUB"
 git clone --quiet "$CANON_CODE" "$CODE_ROOT" || die "failed to clone code from $CANON_CODE"
-CODE_ORIGIN=$(git -C "$CANON_CODE" remote get-url origin) \
-  || die "canonical code repo $CANON_CODE has no 'origin' remote to copy"
-git -C "$CODE_ROOT" remote set-url origin "$CODE_ORIGIN"
-echo "  clones: $WS_ROOT  +  $CODE_ROOT (origin -> $CODE_ORIGIN)"
+git -C "$CODE_ROOT" remote set-url origin "$CODE_REPO"
+echo "  clones: $WS_ROOT  +  $CODE_ROOT (origin -> $CODE_REPO)"
 
 # Issue the per-seat emit wrapper (proto-credential): one file per identity,
 # issued at launch, revocable by deletion; role and actor baked in, not

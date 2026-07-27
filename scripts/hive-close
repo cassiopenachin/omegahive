@@ -30,12 +30,20 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$TASK" ] || usage
 
+# 0. Resolve the task to its order across every project (refusing cross-project
+#    ambiguity), then load that project's committed identity so RUN is the task's
+#    own run — never a global default that could point close at the wrong spine.
+REL=$(find_order "$TASK")
+PROJECT=$(project_from_order "$REL")
+load_project_conf "$PROJECT"
+echo "hive-close: task=$TASK  project=$PROJECT  run=$RUN"
+
 # 1. The board must be in_review — refuse otherwise, printing the actual status.
 #    board_status returns non-zero on an empty board (board-view exits 1); the
 #    `|| STATUS=""` keeps that from aborting under `set -e` so the die below is
 #    what the operator actually sees.
 STATUS=""; STATUS=$(board_status "$TASK") || STATUS=""
-[ -n "$STATUS" ] || die "task '$TASK' is not on the board for run '$RUN' (wrong task or HIVE_RUN_ID?)"
+[ -n "$STATUS" ] || die "task '$TASK' is not on the board for run '$RUN' (wrong task or project?)"
 [ "$STATUS" = "in_review" ] || die "task '$TASK' is '$STATUS', not 'in_review'; refusing to close"
 
 # 2. Read the newest task.result_posted for this task and take its first artifact

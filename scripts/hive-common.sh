@@ -2,27 +2,44 @@
 # hive-common.sh — shared plumbing for the operator tooling (hive-launch /
 # hive-answer / hive-close). Sourced, never executed directly.
 #
-# Everything below is env-overridable; the defaults are the Beastie operator
-# layout (OPERATIONS.md Phase 1). The one override that matters in practice is
-# HIVE_RUN_ID: it is `omegahive` (the durable run) for real operation, and the
-# scratch run id for the tooling drill — so the same code path is exercised in
-# the test without ever writing to the durable spine.
+# Two config layers, kept deliberately apart (the project-vs-deployment fact
+# boundary, decisions.md 2026-07-21):
+#
+#   * PROJECT IDENTITY is a committed per-project fact — RUN_ID and CODE_REPO in
+#     projects/<name>/project.conf, sourced by load_project_conf. Run identity
+#     can therefore never drift with a stray per-shell env var; it lives in a
+#     file the worker clones. (Our most recurrent bug class is a misconfigured
+#     run id — hence identity is a committed fact, not a default.)
+#   * DEPLOYMENT facts are the host paths + worker command below — env-overridable,
+#     defaults are the Beastie operator layout (OPERATIONS.md Phase 1). The one
+#     per-project deployment fact, CANON_CODE, is derived host-side from
+#     CANON_ROOT/<project> (resolve_canon_code); nothing host-specific lives in
+#     the committed conf. This seam is the first brick of the parked
+#     beastie-independence wave; nothing else of that wave is in scope.
+#
+# Precedence, everywhere: an env override wins over project.conf, which wins over
+# the defaults here. HIVE_RUN_ID is the run escape hatch — when set it wins over
+# a conf's RUN_ID (the drill points it at a scratch run so the durable spine is
+# never touched; a single-run operator op can pin it too).
 
 set -euo pipefail
 
-: "${OMEGA_DIR:=$HOME/src/SNET/omegahive}"        # canonical stack dir: compose + emits + deploys run here
-: "${CANON_CODE:=$OMEGA_DIR}"                      # source for worker omegahive clones (hardlinked objects)
+# --- deployment layer (env-overridable host facts; NOT project identity) -------
+: "${OMEGA_DIR:=$HOME/src/SNET/omegahive}"        # canonical STACK dir: compose + emits + deploys run here (ONE shared spine for every run)
+: "${CANON_ROOT:=$HOME/src/SNET}"                  # host root of per-project canonical code checkouts (CANON_ROOT/<project>); resolve_canon_code derives CANON_CODE from it
 : "${WS_HUB:=$HOME/repos/hive-workspace.git}"      # local workspace hub (clone source, push target)
-: "${OPS_WS:=$HOME/workspaces/hive}"               # operator's workspace clone: order files, answers
+: "${OPS_WS:=$HOME/workspaces/hive}"               # operator's workspace clone: order files, project confs, answers
 : "${WORK_ROOT:=$HOME/work}"                       # per-worker working trees live under here
 : "${WRAPPER_DIR:=$HOME/work/hive-wrappers}"       # per-seat emit wrappers (proto-credentials)
-: "${HIVE_RUN_ID:=omegahive}"                      # the durable run; the drill overrides this
 : "${HIVE_TMUX_SESSION:=hive}"                     # tmux session that holds the worker panes
 : "${HIVE_WORKER_CMD:=claude}"                     # session launcher; the drill overrides to a no-op
-: "${ORDERS_SUBDIR:=projects/omegahive/orders}"    # order files, relative to a workspace clone root
-: "${HIVE_WIP_REVIEW_MAX:=3}"                       # hive-launch refuses at this many in_review tasks (review debt); --anyway overrides
+: "${HIVE_WIP_REVIEW_MAX:=3}"                       # hive-launch refuses at this many in_review tasks (review debt, summed across all projects); --anyway overrides
 
-RUN="$HIVE_RUN_ID"
+# RUN / RUN_ID / CODE_REPO / PROJECT / CANON_CODE are resolved per operation by
+# load_project_conf (from the order's project) — never hardcoded here, because a
+# hardcoded run id is exactly the misconfiguration this whole layer removes. RUN
+# stays empty until a project is loaded.
+RUN=""
 # Used by the sourcing scripts (hive-launch/hive-close), not within this file.
 # shellcheck disable=SC2034
 OPERATOR_ACTOR="operator"
@@ -61,21 +78,70 @@ task_from_order() {  # task_from_order <filename-or-path>
   printf '%s\n' "$base"
 }
 
-# Resolve <task> to its unique order file (workspace-relative path). The match is
-# the exact inverse of task_from_order — a file counts iff its own derived task
-# equals <task> — so it resolves the same file hive-launch derived the task from,
-# whether the name is dated (<date>-<task>.md) or bare (<task>.md), and never
-# collides on a suffix (task 'heartbeat' does not match 'notifier-heartbeat.md').
-find_order() {  # find_order <task>  -> prints workspace-relative path
-  local task="$1" dir="$OPS_WS/$ORDERS_SUBDIR" f
-  [ -d "$dir" ] || die "orders dir not found: $dir"
+# Infer the project name from a workspace-relative order path. The path layout is
+# the altitude-2 convention: projects/<name>/orders/<file>.md. Anything else is a
+# hard error — a launch/answer/close must never guess which project it is acting on.
+project_from_order() {  # project_from_order <workspace-relative-order-path> -> prints <name>
+  local p="$1"
+  case "$p" in
+    projects/*/orders/*.md) p=${p#projects/}; printf '%s\n' "${p%%/*}" ;;
+    *) die "cannot infer project from order path (expected projects/<name>/orders/<file>.md): $1" ;;
+  esac
+}
+
+# Source a project's committed conf and set project identity for the operation:
+# RUN_ID, CODE_REPO (from the conf), then RUN / PROJECT / CANON_CODE. The conf is
+# plain shell-sourceable KEY=VAL and carries ONLY deployment-independent facts.
+# Precedence is enforced here: an env override (HIVE_RUN_ID / CODE_REPO) wins over
+# the conf. CANON_CODE is a deployment fact, derived host-side (resolve_canon_code).
+load_project_conf() {  # load_project_conf <project>
+  local proj="$1"
+  local conf="$OPS_WS/projects/$proj/project.conf"
+  [ -f "$conf" ] || die "no project.conf for project '$proj' (expected $conf) — every project needs a committed conf"
+  # Snapshot env overrides so the conf can never clobber them, then source it.
+  local env_run="${HIVE_RUN_ID:-}" env_repo="${CODE_REPO:-}"
+  RUN_ID=""; CODE_REPO=""
+  # shellcheck disable=SC1090
+  source "$conf"
+  [ -n "$env_run" ]  && RUN_ID="$env_run"      # HIVE_RUN_ID env wins over the conf (drill scratch run / single-run ops)
+  [ -n "$env_repo" ] && CODE_REPO="$env_repo"  # CODE_REPO env override wins (symmetry; rarely needed)
+  [ -n "$RUN_ID" ]   || die "project.conf for '$proj' sets no RUN_ID: $conf"
+  [ -n "$CODE_REPO" ] || die "project.conf for '$proj' sets no CODE_REPO: $conf"
+  # RUN_ID becomes a run id in emits and the board column, and a tmux/window value
+  # via the wrapper — constrain it to a safe charset (same guard as task/worker ids).
+  [[ "$RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]] || die "unsafe RUN_ID '$RUN_ID' in $conf (allowed: A-Za-z0-9._-)"
+  PROJECT="$proj"
+  RUN="$RUN_ID"
+  resolve_canon_code
+}
+
+# Resolve CANON_CODE — the per-project canonical code checkout on THIS host — the
+# lone per-project deployment fact. Derived from CANON_ROOT/<project> unless the
+# operator pins CANON_CODE explicitly (env). Must run after PROJECT is set.
+resolve_canon_code() {  # resolve_canon_code  (reads PROJECT/CANON_ROOT/CANON_CODE)
+  : "${CANON_CODE:=$CANON_ROOT/$PROJECT}"
+}
+
+# Resolve <task> to its unique order file (workspace-relative path), searching
+# EVERY project's orders dir (projects/*/orders). The match is the exact inverse
+# of task_from_order — a file counts iff its own derived task equals <task> — so it
+# resolves the same file hive-launch derived the task from (dated <date>-<task>.md
+# or bare <task>.md), never collides on a suffix (task 'heartbeat' does not match
+# 'notifier-heartbeat.md'), and refuses cross-project ambiguity by listing every
+# candidate. Task ids are per-run, so a genuinely-unique task resolves to one file.
+find_order() {  # find_order <task>  -> prints workspace-relative path (unique across projects/*/orders)
+  local task="$1" f rel
+  [ -d "$OPS_WS/projects" ] || die "no projects dir under $OPS_WS"
   local -a m=()
   while IFS= read -r f; do
-    [ "$(task_from_order "$f")" = "$task" ] && m+=("$f")
-  done < <(find "$dir" -maxdepth 1 -type f -name '*.md' -printf '%f\n' 2>/dev/null | sort)
+    rel=${f#"$OPS_WS"/}
+    case "$rel" in projects/*/orders/*.md) ;; *) continue ;; esac
+    [ "$(task_from_order "$rel")" = "$task" ] && m+=("$rel")
+  done < <(find "$OPS_WS/projects" -mindepth 3 -maxdepth 3 -type f -name '*.md' -path '*/orders/*' 2>/dev/null | sort)
+  [ "${#m[@]}" -ne 0 ] || die "no order deriving task '$task' under any projects/*/orders in $OPS_WS"
   [ "${#m[@]}" -eq 1 ] \
-    || die "expected exactly one order deriving task '$task', found ${#m[@]}: ${m[*]-}"
-  printf '%s/%s\n' "$ORDERS_SUBDIR" "${m[0]}"
+    || die "task '$task' is ambiguous across projects — ${#m[@]} orders derive it: ${m[*]}. Disambiguate by project."
+  printf '%s\n' "${m[0]}"
 }
 
 # Pin a workspace-relative path to its full commit sha, refusing dirty or
@@ -116,9 +182,27 @@ board_owner() {  # board_owner <task>  -> prints owner (may be empty)
   board_json | jq -r --arg t "$1" '.[] | select(.task == $t) | .owner // empty' 2>/dev/null
 }
 
-# List the in_review task ids, one per line (empty if none). The review-debt
+# List the in_review task ids on RUN, one per line (empty if none). The review-debt
 # signal the launch throttle paces against: `blocked` tasks are answer debt, not
 # review debt, so they are deliberately excluded.
-board_in_review() {  # board_in_review  -> prints in_review task ids, one per line
+board_in_review() {  # board_in_review  -> prints in_review task ids on RUN, one per line
   board_json | jq -r '.[] | select(.status == "in_review") | .task' 2>/dev/null
+}
+
+# List in_review tasks across EVERY project that has a committed conf, one
+# "<run>: <task>" per line. The WIP limit is the operator's review bandwidth, not
+# any one project's, so the throttle sums the whole portfolio. Each project's run
+# is read straight from its conf's RUN_ID (the committed fact) in a subshell, so
+# this never disturbs the caller's RUN and is independent of any HIVE_RUN_ID
+# escape hatch (which is single-run and cannot represent N runs).
+global_in_review() {  # global_in_review  -> prints "<run>: <task>" lines across all project runs
+  local conf r
+  for conf in "$OPS_WS"/projects/*/project.conf; do
+    [ -f "$conf" ] || continue
+    r=$( RUN_ID=""; # shellcheck disable=SC1090
+         source "$conf"; printf '%s' "${RUN_ID:-}" )
+    [ -n "$r" ] || continue
+    hive board-view "$r" --json 2>/dev/null \
+      | jq -r --arg r "$r" '.[] | select(.status == "in_review") | "\($r): \(.task)"' 2>/dev/null
+  done
 }
