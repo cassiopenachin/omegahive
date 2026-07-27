@@ -208,6 +208,50 @@ Board: `t1 done · t2 ready · workers: sess-demo-1 idle`. Try to close t2 the s
 
 The whole run is now a replayable trace: `omegahive report demo` renders every event in order — including the rejections — and `--human` gives the promoted summary view. That's the loop: **files carry content, events carry facts, views are folds, refusals are answers.**
 
+## Tests
+
+```bash
+docker compose run --rm test          # the full suite in-container
+uv run pytest -q                      # the host path (uv sync first; OMEGAHIVE_TEST_DATABASE_URL at localhost)
+scripts/deploy_checks.sh              # deployment checks 1–5 against a live stack
+```
+
+**Every run gets its own database.** Parallel workers run suites concurrently against the
+one stack Postgres, so a shared test database is a shared-state bug: the committing port
+harness `TRUNCATE`s `events, runs` at fixture setup, which deadlocks against another run's
+readers and, when it wins, deletes that run's committed rows and resets its seq sequence.
+Instead each run creates `omegahive_test_<epoch>_<pid>_<rand>` at start and drops it at the
+end. The mechanism is `tests/scratch_db.py`, and all three paths above use it — the two
+pytest paths through `conftest.py`, `deploy_checks.sh` through the same module's CLI, which
+also gives that harness its own spine so it no longer seeds `checks-*` runs into the durable
+`omegahive` database.
+
+| Variable | Effect |
+|---|---|
+| `OMEGAHIVE_TEST_DATABASE_URL` | the **base** DSN — server and credentials. Its database component no longer names what tests use; the per-run name replaces it. `CREATE`/`DROP DATABASE` run from the `postgres` maintenance database on the same server. |
+| `OMEGAHIVE_TEST_DB` | pin the database name. You then own its lifecycle: created if absent, never dropped — the way to keep a run's data for inspection. |
+| `OMEGAHIVE_TEST_DB_MAX_AGE_S` | orphan sweep threshold, default `21600` (6h); `0` disables it. |
+
+**Orphans.** A run killed before it can drop its database leaves one behind, so the name
+carries the epoch it was created at: every suite start opportunistically drops scratch
+databases older than the threshold. What keeps that from reaping a *live* run is the margin —
+hours of threshold against a suite measured in seconds — so **do not lower the threshold
+below the longest run you expect**. A database with a connected backend is skipped as a
+second line of defence, but it is only that: connections come and go between tests, so a live
+run is not continuously covered by it. Nothing outside the generated name grammar is ever
+touched, including the durable databases. (A pinned `OMEGAHIVE_TEST_DB` is safe for the same
+reason — unless you pin a name that mimics the generated `<prefix>_<epoch>_<pid>_<rand>`
+shape, which puts it back in scope. Don't.) To sweep by hand:
+
+```bash
+docker compose run --rm --no-deps --entrypoint python cli /app/tests/scratch_db.py sweep
+```
+
+**One caveat.** `deploy_checks.sh` is isolated at the database level but is still not safe to
+run twice at once: it drives fixed-name compose services (`coordinator`, `worker`, `review`)
+inside one shared compose project, so concurrent runs collide over containers rather than
+over data. Run it one at a time.
+
 ## What we learned before building this way
 
 We ran controlled experiments on LLM coordination before pivoting to real work, and the results are committed alongside the code: a mechanical greedy coordinator beat every LLM cell on boards where inaction wins — the LLMs lost by **over-intervening**, and giving them more time and budget made the meddling worse, not the outcomes better. Below a capability bar, the measurements reflect the parser, not the model. The verdict, including the board-validity rule any future synthetic coordination test must pass, is [docs/omegahive_stage2_verdict.md](docs/omegahive_stage2_verdict.md); the frozen run records are under `ladder/records/`. The design consequences are baked in: the default coordinator is mechanical; LLM judgment is reserved for trigger points (a plan changed, a gate failed, a question needs answering); and the cognitively valuable coordination — replanning under surprise, decomposition, verification gating — happens at the project level, over durable state.
