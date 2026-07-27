@@ -1,0 +1,91 @@
+# Scratch-stack overlay — a parallel omegahive stack that shares NOTHING with the live one.
+#
+# Purpose: rehearse the `hive` unix-user migration's data path (restore a backup, prove
+# replay identity, bump a generation, clone the workspace bundle) with zero blast radius.
+# Used with the base file, never alone:
+#
+#   podman compose -p omegahive-scratch \
+#     -f docker-compose.yml -f deploy/hive-user/compose.scratch.yml <cmd>
+#
+# Four isolations, each deliberate:
+#
+#  1. PROJECT NAME (`omegahive-scratch`). Compose prefixes named volumes with the project
+#     name, so `omegahive-pgdata` here resolves to `omegahive-scratch_omegahive-pgdata` and
+#     the live stack's data volume is untouchable from this overlay. `-p` on the command
+#     line wins over this key; both are set so a forgotten `-p` is still safe.
+#  2. CONTAINER NAMES. The base pins `container_name: omegahive-pg`, which is a fixed name
+#     within one podman namespace — so a scratch stack run by the SAME user as the live one
+#     would collide. Renamed here, which is what makes the dry run (same user, no `hive`
+#     account yet) possible at all.
+#  3. HOST PORTS. Rootless podman isolates volumes and containers per user, but host ports
+#     are a single namespace shared by every user on the box. The live stack holds
+#     127.0.0.1:5432 (postgres) and 127.0.0.1:8811 (UI, behind the house Caddy); the scratch
+#     stack takes 5433/8812. This is the isolation that matters most once `hive` exists.
+#     Note the `!override` tags: compose CONCATENATES sequence-valued keys across files, so
+#     a plain `ports:` here would publish 5432 *and* 5433 and collide with the live stack on
+#     the first `up`. `!override` (Compose spec, compose v2.24+) replaces the base list
+#     instead of appending to it. Verify after any compose upgrade with
+#     `compose ... config | grep -A6 ports` — exactly one published port per service.
+#  4. IMAGE TAG (`omegahive:scratch`). The base tags every non-postgres service
+#     `omegahive:dev` — the tag the live stack runs on — and `compose build` would overwrite
+#     it. Every such service is retagged here, so `compose build` under this overlay can
+#     never disturb the canonical image (deployment posture, decisions.md 2026-07-13).
+#
+# SELinux (Fedora enforcing): the base's bind mounts carry `:ro,Z` (private relabel) and
+# `:z` (shared relabel). `:Z` relabels the SOURCE PATH on the host exclusively for the
+# calling container, so two different unix users must never point a `:Z` mount at the same
+# file — each relabel revokes the other's access. Consequence: the scratch stack runs from
+# its OWN clone of this repo and its OWN backup directory, both owned by the user running
+# it. Never point the scratch overlay at the live checkout.
+
+name: omegahive-scratch
+
+services:
+  postgres:
+    # Renamed (isolation 2) and moved off 5432 (isolation 3).
+    container_name: omegahive-scratch-pg
+    ports: !override
+      - "127.0.0.1:${OMEGAHIVE_SCRATCH_PG_PORT:-5433}:5432"
+
+  # --- every service built from this repo's Dockerfile, retagged (isolation 4) --------
+  # Spelled out per service rather than shared through a YAML anchor: the list must stay
+  # exhaustive, and a missing entry is easier to spot as a missing line than as a missing
+  # alias. If a service is added to the base file, add it here too -- otherwise a
+  # `compose build` under this overlay rebuilds the canonical omegahive:dev tag.
+  cli:
+    image: omegahive:scratch
+  migrate:
+    image: omegahive:scratch
+  seed:
+    image: omegahive:scratch
+  coordinator:
+    image: omegahive:scratch
+  worker:
+    image: omegahive:scratch
+  review:
+    image: omegahive:scratch
+  board-view:
+    image: omegahive:scratch
+  test:
+    image: omegahive:scratch
+  lint:
+    image: omegahive:scratch
+  deploy-checks:
+    image: omegahive:scratch
+  ladder:
+    image: omegahive:scratch
+  notifier:
+    image: omegahive:scratch
+
+  ui:
+    image: omegahive:scratch
+    ports: !override
+      # Loopback only, and NOT 8811 — the house Caddy reverse-proxies :8443/omegahive to
+      # the live stack's 8811 and must never be pointed at a scratch stack. Nothing in
+      # this overlay touches Caddy, sshd, tailscaled, or the firewall.
+      - "127.0.0.1:${OMEGAHIVE_SCRATCH_UI_PORT:-8812}:8000"
+
+  # `backup` keeps the pinned postgres image (nothing to retag) and inherits the base's
+  # ${OMEGAHIVE_BACKUP_DIR}:/backups:z mount. Point OMEGAHIVE_BACKUP_DIR at a directory the
+  # calling user OWNS -- see the SELinux note above; deploy/hive-user/restore_rehearsal.sh
+  # copies the chosen dump into such a directory before mounting it.

@@ -133,3 +133,10 @@ On any new host / network change / cloud migration, re-run the structural checks
 before agents resume: `scripts/deploy_checks.sh` (tier-routing fact + credential-scope
 scan are checks 4–5), and — once agents exist — the injection-relevant governance
 drills. These are scripts precisely so this checklist is executable, not aspirational.
+
+Moving the deployment to a different unix account on the same host is an environment
+change of this kind, and has its own procedure: `docs/omegahive_hive_user_migration.md`
+(additive prep, a parallel scratch stack, a restore rehearsal, and the cutover with its
+standing rollback). Its replay-identity check reuses `scripts/replay_identity.sql` — an
+ordered-event checksum bounded by a sequence number, so a restored copy can be compared
+against a live spine that has kept growing since the dump was taken.
