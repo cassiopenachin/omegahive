@@ -52,6 +52,12 @@ done
 [ -n "$TASK" ] || usage
 
 PROJECT="$HIVE_PROJECT"
+# Same guard hive-metrics applies: PROJECT is interpolated into a path under
+# $OPS_WS/projects/, so a traversal would write calibration.md outside the
+# workspace, where git never sees it and the operator never commits it.
+case "$PROJECT" in */*|.|..) die "project must be a bare directory name, got '$PROJECT'" ;; esac
+[ -d "$OPS_WS/projects/$PROJECT" ] \
+  || die "no project directory $OPS_WS/projects/$PROJECT (typo in --project/HIVE_PROJECT?)"
 RUN="${RUN_OVERRIDE:-$PROJECT}"
 command -v jq >/dev/null 2>&1 || die "jq is required"
 
@@ -67,32 +73,60 @@ fi
 printf '%s' "$EVENTS" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1 \
   || die "no events for run '$RUN' (wrong run id, or the stack is down?)"
 
+# These three definitions are the same predicates hive-metrics uses, and must stay
+# that way: an entry in calibration.md whose "actual" disagrees with the row in
+# tasks.md for the same task is worse than no entry at all.
 read -r -d '' OUTCOME_JQ <<'JQ' || true
 def first_ts($t): [ .[] | select(.event_type == $t) | .logical_ts ] | first;
 def last_ts($t):  [ .[] | select(.event_type == $t) | .logical_ts ] | last;
-def blocked($fallback):
+
+# An open block is charged to the result only when the result comes after it,
+# else to the terminal event — otherwise a post-result block yields a negative
+# blocked total, and the effort figure it feeds can flip a verdict.
+def blocked($result; $terminal):
   ( reduce .[] as $e ({open: null, total: 0};
       if $e.event_type == "task.blocked" then (if .open == null then .open = $e.logical_ts else . end)
       elif $e.event_type == "task.unblocked" then
         (if .open != null then {open: null, total: (.total + $e.logical_ts - .open)} else . end)
       else . end) ) as $r
-  | if $r.open != null and $fallback != null then $r.total + $fallback - $r.open else $r.total end;
+  | if $r.open == null then $r.total
+    else ( if $result != null and $result > $r.open then $result else $terminal end ) as $end
+    | $r.total + (if $end != null and $end > $r.open then $end - $r.open else 0 end)
+    end;
+
+# Terminal events per the legality table: status_override(done), task.failed, and
+# a run-scoped plan.revised(cancel). status_override(cancelled|failed) is
+# gateway-refused and can never be logged; reopened un-terminates.
+def terminal($created; $cancel_ts):
+  ( reduce .[] as $e (null;
+      if $e.event_type == "task.status_override" and $e.payload.status == "done"
+        then {status: "done", ts: $e.logical_ts}
+      elif $e.event_type == "task.status_override" and $e.payload.status == "reopened"
+        then null
+      elif $e.event_type == "task.failed"
+        then {status: "failed", ts: $e.logical_ts}
+      else . end) ) as $t
+  | if $t != null then $t
+    elif $cancel_ts != null and $created != null and $created <= $cancel_ts
+      then {status: "cancelled", ts: $cancel_ts}
+    else null end;
 
 ( [ .[] | select(.task_id == $task) ] ) as $slice
 | ( map(.seq) | max ) as $head
+| ( [ .[] | select(.event_type == "plan.revised")
+      | select(.payload.action == "cancel") | .logical_ts ] | first ) as $cancel_ts
 | ( [ $slice[] | select(.event_type == "task.created") ] | length > 0 ) as $exists
-| ( [ $slice[] | select(.event_type == "task.status_override")
-      | select(.payload.status == "done" or .payload.status == "cancelled"
-               or .payload.status == "failed") ] | last ) as $close
+| ($slice | first_ts("task.created"))      as $created
+| ($slice | terminal($created; $cancel_ts)) as $close
 | ($slice | first_ts("task.accepted"))     as $accepted
 | ($slice | last_ts("task.result_posted")) as $result
-| ($slice | blocked($result // ($close.logical_ts? // null))) as $blk
+| ($slice | blocked($result; ($close.ts // null))) as $blk
 | {
     head_seq: $head,
     exists: $exists,
     closed: ($close != null),
-    closed_day: (if $close == null then null else ($close.logical_ts | strftime("%Y-%m-%d")) end),
-    final_status: ($close.payload.status? // null),
+    closed_day: (if $close == null then null else ($close.ts | strftime("%Y-%m-%d")) end),
+    final_status: ($close.status // null),
     worker: ( [ $slice[] | select(.event_type == "task.reassigned") | .payload.to ] | last )
             // ( [ $slice[] | select(.event_type == "task.accepted") | .actor.id ] | last )
             // "",
@@ -133,9 +167,18 @@ fi
 # find_order resolves <task> to its single order file exactly as hive-launch
 # derived the task id from it. A closed task with no order file at all is a real
 # (and interesting) case: score it as unpredicted rather than refusing.
+#
+# find_order refuses on two very different things, and they must not be conflated:
+# "found 0" is a legitimate outcome (the 2026-07-13 hand-seeded task ids do not
+# invert to their filenames, and never will) and scores as unpredicted. Anything
+# else — an ambiguous pair of order files, a missing orders dir — is the shared
+# guard doing its job, and swallowing it would append a permanent, committed
+# calibration entry asserting the operator predicted nothing when they did.
+# `2>&1` merges the streams: on success stdout carries the path and stderr is
+# empty; on failure `die` has written only to stderr and stdout is empty.
 PRED_BLOCK=""
 ORDER_REL=""
-if ORDER_REL=$(find_order "$TASK" 2>/dev/null); then
+if ORDER_REL=$(find_order "$TASK" 2>&1); then
   ORDER_FILE="$OPS_WS/$ORDER_REL"
   # From the `## Predictions` heading to the next heading of any level, exclusive.
   PRED_BLOCK=$(awk '
@@ -144,7 +187,10 @@ if ORDER_REL=$(find_order "$TASK" 2>/dev/null); then
     inblock                        { print }
   ' "$ORDER_FILE")
 else
-  ORDER_REL="(no order file found)"
+  case "$ORDER_REL" in
+    *"found 0"*) ORDER_REL="(no order file found)" ;;
+    *) die "cannot resolve the order for '$TASK': ${ORDER_REL#hive: }" ;;
+  esac
 fi
 
 # parse_range <text> -> "lo hi"; accepts "2", "1-2", "1–2" (en dash), "1—2".

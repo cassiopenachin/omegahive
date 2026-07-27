@@ -107,10 +107,14 @@ def first_ts($t): [ .[] | select(.event_type == $t) | .logical_ts ] | first;
 def last_ts($t):  [ .[] | select(.event_type == $t) | .logical_ts ] | last;
 
 # Blocked time: sum over blocked -> unblocked episodes. A block still open at the
-# end of the slice is closed at $fallback (the result, else the close) rather than
-# dropped — an unterminated block is answer debt that really was paid, just never
-# stamped. Nested/duplicate blocks collapse into the outermost episode.
-def blocked($fallback):
+# end of the slice is charged to a fallback rather than dropped — an unterminated
+# block is answer debt that really was paid, just never stamped. The fallback is
+# the result only when the result actually comes after the block opened; otherwise
+# the terminal event. A block opened *after* the last result (a post-result
+# question the operator closed by hand) would otherwise be charged a negative
+# duration, which then makes the "net" worker span exceed the gross one.
+# Nested/duplicate blocks collapse into the outermost episode.
+def blocked($result; $terminal):
   ( reduce .[] as $e ({open: null, total: 0, episodes: 0};
       if $e.event_type == "task.blocked" then
         (if .open == null then .open = $e.logical_ts | .episodes += 1 else . end)
@@ -118,30 +122,62 @@ def blocked($fallback):
         (if .open != null then {open: null, total: (.total + $e.logical_ts - .open),
                                 episodes: .episodes} else . end)
       else . end) ) as $r
-  | if $r.open != null and $fallback != null
-    then {total: ($r.total + $fallback - $r.open), episodes: $r.episodes, open: true}
-    else {total: $r.total, episodes: $r.episodes, open: false} end;
+  | if $r.open == null then {total: $r.total, episodes: $r.episodes, open: false}
+    else ( if $result != null and $result > $r.open then $result else $terminal end ) as $end
+    | { total: ($r.total + (if $end != null and $end > $r.open then $end - $r.open else 0 end)),
+        episodes: $r.episodes, open: true }
+    end;
+
+# A task's terminal event, scanning its slice in seq order. The legality table
+# (board/legality.py) admits exactly three ways to reach a terminal state, and
+# `status_override` is only registered for `done` and `reopened` — a
+# status_override(cancelled|failed) is gateway-refused and can never appear in a
+# log, so matching on those would be dead code while the real terminal events went
+# unseen. `reopened` un-terminates: a task reopened out of review is back in
+# flight until it closes again.
+#   task.status_override(done)  -> done
+#   task.failed                 -> failed   (worker-emitted, from in_progress/blocked)
+#   plan.revised(action=cancel) -> cancelled (run-scoped: no task_id, cancels the board)
+# $cancel_ts is the run-level plan cancel, applied only to a task that both exists
+# by then and has not already reached a terminal event of its own. That last part
+# is a deliberate divergence from the board fold, which overwrites every task's
+# status unconditionally: a task that really was delivered and reviewed should be
+# measured as delivered, not relabelled by a later whole-plan abort. Recorded in
+# the artifact's Method section.
+def terminal($created; $cancel_ts):
+  ( reduce .[] as $e (null;
+      if $e.event_type == "task.status_override" and $e.payload.status == "done"
+        then {status: "done", ts: $e.logical_ts}
+      elif $e.event_type == "task.status_override" and $e.payload.status == "reopened"
+        then null
+      elif $e.event_type == "task.failed"
+        then {status: "failed", ts: $e.logical_ts}
+      else . end) ) as $t
+  | if $t != null then $t
+    elif $cancel_ts != null and $created != null and $created <= $cancel_ts
+      then {status: "cancelled", ts: $cancel_ts}
+    else null end;
 
 # --- run-level window ---------------------------------------------------------
 ( if $upto == "" then . else map(select(.seq <= ($upto | tonumber))) end ) as $evs
 | ($evs | map(.seq) | max) as $head
 | ($evs | map(.task_id) | map(select(. != null)) | unique) as $ids
 | ( [ $evs[] | select(.event_type == "task.created") | .task_id ] | unique ) as $known
+| ( [ $evs[] | select(.event_type == "plan.revised")
+      | select(.payload.action == "cancel") | .logical_ts ] | first ) as $cancel_ts
 
 # --- per-task records ---------------------------------------------------------
 | [ $known[] as $t
   | ( [ $evs[] | select(.task_id == $t) ] ) as $slice
-  | ( [ $slice[] | select(.event_type == "task.status_override")
-        | select(.payload.status == "done" or .payload.status == "cancelled"
-                 or .payload.status == "failed") ] | last ) as $close
-  | select($close != null)                       # closed tasks only — work in flight is not measured
   | ($slice | first_ts("task.created"))       as $created
+  | ($slice | terminal($created; $cancel_ts)) as $close
+  | select($close != null)                       # closed tasks only — work in flight is not measured
   | ($slice | first_ts("task.assigned"))      as $assigned
   | ($slice | first_ts("task.accepted"))      as $accepted
   | ($slice | last_ts("task.result_posted"))  as $result
   | ($slice | last_ts("review.passed"))       as $review
-  | ($close.logical_ts)                       as $closed
-  | ($slice | blocked($result // $closed))    as $blk
+  | ($close.ts)                               as $closed
+  | ($slice | blocked($result; $closed))      as $blk
   | ( [ $slice[] | select(.event_type == "task.accepted") | .actor.id ] | last ) as $acceptor
   | ( [ $slice[] | select(.event_type == "task.reassigned") | .payload.to ] | last ) as $reassigned_to
   | ( [ $slice[] | select(.event_type == "task.assigned") | .payload.worker ] | last ) as $assignee
@@ -151,7 +187,7 @@ def blocked($fallback):
               elif $accepted != null then "abandoned"
               else "retired" end),
       worker: ($reassigned_to // $acceptor // $assignee // ""),
-      final_status: $close.payload.status,
+      final_status: $close.status,
       created_ts: $created, accepted_ts: $accepted, closed_ts: $closed,
 
       # operator clock
@@ -169,9 +205,17 @@ def blocked($fallback):
                                   | if $g == null then null else $g - $blk.total end ),
       questions: ( [ $slice[] | select(.event_type == "task.reported")
                      | select(.payload.kind == "question") ] | length ),
-      rejections: ( [ $slice[] | select(.event_type == "gateway.rejected") ] | length ),
+      # Sum of coalesced_count, NOT the event count: the gateway folds a burst of
+      # identical (actor, op, code) refusals inside its coalesce window into one
+      # event whose coalesced_count carries the real number (gateway.py
+      # _record_rejection). Counting rows would report a worker that hit the
+      # gateway four times as having hit it once — in the one metric whose whole
+      # purpose is surfacing protocol friction.
+      rejections: ( [ $slice[] | select(.event_type == "gateway.rejected")
+                      | (.payload.coalesced_count // 1) ] | add // 0 ),
       rejections_worker: ( [ $slice[] | select(.event_type == "gateway.rejected")
-                             | select(.payload.original_actor_role == "worker") ] | length ),
+                             | select(.payload.original_actor_role == "worker")
+                             | (.payload.coalesced_count // 1) ] | add // 0 ),
 
       # mixed
       assigned_to_accepted_s: nn($assigned; $accepted),
@@ -195,11 +239,11 @@ def blocked($fallback):
       tasks_closed: ($tasks | length)
     },
     tasks: $tasks,
+    # Same terminal predicate as the table, so a task can never be both measured
+    # and listed as open (nor fall through both).
     open: ( [ $known[] as $t
-              | select( [ $evs[] | select(.task_id == $t)
-                          | select(.event_type == "task.status_override")
-                          | select(.payload.status == "done" or .payload.status == "cancelled"
-                                   or .payload.status == "failed") ] | length == 0 )
+              | ( [ $evs[] | select(.task_id == $t) ] ) as $s
+              | select( ($s | terminal(($s | first_ts("task.created")); $cancel_ts)) == null )
               | $t ] | sort ),
     # Reports filed against a task id that was never created: the count would
     # otherwise silently vanish from every per-task number. Real occurrence:
@@ -213,6 +257,13 @@ def blocked($fallback):
 JQ
 
 DATA=$(printf '%s' "$EVENTS" | jq -c --arg run "$RUN" --arg upto "$UPTO" "$EXTRACT")
+
+# An --upto below the run's first seq leaves an empty window, which would render a
+# `seq null` skeleton over a good committed artifact and exit 0 — a typo'd or
+# stale seq silently destroying the file it was meant to reproduce. Refuse instead.
+if [ "$(printf '%s' "$DATA" | jq -r '.meta.head_seq')" = "null" ]; then
+  die "--upto $UPTO selects no events on run '$RUN' (its first seq is above that); nothing written"
+fi
 
 # ------------------------------------------------------------------------------
 # Render. Both outputs come from the same record set, so the .md can never drift
@@ -239,12 +290,22 @@ read -r -d '' RENDER_CSV <<'JQ' || true
 JQ
 
 read -r -d '' RENDER_MD <<'JQ' || true
+# Round to whole minutes ONCE, then split into h/m. Rounding the remainder
+# independently of the hour floor prints impossible clocks: 3599s came out as
+# "60m" and 7199s as "1h60m".
 def d: if . == null then "—"
-       elif . < 60 then "\(.)s"
-       elif . < 3600 then "\((. / 60) | round)m"
-       else "\((. / 3600) | floor)h\(((. % 3600) / 60) | round)m" end;
+       elif . < 60 then "\(. | round)s"
+       else ((. / 60) | round) as $m
+            | if $m < 60 then "\($m)m"
+              else "\(($m / 60) | floor)h\($m % 60)m" end
+       end;
 def n: if . == null then "—" else tostring end;
 def day: if . == null then "—" else (. | strftime("%Y-%m-%d")) end;
+
+# Task ids, worker ids and event-type names reach the artifact straight off the
+# spine, where task_id is an arbitrary string. An unescaped `|` invents a column
+# and shifts every later cell; an embedded newline terminates the table mid-row.
+def cell: if . == null then "" else tostring | gsub("\\|"; "\\\\|") | gsub("[\n\r]+"; " ") end;
 
 def median: if length == 0 then null
             else sort as $s
@@ -292,7 +353,7 @@ def countstat($label; $clock; $rows; $field):
 "| task | closed | create→launch | answer wait | result→review | review→close | result→close | reassigns |",
 "|---|---|---|---|---|---|---|---|"
 ]
-+ [ $worked[] | "| \(.task) | \(.closed_ts | day) | \(.created_to_assigned_s | d) | "
++ [ $worked[] | "| \(.task | cell) | \(.closed_ts | day) | \(.created_to_assigned_s | d) | "
     + "\(.blocked_s | d)\(if .blocked_open then " (unclosed)" else "" end) | "
     + "\(.result_to_review_s | d) | \(.review_to_close_s | d) | \(.result_to_close_s | d) | "
     + "\(.reassignments) |" ]
@@ -303,7 +364,7 @@ def countstat($label; $clock; $rows; $field):
 "| task | worker | accept→result (net of blocked) | questions | rejections | review.failed |",
 "|---|---|---|---|---|---|"
 ]
-+ [ $worked[] | "| \(.task) | `\(.worker)` | \(.accepted_to_result_net_s | d) | "
++ [ $worked[] | "| \(.task | cell) | `\(.worker | cell)` | \(.accepted_to_result_net_s | d) | "
     + "\(.questions) | \(.rejections)\(if .rejections != .rejections_worker then " (\(.rejections_worker) worker)" else "" end) | \(.review_failed) |" ]
 + [
 "",
@@ -317,7 +378,7 @@ def countstat($label; $clock; $rows; $field):
 "| task | create→accept | launch→accept | accept→result (gross) |",
 "|---|---|---|---|"
 ]
-+ [ $worked[] | "| \(.task) | \(.created_to_accepted_s | d) | \(.assigned_to_accepted_s | d) | \(.accepted_to_result_s | d) |" ]
++ [ $worked[] | "| \(.task | cell) | \(.created_to_accepted_s | d) | \(.assigned_to_accepted_s | d) | \(.accepted_to_result_s | d) |" ]
 + [
 "",
 "## Summary",
@@ -354,7 +415,7 @@ stat("accept→result (gross)"; "mixed"; $worked; "accepted_to_result_s")
 "",
 "| task | created | closed | final status | rejections |",
 "|---|---|---|---|---|"
-] + [ $retired[] | "| \(.task) | \(.created_ts | day) | \(.closed_ts | day) | \(.final_status) | \(.rejections) |" ] end)
+] + [ $retired[] | "| \(.task | cell) | \(.created_ts | day) | \(.closed_ts | day) | \(.final_status | cell) | \(.rejections) |" ] end)
 + (if ($r.open | length) == 0 then [] else [
 "",
 "## Open at this window",
@@ -372,7 +433,7 @@ stat("accept→result (gross)"; "mixed"; $worked; "accepted_to_result_s")
 "",
 "| task id on the event | events | types |",
 "|---|---|---|"
-] + [ $r.unattributed[] | "| `\(.task_id)` | \(.events) | \(.kinds | join(", ")) |" ] end)
+] + [ $r.unattributed[] | "| `\(.task_id | cell)` | \(.events) | \(.kinds | map(cell) | join(", ")) |" ] end)
 + [
 "",
 "## Method",
@@ -400,8 +461,17 @@ stat("accept→result (gross)"; "mixed"; $worked; "accepted_to_result_s")
 "- **Attribution.** `worker` is the last reassignment target, else the last accepting",
 "  actor. For a reassigned task the whole span is attributed to the final worker; the",
 "  reassignment count is the flag that the span is not one session's.",
-"- **Closed only.** A task enters this table at its first terminal `task.status_override`",
-"  (`done`/`cancelled`/`failed`). Work in flight is never measured."
+"- **Closed only.** A task enters this table at its terminal event, and work in flight",
+"  is never measured. There are three terminal events, matching the legality table:",
+"  `task.status_override(done)`, `task.failed` (worker-emitted — failed work is",
+"  counted, not hidden), and a run-scoped `plan.revised(action=cancel)`.",
+"  `task.status_override(reopened)` un-terminates a task: it is back in flight until",
+"  it closes again, and only the final close is measured.",
+"- **One divergence from the board fold**, deliberate: a whole-plan cancel relabels",
+"  *every* task `cancelled` on the board, including tasks already delivered and",
+"  reviewed. Here a plan cancel is applied only to tasks that had not already reached",
+"  a terminal event of their own, so work that really was delivered is measured as",
+"  delivered rather than retroactively renamed by a later abort."
 ]
 | join("\n") + "\n"
 JQ
