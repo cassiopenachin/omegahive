@@ -49,10 +49,14 @@ PREFIX = "omegahive_test_"
 # from even on a host where the base DSN's database does not exist yet.
 MAINTENANCE_DB = "postgres"
 
-# The names sweep is allowed to reap: this module's grammar, plus the `_restore` sibling
-# scripts/pg_restore_check.sh derives from it. Anything else — including a pinned
-# OMEGAHIVE_TEST_DB or the legacy shared `omegahive_test` — is left alone.
-_SCRATCH_NAME = re.compile(rf"^{PREFIX}(\d+)_\d+_[0-9a-f]+(?:_restore)?$")
+def _name_re(prefix: str = PREFIX) -> re.Pattern[str]:
+    """The names a sweep is allowed to reap: this module's grammar, plus the `_restore`
+    sibling scripts/pg_restore_check.sh derives from it. Anything else — a pinned
+    OMEGAHIVE_TEST_DB, the legacy shared `omegahive_test` — is left alone."""
+    return re.compile(rf"^{re.escape(prefix)}(\d+)_\d+_[0-9a-f]+(?:_restore)?$")
+
+
+_SCRATCH_NAME = _name_re()
 
 
 def base_url() -> str:
@@ -123,6 +127,7 @@ def sweep(
     url: str | None = None,
     max_age: int | None = None,
     keep: Iterable[str] = (),
+    prefix: str = PREFIX,
 ) -> list[str]:
     """Drop scratch databases older than `max_age` seconds — the orphans left by runs that
     were killed before their own drop.
@@ -131,16 +136,21 @@ def sweep(
     an abandoned database from a long-running suite's, and reaping a live run's spine is the
     very failure this whole mechanism exists to prevent. Best-effort otherwise — a database
     another run has already dropped is skipped rather than failing the sweep.
+
+    `prefix` narrows which databases are in scope at all. Production sweeps leave it at the
+    default; tests/test_scratch_db.py passes a probe prefix of its own so that its fabricated
+    orphans and a concurrently running copy of the suite stay invisible to each other.
     """
     age = max_age_s() if max_age is None else max_age
     if age <= 0:
         return []
     cutoff = time.time() - age
     spared = set(keep)
+    matcher = _name_re(prefix)
     dropped: list[str] = []
     with _admin(url or base_url()) as conn:
         rows = conn.execute(
-            "SELECT datname FROM pg_database WHERE datname LIKE %s", (f"{PREFIX}%",)
+            "SELECT datname FROM pg_database WHERE datname LIKE %s", (f"{prefix}%",)
         ).fetchall()
         in_use = {
             r[0]
@@ -149,7 +159,7 @@ def sweep(
             ).fetchall()
         }
         for (name,) in rows:
-            match = _SCRATCH_NAME.match(name)
+            match = matcher.match(name)
             if match is None or name in spared or name in in_use:
                 continue
             if int(match.group(1)) >= cutoff:
