@@ -4,10 +4,15 @@ Poll loop over the read path: fire a Telegram message on `task.reported(kind=que
 `task.blocked`, `task.escalated`, `task.result_posted`; silence on everything else. The
 cursor is the dedupe — a restart resumes from it and never re-sends. Bursts fold into one
 summary. Orphan task ids render (report is not existence-gated). Messages are HTML
-sentences (who + what + about-what, sha dropped, path fragments escaped in <code>). One
-unconditional daily heartbeat carries a liveness summary derived only from the cursor
-stream + state (head delta, per-type attention counts, open blocks). The bot token never
-reaches a log or a message.
+sentences (glyph + run + who + what + about-what, sha dropped, path fragments escaped in
+<code>). One unconditional daily heartbeat carries a liveness summary derived only from the
+cursor stream + state (head delta, per-type attention counts, open blocks). The bot token
+never reaches a log or a message.
+
+This file drives the machinery with **one** active run, which is the shape most of it has
+regardless of how many runs exist. The portfolio behaviours a second run introduces — run
+discovery, per-run cursors, cutover, cross-run bursts and heartbeat — live in
+`test_notifier_portfolio.py`.
 
 Most tests drive the service with a fake reader + fake sender (no DB) — the logic under
 test is the poll/filter/batch/cursor/heartbeat machinery. Two tests touch real
@@ -30,10 +35,12 @@ from omegahive.clock import LogicalClock
 from omegahive.events.envelope import Actor, Event
 from omegahive.events.log import EventLog
 from omegahive.notifier import (
-    CursorState,
     CursorStore,
-    HeartbeatState,
     NotifierService,
+    PortfolioHeartbeat,
+    RunCursor,
+    RunDelta,
+    RunHeartbeat,
     TelegramClient,
     TelegramError,
     notification_from,
@@ -46,14 +53,16 @@ from omegahive.port import HiveCoordinatorPort, PortView
 GOOD_REF = "projects/omegahive/questions/2026-07-13-q.md@" + "a1b2c3d4" * 5
 RESULT_REF = "projects/omegahive/reports/2026-07-13-t1-result.md@" + "b1b2c3d4" * 5
 
+RUN = "omegahive"
+
 
 # --- helpers ---------------------------------------------------------------
 
 def _ev(seq: int, event_type: str, payload: dict, task_id: str | None = "t1",
         role: str = "worker", actor_id: str = "w1",
-        wall_ts: datetime | None = None) -> Event:
+        wall_ts: datetime | None = None, run_id: str = RUN) -> Event:
     return Event(
-        event_id=uuid4(), run_id="omegahive", logical_ts=seq,
+        event_id=uuid4(), run_id=run_id, logical_ts=seq,
         actor=Actor(role=role, id=actor_id), event_type=event_type,
         task_id=task_id, payload=payload, seq=seq, wall_ts=wall_ts,
     )
@@ -69,23 +78,46 @@ def _fixed(instant: datetime):
     return lambda: instant
 
 
+def _arm(store: CursorStore, cursor: int | None = 0, generation: int | None = None,
+         run: str = RUN, hb: PortfolioHeartbeat | None = None) -> None:
+    """Persist a cursor for `run` as if the notifier had already armed on it — the state a
+    restart resumes from, and the precondition for anything to be paged at all (a run's
+    first sight arms silently)."""
+    store.save({run: RunCursor(cursor, generation)}, hb)
+
+
+def _cursor(store: CursorStore, run: str = RUN) -> int | None:
+    rc = store.load().get(run)
+    return rc.cursor if rc is not None else None
+
+
 class FakeReader:
-    """A faithful cursor-semantics reader over a fixed event list: read(cursor) returns
-    the (cursor, head] slice, mirroring the port so restart-dedupe is exercised honestly."""
+    """A faithful cursor-semantics reader over a fixed event list: read(run, cursor) returns
+    that run's (cursor, head] slice, mirroring the port so restart-dedupe is exercised
+    honestly. Events are grouped by their own run id, and discovery reports those runs."""
 
-    def __init__(self, events: list[Event], generation: int = 1) -> None:
-        self._events = sorted(events, key=lambda e: e.seq or 0)
+    def __init__(self, events: list[Event], generation: int = 1,
+                 runs: list[str] | None = None) -> None:
+        self._by_run: dict[str, list[Event]] = {}
+        for e in sorted(events, key=lambda e: e.seq or 0):
+            self._by_run.setdefault(e.run_id, []).append(e)
         self._generation = generation
+        self._runs = runs if runs is not None else (list(self._by_run) or [RUN])
 
-    def read(self, cursor: int | None) -> PortView:
-        head = (self._events[-1].seq or 0) if self._events else 0
+    def run_ids(self) -> list[str]:
+        return list(self._runs)
+
+    def read(self, run_id: str, cursor: int | None = None,
+             generation: int | None = None) -> PortView:
+        events = self._by_run.get(run_id, [])
+        head = (events[-1].seq or 0) if events else 0
         if cursor is None:
             return PortView(cursor=head, generation=self._generation,
-                            events=list(self._events), board=None, changed=bool(self._events))
+                            events=list(events), board=None, changed=bool(events))
         if head <= cursor:
             return PortView(cursor=cursor, generation=self._generation,
                             events=[], board=None, changed=False)
-        delta = [e for e in self._events if (e.seq or 0) > cursor]
+        delta = [e for e in events if (e.seq or 0) > cursor]
         return PortView(cursor=head, generation=self._generation,
                         events=delta, board=None, changed=True)
 
@@ -100,7 +132,11 @@ class RestoreReader:
         self._new_gen = new_gen
         self._adopted = False
 
-    def read(self, cursor: int | None) -> PortView:
+    def run_ids(self) -> list[str]:
+        return [RUN]
+
+    def read(self, run_id: str, cursor: int | None = None,
+             generation: int | None = None) -> PortView:
         head = (self._events[-1].seq or 0) if self._events else 0
         if cursor is None:
             self._adopted = True
@@ -139,36 +175,31 @@ class RaisingSender:
 def test_fires_on_the_four_types_and_is_silent_otherwise():
     assert notification_from(_ev(1, "task.blocked", {"reason": "stuck"})) is not None
     assert notification_from(_ev(2, "task.escalated", {"reason": "reroute"})) is not None
-    assert notification_from(_ev(3, "task.reported", {"ref": GOOD_REF, "kind": "question"})) \
-        is not None
-    assert notification_from(_result(4, [RESULT_REF])) is not None  # fourth trigger
-    # silence: other reported kinds and unrelated lifecycle events
-    for kind in ("progress", "result", "finding", "reflection"):
-        assert notification_from(_ev(5, "task.reported", {"ref": GOOD_REF, "kind": kind})) is None
-    for et in ("task.accepted", "task.assigned", "task.progress", "task.unblocked",
-               "review.passed", "note.posted"):
+    assert notification_from(
+        _ev(3, "task.reported", {"ref": GOOD_REF, "kind": "question"})) is not None
+    assert notification_from(_result(4, [RESULT_REF])) is not None
+    # a non-question report is silent
+    assert notification_from(_ev(5, "task.reported", {"ref": GOOD_REF, "kind": "progress"})) is None
+    # and so is everything outside the four types
+    for et in ("task.accepted", "task.assigned", "task.unblocked", "review.passed"):
         assert notification_from(_ev(6, et, {})) is None
 
 
 def test_result_ref_and_extra_count():
-    n = notification_from(_result(1, [RESULT_REF]))
-    assert n is not None and n.label == "result" and n.ref == RESULT_REF and n.extra_refs == 0
-    multi = notification_from(_result(2, [RESULT_REF, GOOD_REF, GOOD_REF]))
-    assert multi is not None and multi.ref == RESULT_REF and multi.extra_refs == 2
-    # degenerate payloads render, never crash
-    assert notification_from(_ev(3, "task.result_posted", {"artifact_refs": []})).ref is None
-    assert notification_from(_ev(4, "task.result_posted", {})).ref is None
+    n = notification_from(_result(1, [RESULT_REF, GOOD_REF]))
+    assert n is not None and n.ref == RESULT_REF and n.extra_refs == 1
+    # degenerate payloads never crash: no refs at all
+    n2 = notification_from(_ev(2, "task.result_posted", {"artifact_refs": []}))
+    assert n2 is not None and n2.ref is None and n2.extra_refs == 0
 
 
 def test_ref_extracted_per_type():
     q = notification_from(_ev(1, "task.reported", {"ref": GOOD_REF, "kind": "question"}))
-    assert q is not None and q.ref == GOOD_REF and q.label == "question"
-    b = notification_from(_ev(2, "task.blocked", {"reason": "x", "ref_report": GOOD_REF}))
-    assert b is not None and b.ref == GOOD_REF and b.label == "blocked"
-    e = notification_from(_ev(3, "task.escalated", {"reason": "x", "decision_ref": GOOD_REF}))
-    assert e is not None and e.ref == GOOD_REF and e.label == "escalated"
-    # optional refs absent -> None, no crash
-    assert notification_from(_ev(4, "task.blocked", {"reason": "x"})).ref is None
+    assert q is not None and q.ref == GOOD_REF and q.reason is None
+    b = notification_from(_ev(2, "task.blocked", {"reason": "stuck", "ref_report": GOOD_REF}))
+    assert b is not None and b.reason == "stuck" and b.ref == GOOD_REF
+    e = notification_from(_ev(3, "task.escalated", {"reason": "reroute"}))
+    assert e is not None and e.reason == "reroute"
 
 
 # --- rendering -------------------------------------------------------------
@@ -176,7 +207,8 @@ def test_ref_extracted_per_type():
 def test_render_one_is_a_sentence_without_the_sha():
     n = notification_from(_ev(1, "task.reported", {"ref": GOOD_REF, "kind": "question"}))
     text = render_one(n)
-    # who + what + about-what: actor, verb, task, ref basename (topic) — no sha, no content.
+    # where + who + what + about-what: run, actor, verb, task, ref basename (topic).
+    assert text.startswith("❓ omegahive · ")      # the run is named on every line
     assert "w1" in text and "asks on" in text and "t1" in text
     assert "2026-07-13-q" in text                       # basename (extension stripped)
     assert "a1b2c3d4" not in text                       # the sha is dropped entirely
@@ -206,8 +238,9 @@ def test_render_batch_summarizes():
         notification_from(_ev(3, "task.reported", {"ref": GOOD_REF, "kind": "question"})),
     ]
     text = render_batch(notifs)
-    assert "3 attention events" in text and "omegahive" in text
+    assert "3 attention events · 1 run" in text
     assert text.count("\n") == 3  # header + one line per event
+    assert text.count("omegahive") == 3  # every sentence names its run; the header counts runs
 
 
 def test_render_batch_caps_overflow():
@@ -232,17 +265,16 @@ def test_render_one_links_task_when_base_url_set():
     assert "asks on" in text and "<code>2026-07-13-q</code>" in text
 
 
-def test_render_byte_identical_without_base_url():
-    # Every render is byte-for-byte the same as today when no base URL is configured.
+def test_render_without_base_url_carries_no_links():
+    # Every render is link-free when no base URL is configured — the link is purely additive.
     n = notification_from(_ev(1, "task.reported", {"ref": GOOD_REF, "kind": "question"}))
     b = notification_from(_ev(2, "task.blocked", {"reason": "stuck"}))
     assert render_one(n, None) == render_one(n) and "<a " not in render_one(n)
     batch = render_batch([n, b], None)
     assert batch == render_batch([n, b]) and "<a " not in batch
-    hb = render_heartbeat("omegahive", "2026-07-14", 6, 10, 10, HeartbeatState(),
-                          [("t1", 5)], None)
-    assert hb == render_heartbeat("omegahive", "2026-07-14", 6, 10, 10, HeartbeatState(),
-                                  [("t1", 5)])
+    deltas = [RunDelta(RUN, 10, 0, 0, {"question": 0, "blocked": 1, "escalated": 0, "result": 0})]
+    hb = render_heartbeat("2026-07-14", 6, deltas, [(RUN, "t1", 5)], None)
+    assert hb == render_heartbeat("2026-07-14", 6, deltas, [(RUN, "t1", 5)])
     assert "<a " not in hb and "<code>t1</code>" in hb  # open block still <code>-wrapped
 
 
@@ -257,9 +289,9 @@ def test_render_batch_links_each_task():
 
 
 def test_heartbeat_open_blocks_link_when_base_url_set():
-    hb = render_heartbeat("omegahive", "2026-07-14", 6, 10, 10, HeartbeatState(),
-                          [("port-sha", 26)], BASE)
-    assert f'<a href="{BASE}/run/omegahive/board">port-sha</a> (26h)' in hb
+    deltas = [RunDelta(RUN, 10, 0, 0, {"question": 0, "blocked": 1, "escalated": 0, "result": 0})]
+    hb = render_heartbeat("2026-07-14", 6, deltas, [(RUN, "port-sha", 26)], BASE)
+    assert f'<a href="{BASE}/run/omegahive/board">port-sha</a> (omegahive, 26h)' in hb
     assert "<code>port-sha</code>" not in hb  # the <a> replaces the <code> wrap when linked
 
 
@@ -288,9 +320,11 @@ def test_orphan_task_id_is_not_linked():
 
 # --- the poll loop ---------------------------------------------------------
 
-def _service(events, sender=None, store=None, tmp_path=None, threshold=3):
+def _service(events, sender=None, store=None, tmp_path=None, threshold=3, armed=True):
     sender = sender or FakeSender()
     store = store or CursorStore(tmp_path / "cursor.json")
+    if armed and not store.load():
+        _arm(store)  # the run is already known; first sight is tested on its own
     svc = NotifierService(FakeReader(events), sender, store, batch_threshold=threshold)
     return svc, sender, store
 
@@ -325,6 +359,7 @@ def test_service_threads_ui_base_url_into_the_render(tmp_path):
     # End-to-end wiring: a configured base URL reaches both the per-event and the batch render.
     events = [_ev(1, "task.blocked", {"reason": "stuck"})]
     store = CursorStore(tmp_path / "cursor.json")
+    _arm(store)
     svc = NotifierService(FakeReader(events), (sender := FakeSender()), store,
                           batch_threshold=3, ui_base_url=BASE)
     svc.poll_once()
@@ -341,7 +376,7 @@ def test_cursor_persists_and_restart_does_not_duplicate(tmp_path):
     svc1, sender1, _ = _service(events, store=store)
     svc1.poll_once()
     assert len(sender1.sent) == 2
-    assert store.load().cursor == 2  # advanced to head
+    assert _cursor(store) == 2  # advanced to head
 
     # a fresh process: new service, same store, same log -> no re-send
     svc2, sender2, _ = _service(events, store=store)
@@ -349,8 +384,8 @@ def test_cursor_persists_and_restart_does_not_duplicate(tmp_path):
     assert sender2.sent == []
 
 
-def test_first_launch_baselines_to_head_without_paging_backlog(tmp_path):
-    # A fresh notifier on a run with pre-existing attention events must NOT dump the
+def test_first_sight_arms_at_head_without_paging_backlog(tmp_path):
+    # A notifier meeting a run with pre-existing attention events must NOT dump the
     # backlog — it starts from head and fires only on what happens after it comes online.
     backlog = [
         _ev(1, "task.blocked", {"reason": "old"}),
@@ -360,23 +395,22 @@ def test_first_launch_baselines_to_head_without_paging_backlog(tmp_path):
     store = CursorStore(tmp_path / "cursor.json")
     sender = FakeSender()
     svc = NotifierService(FakeReader(backlog), sender, store, batch_threshold=3)
-    svc.baseline()
-    assert sender.sent == []               # nothing paged
-    assert store.load().cursor == 3        # jumped to head
+    assert svc.poll_once() == 0            # first sight: armed, nothing paged
+    assert sender.sent == []
+    assert _cursor(store) == 3             # jumped to head
     assert svc.poll_once() == 0            # and there is nothing new to fire
 
 
-def test_restart_after_baseline_skips_baseline(tmp_path):
-    # A second launch (cursor present) does not re-baseline; it resumes and fires on new.
+def test_restart_with_a_cursor_does_not_re_arm(tmp_path):
+    # A second launch (cursor present) resumes and fires on what is new.
     store = CursorStore(tmp_path / "cursor.json")
-    store.save(2, 1)  # as if we baselined at seq 2 last run
+    _arm(store, 2, 1)  # as if we armed at seq 2 last run
     events = [
         _ev(1, "task.blocked", {"reason": "pre-baseline"}),   # below cursor: never seen
         _ev(3, "task.reported", {"ref": GOOD_REF, "kind": "question"}),  # new
     ]
     sender = FakeSender()
     svc = NotifierService(FakeReader(events), sender, store, batch_threshold=3)
-    svc.baseline()                 # no-op: cursor already 2
     assert svc.poll_once() == 1    # only the seq-3 question, not the seq-1 backlog
     assert len(sender.sent) == 1
 
@@ -399,15 +433,16 @@ def test_orphan_task_id_renders_and_never_crashes(tmp_path):
 def test_send_failure_holds_the_cursor_for_retry(tmp_path):
     events = [_ev(1, "task.blocked", {"reason": "a"})]
     store = CursorStore(tmp_path / "cursor.json")
+    _arm(store, None)
     sender = FakeSender(fail_first=1)
     svc = NotifierService(FakeReader(events), sender, store, batch_threshold=3)
     with pytest.raises(TelegramError):
         svc.poll_once()  # send fails
-    assert store.load().cursor is None  # cursor NOT advanced
+    assert _cursor(store) is None  # cursor NOT advanced
     # next tick retries the same event and succeeds
     assert svc.poll_once() == 1
     assert len(sender.sent) == 1
-    assert store.load().cursor == 1
+    assert _cursor(store) == 1
 
 
 def test_partial_burst_failure_does_not_resend_delivered(tmp_path):
@@ -417,6 +452,7 @@ def test_partial_burst_failure_does_not_resend_delivered(tmp_path):
         _ev(2, "task.escalated", {"reason": "b"}),
     ]
     store = CursorStore(tmp_path / "cursor.json")
+    _arm(store, None)
     sender = FakeSender(fail_first=0)
 
     # make only the SECOND send fail
@@ -433,7 +469,7 @@ def test_partial_burst_failure_does_not_resend_delivered(tmp_path):
     svc = NotifierService(FakeReader(events), sender, store, batch_threshold=3)
     with pytest.raises(TelegramError):
         svc.poll_once()
-    assert store.load().cursor == 1  # advanced past the first, delivered one only
+    assert _cursor(store) == 1  # advanced past the first, delivered one only
     assert len(sender.sent) == 1
 
     # retry: only the second event is re-read and sent (first is not duplicated)
@@ -450,43 +486,43 @@ def test_permanent_send_failure_is_dropped_so_channel_never_wedges(tmp_path):
         _ev(2, "task.reported", {"ref": GOOD_REF, "kind": "question"}),
     ]
     store = CursorStore(tmp_path / "cursor.json")
-    store.save(0, None)
+    _arm(store)
     sender = RaisingSender(TelegramError("HTTP 400", permanent=True))
     svc = NotifierService(FakeReader(events), sender, store, batch_threshold=99)  # individual
     assert svc.poll_once() == 2          # both processed, no exception raised
-    assert store.load().cursor == 2      # advanced past the poison — channel keeps flowing
+    assert _cursor(store) == 2           # advanced past the poison — channel keeps flowing
 
 
 def test_permanent_batch_failure_advances_past_the_burst(tmp_path):
     events = [_ev(i, "task.blocked", {"reason": "x"}) for i in range(1, 5)]
     store = CursorStore(tmp_path / "cursor.json")
-    store.save(0, None)
+    _arm(store)
     sender = RaisingSender(TelegramError("HTTP 403", permanent=True))
     svc = NotifierService(FakeReader(events), sender, store, batch_threshold=3)  # summary path
     svc.poll_once()
-    assert store.load().cursor == 4      # whole undeliverable burst dropped, not re-tried forever
+    assert _cursor(store) == 4   # whole undeliverable burst dropped, not re-tried forever
 
 
 def test_transient_send_failure_holds_cursor_for_retry(tmp_path):
     events = [_ev(1, "task.blocked", {"reason": "x"})]
     store = CursorStore(tmp_path / "cursor.json")
-    store.save(0, None)
+    _arm(store)
     sender = RaisingSender(TelegramError("HTTP 503", permanent=False))  # transient
     svc = NotifierService(FakeReader(events), sender, store, batch_threshold=99)
     with pytest.raises(TelegramError):
         svc.poll_once()
-    assert store.load().cursor == 0      # held — a transient blip is retried, not dropped
+    assert _cursor(store) == 0   # held — a transient blip is retried, not dropped
 
 
 def test_batch_threshold_zero_does_not_send_empty_summary(tmp_path):
     events = [_ev(1, "task.accepted", {})]  # noise only, no triggers
     store = CursorStore(tmp_path / "cursor.json")
-    store.save(0, None)
+    _arm(store)
     sender = FakeSender()
     svc = NotifierService(FakeReader(events), sender, store, batch_threshold=0)  # clamped to 1
     assert svc.poll_once() == 0
     assert sender.sent == []             # no spurious "0 attention events" summary
-    assert store.load().cursor == 1      # advanced past the noise
+    assert _cursor(store) == 1           # advanced past the noise
 
 
 def test_render_batch_bounded_by_bytes_with_long_refs():
@@ -501,7 +537,7 @@ def test_render_batch_bounded_by_bytes_with_long_refs():
 def test_generation_mismatch_rebaselines_without_notifying(tmp_path):
     # persisted cursor from before a restore
     store = CursorStore(tmp_path / "cursor.json")
-    store.save(1, generation=3)
+    _arm(store, 1, generation=3)
     events = [
         _ev(1, "task.blocked", {"reason": "old"}),
         _ev(2, "task.reported", {"ref": GOOD_REF, "kind": "question"}),
@@ -510,7 +546,7 @@ def test_generation_mismatch_rebaselines_without_notifying(tmp_path):
     svc = NotifierService(RestoreReader(events, new_gen=7), sender, store, batch_threshold=3)
     assert svc.poll_once() == 0  # re-baselines, sends nothing
     assert sender.sent == []
-    saved = store.load()
+    saved = store.load()[RUN]
     assert saved.cursor == 2 and saved.generation == 7  # jumped to head under the new gen
 
 
@@ -518,11 +554,11 @@ def test_generation_mismatch_rebaselines_without_notifying(tmp_path):
 
 def test_cursor_store_roundtrip_and_corruption_safe(tmp_path):
     store = CursorStore(tmp_path / "state" / "cursor.json")  # nested dir auto-created
-    assert store.load().cursor is None
-    store.save(42, 3)
-    assert store.load() == CursorState(42, 3)
+    assert store.load() == {}
+    store.save({RUN: RunCursor(42, 3)})
+    assert store.load() == {RUN: RunCursor(42, 3)}
     (tmp_path / "state" / "cursor.json").write_text("{not json")
-    assert store.load().cursor is None  # corrupt file -> clean baseline, no crash
+    assert store.load() == {}  # corrupt file -> clean baseline, no crash
 
 
 # --- the Telegram sink -----------------------------------------------------
@@ -575,7 +611,7 @@ def test_token_never_appears_in_errors_or_logs(tmp_path, caplog):
     # (HTTP 401 is a permanent failure: dropped + logged, cursor advances past it)
     events = [_ev(1, "task.blocked", {"reason": "a"})]
     store = CursorStore(tmp_path / "cursor.json")
-    store.save(0, None)  # pre-seed a cursor so run() follows (not first-launch baseline)
+    _arm(store)  # pre-seed a cursor so run() follows (not a silent first sight)
     # hold now() before the heartbeat hour so this test exercises only the trigger drop path
     before = datetime(2026, 7, 14, 3, 0, tzinfo=UTC)
     svc = NotifierService(FakeReader(events), client, store, batch_threshold=3,
@@ -584,7 +620,7 @@ def test_token_never_appears_in_errors_or_logs(tmp_path, caplog):
         svc.run(interval=0.0, stop=_once())
     assert SENTINEL not in caplog.text            # token absent even in the drop-warning
     assert "permanent send failure" in caplog.text
-    assert store.load().cursor == 1               # poison event dropped, channel keeps flowing
+    assert _cursor(store) == 1                    # poison event dropped, channel keeps flowing
 
 
 def _once():
@@ -628,24 +664,29 @@ _AT6 = datetime(2026, 7, 14, 6, 0, tzinfo=UTC)
 
 def _hb_service(events, store, *, now, sender=None, hour=6, threshold=99):
     sender = sender or FakeSender()
-    svc = NotifierService(FakeReader(events), sender, store, run_id="omegahive",
+    svc = NotifierService(FakeReader(events), sender, store,
                           heartbeat_hour=hour, now=now, batch_threshold=threshold)
     return svc, sender
+
+
+def _hb_state(**kw) -> PortfolioHeartbeat:
+    """A portfolio heartbeat state holding one run's tally — the single-run shape."""
+    run_kw = {k: kw.pop(k) for k in ("head", "counts", "open_blocks") if k in kw}
+    return PortfolioHeartbeat(runs={RUN: RunHeartbeat(**run_kw)}, **kw)
 
 
 def test_heartbeat_sends_on_an_empty_day(tmp_path):
     events = [_ev(1, "task.accepted", {}), _ev(2, "task.assigned", {})]  # noise only
     store = CursorStore(tmp_path / "cursor.json")
     svc, sender = _hb_service(events, store, now=_fixed(_AT6))
-    svc.baseline()
-    svc.poll_once()  # nothing to page
+    svc.poll_once()  # first sight arms at head; nothing to page
     assert sender.sent == []
     assert svc.maybe_heartbeat() is True
     assert len(sender.sent) == 1
     msg = sender.sent[0]
-    assert "omegahive daily · 2026-07-14 06:00Z" in msg
-    assert "spine head 2 (+0/24h) · cursor lag 0" in msg
-    assert "attention last 24h: 0 question, 0 blocked, 0 escalated, 0 result" in msg
+    assert "🐝 hive daily · 2026-07-14 06:00Z" in msg
+    assert "spine head 2 · 1 run" in msg
+    assert "omegahive +0/24h · quiet" in msg      # no attention at all reads as one word
     assert "open blocks: none" in msg
     assert store.load_heartbeat().last_date == "2026-07-14"  # persisted
 
@@ -653,7 +694,7 @@ def test_heartbeat_sends_on_an_empty_day(tmp_path):
 def test_heartbeat_exactly_once_per_day(tmp_path):
     store = CursorStore(tmp_path / "cursor.json")
     svc, sender = _hb_service([_ev(1, "task.accepted", {})], store, now=_fixed(_AT6))
-    svc.baseline()
+    svc.poll_once()
     assert svc.maybe_heartbeat() is True
     assert svc.maybe_heartbeat() is False   # same day: no second send
     assert len(sender.sent) == 1
@@ -663,31 +704,30 @@ def test_no_heartbeat_before_the_configured_hour(tmp_path):
     store = CursorStore(tmp_path / "cursor.json")
     at3 = datetime(2026, 7, 14, 3, 0, tzinfo=UTC)
     svc, sender = _hb_service([_ev(1, "task.accepted", {})], store, now=_fixed(at3), hour=6)
-    svc.baseline()
+    svc.poll_once()
     assert svc.maybe_heartbeat() is False
     assert sender.sent == []
 
 
 def test_no_heartbeat_on_restart_after_a_send(tmp_path):
     store = CursorStore(tmp_path / "cursor.json")
-    store.save(10, 1, HeartbeatState(last_date="2026-07-14", last_hour=6, head=10))
+    _arm(store, 10, 1, hb=_hb_state(last_date="2026-07-14", last_hour=6, head=10))
     at7 = datetime(2026, 7, 14, 7, 0, tzinfo=UTC)
     svc, sender = _hb_service([_ev(10, "task.accepted", {})], store, now=_fixed(at7))
-    svc.baseline()  # no-op: cursor present
     assert svc.maybe_heartbeat() is False   # already sent today, even across a restart
     assert sender.sent == []
 
 
 def test_heartbeat_fires_once_after_a_missed_boundary(tmp_path):
     store = CursorStore(tmp_path / "cursor.json")
-    store.save(20, 1, HeartbeatState(last_date="2026-07-12", last_hour=6, head=5))  # 2 days stale
+    # 2 days stale
+    _arm(store, 20, 1, hb=_hb_state(last_date="2026-07-12", last_hour=6, head=5))
     at8 = datetime(2026, 7, 14, 8, 0, tzinfo=UTC)
     svc, sender = _hb_service([_ev(20, "task.accepted", {})], store, now=_fixed(at8))
-    svc.baseline()
     assert svc.maybe_heartbeat() is True     # one catch-up send across the missed boundary
     assert svc.maybe_heartbeat() is False    # and only one
     assert len(sender.sent) == 1
-    assert "(+15/24h)" in sender.sent[0]     # head 20 vs previous-heartbeat head 5
+    assert "omegahive +15/24h" in sender.sent[0]  # head 20 vs previous-heartbeat head 5
 
 
 def test_head_delta_across_two_heartbeats(tmp_path):
@@ -695,20 +735,22 @@ def test_head_delta_across_two_heartbeats(tmp_path):
     sender = FakeSender()
     day1 = datetime(2026, 7, 14, 6, 0, tzinfo=UTC)
     svc1, _ = _hb_service([_ev(100, "task.accepted", {})], store, now=_fixed(day1), sender=sender)
-    svc1.baseline()          # head 100 recorded at launch
+    svc1.poll_once()         # head 100 recorded at arming
     svc1.maybe_heartbeat()
-    assert "spine head 100 (+0/24h)" in sender.sent[-1]
+    assert "spine head 100 · 1 run" in sender.sent[-1]
+    assert "omegahive +0/24h" in sender.sent[-1]
 
     day2 = datetime(2026, 7, 15, 6, 0, tzinfo=UTC)
     svc2, _ = _hb_service([_ev(130, "task.accepted", {})], store, now=_fixed(day2), sender=sender)
     svc2.poll_once()         # head advances to 130
     assert svc2.maybe_heartbeat() is True
-    assert "spine head 130 (+30/24h)" in sender.sent[-1]   # growth since the day-1 heartbeat
+    assert "spine head 130 · 1 run" in sender.sent[-1]
+    assert "omegahive +30/24h" in sender.sent[-1]   # growth since the day-1 heartbeat
 
 
 def test_heartbeat_counts_reflect_observed_attention(tmp_path):
     store = CursorStore(tmp_path / "cursor.json")
-    store.save(0, None)
+    _arm(store)
     events = [
         _ev(1, "task.reported", {"ref": GOOD_REF, "kind": "question"}),
         _result(2, [RESULT_REF]),
@@ -718,16 +760,17 @@ def test_heartbeat_counts_reflect_observed_attention(tmp_path):
     svc, sender = _hb_service(events, store, now=_fixed(_AT6))
     svc.poll_once()
     assert svc.maybe_heartbeat() is True
-    assert "attention last 24h: 1 question, 0 blocked, 0 escalated, 1 result" in sender.sent[-1]
+    # no prior heartbeat for this run, so the delta baseline is the head itself (+0)
+    assert "omegahive +0/24h · ❓1 ⛔0 ⬆0 📄1" in sender.sent[-1]
     # the window resets after the heartbeat
-    assert store.load_heartbeat().counts == dict.fromkeys(
+    assert store.load_heartbeat().for_run(RUN).counts == dict.fromkeys(
         ("question", "blocked", "escalated", "result"), 0
     )
 
 
 def test_open_blocks_track_clear_and_survive_restart(tmp_path):
     store = CursorStore(tmp_path / "cursor.json")
-    store.save(0, None)
+    _arm(store)
     wall = datetime(2026, 7, 13, 4, 0, tzinfo=UTC)  # 26h before _AT6
     events = [
         _ev(1, "task.blocked", {"reason": "needs baseline"}, task_id="port-sha", wall_ts=wall),
@@ -735,34 +778,22 @@ def test_open_blocks_track_clear_and_survive_restart(tmp_path):
     ]
     svc, sender = _hb_service(events, store, now=_fixed(_AT6))
     svc.poll_once()  # observes the block (and pages it)
-    assert "port-sha" in store.load_heartbeat().open_blocks   # persisted -> survives restart
+    # persisted -> survives restart
+    assert "port-sha" in store.load_heartbeat().for_run(RUN).open_blocks
     svc.maybe_heartbeat()
-    assert "open blocks: <code>port-sha</code> (26h)" in sender.sent[-1]
+    assert "open blocks: <code>port-sha</code> (omegahive, 26h)" in sender.sent[-1]
 
     # a fresh process reads the block from the file, then an unblock clears it
     events2 = events + [_ev(3, "task.unblocked", {}, task_id="port-sha")]
     svc2, _ = _hb_service(events2, store, now=_fixed(_AT6))
-    assert "port-sha" in svc2._hb.open_blocks   # loaded across the restart
+    assert "port-sha" in svc2._hb.for_run(RUN).open_blocks   # loaded across the restart
     svc2.poll_once()
-    assert "port-sha" not in store.load_heartbeat().open_blocks
-
-
-def test_old_cursor_only_state_loads_clean(tmp_path):
-    p = tmp_path / "cursor.json"
-    p.write_text('{"cursor": 42, "generation": 3}')  # pre-heartbeat file format
-    store = CursorStore(p)
-    assert store.load() == CursorState(42, 3)         # cursor still loads
-    hb = store.load_heartbeat()
-    assert hb.last_date is None and hb.head is None and hb.open_blocks == {}
-    assert hb.counts == {"question": 0, "blocked": 0, "escalated": 0, "result": 0}
-    # a service builds over the old file without error
-    svc, _ = _hb_service([_ev(42, "task.accepted", {})], store, now=_fixed(_AT6))
-    assert svc.cursor == 42
+    assert "port-sha" not in store.load_heartbeat().for_run(RUN).open_blocks
 
 
 def test_heartbeat_send_failure_leaves_event_cursor_untouched(tmp_path):
     store = CursorStore(tmp_path / "cursor.json")
-    store.save(5, 1, HeartbeatState(head=5))   # cursor at 5, no heartbeat sent yet
+    _arm(store, 5, 1, hb=_hb_state(head=5))   # cursor at 5, no heartbeat sent yet
     events = [_ev(5, "task.accepted", {})]
 
     # transient failure: raises, day NOT advanced (retry next tick), cursor untouched
@@ -770,20 +801,20 @@ def test_heartbeat_send_failure_leaves_event_cursor_untouched(tmp_path):
     svc, _ = _hb_service(events, store, now=_fixed(_AT6), sender=transient)
     with pytest.raises(TelegramError):
         svc.maybe_heartbeat()
-    assert store.load().cursor == 5
+    assert _cursor(store) == 5
     assert store.load_heartbeat().last_date is None
 
     # permanent failure: dropped + logged, day advanced (no all-day retry), cursor untouched
     permanent = RaisingSender(TelegramError("HTTP 400", permanent=True))
     svc2, _ = _hb_service(events, store, now=_fixed(_AT6), sender=permanent)
     assert svc2.maybe_heartbeat() is True
-    assert store.load().cursor == 5
+    assert _cursor(store) == 5
     assert store.load_heartbeat().last_date == "2026-07-14"
 
 
 def test_heartbeat_retries_after_transient_failure(tmp_path):
     store = CursorStore(tmp_path / "cursor.json")
-    store.save(5, 1, HeartbeatState(head=5))
+    _arm(store, 5, 1, hb=_hb_state(head=5))
     sender = FakeSender(fail_first=1)  # first send raises (transient), then succeeds
     svc, _ = _hb_service([_ev(5, "task.accepted", {})], store, now=_fixed(_AT6), sender=sender)
     with pytest.raises(TelegramError):
@@ -796,25 +827,34 @@ def test_heartbeat_retries_after_transient_failure(tmp_path):
 
 def test_render_heartbeat_lists_open_blocks_oldest_first():
     now = datetime(2026, 7, 14, 6, 0, tzinfo=UTC)
-    hb = HeartbeatState(
-        head=1000, counts={"question": 1, "blocked": 2, "escalated": 0, "result": 1}
-    )
-    hb.open_blocks = {
+    hb = PortfolioHeartbeat()
+    run = hb.for_run(RUN)
+    run.head = 1000
+    run.counts = {"question": 1, "blocked": 2, "escalated": 0, "result": 1}
+    run.open_blocks = {
         "recent": datetime(2026, 7, 14, 3, 0, tzinfo=UTC).isoformat(),  # 3h
         "old": datetime(2026, 7, 13, 4, 0, tzinfo=UTC).isoformat(),      # 26h
     }
-    ages = hb.open_block_ages(now)
-    text = render_heartbeat("omegahive", "2026-07-14", 6, 1042, 1042, hb, ages)
-    assert "spine head 1042 (+42/24h) · cursor lag 0" in text
-    assert "attention last 24h: 1 question, 2 blocked, 0 escalated, 1 result" in text
+    deltas = [RunDelta(RUN, 1042, 42, 0, run.counts)]
+    text = render_heartbeat("2026-07-14", 6, deltas, hb.open_block_ages(now))
+    assert "spine head 1042 · 1 run" in text
+    assert "omegahive +42/24h · ❓1 ⛔2 ⬆0 📄1" in text
     assert text.index("old") < text.index("recent")   # oldest first
-    assert "(26h)" in text and "(3h)" in text
+    assert "(omegahive, 26h)" in text and "(omegahive, 3h)" in text
+
+
+def test_heartbeat_line_shows_lag_only_when_behind():
+    counts = {"question": 0, "blocked": 0, "escalated": 0, "result": 1}
+    caught_up = render_heartbeat("2026-07-14", 6, [RunDelta(RUN, 100, 5, 0, counts)], [])
+    behind = render_heartbeat("2026-07-14", 6, [RunDelta(RUN, 100, 5, 12, counts)], [])
+    assert "lag" not in caught_up          # the normal case adds no noise
+    assert "lag 12" in behind              # falling behind is worth a word
 
 
 def test_heartbeat_still_fires_when_a_trigger_send_is_wedged(tmp_path):
     # A permanently-wedged trigger send must not suppress the liveness heartbeat.
     store = CursorStore(tmp_path / "cursor.json")
-    store.save(0, None)
+    _arm(store)
 
     class WedgeThenHeartbeat:
         """Raises a transient error on the trigger page, delivers the heartbeat."""
@@ -828,14 +868,29 @@ def test_heartbeat_still_fires_when_a_trigger_send_is_wedged(tmp_path):
 
     sender = WedgeThenHeartbeat()
     svc = NotifierService(FakeReader([_ev(1, "task.blocked", {"reason": "x"})]),
-                          sender, store, run_id="omegahive", heartbeat_hour=6,
+                          sender, store, heartbeat_hour=6,
                           now=_fixed(_AT6), batch_threshold=99)
     svc.run(interval=0.0, stop=_once())
     assert any("daily" in m for m in sender.sent)   # heartbeat got through
-    assert store.load().cursor == 0                 # wedged trigger held the cursor
+    assert _cursor(store) == 0                      # wedged trigger held the cursor
 
 
 # --- the port read path (real DB) ------------------------------------------
+
+class _OneRunReader:
+    """The multi-run reader interface over a single port — the DB test cares about what the
+    port shows the `instrument` actor, not about discovery."""
+
+    def __init__(self, run_id: str, port) -> None:
+        self._run_id = run_id
+        self._port = port
+
+    def run_ids(self) -> list[str]:
+        return [self._run_id]
+
+    def read(self, run_id: str, cursor: int | None, generation: int | None) -> PortView:
+        return self._port.read(cursor)
+
 
 def test_instrument_reader_sees_the_full_stream(conn):
     """The notifier reads as role `instrument`, so it must see attention events regardless
@@ -857,9 +912,11 @@ def test_instrument_reader_sees_the_full_stream(conn):
 
     port = HiveCoordinatorPort(Actor(role="instrument", id="notifier"), run, conn)
     sender = FakeSender()
-    svc = NotifierService(port, sender, CursorStore("/nonexistent-unused"), batch_threshold=99)
+    cursor_store = CursorStore("/nonexistent-unused")
+    svc = NotifierService(_OneRunReader(run, port), sender, cursor_store, batch_threshold=99)
     # avoid touching the filesystem store in this DB test: stub out persistence
     svc._store.save = lambda *a, **k: None  # type: ignore[method-assign]
+    svc._cursors[run] = RunCursor(0, None)  # already armed: this test is about visibility
     n = svc.poll_once()
     assert n == 3  # blocked + escalated + question; the progress report is silent
     assert len(sender.sent) == 3

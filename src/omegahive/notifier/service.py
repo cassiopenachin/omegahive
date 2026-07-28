@@ -1,15 +1,28 @@
-"""The poll loop: read the spine, fire on attention events, advance the cursor.
+"""The poll loop: read every active run's spine, fire on attention events, advance cursors.
 
-Follows the read path (`HiveCoordinatorPort.read`) at a fixed interval. Each tick:
-read `(cursor, head]`, keep the trigger events, send (one message each, or one summary
-when a burst lands), then advance and persist the cursor. The cursor advances only past
-events that were actually delivered, so a send failure leaves the cursor put and the same
-events retry next tick — at-least-once, and no duplicate across a clean restart.
+One notifier watches the **whole spine**, not a run. There is no run id to configure —
+which is the point: the run-identity drift that left the pager truthfully reporting an
+empty acceptance run for a week (decisions.md 2026-07-28) has no surface left to drift on.
 
-Generation handling: a restore rewinds the log and reuses seq values (deployment spec §5).
-A stale cursor read is signalled as a generation mismatch; the service re-baselines to the
-new head **without notifying** (better to miss a ping than to replay the whole history as
-fresh 2am alerts) and persists the new generation.
+Each tick: discover the active runs from the spine's own registry (the *same* cut the
+portfolio board applies — `report.portfolio.portfolio_runs`, so the two surfaces can never
+disagree about which runs exist), then read `(cursor, head]` on each, keep the trigger
+events, send (one message each, or one summary when a burst lands **across the portfolio**),
+then advance and persist that run's cursor. A cursor advances only past events actually
+delivered, so a send failure leaves it put and those events retry next tick — at-least-once,
+and no duplicate across a clean restart.
+
+Per-run state, three rules:
+  - **First sight arms at head.** A run entering the portfolio — at cutover, every run —
+    baselines at its current head without paging. The history it missed is the board's
+    story, never a burst of 2am pages.
+  - **A departed run is forgotten.** When a run falls out of the active window its cursor
+    and tally are dropped, so a run returning after a dormancy re-arms at head rather than
+    replaying the dormancy.
+  - **Generation travels with the cursor.** The port reports GENERATION_MISMATCH only to a
+    client presenting the generation it last saw; a restore therefore re-baselines **that
+    run alone** (without notifying — better to miss a ping than replay history as fresh
+    alerts) while every other run keeps streaming.
 """
 
 from __future__ import annotations
@@ -17,21 +30,26 @@ from __future__ import annotations
 import contextlib
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Protocol, TypeVar
 
 from psycopg import OperationalError
 
-from ..events.envelope import Actor, Event
+from ..events.envelope import Actor
+from ..events.log import read_run_summaries
 from ..port import HiveCoordinatorPort
 from ..port.wire import PortView
-from .cursor import CursorStore
+from ..report.portfolio import configured_window_days, portfolio_runs
+from .cursor import CursorStore, RunCursor
 from .events import Notification, notification_from
 from .format import render_batch, render_heartbeat, render_one
+from .heartbeat import RunDelta
 from .telegram import Sender, TelegramError
 
 log = logging.getLogger("omegahive.notifier")
+
+T = TypeVar("T")
 
 
 def _utcnow() -> datetime:
@@ -39,27 +57,35 @@ def _utcnow() -> datetime:
 
 
 class SpineReader(Protocol):
-    def read(self, cursor: int | None) -> PortView: ...
+    def run_ids(self) -> list[str]: ...
+    def read(self, run_id: str, cursor: int | None, generation: int | None) -> PortView: ...
 
 
 class PortSpineReader:
-    """A read-path port wrapper that survives a dropped connection. The notifier is a
-    long-running follower; its connection can outlive a Postgres restart, so a read that
-    raises OperationalError rebuilds the port on a fresh connection (seeded with the last
-    known generation, so a concurrent restore is still detected) and retries once."""
+    """The spine, read across every active run, on a connection that survives a restart.
+
+    Discovery and reads share one connection: the notifier is a long-running follower whose
+    connection can outlive a Postgres restart, so anything raising OperationalError rebuilds
+    the connection and retries once. A port is constructed per read — it holds no server-side
+    session state, and the per-run generation must be presented on each one.
+
+    Which runs count is **not** decided here: `portfolio_runs` is the portfolio board's own
+    cut (active window, scratch-run globs), imported rather than re-derived so a notifier
+    that pages about a run and a board that lists runs can never disagree.
+    """
 
     def __init__(
         self,
         connect: Callable[[], object],
         actor: Actor,
-        run_id: str,
         *,
-        generation: int | None = None,
+        window_days: int | None = None,
+        exclude: Sequence[str] | None = None,
     ) -> None:
         self._connect = connect
         self._actor = actor
-        self._run_id = run_id
-        self._generation = generation
+        self._window_days = window_days
+        self._exclude = exclude
         self._build()
 
     def _build(self) -> None:
@@ -68,23 +94,32 @@ class PortSpineReader:
             with contextlib.suppress(Exception):
                 old.close()  # don't leak the dead connection on reconnect
         self._conn = self._connect()
-        self._port = HiveCoordinatorPort(
-            self._actor, self._run_id, self._conn, generation=self._generation
-        )
 
-    def read(self, cursor: int | None) -> PortView:
+    def _retry(self, call: Callable[[], T]) -> T:
         try:
-            view = self._port.read(cursor)
+            return call()
         except OperationalError:
             log.warning("spine read lost the connection; reconnecting")
             self._build()
-            view = self._port.read(cursor)
-        # Track the adopted generation so a reconnect re-seeds it. A mismatch view carries
-        # the *new* generation but hasn't been adopted yet — leave the seed on the old one
-        # so the signal survives a reconnect until the service re-baselines.
-        if not view.generation_mismatch and view.generation is not None:
-            self._generation = view.generation
-        return view
+            return call()
+
+    def run_ids(self) -> list[str]:
+        """The active runs, most recently active first — the portfolio's own order."""
+        days = configured_window_days() if self._window_days is None else self._window_days
+
+        def _query() -> list[dict]:
+            return portfolio_runs(
+                read_run_summaries(self._conn), window_days=days, exclude=self._exclude
+            )
+
+        return [row["run_id"] for row in self._retry(_query)]
+
+    def read(self, run_id: str, cursor: int | None, generation: int | None) -> PortView:
+        def _query() -> PortView:
+            port = HiveCoordinatorPort(self._actor, run_id, self._conn, generation=generation)
+            return port.read(cursor)
+
+        return self._retry(_query)
 
 
 class NotifierService:
@@ -94,86 +129,103 @@ class NotifierService:
         sender: Sender,
         cursor_store: CursorStore,
         *,
-        run_id: str = "omegahive",
         batch_threshold: int = 3,
         heartbeat_hour: int = 6,
         ui_base_url: str | None = None,
+        max_run_lines: int = 8,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._reader = reader
         self._sender = sender
         self._store = cursor_store
-        self._run_id = run_id
         self._batch_threshold = max(1, batch_threshold)  # a burst is >= 1 event, never 0
         self._hb_hour = heartbeat_hour
         # External UI base URL for deep links (config, not a secret). None/empty = no links,
         # render byte-identical to before. The render layer normalizes the trailing slash.
         self._ui_base_url = ui_base_url or None
+        self._max_run_lines = max_run_lines
         self._now = now or _utcnow
-        state = cursor_store.load()
-        self._cursor = state.cursor
-        self._generation = state.generation
+        self._cursors: dict[str, RunCursor] = cursor_store.load()
         self._hb = cursor_store.load_heartbeat()
-        self._head: int | None = self._cursor  # latest spine head seen (for the heartbeat)
+        # Latest spine head seen per run (for the heartbeat), and the portfolio order the
+        # last discovery returned — the heartbeat lists runs in it, so the message and the
+        # board read the same way round.
+        self._heads: dict[str, int | None] = {r: c.cursor for r, c in self._cursors.items()}
+        self._runs: list[str] = list(self._cursors)
 
     @property
-    def cursor(self) -> int | None:
-        return self._cursor
+    def cursors(self) -> dict[str, RunCursor]:
+        return dict(self._cursors)
 
     def poll_once(self) -> int:
-        """One read + fire cycle. Returns the number of notifications sent. Raises only if
-        the sender raises (the loop catches that and retries next tick)."""
-        view = self._reader.read(self._cursor)
+        """One discover + read + fire cycle across every active run. Returns the number of
+        attention events surfaced. Raises only if the sender raises (the loop catches that
+        and retries next tick)."""
+        runs = self._reader.run_ids()
+        self._forget_departed(runs)
+        self._runs = runs
 
-        if view.generation_mismatch:
-            self._rebaseline()
-            return 0
-
-        self._head = view.cursor  # head of this read — the heartbeat's "spine head"
-
-        if not view.changed:
-            return 0
-
-        self._generation = view.generation
-        events = view.events
-        triggers: list[Notification] = [
-            n for e in events if (n := notification_from(e)) is not None
-        ]
+        pending: list[tuple[str, PortView]] = []
+        triggers: list[Notification] = []
+        for run_id in runs:
+            rc = self._cursors.get(run_id)
+            if rc is None:
+                self._arm(run_id)  # first sight — no page, no replay
+                continue
+            view = self._reader.read(run_id, rc.cursor, rc.generation)
+            if view.generation_mismatch:
+                self._rebaseline(run_id)
+                continue
+            # Adopt the generation on every clean read, changed or not: it is what the next
+            # read must present for a later restore to be reported rather than skipped.
+            self._cursors[run_id] = RunCursor(rc.cursor, view.generation)
+            self._heads[run_id] = view.cursor
+            if not view.changed:
+                continue
+            pending.append((run_id, view))
+            triggers.extend(
+                n for e in view.events if (n := notification_from(e)) is not None
+            )
 
         if not triggers:
             # Nothing to page; just record (and account for) that we observed up to head.
-            self._commit(view.cursor, events)
+            self._commit_all(pending)
             return 0
 
         delivered = 0
         if len(triggers) >= self._batch_threshold:
-            # One summary for the whole burst; advance past all of them together (a transient
-            # failure raises out and holds the cursor for a retry next tick).
+            # One summary for the whole burst, portfolio-wide; advance past all of it
+            # together (a transient failure raises out and holds every cursor for a retry).
             if self._send(render_batch(triggers, self._ui_base_url),
                           what=f"summary of {len(triggers)} events"):
                 delivered = len(triggers)
-            self._commit(view.cursor, events)
+            self._commit_all(pending)
         else:
-            # One message each, advancing the cursor per delivered (or permanently-dropped)
-            # event so a failure partway through never re-sends what already went out.
-            for n in triggers:
+            # One message each in spine order (seq is the log's total order, so this is
+            # chronological across runs), advancing that run's cursor per delivered (or
+            # permanently-dropped) event so a failure partway never re-sends what went out.
+            views = dict(pending)
+            for n in sorted(triggers, key=lambda t: t.seq or 0):
                 if self._send(render_one(n, self._ui_base_url), what=f"event seq {n.seq}"):
                     delivered += 1
-                self._commit(n.seq, events)
-            self._commit(view.cursor, events)  # all handled: cover trailing non-triggers
+                view = views[n.run_id]
+                self._commit(n.run_id, n.seq, view)
+            self._commit_all(pending)  # all handled: cover trailing non-triggers
 
-        log.info("delivered %d/%d notification(s); cursor -> %s",
-                 delivered, len(triggers), self._cursor)
+        log.info("delivered %d/%d notification(s) across %d run(s)",
+                 delivered, len(triggers), len(pending))
         return len(triggers)
 
     def maybe_heartbeat(self) -> bool:
-        """Send the daily heartbeat if it is due and today's has not gone out. Returns True
-        if a heartbeat was sent (or permanently dropped) this call. Independent of the read
-        cursor: a heartbeat send failure never holds or advances it. Transient send failure
-        re-raises (leaving `last_date` unadvanced so the next tick retries); a permanent one
-        is dropped + logged but still advances the day so it is not retried all day."""
-        if self._head is None:
-            return False  # nothing read yet (DB down at startup) — no head to report
+        """Send the daily portfolio heartbeat if it is due and today's has not gone out —
+        **one** message for every run, not one per run. Returns True if a heartbeat was sent
+        (or permanently dropped) this call. Independent of the read cursors: a heartbeat send
+        failure never holds or advances one. Transient send failure re-raises (leaving
+        `last_date` unadvanced so the next tick retries); a permanent one is dropped + logged
+        but still advances the day so it is not retried all day."""
+        deltas = self._deltas()
+        if not deltas:
+            return False  # nothing read yet (DB down at startup) — no heads to report
         now = self._now()
         if now.hour < self._hb_hour:
             return False
@@ -181,18 +233,17 @@ class NotifierService:
         if self._hb.last_date == today:
             return False  # already sent today
 
-        ages = self._hb.open_block_ages(now)
         text = render_heartbeat(
-            self._run_id, today, self._hb_hour, self._head, self._cursor, self._hb, ages,
-            self._ui_base_url,
+            today, self._hb_hour, deltas, self._hb.open_block_ages(now), self._ui_base_url,
+            max_run_lines=self._max_run_lines,
         )
-        sent = self._send(text, what="daily heartbeat")  # raises on transient -> retry next tick
-        # delivered OR permanently dropped: advance the day and reset the window.
-        self._hb.roll(today, self._hb_hour, self._head)
-        self._store.save(self._cursor, self._generation, self._hb)
-        log.info("daily heartbeat %s (head %s, cursor lag %s)",
-                 "sent" if sent else "dropped (permanent)", self._head,
-                 0 if self._cursor is None else max(0, self._head - self._cursor))
+        sent = self._send(text, what="daily heartbeat")  # raises on transient -> retry
+        # delivered OR permanently dropped: advance the day and reset every run's tally.
+        self._hb.roll(today, self._hb_hour, self._heads)
+        self._store.save(self._cursors, self._hb)
+        log.info("daily heartbeat %s (%d run(s), spine head %s)",
+                 "sent" if sent else "dropped (permanent)", len(deltas),
+                 max(d.head for d in deltas))
         return True
 
     def _send(self, text: str, *, what: str) -> bool:
@@ -210,38 +261,17 @@ class NotifierService:
                 return False
             raise  # transient — propagate; the loop logs and retries next tick
 
-    def baseline(self) -> None:
-        """First launch only (no persisted cursor): jump to the current head so the pager
-        fires only on attention events that occur *after* it comes online — it never dumps
-        the pre-existing backlog (a fresh notifier on a long run must not page every past
-        question). A restart carries a cursor and skips this, resuming where it left off."""
-        if self._cursor is not None:
-            return
-        view = self._reader.read(None)
-        self._cursor = view.cursor
-        self._head = view.cursor
-        self._generation = view.generation
-        # Seed the heartbeat head at launch so the first heartbeat's delta reads as growth
-        # since the notifier came online (there is no prior heartbeat to diff against).
-        if self._hb.head is None:
-            self._hb.head = view.cursor
-        self._store.save(self._cursor, self._generation, self._hb)
-        log.info("first launch: baselined to head %s (backlog not replayed)", self._cursor)
-
     def run(self, interval: float, stop: Callable[[], bool] = lambda: False) -> None:
         """Poll forever (until `stop()`), sleeping `interval` seconds between ticks. Every
-        tick's work — the first-launch baseline included — is inside the error guard, so the
-        service does not die on a transient Telegram or DB blip (a DB that is down at startup
-        just retries the baseline until it answers; nothing is paged until the cursor is
-        set, so no backlog is ever replayed)."""
-        log.info("notifier starting; interval %ss, heartbeat hour %02d:00Z",
+        tick's work — run discovery and the first-sight arming included — is inside the error
+        guard, so the service does not die on a transient Telegram or DB blip (a DB that is
+        down at startup just retries discovery until it answers; nothing is paged until a run
+        is armed, so no backlog is ever replayed)."""
+        log.info("notifier starting; interval %ss, heartbeat hour %02d:00Z, all active runs",
                  interval, self._hb_hour)
         while not stop():
             try:
-                if self._cursor is None:
-                    self.baseline()  # first launch: set the cursor before any poll
-                else:
-                    self.poll_once()
+                self.poll_once()
             except Exception as exc:  # noqa: BLE001 — a tick error must not kill the loop
                 log.warning("tick failed, will retry next tick: %s", exc)
             # The heartbeat is the liveness signal, so a stuck poll (e.g. a wedged trigger
@@ -256,31 +286,82 @@ class NotifierService:
 
     # --- internals ---------------------------------------------------------
 
-    def _commit(self, seq: int | None, events: list[Event]) -> None:
-        """Advance the read cursor to `seq`, folding the newly-crossed events into the
-        heartbeat tally (exactly once each: on a held-cursor retry those events are no
-        longer in the re-read `(cursor, head]` slice). Cursor + heartbeat state persist
+    def _deltas(self) -> list[RunDelta]:
+        """One heartbeat row per followed run with a known head, in portfolio order."""
+        out: list[RunDelta] = []
+        for run_id in self._runs:
+            head = self._heads.get(run_id)
+            if head is None:
+                continue
+            hb = self._hb.for_run(run_id)
+            prev = hb.head if hb.head is not None else head
+            rc = self._cursors.get(run_id)
+            cursor = rc.cursor if rc is not None else None
+            lag = 0 if cursor is None else max(0, head - cursor)
+            out.append(RunDelta(run_id, head, head - prev, lag, dict(hb.counts)))
+        return out
+
+    def _commit_all(self, pending: list[tuple[str, PortView]]) -> None:
+        for run_id, view in pending:
+            self._commit(run_id, view.cursor, view)
+
+    def _commit(self, run_id: str, seq: int | None, view: PortView) -> None:
+        """Advance one run's read cursor to `seq`, folding the newly-crossed events into that
+        run's heartbeat tally (exactly once each: on a held-cursor retry those events are no
+        longer in the re-read `(cursor, head]` slice). Cursors + heartbeat state persist
         together in one atomic write."""
-        if seq is None or (self._cursor is not None and seq <= self._cursor):
+        rc = self._cursors.get(run_id)
+        old = rc.cursor if rc is not None else None
+        if seq is None or (old is not None and seq <= old):
             return
-        old = self._cursor
         now = self._now()
-        for e in events:
+        hb = self._hb.for_run(run_id)
+        for e in view.events:
             s = e.seq or 0
             if (old is None or s > old) and s <= seq:
-                self._hb.observe(e, now)
-        self._cursor = seq
-        self._store.save(self._cursor, self._generation, self._hb)
+                hb.observe(e, now)
+        self._cursors[run_id] = RunCursor(seq, view.generation)
+        self._store.save(self._cursors, self._hb)
 
-    def _rebaseline(self) -> None:
-        """A restore happened: adopt the new generation and jump to head without notifying
-        (the rewound prefix is old history, not fresh attention events)."""
-        snap = self._reader.read(None)  # cursor=None adopts the new generation
-        self._cursor = snap.cursor
-        self._head = snap.cursor
-        self._generation = snap.generation
-        self._store.save(self._cursor, self._generation, self._hb)
-        log.warning(
-            "log generation changed (restore?); re-baselined to head %s without notifying",
-            self._cursor,
-        )
+    def _arm(self, run_id: str) -> None:
+        """First sight of a run: jump to its current head so the pager fires only on
+        attention events that occur *after* it comes into view. It never dumps a
+        pre-existing backlog — at cutover that backlog is every run's whole history."""
+        view = self._reader.read(run_id, None, None)  # full snapshot adopts the generation
+        self._cursors[run_id] = RunCursor(view.cursor, view.generation)
+        self._heads[run_id] = view.cursor
+        hb = self._hb.for_run(run_id)
+        if hb.head is None:
+            # Seed the delta baseline so the first heartbeat reads as growth since arming
+            # (there is no prior heartbeat for this run to diff against).
+            hb.head = view.cursor
+        self._store.save(self._cursors, self._hb)
+        log.info("run %s entered the portfolio: armed at head %s (backlog not paged)",
+                 run_id, view.cursor)
+
+    def _rebaseline(self, run_id: str) -> None:
+        """A restore happened on this run: adopt the new generation and jump to its head
+        without notifying (the rewound prefix is old history, not fresh attention events).
+        The heartbeat head is re-seeded too, so the next delta is not a negative number
+        describing a log that moved backwards."""
+        snap = self._reader.read(run_id, None, None)  # cursor=None adopts the new generation
+        self._cursors[run_id] = RunCursor(snap.cursor, snap.generation)
+        self._heads[run_id] = snap.cursor
+        self._hb.for_run(run_id).head = snap.cursor
+        self._store.save(self._cursors, self._hb)
+        log.warning("run %s: log generation changed (restore?); re-baselined to head %s "
+                    "without notifying", run_id, snap.cursor)
+
+    def _forget_departed(self, runs: Sequence[str]) -> None:
+        """Drop state for runs that have left the active portfolio. A returning run is a
+        first sight again — it arms at head, so a dormancy is never replayed as pages."""
+        keep = set(runs)
+        gone = [r for r in self._cursors if r not in keep]
+        for run_id in gone:
+            del self._cursors[run_id]
+            self._heads.pop(run_id, None)
+        pruned = self._hb.prune(runs)
+        if gone or pruned:
+            self._store.save(self._cursors, self._hb)
+            if gone:
+                log.info("run(s) left the portfolio, state forgotten: %s", ", ".join(gone))
