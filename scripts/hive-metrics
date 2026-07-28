@@ -515,8 +515,14 @@ echo "  $OUT_DIR/tasks.csv"
 # Same act, same helper as hive-score. Regeneration is deterministic, so an
 # unchanged spine prefix produces no diff and there is simply nothing to commit —
 # that is a success, not a failure.
-if [ "$COMMIT" -eq 0 ]; then
-  echo "hive-metrics: not committed (${UPTO:+--upto rebuild is an inspection, never the record}${UPTO:-"--no-commit"}) — review the diff and commit it yourself."
+if [ -n "$UPTO" ]; then
+  # Deliberately NOT "commit it yourself": committing a historical rebuild is the
+  # one thing this branch exists to prevent. Restore the record with a plain run.
+  echo "hive-metrics: not committed — an --upto rebuild is an inspection, never the record."
+  echo "  The working tree now holds the artifact as of seq $UPTO. Restore the current one with:"
+  echo "      hive-metrics $PROJECT"
+elif [ "$COMMIT" -eq 0 ]; then
+  echo "hive-metrics: --no-commit — review the diff and commit it yourself."
 else
   commit_metrics "$PROJECT" "metrics: refresh $PROJECT on run $RUN" \
     || die "artifacts regenerated, but recording them failed (see above) — they are on disk in $OPS_WS; commit and push by hand"

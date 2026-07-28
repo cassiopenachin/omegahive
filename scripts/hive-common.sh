@@ -157,8 +157,11 @@ resolve_canon_code() {  # resolve_canon_code  (reads CODE_REPO/CANON_ROOT/CANON_
   repo=${repo%.git}
   # A CODE_REPO that yields no usable basename would make CANON_CODE a bare
   # directory (or CANON_ROOT itself) and clone the wrong tree — refuse instead.
+  # `:` and `@` catch scp-syntax with no owner path (`git@host:repo.git`, whose
+  # basename is the whole string): repo names are [A-Za-z0-9._-], so anything
+  # carrying host syntax means the URL did not parse, not that the repo is odd.
   case "$repo" in
-    ''|.|..|*/*) die "cannot derive a repo name from CODE_REPO '$CODE_REPO' (project '$PROJECT') — set CANON_CODE explicitly" ;;
+    ''|.|..|*/*|*[:@]*) die "cannot derive a repo name from CODE_REPO '$CODE_REPO' (project '$PROJECT') — set CANON_CODE explicitly" ;;
   esac
   : "${CANON_CODE:=$CANON_ROOT/$repo}"
 }
@@ -218,7 +221,7 @@ order_pin() {  # order_pin <workspace-relative-path>  -> prints sha
 # retry (push -> pull --rebase -> push) and reports precisely how far it got, so
 # "committed locally" is never mistaken for "on the hub".
 commit_metrics() {  # commit_metrics <project> <commit-message>  -> 0 committed/nothing-to-do, non-zero otherwise
-  local proj="$1" msg="$2" spec="projects/$1/metrics"
+  local msg="$2" spec="projects/$1/metrics"
   git -C "$OPS_WS" add -- "$spec" || { echo "hive: git add failed for $spec in $OPS_WS" >&2; return 1; }
   if git -C "$OPS_WS" diff --cached --quiet -- "$spec"; then
     echo "  no change to commit ($spec is already up to date)"

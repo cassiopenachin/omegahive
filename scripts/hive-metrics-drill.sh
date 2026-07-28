@@ -430,6 +430,15 @@ check "--upto before beta close keeps alpha" "[ \"\$(col alpha shape)\" = worked
 # rewind the committed instrument to an older spine prefix.
 check "--upto never commits the rewound artifact" \
   "[ \"\$(git -C '$WS' rev-list --count HEAD)\" = '$UPTO_COMMITS_BEFORE' ]"
+# ...and it must not TELL the operator to commit it either — that advice would undo
+# the guard by hand. Assert the words, because a `${VAR:+…}${VAR:-…}` pair renders
+# the wrong branch silently and no exit code ever notices.
+# shellcheck disable=SC2034  # consumed by `check`, which evals its condition string
+UPTO_OUT="$("$M" "$PROJECT" --upto "$((BETA_CLOSE_SEQ - 1))")"
+check "--upto says why it did not commit"      "printf '%s' \"\$UPTO_OUT\" | grep -qF 'an --upto rebuild is an inspection'"
+check "--upto does NOT advise committing it"   "! printf '%s' \"\$UPTO_OUT\" | grep -qF 'commit it yourself'"
+check "--upto names the restore command"       "printf '%s' \"\$UPTO_OUT\" | grep -qF 'hive-metrics $PROJECT'"
+check "--upto never leaks the seq into prose"  "! printf '%s' \"\$UPTO_OUT\" | grep -qE 'record[0-9]'"
 "$M" "$PROJECT" >/dev/null   # restore the full artifact
 
 # Without the fixture the tool goes to the real read path — which, with OMEGA_DIR
