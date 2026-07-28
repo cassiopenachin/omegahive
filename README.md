@@ -34,7 +34,7 @@ Give it a heartbeat with the built-in demo: `docker compose run --rm seed` plans
 
 For a real deployment — the secrets layout (per-service env files, never in images or logs), the key-isolation proxy for LLM provider keys, remote access over Tailscale, and recovery/restore discipline — read [docs/omegahive_deployment_spec.md](docs/omegahive_deployment_spec.md) and [docs/omegahive_remote_access_spec.md](docs/omegahive_remote_access_spec.md) before trusting it with anything you'd miss.
 
-There is a read-only operator web UI (FastAPI, `src/omegahive/ui/`) — board lanes, filtered log, metrics, rendered artifacts — designed to be served over a tailnet; see [docs/omegahive_ui_spec.md](docs/omegahive_ui_spec.md).
+There is a read-only operator web UI (FastAPI, `src/omegahive/ui/`) — the portfolio (every live run on one page, and the UI's entry point), per-run board lanes, filtered log, and metrics — designed to be served over a tailnet; see [docs/omegahive_ui_spec.md](docs/omegahive_ui_spec.md).
 
 ## Operating a hive: the CLI
 
@@ -54,10 +54,17 @@ The `omegahive` command is the operator's loopback tool. **Trust model, stated p
 | `omegahive db-migrate` | apply migrations to the spine |
 | `omegahive emit --role <role> --actor <id> --type <event> --payload <json>` | the governed write path: gated, idempotent (a duplicate reports `already recorded (idempotent)`), rejections shown verbatim |
 | `omegahive report --board / --metrics / --human` | fold projections as text |
-| `omegahive board-view <run> [--json]` | board rendering (`--json` emits the machine projection for tooling) |
+| `omegahive portfolio [--json] [--all] [--days N] [--exclude <globs>]` | **one board across every live run** — the whole-portfolio glance in one command |
+| `omegahive board-view <run> [--json] [--all] [--days N]` | one run's board (`--json` emits the machine projection for tooling) |
 | `omegahive seed-demo` / `omegahive act` | demo planner and scripted reactors |
 | `omegahive simulate` | deterministic multi-seed simulation of scripted scenarios |
 | `omegahive deploy-checks` | structural security checks (credential scope, tier routing) |
+
+**The active view (both surfaces, one definition).** The board grows monotonically, so a full-history table fills a screen with settled work. `portfolio` and `board-view <run>` therefore show the **active view** by default: every open task, plus anything closed within the active window (default 7 days, `OMEGAHIVE_ACTIVE_WINDOW_DAYS` or `--days`). `--all` restores full history. "Closed" is `done`/`failed`/`cancelled` or a pruned branch, and recency is measured against **that board's own latest status change**, not wall-clock now — so the same log always renders the same screen, replay included.
+
+`portfolio` discovers its runs from the spine, not from any workspace config: a run is a portfolio project when it carries real wall-clock activity inside the same window and its id does not match a scratch-run glob (`OMEGAHIVE_PORTFOLIO_EXCLUDE` or `--exclude`, default `tooling-drill-*` — the drill seeds real, freshly-active runs on this same spine every time it runs, and nothing in the log tells them apart from a project's). Nothing is dropped silently: the footer counts what the cut removed, and `--all` shows it. The web UI serves the same view at `/portfolio` from the same functions, so the two surfaces cannot drift.
+
+**`board-view <run> --json` is exempt, deliberately.** It is always the run's full history, whatever the window says, because the operator tooling looks tasks up in it by id — a task that had aged out of a display window would read as "not on the board" and quietly change what the launch and close guards decide. The portfolio's JSON (`portfolio --json`) is additive: an array of `{"run": …, "tasks": […]}`, where each `tasks` array is exactly what `board-view <run> --json` emits for that run.
 
 Day-to-day operation is mostly: seed tasks from work orders (`emit --type task.created`), watch the board, and answer questions. Workers report through the same path — `task.reported` with `kind ∈ {progress, result, question, finding, reflection}` and a pinned workspace ref. A blocking question surfaces as a report plus `task.blocked`; the answer lands as a *commit to the order file* (artifacts carry truth; channels carry pointers); the worker unblocks itself after re-reading — unblock means "answer consumed," not "answer exists."
 
@@ -111,7 +118,7 @@ The worked example below spells out the raw emits per hat. Day to day the operat
 
 The **emit wrapper** (`~/work/hive-wrappers/<worker>.sh`) is the worker's whole write path: `--run-id`/`--role worker`/`--actor <id>` are baked in, so a worker cannot emit as anyone else. It is shaped as a proto-credential — one file per identity, issued at launch, revocable by deletion — so swapping the assertion for a real per-seat key later changes nothing worker-facing.
 
-The wrappers read board state through **`board-view <run> --json`** — a JSON array (one object per task: `task`/`status`/`owner`/`depends_on`/`review`), the machine projection of the same folded board the table renders. They parse this, never the rendered table: a task id wider than the table's column folds across lines, which no `awk`/`grep` survives (a wrapped id once failed a close with "not on the board" while the board plainly showed it `in_review`). An empty board prints `[]` and exits 0; the human table (`board-view <run>`) is byte-identical to before.
+The wrappers read board state through **`board-view <run> --json`** — a JSON array (one object per task: `task`/`status`/`owner`/`depends_on`/`review`), the machine projection of the same folded board the table renders. They parse this, never the rendered table: a task id wider than the table's column folds across lines, which no `awk`/`grep` survives (a wrapped id once failed a close with "not on the board" while the board plainly showed it `in_review`). An empty board prints `[]` and exits 0. This projection is always the run's **full history** — the active-view filter is a display cut and never reaches it, so a task the operator can no longer see on the table is still found by id here.
 
 #### `project.conf`: project identity vs. deployment facts
 
@@ -123,7 +130,7 @@ RUN_ID=<name>                                   # the project's run (= project n
 CODE_REPO=git@github.com:<owner>/<repo>.git     # origin the worker's code clone is re-pointed to
 ```
 
-**The fact boundary.** `project.conf` carries only facts true on *any* host (run id, repo URL). Host-specific facts stay in the **deployment layer** (`scripts/hive-common.sh`): `OMEGA_DIR`, `CANON_ROOT`, `WS_HUB`, `OPS_WS`, `WORK_ROOT`, `WRAPPER_DIR`, `HIVE_TMUX_SESSION`, `HIVE_WORKER_CMD`, `HIVE_WIP_REVIEW_MAX`. The one *per-project* deployment fact — `CANON_CODE`, the project's canonical code checkout on this host — is derived as `CANON_ROOT/<repo>`, where `<repo>` is the basename of the conf's `CODE_REPO` with any `.git` stripped (override `CANON_CODE` to pin an off-layout checkout). It is the **repo**, not the project directory, because a checkout on disk is whatever `git clone` named it: a project directory `pln-benchmarks` whose repo is `plnbench` is ordinary, and deriving from the directory name refused such a launch outright. This split is the first brick of host-independence: the committed workspace stays portable while host paths live host-side.
+**The fact boundary.** `project.conf` carries only facts true on *any* host (run id, repo URL). Host-specific facts stay in the **deployment layer** (`scripts/hive-common.sh`): `OMEGA_DIR`, `CANON_ROOT`, `WS_HUB`, `OPS_WS`, `WORK_ROOT`, `WRAPPER_DIR`, `HIVE_TMUX_SESSION`, `HIVE_WORKER_CMD`, `HIVE_WIP_REVIEW_MAX`, and the active-view knobs `OMEGAHIVE_ACTIVE_WINDOW_DAYS` / `OMEGAHIVE_PORTFOLIO_EXCLUDE` (display cuts only — the JSON read path the wrappers parse is unaffected). The one *per-project* deployment fact — `CANON_CODE`, the project's canonical code checkout on this host — is derived as `CANON_ROOT/<repo>`, where `<repo>` is the basename of the conf's `CODE_REPO` with any `.git` stripped (override `CANON_CODE` to pin an off-layout checkout). It is the **repo**, not the project directory, because a checkout on disk is whatever `git clone` named it: a project directory `pln-benchmarks` whose repo is `plnbench` is ordinary, and deriving from the directory name refused such a launch outright. This split is the first brick of host-independence: the committed workspace stays portable while host paths live host-side.
 
 **Precedence** (highest first): an **env override** → `project.conf` → the deployment-layer default. `HIVE_RUN_ID` is the run escape hatch — when set it wins over a conf's `RUN_ID` (single-run ops; the drill points it at a scratch run). Adding a project is one file: create `projects/<name>/project.conf`, ensure its checkout exists at `CANON_ROOT/<repo of CODE_REPO>`, and `hive-launch projects/<name>/orders/<first>.md`.
 

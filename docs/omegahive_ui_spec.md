@@ -34,9 +34,20 @@ Four screens, each a thin adapter over an existing fold — no new SQL, no chart
 
 | # | Screen | Route | Shows | Reads via |
 |---|--------|-------|-------|-----------|
+| 0 | **Portfolio** | `/portfolio` | Every live run's board on one page, grouped by run, each linking to its own board. The UI's entry point: `/` redirects here. | run discovery from the spine's run registry, then one `PortView.board` per run |
 | 1 | **Board** | `/run/{run}/board` | The current task graph — objectives, status, owner, priority, blockers — through the existing board renderer wrapped to HTML. Rejected/blocked states styled distinctly. | `PortView.board` (server's authoritative fold; never a client fragment) |
 | 2 | **Events** | `/run/{run}/events` | The event stream, reverse-chronological, with filter chips by actor/agent and type. `gateway.rejected` events styled distinctly so refusals are visible as they land. | `PortView.events` |
 | 3 | **Metrics** | `/run/{run}/metrics` | The metric folds available at the deployed stage, as a plain table. **No sparklines, no charts** in v0.1 (a flagged rabbit hole). | existing metric fold functions |
+
+### 3.3 The portfolio, and the active view (added with altitude 2)
+
+The board is plural once the hive runs more than one project, and the operator's daily glance must stay one URL rather than one per tenant. `/portfolio` is that page and the UI's entry point; per-run routes and every existing deep-link target are unchanged, and each per-run page links back.
+
+**The active view is one definition, shared with the CLI.** Both surfaces call `omegahive.report.portfolio`, so a portfolio page and a `board-view` table can never disagree about what is on the board. Default: every open task, plus anything closed within the active window (`OMEGAHIVE_ACTIVE_WINDOW_DAYS`, default 7 days); `?all=1` and the CLI's `--all` restore full history. Recency is measured against **the board's own latest status change**, never wall-clock now — §7's "kill it, replay the log, render identical" would otherwise be false the moment a window boundary passed.
+
+**Run discovery is a listing, not a second fold.** The page reads the run registry to learn which runs exist, then reads each run's board *through the port* exactly as the per-run pages do — so §2's one-fold-site rule holds. A run is a portfolio project when it carries real wall-clock activity inside the window and its id does not match a scratch-run glob (`OMEGAHIVE_PORTFOLIO_EXCLUDE`); the page states how many runs the cut removed rather than dropping them silently. This is the pragmatic stand-in for §9's project-as-addressable-attribute item, not a substitute for it: when project becomes an event attribute, the run cut becomes a fold and the glob list retires.
+
+**Live like every other screen.** `/portfolio/stream` is the same SSE poll loop holding one cursor per run and riding the same no-change short-circuit. The first tick always re-renders, because the stream never saw the cursors the page was drawn from.
 
 **Deliberately out of v0.1:** interactive diff viewers, math rendering in markdown, semantic/full-text search over transcripts, any charting. Each is named a rabbit hole and deferred.
 
@@ -139,5 +150,6 @@ The honesty rules, condensed. These are structural commitments, not style.
 ## 10. Revision record
 
 - **v0.1 DRAFT (Jul 8 2026)** — initial synthesis. Adjudications made: (1) v0.1 reads as a coordinator-role actor under the single application DB role; dedicated `hive_reader` deferred to the write-path revision, not accelerated for read-only. (2) v0.1 ships read-only; the write path (per-person human actors, ack/steering ops) is designed here but built with stage-4 Tier-1.5 machinery — the UI ack button and the stage-4 outbound gate are identified as one mechanism. (3) §10.3 run-mapping stated as an input (project-as-addressable-attribute), not re-decided. (4) Telegram remains the push/ack surface until the write path lands; v0.1 web is read-only; deep links work via operator-phone Tailscale. (5) Spicy-idea triage: self-narrating ticker → v0.1; catch-up replay and time-travel scrub → later; `human.viewed` event flagged as an owner decision.
+- **Portfolio + active view (Jul 28 2026):** `/portfolio` added as screen 0 and the UI's entry point (`/` redirects there; per-run routes and deep links unchanged) — §3.3. The active view (open work plus recent closes, with a history toggle) is defined once in `report.portfolio` and applied by both the web UI and the CLI. Run discovery reads the run registry and folds nothing. `OMEGAHIVE_UI_DEFAULT_RUN` is retired: the entry point is no longer a single run.
 - **Implementation alignment (Jul 9 2026):** Board title, priority, and blocker context become authoritative board-projection fields. Project filtering/indexing, stage-4 metrics, and generic record detail are explicitly deferred in §3.2; local screen work and visual iteration precede tailnet deployment.
 - **MVP stack simplification (Jul 9 2026):** the read-only implementation uses a local native SSE fragment swapper and one local desktop-first stylesheet in place of htmx/SSE and Pico.css. This preserves server rendering and removes asset/vendor work before the first useful operator view; the write-path seam remains ordinary form POSTs.
