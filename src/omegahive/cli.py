@@ -14,6 +14,7 @@ from rich.console import Console
 from .acceptance import run_actor, seed_demo
 from .acceptance.checks import run_structural_checks
 from .board import fold
+from .board.state import Board
 from .clock import LogicalClock
 from .db import connect, migrate
 from .events.envelope import Actor
@@ -28,6 +29,14 @@ from .report.board import board_to_json, render_board
 from .report.distribution import render_distribution, render_promotion_distribution
 from .report.human import render_human
 from .report.metrics import render_metrics
+from .report.portfolio import (
+    WINDOW_DAYS,
+    active_board,
+    configured_window_days,
+    portfolio_runs,
+    portfolio_to_json,
+    render_portfolio,
+)
 from .report.promotions import render_promotions
 from .report.runs import render_runs
 from .report.trace import render_table, to_json
@@ -340,14 +349,29 @@ def board_view_cmd(
     as_json: bool = typer.Option(
         False, "--json", help="emit the board as a JSON array (machine projection), not a table"
     ),
+    show_all: bool = typer.Option(
+        False, "--all", help="table: full history instead of the active view (no effect on "
+                             "--json, which is always full history)"
+    ),
+    window_days: int | None = typer.Option(
+        None, "--days", help=f"active window in days for the table (default {WINDOW_DAYS})"
+    ),
 ) -> None:
     """Read the board through the port (read surface) and render it.
 
-    `--json` emits the same folded board as a JSON array (task/status/owner/depends_on/
+    The table shows the **active view** by default — open tasks plus work closed within
+    the active window — because a full-history board grows monotonically and fills a
+    screen with settled work. `--all` restores every task.
+
+    `--json` emits the folded board as a JSON array (task/status/owner/depends_on/
     review) for tooling that must not parse the rendered table — a long task id wraps the
-    table's column across lines, which no awk fragment survives. An empty board prints `[]`
-    and exits 0 (empty is a valid machine result, not an error); the human table still
-    exits 1 with a message so an interactive miss is loud."""
+    table's column across lines, which no awk fragment survives. It is **always the run's
+    full history**, filter or no filter: `hive-common.sh` looks a task up by id, and a task
+    that had dropped out of a display window would read as "not on the board" and quietly
+    change what the launch and close guards decide. An empty board prints `[]` and exits 0
+    (empty is a valid machine result, not an error); the human table still exits 1 with a
+    message so an interactive miss is loud."""
+    days = configured_window_days() if window_days is None else window_days
     with connect() as conn:
         view = HiveCoordinatorPort(Actor(role="coordinator", id="board-view"), run_id, conn).read()
         if view.board is None or not view.board.tasks:
@@ -359,7 +383,57 @@ def board_view_cmd(
         if as_json:
             print(board_to_json(view.board))
         else:
-            render_board(view.board, console)
+            render_board(
+                view.board if show_all else active_board(view.board, window_days=days), console
+            )
+
+
+@app.command("portfolio")
+def portfolio_cmd(
+    as_json: bool = typer.Option(
+        False, "--json", help="emit the portfolio as JSON grouped by run, not tables"
+    ),
+    show_all: bool = typer.Option(
+        False, "--all", help="every registered run, full history — the history escape hatch"
+    ),
+    window_days: int | None = typer.Option(
+        None, "--days", help=f"active window in days (default {WINDOW_DAYS})"
+    ),
+    exclude: str | None = typer.Option(
+        None, "--exclude", help="comma-separated run-id globs to treat as scratch runs "
+                                "(default tooling-drill-*,ui-demo; empty string excludes none)"
+    ),
+) -> None:
+    """One board across every live run — the whole-portfolio glance, in one invocation.
+
+    Runs are discovered from the spine itself: a run is a portfolio project when it carries
+    real wall-clock activity inside the window and does not match a scratch-run glob. Within
+    each run, the same active view the per-run table shows. Nothing is dropped silently —
+    the footer counts what the cut removed, and `--all` shows all of it.
+    """
+    days = configured_window_days() if window_days is None else window_days
+    globs = (
+        None if exclude is None
+        else tuple(part.strip() for part in exclude.split(",") if part.strip())
+    )
+    with connect() as conn:
+        summaries = read_run_summaries(conn)
+        rows = portfolio_runs(summaries, window_days=days, exclude=globs, include_all=show_all)
+        entries = []
+        for row in rows:
+            view = HiveCoordinatorPort(
+                Actor(role="coordinator", id="portfolio-view"), row["run_id"], conn
+            ).read()
+            board = view.board or Board(tasks={})
+            entries.append(
+                (row["run_id"], board if show_all else active_board(board, window_days=days))
+            )
+    if as_json:
+        print(portfolio_to_json(entries))
+        return
+    render_portfolio(
+        entries, console, hidden=len(summaries) - len(rows), window_days=days, show_all=show_all
+    )
 
 
 @app.command("notify")
