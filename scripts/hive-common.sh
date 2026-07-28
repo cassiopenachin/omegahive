@@ -14,9 +14,9 @@
 #   * DEPLOYMENT facts are the host paths + worker command below — env-overridable,
 #     defaults are the Beastie operator layout (OPERATIONS.md Phase 1). The one
 #     per-project deployment fact, CANON_CODE, is derived host-side from
-#     CANON_ROOT/<project> (resolve_canon_code); nothing host-specific lives in
-#     the committed conf. This seam is the first brick of the parked
-#     beastie-independence wave; nothing else of that wave is in scope.
+#     CANON_ROOT/<repo basename of CODE_REPO> (resolve_canon_code); nothing
+#     host-specific lives in the committed conf. This seam is the first brick of
+#     the parked beastie-independence wave; nothing else of that wave is in scope.
 #
 # Precedence, everywhere: an env override wins over project.conf, which wins over
 # the defaults here. HIVE_RUN_ID is the run escape hatch — when set it wins over
@@ -27,13 +27,21 @@ set -euo pipefail
 
 # --- deployment layer (env-overridable host facts; NOT project identity) -------
 : "${OMEGA_DIR:=$HOME/src/SNET/omegahive}"        # canonical STACK dir: compose + emits + deploys run here (ONE shared spine for every run)
-: "${CANON_ROOT:=$HOME/src/SNET}"                  # host root of per-project canonical code checkouts (CANON_ROOT/<project>); resolve_canon_code derives CANON_CODE from it
+: "${CANON_ROOT:=$HOME/src/SNET}"                  # host root of canonical code checkouts (CANON_ROOT/<repo>); resolve_canon_code derives CANON_CODE from it
 : "${WS_HUB:=$HOME/repos/hive-workspace.git}"      # local workspace hub (clone source, push target)
 : "${OPS_WS:=$HOME/workspaces/hive}"               # operator's workspace clone: order files, project confs, answers
 : "${WORK_ROOT:=$HOME/work}"                       # per-worker working trees live under here
 : "${WRAPPER_DIR:=$HOME/work/hive-wrappers}"       # per-seat emit wrappers (proto-credentials)
 : "${HIVE_TMUX_SESSION:=hive}"                     # tmux session that holds the worker panes
-: "${HIVE_WORKER_CMD:=claude}"                     # session launcher; the drill overrides to a no-op
+# Session launcher, and the pane's autonomy is part of it: a launched pane that
+# waits on interactive permission prompts is not launched — the ceremony ends and
+# the work does not start. `--permission-mode auto` is the mode WORKER.md section
+# Launch specifies (adaptable, stall-free; bypass mode is prohibited, and auto
+# cannot be granted by the repo's own settings, hence the flag here). The hard
+# line stays the workspace's committed deny pins, which are evaluated first in
+# every mode. Override the whole string with HIVE_WORKER_CMD (project.conf / env)
+# if the worker CLI's flag ever drifts; the drill overrides it to a no-op.
+: "${HIVE_WORKER_CMD:=claude --permission-mode auto}"
 : "${HIVE_WIP_REVIEW_MAX:=3}"                       # hive-launch refuses at this many in_review tasks (review debt, summed across all projects); --anyway overrides
 
 # RUN / RUN_ID / CODE_REPO / PROJECT / CANON_CODE are resolved per operation by
@@ -46,6 +54,20 @@ RUN=""
 OPERATOR_ACTOR="operator"
 
 die() { echo "hive: $*" >&2; exit 1; }
+
+# Refuse a tmux session name that cannot be targeted safely. Task, worker and run
+# ids are all charset-guarded because they flow into tmux targets and generated
+# shell; HIVE_TMUX_SESSION flows into the very same targets and was not — and a
+# `:` in it splits `=<session>:<window>` at the wrong place, so a launch seats a
+# worker in the wrong session and a nudge types an answer into someone else's
+# pane, both silently (tmux exits 0 either way). Same charset as the id guards.
+# Callers run this BEFORE any spine write, so an unsafe name refuses a launch
+# rather than half-completing one. (tmux itself additionally rejects `.` in a
+# session name; that refusal is its own and clear enough.)
+require_safe_tmux_session() {  # require_safe_tmux_session   (reads HIVE_TMUX_SESSION)
+  [[ "$HIVE_TMUX_SESSION" =~ ^[A-Za-z0-9._-]+$ ]] \
+    || die "unsafe HIVE_TMUX_SESSION '$HIVE_TMUX_SESSION' (allowed: A-Za-z0-9._-) — a session name outside this charset cannot be targeted exactly, and tmux would silently act on the wrong session"
+}
 
 # The stack CLI, run in the canonical dir (compose file + running pg live there).
 hive() { ( cd "$OMEGA_DIR" && podman compose run --rm -T cli "$@" ); }
@@ -117,10 +139,28 @@ load_project_conf() {  # load_project_conf <project>
 }
 
 # Resolve CANON_CODE — the per-project canonical code checkout on THIS host — the
-# lone per-project deployment fact. Derived from CANON_ROOT/<project> unless the
-# operator pins CANON_CODE explicitly (env). Must run after PROJECT is set.
-resolve_canon_code() {  # resolve_canon_code  (reads PROJECT/CANON_ROOT/CANON_CODE)
-  : "${CANON_CODE:=$CANON_ROOT/$PROJECT}"
+# lone per-project deployment fact. Derived from CANON_ROOT/<repo>, where <repo> is
+# the basename of the conf's CODE_REPO with any `.git` suffix stripped; the
+# operator can still pin CANON_CODE explicitly (env). Must run after CODE_REPO is
+# set (load_project_conf).
+#
+# The REPO names the checkout, not the project directory, because a checkout on
+# disk is what `git clone` named it — i.e. the repo. Deriving from the project
+# directory name assumed the two always coincide, and the first tenant launch
+# refused the moment they did not (project `pln-benchmarks`, repo `plnbench`).
+# The interim was a per-launch CANON_CODE env override — exactly the
+# misconfigured-run-identity bug class this config layer exists to remove, so the
+# derivation is fixed rather than the override made routine.
+resolve_canon_code() {  # resolve_canon_code  (reads CODE_REPO/CANON_ROOT/CANON_CODE)
+  local repo
+  repo=$(basename -- "${CODE_REPO%/}")   # git@host:owner/repo.git · https://host/owner/repo · /path/to/repo
+  repo=${repo%.git}
+  # A CODE_REPO that yields no usable basename would make CANON_CODE a bare
+  # directory (or CANON_ROOT itself) and clone the wrong tree — refuse instead.
+  case "$repo" in
+    ''|.|..|*/*) die "cannot derive a repo name from CODE_REPO '$CODE_REPO' (project '$PROJECT') — set CANON_CODE explicitly" ;;
+  esac
+  : "${CANON_CODE:=$CANON_ROOT/$repo}"
 }
 
 # Resolve <task> to its unique order file (workspace-relative path), searching
@@ -159,6 +199,42 @@ order_pin() {  # order_pin <workspace-relative-path>  -> prints sha
   git -C "$OPS_WS" merge-base --is-ancestor "$sha" origin/main \
     || die "$path@$sha is not pushed to the hub; push before launch"
   printf '%s\n' "$sha"
+}
+
+# Commit + push a project's regenerated metrics artifacts. Shared by hive-metrics
+# and hive-score, which write only under projects/<project>/metrics/.
+#
+# The instruments used to stop at "written, not committed", which handed the
+# operator back three clerical steps the Phase 1 loop had already collapsed —
+# and cost more than tedium: the improver reads only committed instruments, so a
+# score that exists solely as an uncommitted working tree is invisible to the
+# seat that consumes it (the first improver sitting, 2026-07-27, was bitten by
+# exactly that). Regenerating and recording it are one act.
+#
+# Scoped by pathspec to the project's metrics dir, so unrelated work in the
+# operator's clone is never swept into the commit. Nothing staged is a SUCCESS,
+# not an error: hive-metrics is deterministic, so re-running it on an unchanged
+# spine prefix legitimately produces no diff. Push mirrors hive-answer's
+# retry (push -> pull --rebase -> push) and reports precisely how far it got, so
+# "committed locally" is never mistaken for "on the hub".
+commit_metrics() {  # commit_metrics <project> <commit-message>  -> 0 committed/nothing-to-do, non-zero otherwise
+  local proj="$1" msg="$2" spec="projects/$1/metrics"
+  git -C "$OPS_WS" add -- "$spec" || { echo "hive: git add failed for $spec in $OPS_WS" >&2; return 1; }
+  if git -C "$OPS_WS" diff --cached --quiet -- "$spec"; then
+    echo "  no change to commit ($spec is already up to date)"
+    return 0
+  fi
+  git -C "$OPS_WS" commit --quiet -m "$msg" -- "$spec" \
+    || { echo "hive: git commit failed for $spec in $OPS_WS (git identity unset, a commit hook, or an index lock?)" >&2; return 1; }
+  if ! git -C "$OPS_WS" push --quiet 2>/dev/null; then
+    if ! git -C "$OPS_WS" pull --rebase --quiet; then
+      echo "hive: push failed and rebase failed — committed locally in $OPS_WS, NOT on the hub; resolve by hand" >&2
+      return 1
+    fi
+    git -C "$OPS_WS" push --quiet \
+      || { echo "hive: push failed for $OPS_WS — committed locally, NOT on the hub" >&2; return 1; }
+  fi
+  echo "  committed + pushed: $spec ($msg)"
 }
 
 # The folded board as a JSON array (board-view --json): the machine projection —

@@ -64,6 +64,11 @@ TASK=$(task_from_order "$REL")
 SAFE='^[A-Za-z0-9._-]+$'
 [[ "$TASK" =~ $SAFE ]]   || die "unsafe task id derived from order name: '$TASK' (allowed: A-Za-z0-9._-)"
 [[ "$WORKER" =~ $SAFE ]] || die "unsafe --worker id: '$WORKER' (allowed: A-Za-z0-9._-)"
+# The session name is the third value that flows into a tmux target, and it is
+# guarded here — with the ids, before anything is written — so an unsafe name
+# refuses a launch outright rather than seeding the board and then seating the
+# worker in whatever session tmux resolved instead.
+require_safe_tmux_session
 
 WS_ROOT="$WORK_ROOT/$WORKER/hive"
 CODE_ROOT="$WORK_ROOT/$WORKER/$PROJECT"   # code clone named after the project (omegahive keeps its historical dir)
@@ -160,7 +165,12 @@ fi
 # adopted task keeps its original (seeded) task.created acceptance pin.
 SHA=$(order_pin "$REL")
 ACCEPTANCE="per $REL@$SHA"
-TITLE=$(grep -m1 -E '^# ' "$OPS_WS/$REL" | sed -E 's/^# +//; s/^Order: *//')
+# A heading-less order file is a titling problem, not a launch failure. Without
+# the `|| true` the no-match `grep` fails the whole pipeline under `set -o
+# pipefail`, aborting the script one line ABOVE its own fallback — which made
+# that fallback dead code. The title is an advisory board label; the order file
+# at its pin is what the worker actually reads.
+TITLE=$( { grep -m1 -E '^# ' "$OPS_WS/$REL" | sed -E 's/^# +//; s/^Order: *//'; } || true )
 [ -n "$TITLE" ] || TITLE="$TASK"
 TASK_TYPE="task"   # advisory label only; not gated (events/types.py). Edit freely.
 

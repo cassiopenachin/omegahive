@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# hive-close <task> [--reason <text>]
+# hive-close <task> [--reason <text>] [--no-score]
 #
 # The close bookend of the Phase 1 loop (OPERATIONS.md): one judgment — the
 # result holds — after the PR is merged in the GitHub app. Verifies the board is
 # in_review, pulls the result ref from the spine's own task.result_posted, then
-# emits review.passed + status_override(done).
+# emits review.passed + status_override(done), and finally scores the task's
+# predictions (hive-score) so calibration is a by-product of closing rather than a
+# separate errand the operator has to remember. `--no-score` skips that step.
 #
 # review.passed here certifies exactly what OPERATIONS.md pain 6 says it does:
 # the operator read the result report and saw no red flags — not artifact
@@ -15,13 +17,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/hive-common.sh
 source "$SCRIPT_DIR/hive-common.sh"
 
-usage() { echo "usage: hive-close <task> [--reason <text>]" >&2; exit 2; }
+usage() { echo "usage: hive-close <task> [--reason <text>] [--no-score]" >&2; exit 2; }
 
 TASK=""
 REASON="operator read the result report; no red flags (hive-close)"
+SCORE=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --reason) shift; [ $# -gt 0 ] || usage; REASON="$1" ;;
+    --no-score) SCORE=0 ;;
     -h|--help) usage ;;
     -*) usage ;;
     *) [ -z "$TASK" ] || usage; TASK="$1" ;;
@@ -70,3 +74,35 @@ echo "hive-close: certified"
 echo "  review.passed  ref_result = $REF"
 echo "  status_override done       reason = $REASON"
 echo "  NOTE review.passed = the operator read the result report (not artifact correctness)."
+
+# 5. Score the task's predictions — strictly AFTER the close emits, and strictly
+#    non-fatal. The close is the governed act and it is already durable on the
+#    spine; scoring is a workspace by-product. So the ordering is absolute (a
+#    scoring failure can never make a completed close look failed, and can never
+#    prevent one), and the failure is LOUD rather than swallowed: the operator is
+#    told exactly which one command to re-run.
+#
+#    hive-score is invoked as a child process rather than sourced: it has its own
+#    argument parsing, its own `set -euo pipefail` expectations, and its own
+#    `die` paths, all of which would otherwise abort the close after the fact.
+#    `--project` is passed because this close already resolved it. `</dev/null`
+#    because the spine read is `podman compose run`, which eats stdin.
+#
+#    Not scored here: the review verdict. The spine records `review.failed`, not
+#    whether a PR needed another round of comments, so that column stays
+#    `unscored` until a human supplies it — `hive-score <task> --review "<verdict>"
+#    --again` after the fact.
+if [ "$SCORE" -eq 0 ]; then
+  echo "hive-close: --no-score — calibration not recorded; run 'hive-score $TASK' when you want it."
+elif "$SCRIPT_DIR/hive-score" "$TASK" --project "$PROJECT" </dev/null; then
+  echo "hive-close: scored (add the human review verdict with: hive-score $TASK --review \"<clean|minor rework|rework>\" --again)"
+else
+  {
+    echo
+    echo "hive-close: WARNING the close SUCCEEDED and is durable on the spine — scoring afterwards did not."
+    echo "  Nothing about task '$TASK' is in doubt: review.passed and status_override(done) are emitted."
+    echo "  Only the calibration entry is missing. Recover with one command:"
+    echo "      hive-score $TASK --project $PROJECT"
+    echo "  (already-scored is a normal reason for this to fail — add --again to record a second entry.)"
+  } >&2
+fi

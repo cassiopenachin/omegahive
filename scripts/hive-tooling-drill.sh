@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # hive-tooling-drill.sh — end-to-end dry run of hive-launch / hive-answer /
-# hive-close plus every refusal path, across TWO scratch projects, against a
+# hive-close plus every refusal path, across THREE scratch projects, against a
 # fully isolated sandbox (its own bare hub, workspace clone, per-project canonical
 # repos, work root, wrapper dir, tmux session, and no-op worker command).
 #
@@ -9,10 +9,13 @@
 # infers the project from the order path, sources that conf, and acts on that
 # project's run. The drill exercises: a full lifecycle on project 'alpha', the
 # same lifecycle on a SECOND project 'beta' (proving multi-project provisioning),
-# cross-project task-id ambiguity refusal, the review-WIP throttle summed ACROSS
-# projects, the HIVE_RUN_ID override, and every legacy refusal path.
+# a THIRD project whose directory name differs from its repo (proving CANON_CODE
+# derives from the repo, not the directory), cross-project task-id ambiguity
+# refusal, the review-WIP throttle summed ACROSS projects, the HIVE_RUN_ID
+# override, the close->score->commit coupling and its failure mode, the autonomy
+# default of the issued worker command, and every legacy refusal path.
 #
-# It never touches the durable `omegahive` run: both projects carry scratch run
+# It never touches the durable `omegahive` run: all three projects carry scratch run
 # ids (tooling-drill-<proj>-<stamp>) in their confs, and OPS_WS points at the
 # sandbox workspace so the tooling only ever sees the scratch projects. The one
 # shared resource is the stack itself (podman compose + pg): scratch events land
@@ -33,6 +36,11 @@ OMEGA_DIR_REAL="${OMEGA_DIR:-$HOME/src/SNET/omegahive}"   # the real stack dir (
 # scratched so the durable spine is never touched).
 APROJ="alpha"; ARUN="tooling-drill-${APROJ}-${STAMP}"
 BPROJ="beta";  BRUN="tooling-drill-${BPROJ}-${STAMP}"
+# The third project exists to break the assumption that a project directory and
+# its repo share a name — the first tenant launch refused on exactly that
+# (`pln-benchmarks` the directory, `plnbench` the repo). Its canonical checkout
+# lives at CANON/<GREPO>, and CANON/<GPROJ> deliberately never exists.
+GPROJ="gamma-project"; GREPO="gammarepo"; GRUN="tooling-drill-${GPROJ}-${STAMP}"
 
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); echo "  PASS  $*"; }
@@ -50,21 +58,41 @@ expect_fail_msg(){
   else bad "$d (refused, but message missing '$needle')"; fi
 }
 
+# log_has <repo> <needle> [pathspec ...] — is <needle> a commit subject in <repo>?
+#
+# Two traps, both of which produce a false FAIL against a repo that is actually
+# correct:
+#   * `git log | grep -q` — `-q` exits at the FIRST match, and the SIGPIPE that
+#     sends `git log` fails the whole pipeline under `set -o pipefail`. It bites
+#     precisely when the needle matches an EARLY line, i.e. the passing case.
+#     Plain `grep` reads to EOF, so git is never signalled.
+#   * a bare `git log` in a bare repo whose HEAD is an unborn `master` while every
+#     ref lives on `main` — `--all` reads refs, not HEAD.
+log_has() {
+  local repo="$1" needle="$2"; shift 2
+  git -C "$repo" log --all --format=%s -- "$@" | grep -F -- "$needle" >/dev/null
+}
+
 cleanup() {
   tmux kill-server 2>/dev/null || true   # the drill's own isolated server (TMUX_TMPDIR), not the operator's
   rm -rf "$SANDBOX"
   echo
-  echo "drill: runs=$ARUN,$BRUN  PASS=$PASS  FAIL=$FAIL  (scratch events remain under those runs)"
+  echo "drill: runs=$ARUN,$BRUN,$GRUN  PASS=$PASS  FAIL=$FAIL  (scratch events remain under those runs)"
   [ "$FAIL" -eq 0 ] || echo "drill: FAILURES PRESENT"
 }
 trap cleanup EXIT
 
-echo "drill: sandbox=$SANDBOX  projects=$APROJ,$BPROJ  tmux=$TMUX_SESSION"
+echo "drill: sandbox=$SANDBOX  projects=$APROJ,$BPROJ,$GPROJ  tmux=$TMUX_SESSION"
 
 # --- stack read/write helpers, parameterized by run ----------------------------
 bstatus() {  # bstatus <run> <task> -> prints status (wrap-proof JSON read path)
   ( cd "$OMEGA_DIR_REAL" && podman compose run --rm -T cli board-view "$1" --json ) 2>/dev/null \
     | jq -r --arg t "$2" '.[] | select(.task == $t) | .status'
+}
+btitle() {  # btitle <run> <task> -> the title the launcher seeded on task.created
+  ( cd "$OMEGA_DIR_REAL" && podman compose run --rm -T cli report "$1" --json ) 2>/dev/null \
+    | jq -r --arg t "$2" '[ .[] | select(.event_type == "task.created" and .task_id == $t) ]
+                          | last | .payload.title // empty'
 }
 bcount_review() {  # bcount_review <run> -> count of in_review tasks on that run
   ( cd "$OMEGA_DIR_REAL" && podman compose run --rm -T cli board-view "$1" --json ) 2>/dev/null \
@@ -92,7 +120,7 @@ seed_in_review() {  # seed_in_review <project> <run> <task> <worker>
 # --- 1. build the isolated sandbox --------------------------------------------
 HUB="$SANDBOX/hub.git"
 WS="$SANDBOX/ws"
-CANON="$SANDBOX/canon"       # CANON_ROOT: holds per-project canonical checkouts (CANON/<proj>)
+CANON="$SANDBOX/canon"       # CANON_ROOT: holds canonical checkouts, named by REPO (CANON/<repo>)
 WORK="$SANDBOX/work"
 WRAPPERS="$SANDBOX/wrappers"
 
@@ -102,25 +130,28 @@ git -C "$WS" config user.email drill@example.invalid
 git -C "$WS" config user.name  drill
 
 # A project = projects/<name>/{project.conf, orders/}. seed_project writes the conf
-# and a canonical code repo under CANON/<name>.
-seed_project() {  # seed_project <name> <run>
-  local name="$1" run="$2"
+# and a canonical code repo under CANON/<repo>, where <repo> defaults to the
+# project name but can differ — the third argument is what makes the
+# directory-name-vs-repo-name case expressible at all.
+seed_project() {  # seed_project <name> <run> [repo-basename]
+  local name="$1" run="$2" repo="${3:-$1}"
   mkdir -p "$WS/projects/$name/orders"
   cat > "$WS/projects/$name/project.conf" <<EOF
 # scratch project.conf for the tooling drill — deployment-independent facts only.
 RUN_ID=$run
-CODE_REPO=https://github.invalid/cassiopenachin/$name.git
+CODE_REPO=https://github.invalid/cassiopenachin/$repo.git
 EOF
-  git init --quiet "$CANON/$name"
-  git -C "$CANON/$name" config user.email drill@example.invalid
-  git -C "$CANON/$name" config user.name  drill
-  echo "scratch canonical code for $name" > "$CANON/$name/README.md"
-  git -C "$CANON/$name" add -A
-  git -C "$CANON/$name" commit --quiet -m "drill: $name canon seed"
+  git init --quiet "$CANON/$repo"
+  git -C "$CANON/$repo" config user.email drill@example.invalid
+  git -C "$CANON/$repo" config user.name  drill
+  echo "scratch canonical code for project $name (repo $repo)" > "$CANON/$repo/README.md"
+  git -C "$CANON/$repo" add -A
+  git -C "$CANON/$repo" commit --quiet -m "drill: $repo canon seed"
 }
 mkdir -p "$CANON"
 seed_project "$APROJ" "$ARUN"
 seed_project "$BPROJ" "$BRUN"
+seed_project "$GPROJ" "$GRUN" "$GREPO"
 
 git -C "$WS" add -A
 git -C "$WS" commit --quiet -m "drill: seed projects"
@@ -170,7 +201,7 @@ export WRAPPER_DIR="$WRAPPERS"
 unset HIVE_RUN_ID CANON_CODE CODE_REPO RUN_ID PROJECT 2>/dev/null || true
 
 # Safety: the durable run must never appear.
-case " $ARUN $BRUN " in *" omegahive "*) echo "drill: FATAL a scratch run is 'omegahive'"; exit 1;; esac
+case " $ARUN $BRUN $GRUN " in *" omegahive "*) echo "drill: FATAL a scratch run is 'omegahive'"; exit 1;; esac
 
 # ==============================================================================
 echo
@@ -203,7 +234,7 @@ check "block -> blocked" "[ \"\$(bstatus '$ARUN' alpha-demo)\" = blocked ]"
 "$SCRIPT_DIR/hive-answer" alpha-demo "use event time, not wall clock"
 check "answer appended to order"    "grep -q 'use event time' '$WS/$AORDER'"
 check "answer section header added" "grep -qxF '## Answers' '$WS/$AORDER'"
-check "answer pushed to hub"        "git -C '$HUB' log --oneline | grep -q 'answer: alpha-demo'"
+check "answer pushed to hub"        "log_has '$HUB' 'answer: alpha-demo'"
 check "order body untouched"        "grep -q 'Drill fixture' '$WS/$AORDER'"
 
 "$AWRAP" --type task.unblocked --task alpha-demo >/dev/null
@@ -215,12 +246,25 @@ ARESULT="projects/$APROJ/reports/2026-07-13-alpha-demo-result.md@0123456789abcde
 check "result -> in_review" "[ \"\$(bstatus '$ARUN' alpha-demo)\" = in_review ]"
 
 echo
-echo "== project '$APROJ': close (resolves the task's run) =="
+echo "== project '$APROJ': close (resolves the task's run) — and scores as one act =="
 ACLOSE="$("$SCRIPT_DIR/hive-close" alpha-demo --reason "drill close")"
 printf '%s\n' "$ACLOSE"
 check "close -> done"                  "[ \"\$(bstatus '$ARUN' alpha-demo)\" = done ]"
 check "close named the resolved run"   "printf '%s' \"\$ACLOSE\" | grep -qF 'run=$ARUN'"
 check "close certified the result ref" "printf '%s' \"\$ACLOSE\" | grep -qF '$ARESULT'"
+
+# Scoring is no longer an errand the operator has to remember after the close, and
+# — the part that actually bit the first improver sitting — it no longer stops at
+# an uncommitted working tree. Assert all three links: appended, committed, pushed.
+check "close scored the task"                "grep -q '^### alpha-demo — closed' '$WS/projects/$APROJ/metrics/calibration.md'"
+check "the score is COMMITTED in the workspace clone" \
+  "log_has '$WS' 'score: alpha-demo on run $ARUN' 'projects/$APROJ/metrics'"
+check "the score reached the hub"            "log_has '$HUB' 'score: alpha-demo on run $ARUN'"
+check "close left the workspace clean"       "[ -z \"\$(git -C '$WS' status --porcelain)\" ]"
+check "close reported the scoring"           "printf '%s' \"\$ACLOSE\" | grep -qF 'hive-score'"
+# The commit is pathspec-scoped: it carries the metrics dir and nothing else.
+check "the score commit touched only the metrics dir" \
+  "[ -z \"\$(git -C '$WS' show --name-only --format= HEAD | grep -v '^projects/$APROJ/metrics/')\" ]"
 
 # ==============================================================================
 echo
@@ -246,6 +290,39 @@ BCLOSE="$("$SCRIPT_DIR/hive-close" beta-demo --reason "beta drill close")"
 printf '%s\n' "$BCLOSE"
 check "beta: close resolved beta's run"          "printf '%s' \"\$BCLOSE\" | grep -qF 'run=$BRUN'"
 check "beta: close -> done on beta's run"        "[ \"\$(bstatus '$BRUN' beta-demo)\" = done ]"
+
+# ==============================================================================
+echo
+echo "== THIRD project '$GPROJ': directory name != repo basename (repo '$GREPO') =="
+# The canonical checkout on a host is whatever `git clone` named it — the REPO.
+# Deriving CANON_CODE from the project DIRECTORY assumed the two always coincide,
+# and the first tenant launch refused the moment they did not. The negative
+# control is what makes this test mean something: CANON/<project> must not exist,
+# so a launch that succeeds cannot have used the old derivation.
+check "negative control: no checkout at CANON/<project dir>" "[ ! -e '$CANON/$GPROJ' ]"
+check "the checkout is at CANON/<repo>"                      "[ -d '$CANON/$GREPO/.git' ]"
+GORDER=$(add_order "$GPROJ" "2026-07-13-gamma-demo" "gamma demo")
+GWORKER="sess-gamma-${STAMP}"
+"$SCRIPT_DIR/hive-launch" "$GORDER" --worker "$GWORKER" >/dev/null
+check "launch with NO CANON_CODE override -> assigned" "[ \"\$(bstatus '$GRUN' gamma-demo)\" = assigned ]"
+check "the code clone really came from the repo-named checkout" \
+  "grep -qF 'repo $GREPO' '$WORK/$GWORKER/$GPROJ/README.md'"
+check "gamma: origin re-pointed to the conf CODE_REPO" \
+  "git -C '$WORK/$GWORKER/$GPROJ' remote get-url origin | grep -q 'github.invalid/cassiopenachin/$GREPO'"
+# And the resolver directly, both ways round: derived by default, pinned by env.
+GOT_CANON=$( bash -euo pipefail -c "source '$SCRIPT_DIR/hive-common.sh'; load_project_conf $GPROJ; printf '%s' \"\$CANON_CODE\"" )
+check "CANON_CODE derives from the repo basename, not the project dir" "[ \"$GOT_CANON\" = \"$CANON/$GREPO\" ]"
+PIN="$SANDBOX/pinned-checkout"
+GOT_CANON_OVR=$( CANON_CODE="$PIN" bash -euo pipefail -c "source '$SCRIPT_DIR/hive-common.sh'; load_project_conf $GPROJ; printf '%s' \"\$CANON_CODE\"" )
+check "an explicit CANON_CODE still wins over the derivation" "[ \"$GOT_CANON_OVR\" = \"$PIN\" ]"
+# A CODE_REPO with no usable basename must refuse rather than clone CANON_ROOT.
+mkdir -p "$SANDBOX/badconf/projects/badrepo"
+cat > "$SANDBOX/badconf/projects/badrepo/project.conf" <<EOF
+RUN_ID=tooling-drill-badrepo-${STAMP}
+CODE_REPO=/
+EOF
+expect_fail_msg "a CODE_REPO with no repo name is refused, not guessed" "cannot derive a repo name" \
+  env OPS_WS="$SANDBOX/badconf" bash -euo pipefail -c "source '$SCRIPT_DIR/hive-common.sh'; load_project_conf badrepo"
 
 echo
 echo "== HIVE_RUN_ID override precedence (env wins over project.conf) =="
@@ -336,6 +413,24 @@ check "long id: result -> in_review" "[ \"\$(bstatus '$ARUN' '$LTASK')\" = in_re
 check "long id: close -> done (in_review verified past the wrap)" "[ \"\$(bstatus '$ARUN' '$LTASK')\" = done ]"
 
 echo
+echo "== an order file with no '# ' heading launches, titled by task id =="
+# The title is an advisory board label; the order at its pin is what the worker
+# reads. So a missing heading must not be able to fail a launch — and before this
+# it could: the no-match grep aborted the script under `set -o pipefail` one line
+# ABOVE the `TITLE=\$TASK` fallback, which made that fallback dead code.
+NHTASK="drill-noheading"
+NHREL="projects/$APROJ/orders/2026-07-13-$NHTASK.md"
+printf 'No heading here, just body text.\n\n## Scope\nDrill fixture.\n' > "$WS/$NHREL"
+git -C "$WS" add -A && git -C "$WS" commit --quiet -m "drill: order $NHTASK"
+git -C "$WS" push --quiet origin HEAD:main
+check "the fixture really has no '# ' heading" "! grep -qE '^# ' '$WS/$NHREL'"
+"$SCRIPT_DIR/hive-launch" "$NHREL" --worker "sess-noheading-${STAMP}" >/dev/null
+check "heading-less order launches -> assigned" "[ \"\$(bstatus '$ARUN' '$NHTASK')\" = assigned ]"
+check "the fallback title IS the task id"       "[ \"\$(btitle '$ARUN' '$NHTASK')\" = '$NHTASK' ]"
+# Control: a titled order still takes its heading, minus the `Order: ` prefix.
+check "a titled order still uses its heading"   "[ \"\$(btitle '$ARUN' alpha-demo)\" = 'alpha demo' ]"
+
+echo
 echo "== adopt a pre-seeded ready task (register + assign only, no task.created) =="
 # The pre-tooling backlog was seeded as unowned `ready` tasks via raw task.created.
 # hive-launch must ADOPT such a task on its project's run: register + assign only.
@@ -407,6 +502,29 @@ check "pane-name refusal opened no second window" \
   "[ \"\$(tmux list-windows -t '=$TMUX_SESSION' -F '#{window_name}' | grep -cxF drill-panedup)\" = 1 ]"
 
 echo
+echo "== an unsafe HIVE_TMUX_SESSION is refused BEFORE anything is written =="
+# Task, worker and run ids are charset-guarded because they flow into tmux
+# targets; the session name flows into the very same targets and was not guarded.
+# A `:` splits `=<session>:<window>` at the wrong place, so tmux acts on some
+# other session and exits 0 — a launch seats the worker in the wrong session, a
+# nudge types an answer into a stranger's pane. Refuse, and refuse early: no
+# board write, no clones, no wrapper.
+BSORDER=$(add_order "$APROJ" "2026-07-13-drill-badsession" "bad session name")
+expect_fail_msg "launch refuses a session name outside the id charset" "unsafe HIVE_TMUX_SESSION" \
+  env HIVE_TMUX_SESSION="drill:evil" "$SCRIPT_DIR/hive-launch" "$BSORDER" --worker "sess-badsession-${STAMP}"
+check "the unsafe-session refusal seeded no board state" "[ -z \"\$(bstatus '$ARUN' drill-badsession)\" ]"
+check "the unsafe-session refusal provisioned nothing"   "[ ! -e '$WORK/sess-badsession-${STAMP}' ]"
+check "no wrapper was issued for the refused launch"     "[ ! -e '$WRAPPERS/sess-badsession-${STAMP}.sh' ]"
+expect_fail_msg "answer refuses the same unsafe session name" "unsafe HIVE_TMUX_SESSION" \
+  env HIVE_TMUX_SESSION="drill:evil" "$SCRIPT_DIR/hive-answer" drill-drained "should never land"
+check "the refused answer wrote nothing to the order" \
+  "! grep -q 'should never land' '$WS/projects/$APROJ/orders/2026-07-13-drill-drained.md'"
+# The same launch, with a safe session name, proceeds — so the refusal is the
+# guard firing, not the fixture being broken.
+"$SCRIPT_DIR/hive-launch" "$BSORDER" --worker "sess-badsession-ok-${STAMP}" >/dev/null
+check "the same order launches under a safe session name" "[ \"\$(bstatus '$ARUN' drill-badsession)\" = assigned ]"
+
+echo
 echo "== fail-safe: a pane failure AFTER seeding prints the manual completion path =="
 # This failure cannot be ordered away: the worker's first act is task.accepted,
 # which the board rejects unless the task is already seeded and assigned to it, so
@@ -449,6 +567,83 @@ check "no window was opened for the half-launched task" \
 # The print's central warning must be true, not just printed.
 expect_fail_msg "a half-launched task does refuse a re-launch, as the print warns" "task.reassigned" \
   "$SCRIPT_DIR/hive-launch" "$HORDER" --worker "sess-halflaunch-2-${STAMP}"
+
+echo
+echo "== the launched pane is autonomous by default (and the override still wins) =="
+# A pane that opens on an interactive permission prompt is not a launched task:
+# the ceremony ends, the work waits for someone to attend it. The default worker
+# command therefore carries the autonomy flag. The drill cannot start a real
+# session, so it asserts the COMMAND the launcher issues: with HIVE_WORKER_CMD
+# unset, the tmux stub above fails window creation and the half-launch print shows
+# the exact invocation that would have run — flag included.
+DEF_CMD=$( env -u HIVE_WORKER_CMD bash -euo pipefail -c \
+  "source '$SCRIPT_DIR/hive-common.sh'; printf '%s' \"\$HIVE_WORKER_CMD\"" )
+check "the default worker command carries the autonomy flag" \
+  "printf '%s' \"$DEF_CMD\" | grep -qF -- '--permission-mode auto'"
+OVR_CMD=$( HIVE_WORKER_CMD='some-other-cli --flag' bash -euo pipefail -c \
+  "source '$SCRIPT_DIR/hive-common.sh'; printf '%s' \"\$HIVE_WORKER_CMD\"" )
+check "HIVE_WORKER_CMD overrides the default outright" "[ \"$OVR_CMD\" = 'some-other-cli --flag' ]"
+AORDER2=$(add_order "$APROJ" "2026-07-13-drill-autonomy" "autonomy default")
+# shellcheck disable=SC2034  # consumed by `check`, which evals its condition string
+AUTOOUT="$(PATH="$STUB_BIN:$PATH" env -u HIVE_WORKER_CMD \
+  "$SCRIPT_DIR/hive-launch" "$AORDER2" --worker "sess-autonomy-${STAMP}" 2>&1)" || true
+check "the ISSUED invocation carries the autonomy flag" \
+  "printf '%s' \"\$AUTOOUT\" | grep -qF -- '$DEF_CMD \"\$HIVE_KICKOFF\"'"
+# And the drill's own override is what has been driving every pane above: the
+# no-op worker command only writes kickoff.txt if it was the command actually run.
+check "the drill's HIVE_WORKER_CMD override really drove the panes" "[ -s '$SANDBOX/kickoff.txt' ]"
+
+echo
+echo "== a scoring failure is LOUD but never makes a completed close look failed =="
+# The close→score coupling's blast radius, asserted rather than reasoned about.
+# Injection is the realistic failure: the workspace remote is unreachable, so the
+# score's push fails after the close has already emitted. The close must stand.
+SFTASK="drill-scorefail"
+SFORDER=$(add_order "$APROJ" "2026-07-13-$SFTASK" "score failure")
+SFWORKER="sess-scorefail-${STAMP}"
+"$SCRIPT_DIR/hive-launch" "$SFORDER" --worker "$SFWORKER" >/dev/null
+SFWRAP="$WRAPPERS/$SFWORKER.sh"
+"$SFWRAP" --type task.accepted --task "$SFTASK" >/dev/null
+"$SFWRAP" --type task.result_posted --task "$SFTASK" \
+  --payload "$(jq -cn --arg r "projects/$APROJ/reports/2026-07-13-$SFTASK-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
+git -C "$WS" remote set-url origin "$SANDBOX/nonexistent.git"
+SFRC=0
+SFOUT="$("$SCRIPT_DIR/hive-close" "$SFTASK" --reason "score-failure drill" 2>&1)" || SFRC=$?
+git -C "$WS" remote set-url origin "$HUB"
+printf '%s\n' "$SFOUT"
+check "the close still exits 0 despite the scoring failure" "[ '$SFRC' -eq 0 ]"
+check "the close really did land on the board"              "[ \"\$(bstatus '$ARUN' '$SFTASK')\" = done ]"
+check "the failure is loud, not swallowed"                  "printf '%s' \"\$SFOUT\" | grep -qF 'close SUCCEEDED'"
+check "the complaint names the one recovery command"        "printf '%s' \"\$SFOUT\" | grep -qF 'hive-score $SFTASK --project $APROJ'"
+check "the complaint says the close is not in doubt"        "printf '%s' \"\$SFOUT\" | grep -qF 'is durable on the spine'"
+# The push failed; the local commit is still there, which is what makes the
+# recovery a push rather than a rescore.
+check "the score entry survived locally"                    "grep -q '^### $SFTASK — closed' '$WS/projects/$APROJ/metrics/calibration.md'"
+git -C "$WS" push --quiet origin HEAD:main
+check "and pushes cleanly once the remote is back"          "log_has '$HUB' 'score: $SFTASK on run $ARUN'"
+# --no-score is the deliberate opt-out: close, and score later by hand.
+NSTASK="drill-noscore"
+NSORDER=$(add_order "$APROJ" "2026-07-13-$NSTASK" "no score")
+NSWORKER="sess-noscore-${STAMP}"
+"$SCRIPT_DIR/hive-launch" "$NSORDER" --worker "$NSWORKER" >/dev/null
+NSWRAP="$WRAPPERS/$NSWORKER.sh"
+"$NSWRAP" --type task.accepted --task "$NSTASK" >/dev/null
+"$NSWRAP" --type task.result_posted --task "$NSTASK" \
+  --payload "$(jq -cn --arg r "projects/$APROJ/reports/2026-07-13-$NSTASK-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
+"$SCRIPT_DIR/hive-close" "$NSTASK" --reason "no-score drill" --no-score >/dev/null
+check "--no-score closes the task"        "[ \"\$(bstatus '$ARUN' '$NSTASK')\" = done ]"
+check "--no-score records no calibration" "! grep -q '^### $NSTASK — closed' '$WS/projects/$APROJ/metrics/calibration.md'"
+# ...and scoring it afterwards works, standalone, committing as one act.
+"$SCRIPT_DIR/hive-score" "$NSTASK" --review "clean" </dev/null >/dev/null
+check "standalone hive-score records the entry"   "grep -q '^### $NSTASK — closed' '$WS/projects/$APROJ/metrics/calibration.md'"
+check "standalone hive-score carries the verdict" "grep -qF 'clean' '$WS/projects/$APROJ/metrics/calibration.md'"
+check "standalone hive-score committed + pushed"  "log_has '$HUB' 'score: $NSTASK on run $ARUN'"
+check "standalone hive-score left the tree clean" "[ -z \"\$(git -C '$WS' status --porcelain)\" ]"
+# --no-commit is the other escape hatch: written, deliberately not recorded.
+"$SCRIPT_DIR/hive-score" "$NSTASK" --again --no-commit </dev/null >/dev/null
+check "--no-commit leaves the entry uncommitted" \
+  "[ -n \"\$(git -C '$WS' status --porcelain -- 'projects/$APROJ/metrics')\" ]"
+git -C "$WS" checkout --quiet -- "projects/$APROJ/metrics"
 
 echo
 echo "== refusal paths =="

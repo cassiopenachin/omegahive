@@ -20,6 +20,12 @@ TASK="$1"; shift
 TEXT="$*"
 [ -n "$TEXT" ] || usage
 
+# Guarded up front, not at nudge time: this script's tmux target is
+# `=<session>:=<task>`, so a session name carrying `:` splits at the wrong place
+# and send-keys types the nudge into another session's pane — silently, because
+# it succeeds. Same guard hive-launch applies (hive-common.sh).
+require_safe_tmux_session
+
 REL=$(find_order "$TASK")
 FILE="$OPS_WS/$REL"
 TODAY=$(date +%F)

@@ -19,10 +19,12 @@
 # The artifact therefore reports the two clocks in separate tables, plus a third
 # for the genuinely mixed spans, and every summary row carries its clock label.
 #
-# READ-ONLY, ALWAYS. This tool issues no events and holds no write path to the
-# spine: it shells out to `omegahive report <run> --json` and nothing else. It
-# also never commits — it writes two files and prints their paths; committing
-# them is the operator's act.
+# READ-ONLY OVER THE SPINE, ALWAYS. This tool issues no events and holds no write
+# path to the spine: it shells out to `omegahive report <run> --json` and nothing
+# else. What it does write, it also records: the two artifacts are committed and
+# pushed, because the improver seat reads committed instruments and a regenerated
+# artifact left in a working tree is invisible to it. `--no-commit` (and
+# `--stdout`, which writes nothing at all) opt out.
 #
 # DETERMINISM. The same spine prefix always renders the same bytes: no clock
 # reading, no hostname, no "generated at", and a total order on every list. The
@@ -44,7 +46,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/hive-common.sh"
 
 usage() {
-  echo "usage: hive-metrics <project> [--run <run-id>] [--upto <seq>] [--stdout]" >&2
+  echo "usage: hive-metrics <project> [--run <run-id>] [--upto <seq>] [--stdout] [--no-commit]" >&2
   exit 2
 }
 
@@ -52,11 +54,13 @@ PROJECT=""
 RUN_OVERRIDE=""
 UPTO=""
 TO_STDOUT=0
+COMMIT=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --run)    shift; [ $# -gt 0 ] || usage; RUN_OVERRIDE="$1" ;;
     --upto)   shift; [ $# -gt 0 ] || usage; UPTO="$1" ;;
     --stdout) TO_STDOUT=1 ;;
+    --no-commit) COMMIT=0 ;;
     -h|--help) usage ;;
     -*) usage ;;
     *) [ -z "$PROJECT" ] || usage; PROJECT="$1" ;;
@@ -65,6 +69,11 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$PROJECT" ] || usage
 case "$PROJECT" in */*|.|..) die "project must be a bare directory name, got '$PROJECT'" ;; esac
+# `--upto` rebuilds a HISTORICAL artifact — an inspection (does seq N still
+# reproduce byte for byte?), never the current record. Committing one would rewind
+# the committed instrument to an older spine prefix, so a historical regeneration
+# never commits.
+if [ -n "$UPTO" ]; then COMMIT=0; fi
 
 # Project -> run id, from the project's committed identity
 # (projects/<name>/project.conf: RUN_ID) — never the project name by convention. A
@@ -502,4 +511,13 @@ HEAD=$(printf '%s' "$DATA" | jq -r '.meta.head_seq')
 echo "hive-metrics: run=$RUN  head seq=$HEAD  closed tasks=$CLOSED"
 echo "  $OUT_DIR/tasks.md"
 echo "  $OUT_DIR/tasks.csv"
-echo "hive-metrics: not committed — review the diff and commit it yourself."
+
+# Same act, same helper as hive-score. Regeneration is deterministic, so an
+# unchanged spine prefix produces no diff and there is simply nothing to commit —
+# that is a success, not a failure.
+if [ "$COMMIT" -eq 0 ]; then
+  echo "hive-metrics: not committed (${UPTO:+--upto rebuild is an inspection, never the record}${UPTO:-"--no-commit"}) — review the diff and commit it yourself."
+else
+  commit_metrics "$PROJECT" "metrics: refresh $PROJECT on run $RUN" \
+    || die "artifacts regenerated, but recording them failed (see above) — they are on disk in $OPS_WS; commit and push by hand"
+fi
