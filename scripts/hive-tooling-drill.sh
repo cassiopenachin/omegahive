@@ -29,6 +29,23 @@ SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/hive-drill-${STAMP}.XXXXXX")"
 TMUX_SESSION="drill-${STAMP}"
 OMEGA_DIR_REAL="${OMEGA_DIR:-$HOME/src/SNET/omegahive}"   # the real stack dir (compose + pg live here)
 
+# --- tmux isolation: FIRST, before the EXIT trap exists ------------------------
+# The drill runs tmux on a private server: TMUX/TMUX_PANE dropped and TMUX_TMPDIR
+# pointed at the sandbox, so every tmux call — the drill's and hive-launch's alike
+# — lands on a server holding only the drill session. Two payoffs: the drill stops
+# creating windows on the operator's live server, and tmux's "current session"
+# (what target resolution falls back to) becomes deterministic, without which the
+# window-allocation cases below could not assert anything.
+#
+# This MUST precede `trap cleanup EXIT`. cleanup calls `tmux kill-server`, which
+# without TMUX_TMPDIR set would hit the DEFAULT socket and destroy the operator's
+# live `hive` session — every worker pane on the host. Any failure between the
+# trap and this block (a git clone, a push, an operator's Ctrl-C) would fire that
+# trap. Order is the guard; cleanup's own check below is the backstop.
+unset TMUX TMUX_PANE 2>/dev/null || true
+export TMUX_TMPDIR="$SANDBOX/tmux"
+mkdir -p "$TMUX_TMPDIR"
+
 # The two scratch projects and their runs (run id = project name convention, but
 # scratched so the durable spine is never touched).
 APROJ="alpha"; ARUN="tooling-drill-${APROJ}-${STAMP}"
@@ -51,7 +68,14 @@ expect_fail_msg(){
 }
 
 cleanup() {
-  tmux kill-server 2>/dev/null || true   # the drill's own isolated server (TMUX_TMPDIR), not the operator's
+  # Kill ONLY the drill's own server. The check is not paranoia: an unguarded
+  # `tmux kill-server` reaching the default socket would take down the operator's
+  # live `hive` session and every worker pane in it. Refuse rather than guess.
+  if [ "${TMUX_TMPDIR:-}" = "$SANDBOX/tmux" ]; then
+    tmux kill-server 2>/dev/null || true
+  else
+    echo "drill: WARNING not killing any tmux server — TMUX_TMPDIR is not the sandbox's" >&2
+  fi
   rm -rf "$SANDBOX"
   echo
   echo "drill: runs=$ARUN,$BRUN  PASS=$PASS  FAIL=$FAIL  (scratch events remain under those runs)"
@@ -148,15 +172,7 @@ EOF
 chmod +x "$WORKER_CMD"
 
 # --- environment the scripts read (deployment layer overridden to the sandbox) --
-# tmux gets its own server too. Dropping TMUX/TMUX_PANE and pointing TMUX_TMPDIR
-# at the sandbox means every tmux call — the drill's and hive-launch's alike —
-# lands on a private server holding ONLY the drill session. Two payoffs: the drill
-# stops creating windows on the operator's live server, and tmux's "current
-# session" (which it falls back to when resolving targets) becomes deterministic,
-# without which the window-allocation cases below could not assert anything.
-unset TMUX TMUX_PANE 2>/dev/null || true
-export TMUX_TMPDIR="$SANDBOX/tmux"
-mkdir -p "$TMUX_TMPDIR"
+# (tmux isolation is set at the top of the file — it must precede the EXIT trap.)
 export HIVE_TMUX_SESSION="$TMUX_SESSION"
 export HIVE_WORKER_CMD="$WORKER_CMD"
 export WS_HUB="$HUB"
@@ -418,10 +434,12 @@ STUB_BIN="$SANDBOX/stubbin"
 mkdir -p "$STUB_BIN"
 cat > "$STUB_BIN/tmux" <<EOF
 #!/usr/bin/env bash
-# drill stub — fail window creation the way the 2026-07-27 collision did.
+# drill stub — fail window creation the way the 2026-07-27 collision did. ONLY
+# new-window: leaving new-session live keeps the two branches distinguishable, so
+# the recovery print's "which step failed" can be asserted rather than assumed.
 for a in "\$@"; do
   case "\$a" in
-    new-window|new-session) echo "create window failed: index 4 in use" >&2; exit 1 ;;
+    new-window) echo "create window failed: index 4 in use" >&2; exit 1 ;;
   esac
 done
 exec "$REAL_TMUX" "\$@"
@@ -434,6 +452,7 @@ HOUT="$(PATH="$STUB_BIN:$PATH" "$SCRIPT_DIR/hive-launch" "$HORDER" --worker "$HW
 printf '%s\n' "$HOUT"   # the recovery print is the deliverable here — show it, do not just assert it
 check "pane failure exits non-zero"            "[ '$HRC' -ne 0 ]"
 check "it is announced as a half-launch"       "printf '%s' \"\$HOUT\" | grep -qF 'HALF-LAUNCHED'"
+check "the print names which tmux step failed" "printf '%s' \"\$HOUT\" | grep -qF 'tmux new-window failed AFTER'"
 check "the board really was left half-launched" "[ \"\$(bstatus '$ARUN' drill-halflaunch)\" = assigned ]"
 check "recovery print carries the filled kickoff" \
   "printf '%s' \"\$HOUT\" | grep -qF 'You are hive worker $HWORKER on task drill-halflaunch'"
