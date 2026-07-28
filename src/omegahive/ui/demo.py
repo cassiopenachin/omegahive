@@ -14,6 +14,10 @@ from ..events.envelope import Actor, Event
 from ..port.wire import PortView
 
 DEMO_RUN_ID = "ui-demo"
+# A second run so the portfolio page has a portfolio to show. Demo mode exists for local
+# visual work, and a one-run portfolio would not show the thing being worked on.
+DEMO_RUN_ID_B = "ui-demo-bench"
+DEMO_RUNS = (DEMO_RUN_ID, DEMO_RUN_ID_B)
 _PLANNER = Actor(role="planner", id="planner")
 _COORDINATOR = Actor(role="coordinator", id="coordinator")
 _GATEWAY = Actor(role="gateway", id="gateway")
@@ -26,10 +30,11 @@ def _event(
     *,
     task_id: str | None = None,
     actor: Actor = _PLANNER,
+    run_id: str = DEMO_RUN_ID,
 ) -> Event:
     return Event(
-        event_id=uuid5(NAMESPACE_URL, f"omegahive-ui-demo:{seq}"),
-        run_id=DEMO_RUN_ID,
+        event_id=uuid5(NAMESPACE_URL, f"omegahive-ui-demo:{run_id}:{seq}"),
+        run_id=run_id,
         logical_ts=seq,
         wall_ts=datetime(2026, 7, 9, 13, min(seq, 59), tzinfo=UTC),
         actor=actor,
@@ -146,6 +151,38 @@ def demo_events() -> list[Event]:
     return events
 
 
+def demo_bench_events() -> list[Event]:
+    """A small second project — enough for the portfolio page to have two boards."""
+    worker = Actor(role="worker", id="w4")
+    return [
+        _event(1, "goal.received", {"text": "Revalidate the benchmark suite"},
+               run_id=DEMO_RUN_ID_B),
+        _event(2, "worker.registered", {"worker_id": "w4"}, run_id=DEMO_RUN_ID_B),
+        _event(3, "task.created", {"title": "Re-pin the chainer fixtures"}, task_id="B1",
+               run_id=DEMO_RUN_ID_B),
+        _event(4, "task.created", {"title": "Score the forward pass"}, task_id="B2",
+               run_id=DEMO_RUN_ID_B),
+        _event(5, "task.assigned", {"worker": "w4"}, task_id="B1", actor=_COORDINATOR,
+               run_id=DEMO_RUN_ID_B),
+        _event(6, "task.accepted", {}, task_id="B1", actor=worker, run_id=DEMO_RUN_ID_B),
+    ]
+
+
+_DEMO_EVENTS = {DEMO_RUN_ID: demo_events, DEMO_RUN_ID_B: demo_bench_events}
+
+
+def demo_run_summaries() -> list[dict]:
+    """The demo's stand-in for the spine's run registry — both demo runs, active now."""
+    now = datetime.now(UTC)
+    return [
+        {"run_id": run_id, "events": len(events), "first_ts": now, "last_ts": now}
+        for run_id, events in (
+            (DEMO_RUN_ID, demo_events()),
+            (DEMO_RUN_ID_B, demo_bench_events()),
+        )
+    ]
+
+
 class DemoPort:
     """A read-only port-shaped fixture used only when `OMEGAHIVE_UI_DEMO=1`."""
 
@@ -154,7 +191,7 @@ class DemoPort:
         self.generation = generation or 1
 
     def read(self, cursor: int | None = None) -> PortView:
-        events = demo_events() if self.run_id == DEMO_RUN_ID else []
+        events = _DEMO_EVENTS.get(self.run_id, lambda: [])()
         head = len(events)
         if cursor is not None and cursor >= head:
             return PortView(

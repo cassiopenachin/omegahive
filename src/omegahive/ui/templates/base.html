@@ -7,19 +7,28 @@
     <link rel="stylesheet" href="{{ request.url_for('static', path='ui.css') }}">
     <script defer src="{{ request.url_for('static', path='live.js') }}"></script>
   </head>
-  <body data-stream-url="{{ stream_url }}?page={{ page }}&cursor={{ cursor }}&generation={{ generation if generation is not none else '' }}{% if selected_actor %}&actor={{ selected_actor }}{% endif %}{% if selected_type %}&type={{ selected_type }}{% endif %}">
+  <body data-stream-url="{{ stream_url }}?page={{ page }}{% if run_id %}&cursor={{ cursor }}&generation={{ generation if generation is not none else '' }}{% endif %}{% if selected_actor %}&actor={{ selected_actor }}{% endif %}{% if selected_type %}&type={{ selected_type }}{% endif %}{% if show_all %}&all=1{% endif %}">
     <header class="site-header">
-      <a class="brand" href="{{ base_path }}/run/{{ run_id }}/board" aria-label="OmegaHive board">
+      <a class="brand" href="{{ base_path }}/portfolio" aria-label="OmegaHive portfolio">
         <span class="brand-mark" aria-hidden="true">Ω</span>
         <span>OmegaHive</span>
       </a>
-      <div class="run-context"><span class="live-dot" aria-hidden="true"></span> Run <strong>{{ run_id }}</strong></div>
-      <nav aria-label="Run views">
-        <a href="{{ base_path }}/run/{{ run_id }}/board" {% if page == 'board' %}aria-current="page"{% endif %}>Board</a>
-        <a href="{{ base_path }}/run/{{ run_id }}/events" {% if page == 'events' %}aria-current="page"{% endif %}>Events</a>
-        <a href="{{ base_path }}/run/{{ run_id }}/metrics" {% if page == 'metrics' %}aria-current="page"{% endif %}>Metrics</a>
-      </nav>
-      {% include "fragments/freshness.html" %}
+      {% if run_id %}
+        <div class="run-context"><span class="live-dot" aria-hidden="true"></span> Run <strong>{{ run_id }}</strong></div>
+        <nav aria-label="Run views">
+          <a href="{{ base_path }}/portfolio">Portfolio</a>
+          <a href="{{ base_path }}/run/{{ run_id }}/board" {% if page == 'board' %}aria-current="page"{% endif %}>Board</a>
+          <a href="{{ base_path }}/run/{{ run_id }}/events" {% if page == 'events' %}aria-current="page"{% endif %}>Events</a>
+          <a href="{{ base_path }}/run/{{ run_id }}/metrics" {% if page == 'metrics' %}aria-current="page"{% endif %}>Metrics</a>
+        </nav>
+        {% include "fragments/freshness.html" %}
+      {% else %}
+        <div class="run-context"><span class="live-dot" aria-hidden="true"></span> All runs</div>
+        <nav aria-label="Portfolio views">
+          <a href="{{ base_path }}/portfolio" {% if not show_all %}aria-current="page"{% endif %}>Active</a>
+          <a href="{{ base_path }}/portfolio?all=1" {% if show_all %}aria-current="page"{% endif %}>History</a>
+        </nav>
+      {% endif %}
     </header>
     <main class="page-shell">
       {% block content %}{% endblock %}

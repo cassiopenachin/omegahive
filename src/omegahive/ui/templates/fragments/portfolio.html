@@ -1,0 +1,57 @@
+{#
+  The portfolio: one board per live run, on one screen. Lane is carried by a text
+  label and a glyph, never by colour alone — the operator reading this is colourblind
+  and the phone is often in daylight.
+#}
+<section id="portfolio-fragment" class="portfolio" aria-label="All runs">
+  <p class="eyebrow">Portfolio</p>
+  {% if generation_notice %}
+    <p class="view-notice"><span class="freshness-warning">Log restored — refreshed from a new generation.</span></p>
+  {% endif %}
+  <p class="view-notice">
+    {% if show_all %}
+      Full history, every registered run.
+      <a href="{{ base_path }}/portfolio">Back to the active view</a>
+    {% else %}
+      Active view: open work plus anything closed within {{ window_days }} days.
+      {% if hidden %}{{ hidden }} run(s) hidden (dormant or scratch).{% endif %}
+      <a href="{{ base_path }}/portfolio?all=1">Show full history</a>
+    {% endif %}
+  </p>
+
+  {% for entry in runs %}
+    <article class="run-card">
+      <header>
+        <h2><a href="{{ base_path }}/run/{{ entry.run_id }}/board">{{ entry.run_id }}</a></h2>
+        <p class="run-tally">
+          <span>{{ entry.summary.active }} in motion</span>
+          <span class="{% if entry.summary.attention %}tally-attention{% endif %}">{{ entry.summary.attention }} need attention</span>
+          <span>{{ entry.summary.completed }} completed</span>
+        </p>
+      </header>
+      {% set order = [('attention', 'Needs attention', '▲'), ('active', 'In motion', '●'), ('ready', 'Ready', '○'), ('completed', 'Completed', '✓')] %}
+      <ul class="run-tasks">
+        {% for lane, label, glyph in order %}
+          {% for task in entry.lanes[lane] %}
+            <li class="run-task lane-{{ lane }} priority-{{ task.priority }}">
+              <span class="lane-glyph" aria-hidden="true">{{ glyph }}</span>
+              <span class="task-id">{{ task.task_id }}</span>
+              <span class="run-task-title">{{ task.title or task.task_id }}</span>
+              <span class="run-task-status">{{ label }} · {{ task.status|replace('_', ' ') }}{% if task.owner %} · {{ task.owner }}{% endif %}</span>
+              {% if task.blocker_reason %}
+                <span class="run-task-blocker">Blocked: {{ task.blocker_reason }}{% if task.blocker_needs %} (needs {{ task.blocker_needs }}){% endif %}</span>
+              {% elif task.escalated %}
+                <span class="run-task-blocker">Escalated: waiting for an operator decision.</span>
+              {% endif %}
+            </li>
+          {% endfor %}
+        {% endfor %}
+        {% if not entry.board.tasks %}
+          <li class="empty-lane">Nothing in view on this run.</li>
+        {% endif %}
+      </ul>
+    </article>
+  {% else %}
+    <p class="empty-state">No live runs. <a href="{{ base_path }}/portfolio?all=1">Show full history</a>.</p>
+  {% endfor %}
+</section>

@@ -82,3 +82,28 @@ h1, h2, h3, p { margin-top: 0; }
 
 @media (max-width: 1050px) { .site-header { grid-template-columns: auto 1fr auto; }.run-context { display: none; }.board-grid { grid-template-columns: repeat(2, minmax(15rem, 1fr)); }.metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 680px) { .site-header { grid-template-columns: 1fr auto; gap: 0.55rem; padding: 0.7rem 1rem; }.site-header nav { grid-column: 1 / -1; justify-content: flex-start; overflow-x: auto; }.freshness { font-size: 0.68rem; }.page-shell { width: min(100% - 2rem, 1600px); padding-top: 1.25rem; }.summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.board-grid { grid-template-columns: minmax(0, 1fr); }.lane { min-height: 0; }.ticker { grid-template-columns: 1fr; }.event-row summary { grid-template-columns: 2.5rem minmax(0, 1fr); gap: 0.55rem; }.event-type { grid-column: 2; }.event-row pre { margin-left: 0; }.metric-grid { grid-template-columns: 1fr; }.filters select { min-width: min(100%, 17rem); } }
+
+/* portfolio — one board per live run. Lane is carried by a glyph and a text label as
+   well as a hue, so the screen reads the same to a colourblind eye and in daylight. */
+.view-notice { margin: 0 0 1rem; color: var(--muted); font-size: 0.82rem; }
+.view-notice a { color: var(--cyan); }
+.run-card { margin-bottom: 1.5rem; padding: 1rem 1.15rem; border: 1px solid var(--line); border-radius: 0.85rem; background: color-mix(in srgb, var(--surface) 87%, transparent); }
+.run-card > header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.85rem; padding-bottom: 0.7rem; border-bottom: 1px solid var(--line); }
+.run-card h2 { margin: 0; font-size: 1.05rem; }
+.run-card h2 a { color: var(--ink); text-decoration: none; }
+.run-card h2 a:hover { color: var(--cyan); }
+.run-tally { display: flex; gap: 0.9rem; flex-wrap: wrap; margin: 0; color: var(--muted); font-size: 0.8rem; }
+.run-tally .tally-attention { color: var(--amber); font-weight: 650; }
+.run-tasks { display: grid; gap: 0.5rem; margin: 0; padding: 0; list-style: none; }
+.run-task { display: grid; grid-template-columns: 1.1rem minmax(0, auto) minmax(0, 1fr); gap: 0.25rem 0.6rem; align-items: baseline; padding: 0.55rem 0.6rem; border-left: 2px solid var(--line); border-radius: 0.4rem; background: #121d29; }
+.run-task .lane-glyph { grid-row: span 2; color: var(--muted); font-size: 0.85rem; }
+.run-task-title { min-width: 0; color: var(--ink); font-size: 0.9rem; }
+.run-task-status { grid-column: 2 / -1; color: var(--muted); font-size: 0.76rem; }
+.run-task-blocker { grid-column: 2 / -1; color: #ffe6b7; font-size: 0.76rem; }
+.run-task.lane-attention { border-left-color: var(--amber); }
+.run-task.lane-attention .lane-glyph { color: var(--amber); }
+.run-task.lane-active { border-left-color: var(--violet); }
+.run-task.lane-ready { border-left-color: var(--cyan); }
+.run-task.lane-completed { opacity: 0.68; }
+.run-task.priority-high { box-shadow: inset 0 2px 0 var(--amber); }
+@media (max-width: 46rem) { .run-task { grid-template-columns: 1.1rem minmax(0, 1fr); } .run-task .task-id { grid-column: 2; } .run-task-title { grid-column: 2; } }

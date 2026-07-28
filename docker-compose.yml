@@ -79,20 +79,24 @@ services:
     command: ["board-view", "${OMEGAHIVE_RUN_ID:-accept}"]
 
   # The read-only operator web UI (ui spec §5). A long-running uvicorn server on the
-  # omegahive image, reading the spine over the compose network (board/events/metrics
-  # screens; no write path). NOT a front door: the *host* publish is loopback-only, so the
-  # house Caddy on :8443 is the sole ingress, reverse-proxying https://<host>:8443/omegahive/
-  # here. Never publish this on 0.0.0.0. `--host 0.0.0.0` (ui-serve default) binds only the
-  # container's own netns — the loopback host-publish below is the real boundary (same shape
-  # postgres uses). OMEGAHIVE_UI_BASE_PATH is the serving prefix (config, not a secret) and
-  # MUST match the Caddy handle block; empty would serve at the root. Container listens on
-  # 8000; the app trusts proxy headers so url_for reflects the external https origin.
+  # omegahive image, reading the spine over the compose network (portfolio/board/events/
+  # metrics screens; no write path). NOT a front door: the *host* publish is loopback-only,
+  # so the house Caddy on :8443 is the sole ingress, reverse-proxying
+  # https://<host>:8443/omegahive/ here. Never publish this on 0.0.0.0. `--host 0.0.0.0`
+  # (ui-serve default) binds only the container's own netns — the loopback host-publish below
+  # is the real boundary (same shape postgres uses). OMEGAHIVE_UI_BASE_PATH is the serving
+  # prefix (config, not a secret) and MUST match the Caddy handle block; empty would serve at
+  # the root. Container listens on 8000; the app trusts proxy headers so url_for reflects the
+  # external https origin. The entry point is the portfolio — every live run on one page — so
+  # the UI needs no default run; the two knobs below tune which runs and which tasks the
+  # active view keeps, and the CLI reads the same two so both surfaces stay one board.
   ui:
     <<: *omega
     command: ["ui-serve"]
     environment:
       - OMEGAHIVE_UI_BASE_PATH=${OMEGAHIVE_UI_BASE_PATH:-/omegahive}
-      - OMEGAHIVE_UI_DEFAULT_RUN=${OMEGAHIVE_RUN_ID:-accept}
+      - OMEGAHIVE_ACTIVE_WINDOW_DAYS=${OMEGAHIVE_ACTIVE_WINDOW_DAYS:-7}
+      - OMEGAHIVE_PORTFOLIO_EXCLUDE=${OMEGAHIVE_PORTFOLIO_EXCLUDE:-tooling-drill-*}
     ports:
       # host loopback only -> container 8000. Change the host port via OMEGAHIVE_UI_HOST_PORT
       # (must match the Caddy reverse_proxy target). Never 0.0.0.0 (deployment posture).

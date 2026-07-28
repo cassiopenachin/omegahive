@@ -428,6 +428,56 @@ check "long id: result -> in_review" "[ \"\$(bstatus '$ARUN' '$LTASK')\" = in_re
 "$SCRIPT_DIR/hive-close" "$LTASK" --reason "long-id drill close" >/dev/null
 check "long id: close -> done (in_review verified past the wrap)" "[ \"\$(bstatus '$ARUN' '$LTASK')\" = done ]"
 
+# ==============================================================================
+echo
+echo "== portfolio: both projects on one board, active by default, per-run reads unchanged =="
+# The operator's glance is one command across every live run. Both drill runs are real,
+# freshly-active runs on the same spine, which is exactly why the default cut excludes
+# `tooling-drill-*` — so this section asserts BOTH halves: the runs are there when the
+# exclusion is cleared, and gone when it is not.
+pf() {  # pf <args...> -> portfolio JSON
+  ( cd "$OMEGA_DIR_REAL" && podman compose run --rm -T cli portfolio --json "$@" ) 2>/dev/null
+}
+bview() {  # bview <run> <args...> -> whatever board-view prints for that run
+  ( cd "$OMEGA_DIR_REAL" && podman compose run --rm -T cli board-view "$@" ) 2>/dev/null
+}
+RV_BEFORE="$(bcount_review "$ARUN")"
+# shellcheck disable=SC2034  # read inside check's eval, which shellcheck cannot see
+PF_ALL="$(pf --exclude '')"
+check "portfolio lists alpha's run"  "printf '%s' \"\$PF_ALL\" | jq -e --arg r '$ARUN' 'map(.run) | index(\$r)' >/dev/null"
+check "portfolio lists beta's run"   "printf '%s' \"\$PF_ALL\" | jq -e --arg r '$BRUN' 'map(.run) | index(\$r)' >/dev/null"
+check "portfolio groups tasks under their own run" \
+  "printf '%s' \"\$PF_ALL\" | jq -e --arg r '$ARUN' 'map(select(.run == \$r))[0].tasks | map(.task) | index(\"alpha-demo\")' >/dev/null"
+check "portfolio does not leak alpha's tasks into beta" \
+  "! printf '%s' \"\$PF_ALL\" | jq -e --arg r '$BRUN' 'map(select(.run == \$r))[0].tasks | map(.task) | index(\"alpha-demo\")' >/dev/null"
+
+# The scratch cut: with the default exclusion, drill runs are NOT portfolio projects.
+# shellcheck disable=SC2034  # read inside check's eval
+PF_DEFAULT="$(pf)"
+check "default exclusion hides the drill's scratch runs" \
+  "! printf '%s' \"\$PF_DEFAULT\" | jq -e --arg r '$ARUN' 'map(.run) | index(\$r)' >/dev/null"
+
+# Parity: the portfolio's per-run task array IS the per-run board projection. Nothing in
+# this drill is old enough to age out, so the two must be equal object for object.
+check "portfolio tasks equal the per-run board-view --json for that run" \
+  "[ \"\$(printf '%s' \"\$PF_ALL\" | jq -S --arg r '$ARUN' 'map(select(.run == \$r))[0].tasks')\" = \"\$(bview '$ARUN' --json | jq -S '.')\" ]"
+
+# The active filter, exercised through the real CLI: a zero-day window keeps open work
+# and drops everything closed. `--all` puts it back.
+check "active view keeps open work"    "bview '$ARUN' --days 0 | grep -q 'drill-drained'"
+check "active view drops settled work" "! bview '$ARUN' --days 0 | grep -q 'alpha-demo'"
+check "--all restores the full table"  "bview '$ARUN' --days 0 --all | grep -q 'alpha-demo'"
+
+# The frozen contract: --json is full history whatever the window says, because the
+# tooling looks tasks up in it. A closed task must still be findable, and the count the
+# launch throttle reads must not move — a display cut can never change what a launch decides.
+check "board-view --json stays full history under a zero-day window" \
+  "[ \"\$(bview '$ARUN' --json --days 0 | jq -r '.[] | select(.task == \"alpha-demo\") | .status')\" = done ]"
+check "throttle's in_review count unmoved by the portfolio work" \
+  "[ \"\$(bcount_review '$ARUN')\" = '$RV_BEFORE' ]"
+check "throttle's in_review count unmoved under a zero-day window" \
+  "[ \"\$(bview '$ARUN' --json --days 0 | jq -r '[.[] | select(.status == \"in_review\")] | length')\" = '$RV_BEFORE' ]"
+
 echo
 echo "== an order file with no '# ' heading launches, titled by task id =="
 # The title is an advisory board label; the order at its pin is what the worker
