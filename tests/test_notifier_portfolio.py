@@ -381,7 +381,11 @@ def test_a_new_run_entering_the_portfolio_arms_silently(tmp_path):
     assert "plnbench" in sender.sent[-1] and "fresh" in sender.sent[-1]
 
 
-def test_a_departed_run_is_forgotten_and_returns_as_a_first_sight(tmp_path):
+def test_a_dormant_runs_first_question_on_waking_is_paged(tmp_path):
+    """A run leaves the window because it went quiet, so its cursor already sits at its head.
+    Keeping it is what makes the wake-up page: a dormant project returns to the portfolio
+    precisely BY someone asking a question, and re-arming at head would swallow exactly that
+    event — the failure class this whole surface exists to prevent."""
     store = CursorStore(tmp_path / "cursor.json")
     _armed(store, "omegahive", "sandbox")
     reader = MultiRunReader(
@@ -393,22 +397,46 @@ def test_a_departed_run_is_forgotten_and_returns_as_a_first_sight(tmp_path):
     )
     svc, sender = _service(reader, store, threshold=99)
     svc.poll_once()
-    assert set(store.load()) == {"omegahive", "sandbox"}
+    assert store.load()["sandbox"].cursor == 2     # caught up to its head
 
-    reader.runs = ["omegahive"]                    # sandbox goes dormant, leaves the window
+    reader.runs = ["omegahive"]                    # sandbox goes quiet, leaves the window
     svc.poll_once()
-    assert set(store.load()) == {"omegahive"}      # its cursor and tally are dropped
-    assert "sandbox" not in store.load_heartbeat().runs
+    assert store.load()["sandbox"].cursor == 2     # its cursor is kept, not dropped
 
-    # it returns months later with a pile of history: a first sight, not a replay burst
-    reader._by_run["sandbox"] = [
-        _ev(seq, "task.blocked", {"reason": "dormant backlog"}, run_id="sandbox")
-        for seq in range(10, 30)
-    ]
+    # weeks later a worker asks a question there — which is what puts it back in the window
+    reader._by_run["sandbox"].append(
+        _ev(40, "task.reported", {"ref": GOOD_REF, "kind": "question"}, run_id="sandbox")
+    )
     reader.runs = ["omegahive", "sandbox"]
-    assert svc.poll_once() == 0
-    assert sender.sent == []
-    assert store.load()["sandbox"].cursor == 29
+    assert svc.poll_once() == 1
+    assert len(sender.sent) == 1 and sender.sent[0].startswith("❓ sandbox · ")
+
+
+def test_a_departed_runs_open_blocks_leave_the_heartbeat_with_it(tmp_path):
+    """State is kept for a departed run, but the message must show exactly the cut it
+    claims — a block from a run the operator was told is out of view would be a lie."""
+    store = CursorStore(tmp_path / "cursor.json")
+    _armed(store, "omegahive", "sandbox")
+    reader = MultiRunReader(
+        {
+            "omegahive": [_ev(1, "task.accepted", {}, run_id="omegahive")],
+            "sandbox": [_ev(2, "task.blocked", {"reason": "stuck"}, task_id="sand-t1",
+                            run_id="sandbox")],
+        },
+        runs=["omegahive", "sandbox"],
+    )
+    svc, sender = _service(reader, store, threshold=99)
+    svc.poll_once()
+    svc.maybe_heartbeat()
+    assert "sand-t1" in sender.sent[-1]
+
+    reader.runs = ["omegahive"]                    # sandbox leaves the window
+    svc.poll_once()
+    svc._hb.last_date = None                       # let a second heartbeat out
+    svc.maybe_heartbeat()
+    assert "sand-t1" not in sender.sent[-1] and "open blocks: none" in sender.sent[-1]
+    # ...but the tally is still held, ready to resume when it comes back
+    assert "sand-t1" in store.load_heartbeat().for_run("sandbox").open_blocks
 
 
 def test_a_restore_rebaselines_only_the_restored_run(tmp_path):

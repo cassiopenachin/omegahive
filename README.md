@@ -120,7 +120,7 @@ install -m600 /dev/null "$OMEGAHIVE_SECRETS_DIR/notifier.env"   # then edit — 
 docker compose up -d notifier      # no run id — it follows every active run
 ```
 
-**Which runs it follows** is the board's cut, not a second opinion: a run in the spine's registry with real wall-clock activity inside `OMEGAHIVE_ACTIVE_WINDOW_DAYS` (default 7) that does not match `OMEGAHIVE_PORTFOLIO_EXCLUDE` (default `tooling-drill-*`, so drill debris never pages). `omegahive notify --days N` / `--exclude <globs>` override per invocation. **A run's first sight arms at its head** — it is never paged for a backlog that predates the notifier meeting it — and a run that falls out of the window is forgotten, so its eventual return is a first sight again rather than a replay burst.
+**Which runs it follows** is the board's cut, not a second opinion: a run in the spine's registry with real wall-clock activity inside `OMEGAHIVE_ACTIVE_WINDOW_DAYS` (default 7) that does not match `OMEGAHIVE_PORTFOLIO_EXCLUDE` (default `tooling-drill-*`, so drill debris never pages). `omegahive notify --days N` / `--exclude <globs>` override per invocation. **A run the notifier has never seen arms at its head** — it is never paged for a backlog that predates their meeting. A run that falls out of the window **keeps its cursor**: it left because it went quiet, so the cursor is already at its head and resuming replays nothing, while forgetting it would swallow the first question asked when the project wakes up. Its open blocks leave the heartbeat with it, though — the message shows exactly the cut it claims.
 
 ### Operator tooling: the launch / answer / close loop
 

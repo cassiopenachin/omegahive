@@ -13,12 +13,14 @@ delivered, so a send failure leaves it put and those events retry next tick — 
 and no duplicate across a clean restart.
 
 Per-run state, three rules:
-  - **First sight arms at head.** A run entering the portfolio — at cutover, every run —
-    baselines at its current head without paging. The history it missed is the board's
-    story, never a burst of 2am pages.
-  - **A departed run is forgotten.** When a run falls out of the active window its cursor
-    and tally are dropped, so a run returning after a dormancy re-arms at head rather than
-    replaying the dormancy.
+  - **First sight arms at head.** A run the notifier has never seen — at cutover, every
+    run — baselines at its current head without paging. The history it missed is the
+    board's story, never a burst of 2am pages.
+  - **A departed run keeps its cursor.** A run leaves the active window *because* it
+    stopped producing events, so its cursor is already at its head and resuming from it
+    replays nothing. Forgetting it would make its return a first sight — and a dormant
+    project returns precisely by someone asking a question, so the one page that mattered
+    would be the one swallowed. The heartbeat still shows only the runs in view.
   - **Generation travels with the cursor.** The port reports GENERATION_MISMATCH only to a
     client presenting the generation it last saw; a restore therefore re-baselines **that
     run alone** (without notifying — better to miss a ping than replay history as fresh
@@ -44,7 +46,7 @@ from ..report.portfolio import configured_window_days, portfolio_runs
 from .cursor import CursorStore, RunCursor
 from .events import Notification, notification_from
 from .format import render_batch, render_heartbeat, render_one
-from .heartbeat import RunDelta
+from .heartbeat import RunDelta, RunHeartbeat
 from .telegram import Sender, TelegramError
 
 log = logging.getLogger("omegahive.notifier")
@@ -162,7 +164,6 @@ class NotifierService:
         attention events surfaced. Raises only if the sender raises (the loop catches that
         and retries next tick)."""
         runs = self._reader.run_ids()
-        self._forget_departed(runs)
         self._runs = runs
 
         pending: list[tuple[str, PortView]] = []
@@ -227,19 +228,22 @@ class NotifierService:
         failure never holds or advances one. Transient send failure re-raises (leaving
         `last_date` unadvanced so the next tick retries); a permanent one is dropped + logged
         but still advances the day so it is not retried all day."""
-        deltas = self._deltas()
-        if not deltas:
-            return False  # nothing read yet (DB down at startup) — no heads to report
         now = self._now()
         if now.hour < self._hb_hour:
             return False
         today = now.date().isoformat()
         if self._hb.last_date == today:
             return False  # already sent today
+        deltas = self._deltas()
+        if not deltas:
+            return False  # nothing read yet (DB down at startup) — no heads to report
 
+        # Open blocks are scoped to the runs currently followed: state is kept for runs that
+        # have left the window (so their return resumes rather than re-arms), but the message
+        # must show exactly the cut it claims to.
         text = render_heartbeat(
-            today, self._hb_hour, deltas, self._hb.open_block_ages(now), self._ui_base_url,
-            max_run_lines=self._max_run_lines,
+            today, self._hb_hour, deltas, self._hb.open_block_ages(now, runs=self._runs),
+            self._ui_base_url, max_run_lines=self._max_run_lines,
         )
         sent = self._send(text, what="daily heartbeat")  # raises on transient -> retry
         # delivered OR permanently dropped: advance the day and reset every run's tally.
@@ -297,7 +301,7 @@ class NotifierService:
             head = self._heads.get(run_id)
             if head is None:
                 continue
-            hb = self._hb.for_run(run_id)
+            hb = self._hb.runs.get(run_id) or RunHeartbeat()  # a read must not create state
             prev = hb.head if hb.head is not None else head
             rc = self._cursors.get(run_id)
             cursor = rc.cursor if rc is not None else None
@@ -356,16 +360,10 @@ class NotifierService:
         log.warning("run %s: log generation changed (restore?); re-baselined to head %s "
                     "without notifying", run_id, snap.cursor)
 
-    def _forget_departed(self, runs: Sequence[str]) -> None:
-        """Drop state for runs that have left the active portfolio. A returning run is a
-        first sight again — it arms at head, so a dormancy is never replayed as pages."""
-        keep = set(runs)
-        gone = [r for r in self._cursors if r not in keep]
-        for run_id in gone:
-            del self._cursors[run_id]
-            self._heads.pop(run_id, None)
-        pruned = self._hb.prune(runs)
-        if gone or pruned:
-            self._store.save(self._cursors, self._hb)
-            if gone:
-                log.info("run(s) left the portfolio, state forgotten: %s", ", ".join(gone))
+    # A run that leaves the active window keeps its cursor rather than being forgotten, and
+    # that is deliberate: a run leaves *because* it stopped producing events, so its cursor
+    # is already at its head and resuming from it replays nothing. Forgetting it instead
+    # would make its return a first sight — and a dormant project returns precisely by
+    # someone asking a question, so the one page that mattered would be the one swallowed.
+    # A config-driven departure (a widened exclude glob, a shrunk window) is the only case
+    # with a real backlog behind it, and the batch path folds that into one capped summary.

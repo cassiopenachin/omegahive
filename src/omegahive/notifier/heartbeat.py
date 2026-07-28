@@ -17,7 +17,10 @@ What a run's tally tracks:
 What the portfolio wrapper adds:
   - `last_date` / `last_hour`: when the last heartbeat went out, so a restart never
     double-sends (the day is the idempotence key) — one schedule for all runs.
-  - `runs`: the per-run tallies, pruned as runs leave the active portfolio.
+  - `runs`: the per-run tallies. A run's tally is **kept** when it leaves the active
+    window — a departed run's cursor already sits at its head, so resuming from it replays
+    nothing, while forgetting it would swallow the first attention event of its return.
+    The heartbeat scopes what it *shows* to the runs currently followed instead.
 
 Serialization is `.get`-based and additive. A **legacy** single-run state file (the
 pre-portfolio notifier's flat `head`/`counts`/`open_blocks`) loads with its schedule kept —
@@ -142,21 +145,21 @@ class PortfolioHeartbeat:
         for run_id, head in heads.items():
             self.for_run(run_id).roll(head)
 
-    def prune(self, run_ids: Iterable[str]) -> bool:
-        """Drop the tallies of runs no longer in the active portfolio. Returns True if
-        anything was dropped. A run that comes back is a first sight again — it re-arms at
-        head rather than replaying a dormancy's worth of history as fresh pages."""
-        keep = set(run_ids)
-        gone = [r for r in self.runs if r not in keep]
-        for run_id in gone:
-            del self.runs[run_id]
-        return bool(gone)
+    def open_block_ages(
+        self, now: datetime, runs: Iterable[str] | None = None
+    ) -> list[tuple[str, str, int]]:
+        """(run_id, task_id, age_in_hours) oldest first, across `runs` (default: all held).
 
-    def open_block_ages(self, now: datetime) -> list[tuple[str, str, int]]:
-        """(run_id, task_id, age_in_hours) across every followed run, oldest first."""
+        The caller passes the runs it currently follows: tallies are kept for runs that have
+        left the active window — so their return resumes rather than re-arms — but a message
+        must list exactly the cut it claims, never a block from a run the operator was told
+        is not in view.
+        """
+        keep = None if runs is None else set(runs)
         out = [
             (run_id, tid, age)
             for run_id, hb in self.runs.items()
+            if keep is None or run_id in keep
             for tid, age in hb.open_block_ages(now)
         ]
         out.sort(key=lambda row: (-row[2], row[0], row[1]))
