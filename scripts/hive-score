@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # hive-score <task> [--project <name>] [--run <run-id>] [--review <verdict>]
-#                   [--note <text>] [--again]
+#                   [--note <text>] [--again] [--no-commit]
 #
 # Scores a closed task's order-file predictions against what actually happened,
 # appending one entry to projects/<project>/metrics/calibration.md.
@@ -19,15 +19,19 @@
 # outcome comes from the spine, so scoring a task closed weeks ago gives the same
 # answer it would have given on the day.
 #
-# READ-ONLY over the spine, like hive-metrics: one `report <run> --json` read, no
-# emits, no commits. Appending to calibration.md is the only write.
+# READ-ONLY over the spine, like hive-metrics: one `report <run> --json` read and
+# no emits ever. Appending to calibration.md is its only write — and scoring then
+# commits and pushes that file, because a score is only real once it is committed:
+# the improver seat reads committed instruments, so an uncommitted calibration.md
+# is invisible to the only reader it has. `--no-commit` restores the old
+# write-and-stop behaviour for a dry run or a hand-curated commit.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/hive-common.sh
 source "$SCRIPT_DIR/hive-common.sh"
 
 usage() {
-  echo "usage: hive-score <task> [--project <name>] [--run <run-id>] [--review <verdict>] [--note <text>] [--again]" >&2
+  echo "usage: hive-score <task> [--project <name>] [--run <run-id>] [--review <verdict>] [--note <text>] [--again] [--no-commit]" >&2
   exit 2
 }
 
@@ -37,6 +41,7 @@ RUN_OVERRIDE=""
 REVIEW_VERDICT=""
 NOTE=""
 AGAIN=0
+COMMIT=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --project) shift; [ $# -gt 0 ] || usage; PROJECT_OVERRIDE="$1" ;;
@@ -44,6 +49,7 @@ while [ $# -gt 0 ]; do
     --review)  shift; [ $# -gt 0 ] || usage; REVIEW_VERDICT="$1" ;;
     --note)    shift; [ $# -gt 0 ] || usage; NOTE="$1" ;;
     --again)   AGAIN=1 ;;
+    --no-commit) COMMIT=0 ;;
     -h|--help) usage ;;
     -*) usage ;;
     *) [ -z "$TASK" ] || usage; TASK="$1" ;;
@@ -345,4 +351,14 @@ echo "hive-score: $TASK — coverage: $COVERAGE"
 echo "  effort     predicted $PRED_EFFORT · actual $ACT_EFFORT · $V_EFFORT"
 echo "  questions  predicted $PRED_QUESTIONS · actual $ACT_QUESTIONS · $V_QUESTIONS"
 echo "  review     predicted $PRED_REVIEW · $V_REVIEW"
-echo "  appended to $CAL (not committed)"
+echo "  appended to $CAL"
+
+# Recording the score is part of scoring. The append above is worth nothing to the
+# improver until it is committed, so this is one act, not two — and the pathspec
+# keeps it to this project's metrics dir.
+if [ "$COMMIT" -eq 0 ]; then
+  echo "  --no-commit: left uncommitted in $OPS_WS — commit it yourself, or the improver will never see it"
+else
+  commit_metrics "$PROJECT" "score: $TASK on run $RUN" \
+    || die "scored and appended to $CAL, but recording it failed (see above) — the entry is on disk in $OPS_WS; commit and push it by hand"
+fi

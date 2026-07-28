@@ -31,6 +31,20 @@ expect_fail_msg(){
   else bad "$d (refused, but message missing '$needle'); got: $out"; fi
 }
 
+# log_has <repo> <needle> [pathspec ...] — is <needle> a commit subject in <repo>?
+#
+# Two traps, both of which produced a green-looking false FAIL here:
+#   * `git log | grep -q` — `-q` exits at the FIRST match, and the SIGPIPE that
+#     sends `git log` fails the whole pipeline under `set -o pipefail`. It bites
+#     precisely when the needle matches an EARLY line, i.e. the passing case.
+#     Plain `grep` reads to EOF, so git is never signalled.
+#   * a bare `git log` in a bare repo whose HEAD is an unborn `master` while every
+#     ref lives on `main` — `--all` reads refs, not HEAD.
+log_has() {
+  local repo="$1" needle="$2"; shift 2
+  git -C "$repo" log --all --format=%s -- "$@" | grep -F -- "$needle" >/dev/null
+}
+
 cleanup() {
   rm -rf "$SANDBOX"
   echo
@@ -42,12 +56,28 @@ trap cleanup EXIT
 echo "metrics drill: sandbox=$SANDBOX"
 
 WS="$SANDBOX/ws"
+HUB="$SANDBOX/hub.git"          # push target, so the tools' commit path runs for real
 EMPTY="$SANDBOX/empty"          # stands in for OMEGA_DIR: no compose file, so any
 mkdir -p "$EMPTY"               # accidental `hive ...` call fails instead of running
 PROJECT=drill
 ORDERS="$WS/projects/$PROJECT/orders"
 METRICS="$WS/projects/$PROJECT/metrics"
 mkdir -p "$ORDERS"
+
+# The workspace is a real clone with a real upstream, because both tools now
+# COMMIT and PUSH what they regenerate: a regenerated artifact that stops at the
+# working tree is invisible to the improver seat, the only seat that reads it.
+# Driving them against a bare directory would exercise a path that no longer ships.
+git init --quiet --bare "$HUB"
+git init --quiet "$WS"
+# Local branch `main`, matching the upstream it will track — set via symbolic-ref
+# rather than `git init -b` so this does not depend on the host's git version or
+# its init.defaultBranch. A local/upstream name mismatch makes a bare `git push`
+# refuse, which would test the tools' error path instead of their happy one.
+git -C "$WS" symbolic-ref HEAD refs/heads/main
+git -C "$WS" config user.email drill@example.invalid
+git -C "$WS" config user.name  drill
+git -C "$WS" remote add origin "$HUB"
 
 # The scratch project's committed identity. Both tools resolve the run through
 # load_project_conf, so the project name is NOT assumed to be the run id — this
@@ -265,6 +295,13 @@ Still in flight.
 - Expected effort: 1 worker-hour. Expected questions: 0. Expected review outcome: clean.
 EOF
 
+# Seed the workspace and give `main` an upstream, so the tools' plain `git push`
+# has somewhere to go.
+git -C "$WS" add -A
+git -C "$WS" commit --quiet -m "drill: seed workspace"
+git -C "$WS" push --quiet -u origin HEAD:main
+git -C "$WS" branch --quiet --set-upstream-to=origin/main 2>/dev/null || true
+
 export HIVE_SPINE_JSON="$FIXTURE"
 export OPS_WS="$WS"
 export OMEGA_DIR="$EMPTY"
@@ -279,6 +316,30 @@ echo "metrics drill: hive-metrics"
 "$M" "$PROJECT" >/dev/null
 check "tasks.md written"  "[ -s '$METRICS/tasks.md' ]"
 check "tasks.csv written" "[ -s '$METRICS/tasks.csv' ]"
+# Regenerating and recording are one act — the artifacts are committed and pushed,
+# not left for the operator to remember.
+check "the artifacts were committed"        "log_has '$WS' 'metrics: refresh $PROJECT on run metrics-drill' 'projects/$PROJECT/metrics'"
+check "the artifacts reached the upstream"  "log_has '$HUB' 'metrics: refresh $PROJECT on run metrics-drill'"
+check "the workspace was left clean"        "[ -z \"\$(git -C '$WS' status --porcelain -- 'projects/$PROJECT/metrics')\" ]"
+# Deterministic regeneration means an unchanged spine prefix has nothing to
+# commit — a success, not a failure, and it must not manufacture an empty commit.
+NCOMMITS_BEFORE=$(git -C "$WS" rev-list --count HEAD)
+# shellcheck disable=SC2034  # consumed by `check`, which evals its condition string
+RERUN_OUT="$("$M" "$PROJECT")"
+check "a no-change re-run says so"          "printf '%s' \"\$RERUN_OUT\" | grep -qF 'no change to commit'"
+check "a no-change re-run adds no commit"   "[ \"\$(git -C '$WS' rev-list --count HEAD)\" = '$NCOMMITS_BEFORE' ]"
+# --no-commit is the escape hatch: written, deliberately not recorded. Commit a
+# deliberately stale artifact first, so a regeneration genuinely has a diff to
+# withhold — otherwise determinism would make "nothing to commit" indistinguishable
+# from "chose not to commit".
+printf 'stale\n' > "$METRICS/tasks.md"
+git -C "$WS" commit --quiet -m "drill: stale artifact" -- "projects/$PROJECT/metrics"
+"$M" "$PROJECT" --no-commit >/dev/null
+check "--no-commit leaves the regenerated artifact uncommitted" \
+  "[ -n \"\$(git -C '$WS' status --porcelain -- 'projects/$PROJECT/metrics')\" ]"
+"$M" "$PROJECT" >/dev/null   # re-record, so the rest of the drill starts clean
+check "the follow-up run recorded it after all" \
+  "[ -z \"\$(git -C '$WS' status --porcelain -- 'projects/$PROJECT/metrics')\" ]"
 
 MD="$METRICS/tasks.md"; CSV="$METRICS/tasks.csv"
 col() { # col <task> <header>  -> that task's value from the CSV ("«missing»" if no row)
@@ -361,9 +422,23 @@ check "--upto head reproduces the artifact" "cmp -s '$SANDBOX/first.md' '$MD'"
 # Truncating before beta's close must drop beta from the closed set — the property
 # that makes a historical regeneration meaningful.
 BETA_CLOSE_SEQ=$(jq -r '[.[] | select(.task_id=="beta" and .event_type=="task.status_override") | .seq] | first' "$FIXTURE")
+UPTO_COMMITS_BEFORE=$(git -C "$WS" rev-list --count HEAD)
 "$M" "$PROJECT" --upto "$((BETA_CLOSE_SEQ - 1))" >/dev/null
 check "--upto before beta close drops beta" "[ \"\$(col beta shape)\" = '«missing»' ]"
 check "--upto before beta close keeps alpha" "[ \"\$(col alpha shape)\" = worked ]"
+# A historical rebuild is an inspection, never the record: committing one would
+# rewind the committed instrument to an older spine prefix.
+check "--upto never commits the rewound artifact" \
+  "[ \"\$(git -C '$WS' rev-list --count HEAD)\" = '$UPTO_COMMITS_BEFORE' ]"
+# ...and it must not TELL the operator to commit it either — that advice would undo
+# the guard by hand. Assert the words, because a `${VAR:+…}${VAR:-…}` pair renders
+# the wrong branch silently and no exit code ever notices.
+# shellcheck disable=SC2034  # consumed by `check`, which evals its condition string
+UPTO_OUT="$("$M" "$PROJECT" --upto "$((BETA_CLOSE_SEQ - 1))")"
+check "--upto says why it did not commit"      "printf '%s' \"\$UPTO_OUT\" | grep -qF 'an --upto rebuild is an inspection'"
+check "--upto does NOT advise committing it"   "! printf '%s' \"\$UPTO_OUT\" | grep -qF 'commit it yourself'"
+check "--upto names the restore command"       "printf '%s' \"\$UPTO_OUT\" | grep -qF 'hive-metrics $PROJECT'"
+check "--upto never leaks the seq into prose"  "! printf '%s' \"\$UPTO_OUT\" | grep -qE 'record[0-9]'"
 "$M" "$PROJECT" >/dev/null   # restore the full artifact
 
 # Without the fixture the tool goes to the real read path — which, with OMEGA_DIR
@@ -411,6 +486,21 @@ check "alpha effort verdict = hit"    "[ \"\$(verdict alpha effort)\" = hit ]"
 check "alpha questions verdict = hit" "[ \"\$(verdict alpha questions)\" = hit ]"
 check "alpha review left unscored"    "verdict alpha 'review outcome' | grep -q '^unscored'"
 check "alpha coverage full"           "entry alpha | grep -q '^- coverage: full$'"
+# Scoring records the score: the entry is committed and pushed as part of the same
+# act, because the improver seat reads committed instruments and nothing else.
+check "the score was committed"        "log_has '$WS' 'score: alpha on run metrics-drill' 'projects/$PROJECT/metrics'"
+check "the score reached the upstream" "log_has '$HUB' 'score: alpha on run metrics-drill'"
+check "scoring left the workspace clean" "[ -z \"\$(git -C '$WS' status --porcelain -- 'projects/$PROJECT/metrics')\" ]"
+check "the score commit touched only the metrics dir" \
+  "[ -z \"\$(git -C '$WS' show --name-only --format= HEAD | grep -v '^projects/$PROJECT/metrics/')\" ]"
+# --no-commit is the escape hatch: appended, deliberately not recorded.
+SCORE_COMMITS_BEFORE=$(git -C "$WS" rev-list --count HEAD)
+"$S" alpha --again --no-commit >/dev/null
+check "--no-commit appends but does not commit" \
+  "[ -n \"\$(git -C '$WS' status --porcelain -- 'projects/$PROJECT/metrics')\" ]"
+check "--no-commit adds no commit" \
+  "[ \"\$(git -C '$WS' rev-list --count HEAD)\" = '$SCORE_COMMITS_BEFORE' ]"
+git -C "$WS" checkout --quiet -- "projects/$PROJECT/metrics"
 
 expect_fail_msg "re-scoring refused"  "already scored" "$S" alpha
 "$S" alpha --again >/dev/null
