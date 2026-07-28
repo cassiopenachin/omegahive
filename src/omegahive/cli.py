@@ -401,7 +401,7 @@ def portfolio_cmd(
     ),
     exclude: str | None = typer.Option(
         None, "--exclude", help="comma-separated run-id globs to treat as scratch runs "
-                                "(default tooling-drill-*,ui-demo; empty string excludes none)"
+                                "(default tooling-drill-*; empty string excludes none)"
     ),
 ) -> None:
     """One board across every live run — the whole-portfolio glance, in one invocation.

@@ -46,9 +46,10 @@ DAY_SECONDS = 86_400
 # Terminal task statuses — the same set the stall detectors treat as "not open work".
 CLOSED_STATUSES = frozenset({"done", "failed", "cancelled"})
 
-# Run-id globs that are never portfolio projects. `tooling-drill-*` is the drill's
-# per-invocation scratch run; `ui-demo` is the UI's own fixture run.
-DEFAULT_EXCLUDE: tuple[str, ...] = ("tooling-drill-*", "ui-demo")
+# Run-id globs that are never portfolio projects: the drill's per-invocation scratch
+# runs. Nothing in the spine tells them apart from a project's run — they are registered,
+# real, and freshly active every time the drill runs — so the cut is by name.
+DEFAULT_EXCLUDE: tuple[str, ...] = ("tooling-drill-*",)
 
 _EXCLUDE_ENV = "OMEGAHIVE_PORTFOLIO_EXCLUDE"
 _WINDOW_ENV = "OMEGAHIVE_ACTIVE_WINDOW_DAYS"
@@ -58,8 +59,8 @@ def configured_exclude() -> tuple[str, ...]:
     """Scratch-run globs from the environment, or the built-in default.
 
     Set `OMEGAHIVE_PORTFOLIO_EXCLUDE` to a comma-separated glob list to override it;
-    set it to the empty string to exclude nothing (what the drill does, so it can see
-    its own runs).
+    set it to the empty string to exclude nothing — which is what the drill does, so it
+    can see the very runs the default hides.
     """
     raw = os.environ.get(_EXCLUDE_ENV)
     if raw is None:

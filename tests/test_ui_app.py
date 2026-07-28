@@ -3,24 +3,17 @@
 from fastapi.testclient import TestClient
 
 from omegahive.ui.app import create_app
-from omegahive.ui.demo import DEMO_RUN_ID, DemoPort
+from omegahive.ui.demo import DEMO_RUN_ID, DemoPort, demo_run_summaries
 
 
 def _client(base_path: str = "") -> TestClient:
     app = create_app(
         port_factory=lambda run_id, generation: DemoPort(run_id, generation),
-        default_run=DEMO_RUN_ID,
+        runs_factory=demo_run_summaries,
         poll_seconds=0.001,
         base_path=base_path,
     )
     return TestClient(app)
-
-
-def test_home_redirects_to_the_configured_run():
-    response = _client().get("/", follow_redirects=False)
-
-    assert response.status_code == 307
-    assert response.headers["location"] == f"/run/{DEMO_RUN_ID}/board"
 
 
 def test_board_renders_authoritative_operator_fields_and_live_seam():
@@ -83,7 +76,7 @@ def test_unset_base_path_home_redirect_is_unprefixed():
     response = _client().get("/", follow_redirects=False)
 
     assert response.status_code == 307
-    assert response.headers["location"] == f"/run/{DEMO_RUN_ID}/board"
+    assert response.headers["location"] == "/portfolio"
 
 
 def test_base_path_serves_under_the_prefix_and_prefixes_every_link():
@@ -111,7 +104,7 @@ def test_base_path_home_redirect_carries_the_prefix():
     response = client.get("/omegahive/", follow_redirects=False)
 
     assert response.status_code == 307
-    assert response.headers["location"] == f"/omegahive/run/{DEMO_RUN_ID}/board"
+    assert response.headers["location"] == "/omegahive/portfolio"
 
 
 def test_base_path_normalizes_sloppy_values():

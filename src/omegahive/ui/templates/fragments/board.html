@@ -1,4 +1,13 @@
 <section id="board-fragment" class="board-region" aria-label="Task board">
+  <p class="view-notice">
+    {% if show_all %}
+      Full history.
+      <a href="{{ base_path }}/run/{{ run_id }}/board">Back to the active view</a>
+    {% else %}
+      Active view: open work plus anything closed within {{ window_days }} days.
+      <a href="{{ base_path }}/run/{{ run_id }}/board?all=1">Show full history</a>
+    {% endif %}
+  </p>
   <div class="summary-grid">
     <article><strong>{{ summary.total }}</strong><span>tasks in view</span></article>
     <article><strong>{{ summary.active }}</strong><span>in motion</span></article>
