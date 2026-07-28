@@ -129,12 +129,28 @@ if [ -n "$EXISTING" ]; then
   esac
 fi
 
+# --- tmux targeting: name the SESSION exactly, never let tmux guess -------------
+# Every tmux target below goes through SESSION_T. The `=` prefix forces an EXACT
+# session-name match: a bare `hive` also prefix-matches a session named
+# `hive-scratch`, which would silently seat the worker in the wrong session.
+SESSION_T="=$HIVE_TMUX_SESSION"
+
 # Clobber guards: never overwrite an existing clone or a same-named live pane.
+# tmux is checked here, BEFORE any board write — a missing tmux is a knowable
+# failure, and knowable failures belong on this side of the spine seeding.
+command -v tmux >/dev/null 2>&1 \
+  || die "tmux not found on PATH — the pane is the task registry, so a launch without tmux cannot complete"
 [ ! -e "$WS_ROOT" ]   || die "$WS_ROOT already exists; pick a fresh --worker id or clear it"
 [ ! -e "$CODE_ROOT" ] || die "$CODE_ROOT already exists; pick a fresh --worker id or clear it"
-if tmux has-session -t "$HIVE_TMUX_SESSION" 2>/dev/null \
-   && tmux list-windows -t "$HIVE_TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qxF "$TASK"; then
-  die "a tmux window named '$TASK' already exists in session '$HIVE_TMUX_SESSION' (the pane is the registry)"
+# The one collision that still means something: a window already NAMED for this
+# task. The pane name is the registry (no registry file), so a second window for
+# one task would corrupt the registry — refuse, and name the recovery path.
+if tmux has-session -t "$SESSION_T" 2>/dev/null \
+   && tmux list-windows -t "$SESSION_T" -F '#{window_name}' 2>/dev/null | grep -qxF "$TASK"; then
+  die "a tmux window named '$TASK' already exists in session '$HIVE_TMUX_SESSION' — the pane IS the registry, so this task already has a session.
+  Look first: tmux attach -t '$HIVE_TMUX_SESSION', then select the '$TASK' window.
+  If that worker is dead, recover per RUNBOOK 'Dead worker recovery' — kill the pane, register a fresh worker id, emit task.reassigned.
+  Never a second window for one task."
 fi
 
 # --- pin the order and build the seed payloads --------------------------------
@@ -225,16 +241,87 @@ Container tooling is podman (not docker). Begin by reading both files, then emit
 task.accepted and start.
 KICK
 
+# The spine is seeded above and the pane is opened below, and that order is
+# deliberate: the worker's very first act is `task.accepted`, which the board
+# rejects unless the task already exists and is assigned to it. Creating the
+# window first would race a live session against its own ownership. So the window
+# stays last — and a failure there is made SAFE rather than reordered away: it
+# strands a half-launch (task owned on the board, clones and wrapper on disk, no
+# session, kickoff never delivered), which on 2026-07-27 took WORKER.md plus the
+# launch output to reconstruct by hand. The launcher prints that reconstruction
+# itself, and externalizes the kickoff so it does not live only in a terminal.
+half_launch_recovery() {  # half_launch_recovery <what-failed>
+  local kf="$WORK_ROOT/$WORKER/kickoff.txt"
+  printf '%s' "$KICKOFF" > "$kf" 2>/dev/null || kf=""
+  {
+    echo
+    echo "hive-launch: HALF-LAUNCHED — $1 failed AFTER the board was seeded."
+    echo
+    echo "  Already done:  board seeded on run '$RUN' (task '$TASK' is owned by '$WORKER')"
+    echo "                 clones   $WS_ROOT  +  $CODE_ROOT"
+    echo "                 wrapper  $WRAPPER"
+    echo "  Still missing: the tmux window, and delivery of the kickoff below."
+    echo
+    echo "  Do NOT re-run hive-launch: the task is owned now, so it will refuse."
+    echo "  Finish it by hand (WORKER.md section Launch) — either is complete:"
+    echo
+    if [ -n "$kf" ]; then
+      echo "  (a) retry just the pane:"
+      echo "        tmux new-window -a -t '$SESSION_T:{end}' -n '$TASK' -c '$WS_ROOT' \\"
+      echo "          -e HIVE_KICKOFF=\"\$(cat $kf)\" '$HIVE_WORKER_CMD \"\$HIVE_KICKOFF\"'"
+    fi
+    echo "  (b) fallback if tmux itself is the problem — run the session in any terminal and"
+    echo "      paste the kickoff below as its first message:"
+    echo "        cd $WS_ROOT && $HIVE_WORKER_CMD"
+    echo "      Prefer (a): the pane name is the task registry, and (b) leaves no pane."
+    echo
+    echo "  If you would rather abandon this seat, recover per RUNBOOK 'Dead worker recovery'"
+    echo "  (register a fresh worker id, then task.reassigned — never a relaunch)."
+    echo
+    if [ -n "$kf" ]; then echo "  Kickoff (also written to $kf):"; else echo "  Kickoff:"; fi
+    echo "  --------------------------------------------------------------------"
+    printf '%s\n' "$KICKOFF" | sed 's/^/  /'
+    echo "  --------------------------------------------------------------------"
+  } >&2
+  exit 1
+}
+
 # Open the pane. The kickoff travels as an env var (HIVE_KICKOFF) so no multi-line
 # text is ever quoted onto a command line; the window runs the worker command with
 # it as the initial prompt. The pane NAME is the registry — no registry file.
+#
+# Allocation is name-only: we supply the session and the window NAME, never an
+# index. `-t <name>` alone cannot express that — it is a target-WINDOW, so tmux
+# first hunts for a window matching <name> in whatever session happens to be
+# "current" (exact name, then name-prefix, then fnmatch) and only then falls back
+# to <name> as a session. Worker windows are named after task ids, so a task id
+# that starts with the session name — `hive-metrics` in the `hive` session,
+# 2026-07-27 — makes `-t hive` resolve to THAT window and its concrete index, and
+# the launch dies with `create window failed: index N in use`. The trap is not the
+# index we chose (we never chose one); it is having let tmux choose a target.
+# It reads as intermittent because it needs EXACTLY ONE match: with two `hive-*`
+# windows open the prefix match is ambiguous, tmux abandons it and falls back to
+# the session, and the very same command succeeds. Do not trust a passing launch
+# as evidence that a bare `-t <session>` is safe.
+#   * `$SESSION_T:` — exact session, and the colon makes the target a session, so
+#     no window name can shadow it.
+#   * `-a -t ...:{end}` — insert AFTER the highest-numbered window, i.e. append.
+#     The next slot past the last window is free by construction, so an occupied
+#     index is unreachable; and appending past {end} (rather than after the
+#     current window) never renumbers an existing window. Verified on tmux 3.5a
+#     under the operator config (base-index 1, renumber-windows on) and under
+#     stock defaults (base-index 0, renumber off) — the result holds either way.
 launch_cmd="$HIVE_WORKER_CMD \"\$HIVE_KICKOFF\""
-if tmux has-session -t "$HIVE_TMUX_SESSION" 2>/dev/null; then
-  tmux new-window -t "$HIVE_TMUX_SESSION" -n "$TASK" -c "$WS_ROOT" \
-    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd"
+if tmux has-session -t "$SESSION_T" 2>/dev/null; then
+  PANE=$(tmux new-window -a -t "$SESSION_T:{end}" -n "$TASK" -c "$WS_ROOT" \
+    -e HIVE_KICKOFF="$KICKOFF" -P -F '#{session_name}:#{window_index}' "$launch_cmd") \
+    || half_launch_recovery "tmux new-window"
 else
-  tmux new-session -d -s "$HIVE_TMUX_SESSION" -n "$TASK" -c "$WS_ROOT" \
-    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd"
+  PANE=$(tmux new-session -d -s "$HIVE_TMUX_SESSION" -n "$TASK" -c "$WS_ROOT" \
+    -e HIVE_KICKOFF="$KICKOFF" -P -F '#{session_name}:#{window_index}' "$launch_cmd") \
+    || half_launch_recovery "tmux new-session"
 fi
-echo "  pane:   $HIVE_TMUX_SESSION:$TASK  (attach: tmux attach -t $HIVE_TMUX_SESSION)"
+# Report where it actually landed (-P), not where we assumed: the index is tmux's
+# to choose, so the launcher reads it back rather than predicting it.
+echo "  pane:   $PANE  window '$TASK'  (attach: tmux attach -t $HIVE_TMUX_SESSION)"
 echo "hive-launch: done."

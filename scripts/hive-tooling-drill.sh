@@ -51,7 +51,7 @@ expect_fail_msg(){
 }
 
 cleanup() {
-  tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+  tmux kill-server 2>/dev/null || true   # the drill's own isolated server (TMUX_TMPDIR), not the operator's
   rm -rf "$SANDBOX"
   echo
   echo "drill: runs=$ARUN,$BRUN  PASS=$PASS  FAIL=$FAIL  (scratch events remain under those runs)"
@@ -148,6 +148,15 @@ EOF
 chmod +x "$WORKER_CMD"
 
 # --- environment the scripts read (deployment layer overridden to the sandbox) --
+# tmux gets its own server too. Dropping TMUX/TMUX_PANE and pointing TMUX_TMPDIR
+# at the sandbox means every tmux call — the drill's and hive-launch's alike —
+# lands on a private server holding ONLY the drill session. Two payoffs: the drill
+# stops creating windows on the operator's live server, and tmux's "current
+# session" (which it falls back to when resolving targets) becomes deterministic,
+# without which the window-allocation cases below could not assert anything.
+unset TMUX TMUX_PANE 2>/dev/null || true
+export TMUX_TMPDIR="$SANDBOX/tmux"
+mkdir -p "$TMUX_TMPDIR"
 export HIVE_TMUX_SESSION="$TMUX_SESSION"
 export HIVE_WORKER_CMD="$WORKER_CMD"
 export WS_HUB="$HUB"
@@ -356,6 +365,90 @@ expect_fail_msg "launch refuses an owned/in-flight task (suggests reassign)" "ta
 expect_fail_msg "launch refuses a done task (not launchable)" "not launchable" \
   "$SCRIPT_DIR/hive-launch" "$AORDER" --worker "sess-adopt-done-${STAMP}"
 check "adopt refusal emitted no board state" "[ ! -e '$WORK/sess-adopt-done-${STAMP}' ]"
+
+echo
+echo "== window allocation: a window whose name shadows the session must not block a launch =="
+# The 2026-07-27 launch failure, reproduced. `tmux new-window -t <name>` takes a
+# target-WINDOW, not a target-session: tmux hunts for a WINDOW matching <name> in
+# the current session (exact name, then name-prefix, then fnmatch) and only then
+# reads <name> as a session. Worker windows are named after task ids, so a task id
+# starting with the session name shadows the session, and creation lands on that
+# window's concrete — occupied — index. Plant an exact shadow, prove the legacy
+# form still dies on it, then prove hive-launch is immune.
+tmux new-window -a -t "=$TMUX_SESSION:{end}" -n "$TMUX_SESSION" 'sleep 600'
+expect_fail_msg "legacy 'new-window -t <session>' dies on the shadowing window" "in use" \
+  tmux new-window -t "$TMUX_SESSION" -n drill-shadow-probe 'sleep 600'
+SORDER=$(add_order "$APROJ" "2026-07-13-drill-shadowed" "shadowed launch")
+SWORKER="sess-shadowed-${STAMP}"
+"$SCRIPT_DIR/hive-launch" "$SORDER" --worker "$SWORKER" >/dev/null
+check "launch succeeds with a shadowing window present" "[ \"\$(bstatus '$ARUN' drill-shadowed)\" = assigned ]"
+check "the task's window exists in the drill session" \
+  "tmux list-windows -t '=$TMUX_SESSION' -F '#{window_name}' | grep -qxF 'drill-shadowed'"
+check "the shadowing window survived untouched" \
+  "tmux list-windows -t '=$TMUX_SESSION' -F '#{window_name}' | grep -qxF '$TMUX_SESSION'"
+# Append semantics, not free-slot: the new window must sit past the highest index,
+# so no existing window is ever renumbered out from under an attached operator.
+check "the new window was APPENDED (holds the highest index)" \
+  "[ \"\$(tmux list-windows -t '=$TMUX_SESSION' -F '#{window_index} #{window_name}' | sort -rn | head -1 | cut -d' ' -f2)\" = drill-shadowed ]"
+
+echo
+echo "== the one collision that stays meaningful: a window already NAMED for the task =="
+# Not on the board (so the board guard cannot fire first) but its pane name is
+# taken — the pane IS the registry, so this must refuse and say how to recover,
+# never open a second window for one task.
+tmux new-window -a -t "=$TMUX_SESSION:{end}" -n drill-panedup 'sleep 600'
+PORDER=$(add_order "$APROJ" "2026-07-13-drill-panedup" "pane dup")
+expect_fail_msg "launch refuses when a window already carries the task name" "already exists" \
+  "$SCRIPT_DIR/hive-launch" "$PORDER" --worker "sess-panedup-${STAMP}"
+expect_fail_msg "the pane-name refusal names the recovery path" "Dead worker recovery" \
+  "$SCRIPT_DIR/hive-launch" "$PORDER" --worker "sess-panedup-${STAMP}"
+check "pane-name refusal provisioned nothing" "[ ! -e '$WORK/sess-panedup-${STAMP}' ]"
+check "pane-name refusal opened no second window" \
+  "[ \"\$(tmux list-windows -t '=$TMUX_SESSION' -F '#{window_name}' | grep -cxF drill-panedup)\" = 1 ]"
+
+echo
+echo "== fail-safe: a pane failure AFTER seeding prints the manual completion path =="
+# This failure cannot be ordered away: the worker's first act is task.accepted,
+# which the board rejects unless the task is already seeded and assigned to it, so
+# the pane must come last and a pane failure must therefore be survivable. A stub
+# tmux fails window creation exactly as 2026-07-27 did; everything else passes
+# through to the real tmux.
+REAL_TMUX="$(command -v tmux)"
+STUB_BIN="$SANDBOX/stubbin"
+mkdir -p "$STUB_BIN"
+cat > "$STUB_BIN/tmux" <<EOF
+#!/usr/bin/env bash
+# drill stub — fail window creation the way the 2026-07-27 collision did.
+for a in "\$@"; do
+  case "\$a" in
+    new-window|new-session) echo "create window failed: index 4 in use" >&2; exit 1 ;;
+  esac
+done
+exec "$REAL_TMUX" "\$@"
+EOF
+chmod +x "$STUB_BIN/tmux"
+HORDER=$(add_order "$APROJ" "2026-07-13-drill-halflaunch" "half launch")
+HWORKER="sess-halflaunch-${STAMP}"
+HRC=0
+HOUT="$(PATH="$STUB_BIN:$PATH" "$SCRIPT_DIR/hive-launch" "$HORDER" --worker "$HWORKER" 2>&1)" || HRC=$?
+printf '%s\n' "$HOUT"   # the recovery print is the deliverable here — show it, do not just assert it
+check "pane failure exits non-zero"            "[ '$HRC' -ne 0 ]"
+check "it is announced as a half-launch"       "printf '%s' \"\$HOUT\" | grep -qF 'HALF-LAUNCHED'"
+check "the board really was left half-launched" "[ \"\$(bstatus '$ARUN' drill-halflaunch)\" = assigned ]"
+check "recovery print carries the filled kickoff" \
+  "printf '%s' \"\$HOUT\" | grep -qF 'You are hive worker $HWORKER on task drill-halflaunch'"
+check "recovery print names the wrapper"       "printf '%s' \"\$HOUT\" | grep -qF '$WRAPPERS/$HWORKER.sh'"
+check "recovery print names the clones"        "printf '%s' \"\$HOUT\" | grep -qF '$WORK/$HWORKER/hive'"
+check "recovery print forbids a re-run"        "printf '%s' \"\$HOUT\" | grep -qF 'Do NOT re-run hive-launch'"
+check "recovery print points at RUNBOOK recovery" "printf '%s' \"\$HOUT\" | grep -qF 'Dead worker recovery'"
+check "the kickoff was externalized to a file" "[ -s '$WORK/$HWORKER/kickoff.txt' ]"
+check "the externalized kickoff is the real one" \
+  "grep -qF 'You are hive worker $HWORKER on task drill-halflaunch' '$WORK/$HWORKER/kickoff.txt'"
+check "no window was opened for the half-launched task" \
+  "! tmux list-windows -t '=$TMUX_SESSION' -F '#{window_name}' | grep -qxF 'drill-halflaunch'"
+# The print's central warning must be true, not just printed.
+expect_fail_msg "a half-launched task does refuse a re-launch, as the print warns" "task.reassigned" \
+  "$SCRIPT_DIR/hive-launch" "$HORDER" --worker "sess-halflaunch-2-${STAMP}"
 
 echo
 echo "== refusal paths =="
