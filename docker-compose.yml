@@ -136,11 +136,19 @@ services:
   # blocking question at 2am operator-time doesn't sit until the next manual check-in.
   # Outbound only: no inbound port, no ack path. The bot token lives in its own secrets
   # env-file (deployment spec §4), never in .env / the image / a log / a message. Its read
-  # cursor persists on its own named volume, so a restart resumes without replay or
+  # cursors persist on its own named volume, so a restart resumes without replay or
   # duplicate. Start it explicitly: `podman compose up -d notifier`.
+  #
+  # It is a PORTFOLIO surface, like the board: ONE instance follows every active run,
+  # discovered from the spine's own registry through the same cut `hive portfolio` applies.
+  # There is deliberately NO run id here — a stale `OMEGAHIVE_RUN_ID` left standing in a
+  # deploy env once had it paging an empty acceptance run for a week (decisions.md
+  # 2026-07-28), and the fix was to delete the surface rather than guard it. A run entering
+  # or leaving the active window needs no redeploy. To narrow what it follows, the board's
+  # own knobs apply (OMEGAHIVE_PORTFOLIO_EXCLUDE / OMEGAHIVE_ACTIVE_WINDOW_DAYS in .env).
   notifier:
     <<: *omega
-    command: ["notify", "--run-id", "${OMEGAHIVE_RUN_ID:-accept}"]
+    command: ["notify"]
     restart: unless-stopped
     environment:
       # Daily-heartbeat hour (UTC, integer). Config, not a secret — so it rides the compose
@@ -151,16 +159,18 @@ services:
       # not a secret; empty default = links absent, render unchanged. Same pattern as above.
       OMEGAHIVE_UI_BASE_URL: ${OMEGAHIVE_UI_BASE_URL:-}
     env_file:
-      - .env                                       # OMEGAHIVE_DATABASE_URL (the read path)
+      # OMEGAHIVE_DATABASE_URL (the read path) plus the shared portfolio run cut
+      # (OMEGAHIVE_PORTFOLIO_EXCLUDE / OMEGAHIVE_ACTIVE_WINDOW_DAYS).
+      - .env
       # required:false so an unconfigured host doesn't break `compose config`/other services;
       # the notifier fails fast at startup if the token/chat are absent.
       - path: ${OMEGAHIVE_SECRETS_DIR}/notifier.env   # TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
         required: false
     volumes:
-      # :z — shared SELinux label so the cursor survives container replacement. Without it,
+      # :z — shared SELinux label so the cursors survive container replacement. Without it,
       # rootless Podman gives each container a unique MCS category and a *new* notifier
-      # instance is denied read/write to the previous one's cursor file (restart breaks).
-      - omegahive-notifier:/var/lib/omegahive/notifier:z   # persisted read cursor
+      # instance is denied read/write to the previous one's state file (restart breaks).
+      - omegahive-notifier:/var/lib/omegahive/notifier:z   # persisted per-run read cursors
 
   # Containerized backup: pg_dump of the log store from the pinned postgres image
   # (deployment spec §4/§5). `profiles: [ops]` keeps it out of a plain `up`; the

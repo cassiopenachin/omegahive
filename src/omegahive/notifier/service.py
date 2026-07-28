@@ -192,6 +192,11 @@ class NotifierService:
             self._commit_all(pending)
             return 0
 
+        # seq is the log's total order, so this is chronological across runs. Both send
+        # paths read the same way round: a summary is a timeline, not a per-run grouping
+        # whose order would silently depend on which run discovery happened to list first.
+        triggers.sort(key=lambda t: t.seq or 0)
+
         delivered = 0
         if len(triggers) >= self._batch_threshold:
             # One summary for the whole burst, portfolio-wide; advance past all of it
@@ -201,11 +206,10 @@ class NotifierService:
                 delivered = len(triggers)
             self._commit_all(pending)
         else:
-            # One message each in spine order (seq is the log's total order, so this is
-            # chronological across runs), advancing that run's cursor per delivered (or
+            # One message each in spine order, advancing that run's cursor per delivered (or
             # permanently-dropped) event so a failure partway never re-sends what went out.
             views = dict(pending)
-            for n in sorted(triggers, key=lambda t: t.seq or 0):
+            for n in triggers:
                 if self._send(render_one(n, self._ui_base_url), what=f"event seq {n.seq}"):
                     delivered += 1
                 view = views[n.run_id]

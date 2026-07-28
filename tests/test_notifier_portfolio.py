@@ -213,6 +213,26 @@ def test_individual_messages_go_out_in_spine_order(tmp_path):
     assert "earlier" in sender.sent[0] and "later" in sender.sent[1]
 
 
+def test_summary_reads_as_a_timeline_not_a_per_run_grouping(tmp_path):
+    """The summary's line order must not depend on which run discovery listed first — it is
+    the same chronological order the individual path uses, so the two never disagree."""
+    store = CursorStore(tmp_path / "cursor.json")
+    _armed(store, "a", "b")
+    reader = MultiRunReader(
+        {
+            "a": [_ev(2, "task.blocked", {"reason": "second"}, run_id="a"),
+                  _ev(4, "task.blocked", {"reason": "fourth"}, run_id="a")],
+            "b": [_ev(1, "task.blocked", {"reason": "first"}, run_id="b"),
+                  _ev(3, "task.blocked", {"reason": "third"}, run_id="b")],
+        },
+        runs=["a", "b"],   # discovery order is the reverse of the log order
+    )
+    svc, sender = _service(reader, store, threshold=3)
+    svc.poll_once()
+    body = sender.sent[0]
+    assert body.index("first") < body.index("second") < body.index("third") < body.index("fourth")
+
+
 # --- the portfolio heartbeat ------------------------------------------------
 
 def test_one_heartbeat_carries_every_run(tmp_path):
