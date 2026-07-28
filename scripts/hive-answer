@@ -53,10 +53,11 @@ echo "hive-answer: appended to $REL and pushed"
 # missing pane is a warning, not a failure — the worker (or a relaunch) will read
 # the order at HEAD regardless.
 #
-# Every target is `=`-prefixed: without it tmux accepts a PREFIX match on the
-# session name (bare `hive` also matches a session called `hive-scratch`), and a
-# nudge that resolves to the wrong session types an answer into someone else's
-# pane — silently, since send-keys succeeds. Same guard as hive-launch's.
+# Every target is `=`-prefixed: without it tmux falls back to a PREFIX match when
+# no session is named exactly `$HIVE_TMUX_SESSION` — so with that session gone or
+# renamed, a bare `hive` matches `hive-scratch`, and the nudge types an answer
+# into someone else's pane, silently, since send-keys succeeds. Same guard as
+# hive-launch's.
 NUDGE="answer landed; pull and re-read your order at HEAD; emit task.unblocked only if it answers your question"
 if tmux has-session -t "=$HIVE_TMUX_SESSION" 2>/dev/null \
    && tmux list-windows -t "=$HIVE_TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qxF "$TASK"; then

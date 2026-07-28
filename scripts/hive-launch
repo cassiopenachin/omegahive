@@ -136,8 +136,10 @@ fi
 
 # --- tmux targeting: name the SESSION exactly, never let tmux guess -------------
 # Every tmux target below goes through SESSION_T. The `=` prefix forces an EXACT
-# session-name match: a bare `hive` also prefix-matches a session named
-# `hive-scratch`, which would silently seat the worker in the wrong session.
+# session-name match. Without it, tmux falls back to prefix matching when no
+# session is named exactly `$HIVE_TMUX_SESSION` — so with the real session gone or
+# renamed, a bare `hive` silently matches a session called `hive-scratch` and
+# seats the worker there. An exact match, or nothing.
 SESSION_T="=$HIVE_TMUX_SESSION"
 
 # Clobber guards: never overwrite an existing clone or a same-named live pane.
@@ -278,12 +280,17 @@ half_launch_recovery() {  # half_launch_recovery <what-failed>
     if [ -n "$kf" ]; then
       echo "  (a) retry just the pane:"
       echo "        tmux new-window -a -t '$SESSION_T:{end}' -n '$TASK' -c '$WS_ROOT' \\"
-      echo "          -e HIVE_KICKOFF=\"\$(cat $kf)\" '$HIVE_WORKER_CMD \"\$HIVE_KICKOFF\"'"
+      echo "          -e HIVE_KICKOFF=\"\$(cat '$kf')\" '$HIVE_WORKER_CMD \"\$HIVE_KICKOFF\"'"
+      echo "      If the session itself is gone ('can't find session'), create it instead:"
+      echo "        tmux new-session -d -s '$HIVE_TMUX_SESSION' -n '$TASK' -c '$WS_ROOT' \\"
+      echo "          -e HIVE_KICKOFF=\"\$(cat '$kf')\" '$HIVE_WORKER_CMD \"\$HIVE_KICKOFF\"'"
     fi
     echo "  (b) fallback if tmux itself is the problem — run the session in any terminal and"
     echo "      paste the kickoff below as its first message:"
-    echo "        cd $WS_ROOT && $HIVE_WORKER_CMD"
-    echo "      Prefer (a): the pane name is the task registry, and (b) leaves no pane."
+    echo "        cd '$WS_ROOT' && $HIVE_WORKER_CMD"
+    if [ -n "$kf" ]; then
+      echo "      Prefer (a): the pane name is the task registry, and (b) leaves no pane."
+    fi
     echo
     echo "  If you would rather abandon this seat, recover per RUNBOOK 'Dead worker recovery'"
     echo "  (register a fresh worker id, then task.reassigned — never a relaunch)."
