@@ -10,7 +10,7 @@ import asyncio
 import os
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
-from typing import Protocol
+from typing import NamedTuple, Protocol
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
@@ -98,6 +98,48 @@ def _sse(event: str, html: str) -> str:
     """Encode an HTML fragment without asking the browser to interpret any event data."""
     data = "".join(f"data: {line}\n" for line in html.splitlines() or [""])
     return f"event: {event}\n{data}\n"
+
+
+# One (cursor, generation) pair per run — what the portfolio stream carries between ticks.
+PortfolioCursors = dict[str, tuple[int | None, int | None]]
+
+
+class PortfolioTick(NamedTuple):
+    cursors: PortfolioCursors
+    changed: bool
+    restored: bool
+
+
+def poll_portfolio(
+    factory: PortFactory, rows: list[dict], cursors: PortfolioCursors
+) -> PortfolioTick:
+    """One portfolio stream tick: read each live run at its cursor and report what moved.
+
+    The generation travels with the cursor because the port reports GENERATION_MISMATCH
+    only to a client that presents the generation it last saw. Read with `generation=None`
+    and a restore-rewound log answers "no change" forever — the silent skipping read the
+    token exists to prevent (port spec §2; the UI is not special). On a mismatch the run's
+    cursor is dropped, so the next read is a full snapshot, which adopts the new generation.
+
+    An empty `cursors` means the stream has just started: it reports `changed` so the page
+    re-renders once, because it never saw the cursors the page was drawn from and a change
+    landing in that gap would otherwise be lost. A run entering or leaving the portfolio
+    counts as a change too — the page lists runs, not only tasks.
+    """
+    changed = not cursors or {row["run_id"] for row in rows} != set(cursors)
+    restored = False
+    fresh: PortfolioCursors = {}
+    for row in rows:
+        run_id = row["run_id"]
+        cursor, generation = cursors.get(run_id, (None, None))
+        delta = _read(factory, run_id, cursor, generation)
+        if delta.generation_mismatch:
+            changed = restored = True
+            fresh[run_id] = (None, None)
+            continue
+        changed = changed or delta.changed
+        fresh[run_id] = (delta.cursor, delta.generation)
+    return PortfolioTick(fresh, changed, restored)
 
 
 def _page_context(
@@ -231,6 +273,7 @@ def create_app(
             "hidden": len(summaries) - len(rows),
             "show_all": show_all,
             "window_days": days,
+            "generation_notice": False,
         }
 
     @app.get("/", response_class=HTMLResponse)
@@ -254,11 +297,7 @@ def create_app(
         request: Request, show_all: bool = Query(default=False, alias="all")
     ) -> StreamingResponse:
         async def updates() -> AsyncIterator[str]:
-            # One cursor per run, riding the port's O(1) no-change short-circuit exactly
-            # as the per-run stream does. The first tick always re-renders: the page was
-            # drawn from a slightly earlier snapshot and this stream never saw its
-            # cursors, so re-rendering once is how a change in that gap is not lost.
-            seen: dict[str, int | None] = {}
+            cursors: PortfolioCursors = {}
             while not await request.is_disconnected():
                 await asyncio.sleep(poll_seconds)
                 rows = await asyncio.to_thread(
@@ -266,15 +305,11 @@ def create_app(
                         runs(), window_days=configured_window_days(), include_all=show_all
                     )
                 )
-                changed = not seen or {row["run_id"] for row in rows} != set(seen)
-                for row in rows:
-                    run_id = row["run_id"]
-                    delta = await asyncio.to_thread(_read, factory, run_id, seen.get(run_id), None)
-                    if delta.changed or delta.generation_mismatch:
-                        changed = True
-                    seen[run_id] = delta.cursor
-                if changed:
+                tick = await asyncio.to_thread(poll_portfolio, factory, rows, cursors)
+                cursors = tick.cursors
+                if tick.changed:
                     context = await asyncio.to_thread(portfolio_context, request, show_all)
+                    context["generation_notice"] = tick.restored
                     yield _sse("fragments", _fragments("portfolio", context))
                 else:
                     yield ": quiet\n\n"

@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from omegahive.board.state import Board, TaskState
 from omegahive.port.wire import PortView
 from omegahive.report.portfolio import DAY_SECONDS
-from omegahive.ui.app import create_app
+from omegahive.ui.app import create_app, poll_portfolio
 
 NOW = datetime(2026, 7, 28, 12, 0, tzinfo=UTC)
 REF_TS = int(NOW.timestamp())
@@ -169,3 +169,80 @@ def test_portfolio_carries_a_live_stream_seam():
 
     assert "data-stream-url=" in response.text
     assert "/portfolio/stream" in response.text
+
+
+# --- the stream's per-tick bookkeeping ----------------------------------------------
+#
+# `poll_portfolio` is the whole of what the SSE loop decides each tick, lifted out of the
+# async generator so it can be driven directly. Driving it beats driving the socket: the
+# invariant under test is which (cursor, generation) the tick presents, and that is exactly
+# what a live-socket test would have to infer.
+
+
+class _SpyPort:
+    """Records what each read presented, and reports a restore the way the real port does:
+    GENERATION_MISMATCH only to a client that presents the generation it last saw."""
+
+    def __init__(self, run_id: str, generation: int | None = None) -> None:
+        self.run_id = run_id
+        self.presented = generation
+        _SpyPort.reads.append((run_id, generation))
+
+    reads: list[tuple[str, int | None]] = []
+    current_generation = 1
+
+    def read(self, cursor: int | None = None) -> PortView:
+        board = BOARDS.get(self.run_id, Board(tasks={}))
+        if cursor is not None and self.presented is not None:
+            if self.presented != _SpyPort.current_generation:
+                return PortView(cursor=cursor, generation=_SpyPort.current_generation,
+                                events=[], board=None, changed=False, generation_mismatch=True)
+            return PortView(cursor=cursor, generation=_SpyPort.current_generation,
+                            events=[], board=None, changed=False)
+        return PortView(cursor=7, generation=_SpyPort.current_generation, events=[],
+                        board=board, changed=True)
+
+
+def _spy_tick(cursors):
+    _SpyPort.reads = []
+    return poll_portfolio(lambda run_id, gen: _SpyPort(run_id, gen), [SUMMARIES[0]], cursors)
+
+
+def test_first_tick_re_renders_because_it_never_saw_the_pages_cursors():
+    tick = _spy_tick({})
+
+    assert tick.changed and not tick.restored
+    assert tick.cursors == {"omegahive": (7, 1)}
+
+
+def test_a_quiet_run_stays_quiet():
+    tick = _spy_tick({"omegahive": (7, 1)})
+
+    assert not tick.changed
+
+
+def test_the_tick_presents_the_generation_it_last_saw():
+    """The bug this guards: reading with generation=None makes the port structurally
+    unable to answer GENERATION_MISMATCH, so a restored log would read as 'no change'
+    forever and the portfolio would sit frozen on a stale board (port spec §2)."""
+    _spy_tick({"omegahive": (7, 1)})
+
+    assert _SpyPort.reads == [("omegahive", 1)]
+
+
+def test_a_restore_is_signalled_and_the_cursor_is_dropped_so_the_next_read_re_snapshots():
+    _SpyPort.current_generation = 2
+    try:
+        tick = _spy_tick({"omegahive": (7, 1)})
+    finally:
+        _SpyPort.current_generation = 1
+
+    assert tick.changed and tick.restored
+    assert tick.cursors == {"omegahive": (None, None)}
+
+
+def test_a_run_joining_the_portfolio_is_itself_a_change():
+    tick = _spy_tick({"omegahive": (7, 1), "departed": (3, 1)})
+
+    assert tick.changed
+    assert "departed" not in tick.cursors

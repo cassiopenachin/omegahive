@@ -5,6 +5,9 @@
 #}
 <section id="portfolio-fragment" class="portfolio" aria-label="All runs">
   <p class="eyebrow">Portfolio</p>
+  {% if generation_notice %}
+    <p class="view-notice"><span class="freshness-warning">Log restored — refreshed from a new generation.</span></p>
+  {% endif %}
   <p class="view-notice">
     {% if show_all %}
       Full history, every registered run.
