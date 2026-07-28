@@ -46,10 +46,15 @@ echo "hive-answer: appended to $REL and pushed"
 # Nudge the pane named <task>. The answer is already durable on the hub, so a
 # missing pane is a warning, not a failure — the worker (or a relaunch) will read
 # the order at HEAD regardless.
+#
+# Every target is `=`-prefixed: without it tmux accepts a PREFIX match on the
+# session name (bare `hive` also matches a session called `hive-scratch`), and a
+# nudge that resolves to the wrong session types an answer into someone else's
+# pane — silently, since send-keys succeeds. Same guard as hive-launch's.
 NUDGE="answer landed; pull and re-read your order at HEAD; emit task.unblocked only if it answers your question"
-if tmux has-session -t "$HIVE_TMUX_SESSION" 2>/dev/null \
-   && tmux list-windows -t "$HIVE_TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qxF "$TASK"; then
-  tmux send-keys -t "$HIVE_TMUX_SESSION:$TASK" "$NUDGE" Enter
+if tmux has-session -t "=$HIVE_TMUX_SESSION" 2>/dev/null \
+   && tmux list-windows -t "=$HIVE_TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qxF "$TASK"; then
+  tmux send-keys -t "=$HIVE_TMUX_SESSION:=$TASK" "$NUDGE" Enter
   echo "hive-answer: nudged pane $HIVE_TMUX_SESSION:$TASK"
 else
   echo "hive-answer: WARNING no pane '$TASK' in session '$HIVE_TMUX_SESSION' — answer is on the hub; nudge the worker by hand" >&2
