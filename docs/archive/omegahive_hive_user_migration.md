@@ -1,5 +1,7 @@
 # OmegaHive — migrating the stack to a dedicated `hive` unix user
 
+**Status:** archived — executed procedure. The migration ran; the `hive` unix account exists on the host. Retained for the record and for any future re-run of the same class of migration, not as a pending checklist.
+
 Moving the omegahive deployment off the operator's personal account and onto a dedicated,
 unprivileged `hive` account: its own home, its own rootless-podman namespace, its own
 containers, volumes, images, and systemd user timers.

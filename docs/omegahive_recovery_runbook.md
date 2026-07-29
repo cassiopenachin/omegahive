@@ -1,6 +1,6 @@
 # OmegaHive — Recovery Runbook
 
-Operational procedures for an OmegaHive deployment: the human-only recovery path,
+**Status:** current, v1. Operational procedures for an OmegaHive deployment: the human-only recovery path,
 backup, restore, and drain-before-migrate. Companion to the deployment spec (§5) and
 a deployment's record (e.g. `docs/deployments/deployment-0-beastie.md`). Standalone —
 a reader needs only this document, a shell on the host, and the deployment's checkout.
@@ -135,7 +135,7 @@ scan are checks 4–5), and — once agents exist — the injection-relevant gov
 drills. These are scripts precisely so this checklist is executable, not aspirational.
 
 Moving the deployment to a different unix account on the same host is an environment
-change of this kind, and has its own procedure: `docs/omegahive_hive_user_migration.md`
+change of this kind, and has its own procedure: `docs/archive/omegahive_hive_user_migration.md`
 (additive prep, a parallel scratch stack, a restore rehearsal, and the cutover with its
 standing rollback). Its replay-identity check reuses `scripts/replay_identity.sql` — an
 ordered-event checksum bounded by a sequence number, so a restored copy can be compared

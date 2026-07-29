@@ -1,6 +1,8 @@
 # Stage-2 V1/V2a — post-audit fixes A1–A4 (self-contained work order)
 
-**Context (all you need):** the k-joins/prune substrate (PR #1) and ladder harness deterministic half (PR #2) were audited against `docs/omegahive_stage2_spec.md` (now v2.2 — §3 was corrected as part of this audit; read it first). Four fixes. File:line references as of merge `3d6e165`; anchor by function if drifted. A1 is the substantive one. Fold/guard unit tests run without Postgres; anything touching the DB paths needs `docker-compose up` + `OMEGAHIVE_TEST_DATABASE_URL`.
+**Status:** archived — closed post-audit fix record; folded into `docs/archive/omegahive_stage2_spec.md` (its own Status line notes "audit fixes A1–A4 folded"), so this file's content is already reflected there.
+
+**Context (all you need):** the k-joins/prune substrate (PR #1) and ladder harness deterministic half (PR #2) were audited against `docs/archive/omegahive_stage2_spec.md` (now v2.2 — §3 was corrected as part of this audit; read it first). Four fixes. File:line references as of merge `3d6e165`; anchor by function if drifted. A1 is the substantive one. Fold/guard unit tests run without Postgres; anything touching the DB paths needs `docker-compose up` + `OMEGAHIVE_TEST_DATABASE_URL`.
 
 ---
 

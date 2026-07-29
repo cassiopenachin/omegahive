@@ -1,5 +1,7 @@
 # C2 battery — v0a v2 experiment (self-contained work order)
 
+**Status:** archived — executed work order (PR #13 and the v2 experiment it specifies are done; cited as complete by `docs/reference/omegahive_v0b_order.md`'s entry conditions).
+
 **Context (all you need):** the first v0a run (`qual/records/2026-07-09-v0a-r1/`, PR #13) proved the pipeline — real providers through the hive image, capture, grading — and the validity review (`docs/evidence/omegahive_c2_v0a_r1.md`, the authoritative reading) found the numbers unusable: wrong prompt ran, four host-side artifact metrics, a saturated probe, an unattributed failure. This order turns the F1–F6 dispositions into the v2 experiment. **Goal: a valid emission-discipline record that can inform the stage-2 cheap pick — and it runs before v0b** (sequencing decision, Jul 9). Presumes PR #13 merged. **Stop-lines:** no fork/image code changes (the battery consumes images, never patches them); no upstream contact; scoring-bar changes belong to the battery spec, not here.
 
 ## Decisions settled here (flag disagreement rather than diverging)
