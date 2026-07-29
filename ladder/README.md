@@ -2,7 +2,7 @@
 
 **Status: closed.** This harness ran the stage-2 coordinator ladder and produced the frozen
 records under `ladder/records/2026-07-09/`. The experiment is closed per
-`docs/omegahive_stage2_verdict.md`; its §7 decision layer (cross-cell contrasts, the
+`docs/reference/omegahive_stage2_verdict.md`; its §7 decision layer (cross-cell contrasts, the
 knowledge-value verdict, the interim gate recommendation, and boundary-replication flagging) has
 been removed from `main`. Git history preserves it.
 

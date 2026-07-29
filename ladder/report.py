@@ -4,7 +4,7 @@ the raw rows and easy to test.
 
 The §7 decision layer (cross-cell contrasts, the knowledge-value verdict, the interim gate
 recommendation, and boundary-replication flagging) was retired with the ladder's closure — see
-`ladder/README.md` and `docs/omegahive_stage2_verdict.md`. This module now renders only the
+`ladder/README.md` and `docs/reference/omegahive_stage2_verdict.md`. This module now renders only the
 records' descriptive tables; the verdicts they once computed live in git history.
 """
 
