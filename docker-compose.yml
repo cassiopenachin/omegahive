@@ -164,7 +164,14 @@ services:
       - .env
       # required:false so an unconfigured host doesn't break `compose config`/other services;
       # the notifier fails fast at startup if the token/chat are absent.
-      - path: ${OMEGAHIVE_SECRETS_DIR}/notifier.env   # TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
+      #
+      # OMEGAHIVE_SECRETS_DIR carries a DEFAULT here (deployment spec §4's canonical
+      # location) because it previously had none: unset, this path interpolated to a bare
+      # `/notifier.env`, which `required: false` then skipped in silence — a notifier with
+      # no token and no complaint until startup. The default makes the documented location
+      # the actual location, so `hive-init-secrets` and this file cannot disagree. An
+      # exported OMEGAHIVE_SECRETS_DIR still wins (deployment #0 exports exactly this path).
+      - path: ${OMEGAHIVE_SECRETS_DIR:-${HOME}/.config/omegahive/secrets}/notifier.env   # TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
         required: false
     volumes:
       # :z — shared SELinux label so the cursors survive container replacement. Without it,
