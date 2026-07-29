@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # restore_rehearsal.sh — rehearse the hive-user migration's data path in a scratch stack.
 #
-# The migration (docs/omegahive_hive_user_migration.md) moves the log store and the
+# The migration (docs/archive/omegahive_hive_user_migration.md) moves the log store and the
 # workspace into a stack owned by a dedicated `hive` unix account. Its cutover is four
 # minutes of drain / dump / restore / verify. This script performs exactly those steps
 # against a PARALLEL stack — scratch project, scratch container names, scratch ports,

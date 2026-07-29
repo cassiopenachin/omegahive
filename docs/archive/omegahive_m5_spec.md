@@ -2,7 +2,7 @@
 
 **Status:** Build spec, ready to scaffold on top of M4. **Implements:** the *one* thing the RP2 result actually asked for — concentrate difficulty on the substantive steps so the reproduction DAG's three-way experiment fork is reached and stressed. Nothing more.
 
-**History (why this is small):** an earlier draft of M5 bundled three substrate changes — per-(worker,task_type) competence, worker capacity, and a capability-aware coordinator. An independent red-team panel cut it: only per-task-*type* difficulty is what the data demanded; capacity and the capable coordinator were premature *and* carried two real bugs and a rigged comparison. They're deferred to [omegahive_deferred_capability_coordination.md](omegahive_deferred_capability_coordination.md), to land with Track B / RP3 against a DAG that actually has routing decisions. This spec is the minimal slice, in keeping with *simplest-that-still-gives-signal*.
+**History (why this is small):** an earlier draft of M5 bundled three substrate changes — per-(worker,task_type) competence, worker capacity, and a capability-aware coordinator. An independent red-team panel cut it: only per-task-*type* difficulty is what the data demanded; capacity and the capable coordinator were premature *and* carried two real bugs and a rigged comparison. They're deferred to [omegahive_deferred_capability_coordination.md](../evidence/omegahive_deferred_capability_coordination.md), to land with Track B / RP3 against a DAG that actually has routing decisions. This spec is the minimal slice, in keeping with *simplest-that-still-gives-signal*.
 
 **Builds on:** M4. **Additive — no events-table migration, no engine change, byte-identical to M0–M4.** `task_type` already rides in the `task.created` payload (verified: `events/types.py` `TaskCreated.task_type`, emitted by `loader.py`); the reducer just surfaces it.
 
@@ -74,4 +74,4 @@ Scenarios with no `success_by_type` remain byte-identical to today.
 
 ## 5. Deferred
 
-Per-worker competence, worker capacity, and the capability-aware coordinator — with the two substrate bugs and the experiment-validity requirements the red-team found — are written up in [omegahive_deferred_capability_coordination.md](omegahive_deferred_capability_coordination.md). They land when there's a DAG with real routing decisions to justify them (RP3 / Track B), not before.
+Per-worker competence, worker capacity, and the capability-aware coordinator — with the two substrate bugs and the experiment-validity requirements the red-team found — are written up in [omegahive_deferred_capability_coordination.md](../evidence/omegahive_deferred_capability_coordination.md). They land when there's a DAG with real routing decisions to justify them (RP3 / Track B), not before.

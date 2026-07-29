@@ -1,6 +1,8 @@
 # O2 — OmegaClaw fork patches (self-contained work order)
 
-**Context (all you need):** you are working in the **OmegaClaw fork repo** (base already cut from upstream HEAD; the pre-patch **base image** is built and recorded — do not modify it; your output is the **hive image**, a new tag). These patches bind the agent to the OmegaHive board for the stage-2 spike ([omegahive_stage2_spec.md](omegahive_stage2_spec.md) §4 is the behavioral contract; this file adds the operational decisions). Patches to a live agent runtime move at review pace: small commits, each with tests, no drive-bys. **Stop-lines:** no upstream contact (pulls only, nothing outbound before the mid-July release); no changes beyond the patch list; the coordinator-side cognition (personas, KB content) is not yours.
+**Status:** reference — shipped fork-patch spec; the runtime facts and shared-code decisions below stay normative for the fork's binding story (companion to `omegahive_session_agents.md`'s CLI-agent binding story).
+
+**Context (all you need):** you are working in the **OmegaClaw fork repo** (base already cut from upstream HEAD; the pre-patch **base image** is built and recorded — do not modify it; your output is the **hive image**, a new tag). These patches bind the agent to the OmegaHive board for the stage-2 spike ([omegahive_stage2_spec.md](../archive/omegahive_stage2_spec.md) §4 is the behavioral contract; this file adds the operational decisions). Patches to a live agent runtime move at review pace: small commits, each with tests, no drive-bys. **Stop-lines:** no upstream contact (pulls only, nothing outbound before the mid-July release); no changes beyond the patch list; the coordinator-side cognition (personas, KB content) is not yours.
 
 ## Runtime facts you need (verified against source; trust these)
 

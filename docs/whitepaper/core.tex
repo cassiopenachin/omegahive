@@ -1,0 +1,166 @@
+% =========================================================================
+\section{Key Concepts}
+% =========================================================================
+
+\subsection{The spine: events, runs, time}
+
+An event is a small record: an actor, a role, a type, a task id where relevant, and a payload of references and short structured fields. \code{task.created}, \code{task.assigned}, \code{task.blocked}, \code{task.reported}, \code{review.passed}, \code{gateway.rejected} --- coordination facts, never content. Events live in Postgres, append-only, in \emph{runs}: one run per project, each run a bounded, totally-ordered span with its own board. Time is server-set --- a per-run monotonic logical timestamp assigned under the emit lock --- so no client clock is ever trusted and every duration in our metrics is a difference of positions in the record, not of laptops' opinions.
+
+Two mechanisms make the log safe for concurrent, fallible, out-of-process writers. \emph{Idempotency}: every emit carries a content-derived key --- a hash of the run, actor, operation, payload, and the log position the writer had observed --- so two emits share a key exactly when they are the same decision made from the same observed board, and retries never duplicate. \emph{Generation tokens}: every read carries a token that a restore-from-backup bumps, so a client holding a cursor from before the restore gets a refusal, drops its cursor, and re-reads --- a restore can never silently strand a live reader on a phantom history.
+
+\subsection{Legality: one specification, checked on the way in}
+
+Who may emit what, from which task state, is one declarative table. The gateway evaluates it before appending; the board fold applies the same table when projecting. One specification, two consumers --- so the failure class ``accepted but silently changes nothing'' is gone by construction. A worker emitting \code{task.accepted} on a task assigned to someone else is refused with \code{ALREADY\_OWNED}; the refusal is itself an event, visible in every projection. Refusals are diagnostic data, not embarrassment --- when a wave of them appears, something upstream is misconfigured, and the log says exactly what.
+
+The task lifecycle the legality table governs:
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[node distance=9mm and 11mm]
+  \node[hbox] (created) {created};
+  \node[hbox, right=of created] (assigned) {assigned};
+  \node[hbox, right=of assigned] (prog) {in\_progress};
+  \node[hbox, below=7mm of prog] (blocked) {blocked};
+  \node[hbox, right=of prog] (review) {in\_review};
+  \node[hboxaccent, right=of review] (done) {done};
+  \draw[harrow] (created) -- node[hlabel, above]{assign} (assigned);
+  \draw[harrow] (assigned) -- node[hlabel, above]{accept} (prog);
+  \draw[harrow] (prog) -- node[hlabel, above]{result} (review);
+  \draw[harrowaccent] (review) -- node[hlabel, above]{review +\\close} (done);
+  \draw[harrow, bend left=18] (prog.south west) to node[hlabel, left]{question} (blocked.west);
+  \draw[harrow, bend left=18] (blocked.east) to node[hlabel, right]{answer\\consumed} (prog.south east);
+  \draw[harrow, dashed, bend left=40] (assigned.north) to node[hlabel, above=1mm]{reassign (dead worker)} (prog.north);
+\end{tikzpicture}
+\caption{Task lifecycle. Worker-owned transitions (accept, block, unblock, result) and operator-owned ones (assign, review, close) are separated by the legality table, not by convention. \code{done} is unreachable without a review event.}
+\end{figure}
+
+\subsection{Refs, not bulk: the workspace}
+
+The log carries references; content lives in git. The \emph{workspace} repository is the project's paper trail, one directory per project: \code{orders/} (one file per task --- the task's contract), \code{reports/} (worker results), \code{questions/} (blocking questions as files), \code{decisions.md} (append-only decision log), plus the project charter, roadmap, and operating docs. The \emph{code repo} holds the software and takes changes only as pull requests.
+
+The join between log and git is the pin: every reference emitted into the spine is \code{path@sha}, minted only after the content is committed and pushed. Tooling refuses to mint a pin for uncommitted content. The consequence is a strong property bought cheaply: an unprovenanced claim is structurally impossible. A result event points at an exact immutable version of a report; a review event points at the result it certifies; replaying the log years later resolves every citation to the byte.
+
+\subsection{Roles, identity, and the honest caveat}
+
+Four roles today: \emph{human} (the operator and the seat functions acting with human-tier authority), \emph{coordinator} (assignment and plan mutation), \emph{worker} (one per launched session, registered at launch), and \emph{instrument} (deterministic emitters --- the notifier, the metrics generator --- which never judge anything). A launched worker's only write path is a wrapper script issued at launch with its run, role, and actor id baked in --- a proto-credential the worker cannot misstate. Three named functions operate at human tier today --- the \emph{design partner} (authors a project's orders and its defining documents), the \emph{coordinator} (composes waves from the ready order stock), and the \emph{improver} (runs the retros) --- each a role over durable state, woken per \emph{sitting} (one continuous stretch of operator engagement); why they are seats in rehearsal rather than resident agents is Section~7's subject.
+
+The caveat we state plainly: identity is assertion, not mechanism. Any process on the host could claim any role; the audit answers \emph{what was legal}, not \emph{who really}. This is an accepted, recorded posture --- safe while every writer enters through operator-controlled hardware, and exactly the thing the \emph{identity gate} of Section~7 (below, simply: the gate) exists to close before any long-lived agent holds authority.
+
+\subsection{A task's life, in events}
+
+Concretely --- a small real task, as the log records it:
+
+\begin{casebox}
+\begin{tabular}{@{}p{40mm}L{88mm}@{}}
+\code{worker.registered} & operator registers \code{sess-cli-polish-0721} \\
+\code{task.created} & order pinned: \code{orders/cli-polish.md@41c2f9e} \\
+\code{task.assigned} & to the registered worker \\
+\code{task.accepted} & the session's first act --- refused unless assigned to it \\
+\code{task.reported} & \code{kind=question}, ref to a committed question file \\
+\code{task.blocked} & \code{needs: decision} --- the worker stops; the operator's phone buzzes \\
+\code{task.unblocked} & the answer arrived as a commit to the order; the worker consumed it \\
+\code{task.result\_posted} & ref to the pinned result report \\
+\code{review.passed} & the operator's judgment, referencing the result it certifies \\
+\code{task.status\_override} & \code{done} --- reachable only past the review \\
+\end{tabular}
+\end{casebox}
+
+Ten events, four pinned documents, and no self-report load-bearing anywhere: every step is either a recorded judgment or a refusal waiting to happen.
+
+% =========================================================================
+\section{The Hive Today}
+% =========================================================================
+
+\subsection{The operator's day}
+
+The interface in one line: \emph{Telegram pushes, the UI shows, SSH writes.} A task costs the operator four judgments, each about one command's worth of clerical residue:
+
+\textbf{Launch.} \code{hive-launch <order-file>} seeds the task on the board with its order pinned, registers and assigns a worker, provisions its private git clones of the workspace and code repos, issues the wrapper, opens a tmux window named after the task, and pastes the kickoff. The worker starts unattended --- autonomous permissions are the launch default, bounded by the wrapper-only write path, per-worker file scoping, and command deny rules, with the pane watchable throughout; the fuller answer is the gate's OS-separation step. One judgment: the order is ready.
+
+\textbf{Answer.} The phone buzzes --- who, what, topic, with a deep link into the board. \code{hive-answer <task> "<text>"} appends the answer to the order's Answers section, commits, pushes, and nudges the worker's pane itself. One judgment. Append-only by design: amendments flow as commits to the order, and the worker re-reads its order at HEAD before acting --- the latest committed order supersedes its memory of it.
+
+\textbf{Merge.} The pull request, reviewed in the ordinary way --- deliberately outside the hive. This is the engineering judgment on the artifact, and it stays on engineering's home turf.
+
+\textbf{Close.} \code{hive-close <task>} verifies the board state, pulls the result ref from the spine's own record, emits the review verdict and the close --- then scores the task's predictions and commits the updated metrics, automatically. One judgment: the result holds.
+
+A launch refuses when too many tasks sit in review --- the throttle counts \code{in\_review} across every project, because the limit is the operator's review bandwidth, not any project's. When that refusal fires regularly, review is the bottleneck; the correct response is to slow down or deepen review, and the system makes the signal impossible to miss. Daily, one heartbeat message summarizes every run; silence one hour past its scheduled time is itself the alarm.
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[node distance=7mm and 9mm]
+  \node[hboxaccent, minimum width=25mm] (launch) {\textbf{launch}\\\footnotesize seed + assign +\\pane + kickoff};
+  \node[hbox, right=of launch, minimum width=25mm] (work) {\textbf{work}\\\footnotesize session works\\unattended};
+  \node[hbox, right=of work, minimum width=25mm] (qa) {\textbf{question?}\\\footnotesize block $\to$ buzz $\to$\\answer $\to$ resume};
+  \node[hbox, right=of qa, minimum width=25mm] (result) {\textbf{result}\\\footnotesize report pinned,\\PR open};
+  \node[hboxaccent, below=of result, minimum width=25mm] (close) {\textbf{merge + close}\\\footnotesize review verdict,\\score, done};
+  \draw[harrow] (launch) -- (work);
+  \draw[harrow] (work) -- (qa);
+  \draw[harrow] (qa) -- (result);
+  \draw[harrow] (result) -- (close);
+  \draw[harrow, dashed, bend left=25] (qa.north) to node[hlabel, above]{zero questions is the observed norm} (result.north);
+  \node[hlabel, below=2.5mm of work] {operator attention: launch judgment only};
+  \node[hlabel, below=2.5mm of close, yshift=-1mm] {operator attention: two judgments};
+\end{tikzpicture}
+\caption{The Phase 1 loop. Four operator judgments per task; everything between them runs on the spine.}
+\end{figure}
+
+\subsection{Workers: sessions, not services}
+
+Our workers are launched CLI coding-agent sessions (Claude Code today; the binding is tool-agnostic). The participation contract is short: operate as your registered actor; stay inside your order's scope and stop-lines; speak only through the spine; put content in the workspace and emit pinned refs; when your order under-determines something with frozen consequences, \emph{do not extrapolate --- ask}, by writing a question file, blocking, and stopping; consume answers from the order at HEAD, never from chat; externalize your state before every stop.
+
+Silent extrapolation is the defect; the interruption is the feature. And blocking is free: an idle session at its prompt makes zero API calls, and in headless mode the process simply exits between turns --- a blocked worker is state, not a process. This inverts the economics of Ben's resident-agent picture in a way we consider load-bearing: a continuous agent loop pays tokens to keep \emph{being}, and free-running is also precisely the over-intervention failure our coordinator experiments punished. Session workers are natively trigger-driven. Waiting costs nothing; acting requires a reason.
+
+Worker death is a normal event, not an incident. A session that dies or degrades is replaced, never resurrected: a fresh worker id, a reassignment on the record, a kickoff citing the last pinned report --- the new session starts from externalized state. Nothing that matters lives in a process.
+
+\subsection{The instruments}
+
+Deterministic emitters, no judgment anywhere in them. The \emph{notifier} watches the spine and renders attention events --- questions, blocks, escalations, results --- to Telegram, each with a deep link into the web UI; plus the daily heartbeat. The \emph{metrics generator} projects per-task durations with clock ownership made explicit: operator-clock spans (how long an answer waited) are the hive's own latency and never a worker-performance signal; worker-clock spans are the session's. The hive never grades itself --- numbers come from deterministic folds, verdicts from humans.
+
+The one instrument with teeth at launch time: \emph{predictions}. Every order carries a committed prediction --- expected effort against the project's own recorded medians, expected question count, expected review outcome, named risks --- and the launcher refuses an order without one. At close, the prediction is scored against the spine and appended to a calibration ledger. Predictions are honest guesses, never commitments; calibration is the product, not the number.
+
+\subsection{The web UI and the portfolio}
+
+Server-rendered, tailnet-only today, and structurally boring on purpose: it constructs the same \emph{port} client every process uses --- the one small library that reads the log and emits through the gateway --- and holds no state that is not an event --- kill it, replay the log, and it renders identically. The entry point is the portfolio: every live project's board on one page, active work plus recent closes by default, full history a click away. Per-run views show the board, the raw event stream with refusals styled distinctly, and metrics. A ticker renders events as one-line sentences (``w1 claimed t3'', ``\texttimes\ w2 refused t3: ALREADY\_OWNED'') --- the single feature that makes the thing feel alive, and every line of it a deterministic rendering of the log.
+
+The hive runs multiple projects on one substrate: each is a run with its own board, orders, and reports, its committed identity in a small \code{project.conf}, and its own effort baselines --- work-shapes differ, so calibration is per-project. The hive itself is project number one; the first tenant --- a PLN benchmarking project, real work: re-validating PLN reasoning benchmarks against current Hyperon components --- seeded in a day and launched through the same tools. The portfolio surfaces --- one board, one heartbeat, one notifier across all runs --- exist because operating two projects immediately made per-project surfaces feel like toil. That is the standing pattern: overhead complaints are data, and a step that feels clerical twice gets named as a pain with a proposed fix.
+
+\subsection{What it runs on}
+
+One modest host. A container stack --- Postgres (loopback-only), the hive image (gateway library, CLI, migrations, tests --- one image, many one-shot services), the notifier, the UI --- under rootless Podman with pinned digests. Secrets live per-service in an operator-owned directory, referenced by a committed names-only manifest; nothing secret ever lands in the log or the repos. Backups are drilled, not assumed: a scheduled dump of the log store, a mirrored workspace, and a rehearsed restore whose generation bump makes stale readers refuse rather than silently diverge. Every deployment is pinned --- container images, the patched OmegaClaw fork's commit, the policy hash --- so a deployment can be rebuilt from its lockfile plus its backups. Remote operation is a tailnet carrying plain SSH: transport, not trust, with the human-only recovery path Ben's spec demands preserved exactly (keys-only \code{sshd}, no agent in that loop).
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[node distance=5mm and 6mm]
+  \node[hbox] (pg) {Postgres\\\footnotesize the log, loopback-only};
+  \node[hbox, right=of pg] (img) {hive image\\\footnotesize gateway lib $\cdot$ CLI $\cdot$ migrations};
+  \node[hbox, right=of img] (not) {notifier};
+  \node[hbox, below=3mm of not] (ui) {web UI};
+  \node[hboxdim, below=8mm of img] (sec) {secrets dir\\\footnotesize per-service env, 0600};
+  \node[hboxdim, below=8mm of pg] (bak) {backups\\\footnotesize dump + mirror, restore drilled};
+  \begin{scope}[on background layer]
+    \node[fill=palegrey, rounded corners=3pt, inner xsep=4mm, inner ysep=5mm, fit=(pg)(img)(not)(ui)(sec)(bak)] (host) {};
+  \end{scope}
+  \node[hlabel, anchor=south west] at ($(host.north west)+(1mm,0.3mm)$) {one host $\cdot$ rootless containers $\cdot$ pinned digests};
+  \node[hbox, left=8mm of host] (op2) {operator\\\footnotesize SSH over tailnet\\phone: Telegram + UI};
+  \draw[harrow] (op2.east) -- (host.west);
+  \draw[harrow] (img.south) -- (sec.north);
+  \draw[harrow] (pg.south) -- (bak.north);
+\end{tikzpicture}
+\caption{Deployment. Boring by design: one host, one compose profile, secrets outside the repos, backups that have actually been restored.}
+\end{figure}
+
+\subsection{A defect's life: the launch-pane story}
+
+One task, end to end, because it shows the properties this document keeps claiming.
+
+\begin{casebox}
+\textbf{Found by use.} July 27, the sitting's third launch: \code{hive-launch} seeds the task, provisions the worker's git clones, issues the wrapper --- then dies opening the tmux window: \code{create window failed: index 4 in use}. The task is stranded half-launched: owned on the board, no session. Manual recovery works; the defect gets an order the same evening, with a committed prediction (1--2 hours, review outcome: clean).
+
+\textbf{The order's mechanism was wrong; its observation was right.} The order blamed index derivation. The worker reproduced the failure experimentally and found the truth one level deeper: \code{tmux new-window -t hive} does not target a session --- tmux resolves the target by \emph{window-name} matching first, so any worker window whose task id starts with ``hive'' shadows the session and donates its occupied index. Intermittently: two matching windows make the match ambiguous and the command works. A passing launch was never evidence the form was safe.
+
+\textbf{The fix, and the fix's own defect.} Append-by-construction targeting (\code{-a -t '=hive:\{end\}'}), name collisions refused, and half-launches made survivable: the failure path now prints and writes the complete manual finish. The tooling drill --- the scripted harness that exercises the whole launch-answer-close loop against a sandbox --- grew from 70 to 92 assertions, all green, four full runs. Then the independent review pass caught what green could not: the change had moved the drill's cleanup trap ahead of its isolation, so an early abort could have killed the operator's live tmux server --- every worker pane on the host. High severity, introduced by the fix, invisible to a test suite that only exercises the code under test, not the harness's own failure path. Dispositioned in a follow-up PR before close.
+
+\textbf{Scored.} Effort ran over the prediction; the review outcome prediction (``clean'') was wrong, and the calibration ledger says so. The reflection that survives: cleanup paths are where small diffs stop being small, and a more powerful cleanup handler is a blast-radius change first, a convenience second.
+\end{casebox}
+
+The loop found the defect, ordered the fix, caught the fix's own regression, and recorded a calibration lesson --- all on its own rails, all replayable. This is what ``the hive builds itself'' means in practice.

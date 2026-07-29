@@ -1,8 +1,8 @@
 # Repo Hygiene & OmegaClaw Fork Program — Execution Spec
 
-> **OBSOLETE (Jul 6 2026).** Absorbed into [omegahive_deployment_spec.md](omegahive_deployment_spec.md) (§§2–3), which extends it with deployment topology, upgrade/backup/restore/recovery procedures, and the Beastie bring-up plan. One content change in the move: the two-arg board-op round-trip test became conditional on the stage-2 §3.4 payload decision (single-string default). Retained for history only — do not update.
+> **OBSOLETE (Jul 6 2026).** Absorbed into [omegahive_deployment_spec.md](../omegahive_deployment_spec.md) (§§2–3), which extends it with deployment topology, upgrade/backup/restore/recovery procedures, and the Beastie bring-up plan. One content change in the move: the two-arg board-op round-trip test became conditional on the stage-2 §3.4 payload decision (single-string default). Retained for history only — do not update.
 
-**Status:** Companion to [omegahive_port_spec.md](omegahive_port_spec.md), split out so it can be executed independently — by Claude Code running at `~/code/SNET` (recommended: it needs real git and `gh`, which the cowork sandbox handles poorly on mounted repos). Covers cross-repo git hygiene and the OmegaClaw hive fork. **Interface to the port milestone:** this track delivers a buildable, pinned fork image + container policy file; the port's environment slice consumes them.
+**Status:** Companion to [omegahive_port_spec.md](../reference/omegahive_port_spec.md), split out so it can be executed independently — by Claude Code running at `~/code/SNET` (recommended: it needs real git and `gh`, which the cowork sandbox handles poorly on mounted repos). Covers cross-repo git hygiene and the OmegaClaw hive fork. **Interface to the port milestone:** this track delivers a buildable, pinned fork image + container policy file; the port's environment slice consumes them.
 
 ## 1. Principle and the failure it prevents
 

@@ -1,5 +1,7 @@
 # V3 review — fixes B1–B6 (self-contained work order)
 
+**Status:** archived — closed post-audit fix record; B1–B6 are merged (cited as done by `docs/reference/omegahive_v0b_order.md`'s entry conditions).
+
 **Context (all you need):** PR #8's three artifacts (persona v2, op-reference sheet, KB v1) passed fresh-eyes review clean — strategy-inert, leak-free, symmetric. The blockers are in the surrounding code: the grid's execution path still consumes the superseded catalog, and the op sheet documents a rejection code the substrate does not implement. These land as a follow-up PR on the V track; **B1–B4 gate the grid freeze** (any L-cell run before they land is contaminated or mis-documented). File:line refs as of `29b499d`.
 
 ## B1 — BLOCKER: the grid runs against the contaminated v1 catalog

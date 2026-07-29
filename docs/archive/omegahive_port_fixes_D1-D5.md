@@ -1,5 +1,7 @@
 # Port build — post-audit fixes D1–D5 (self-contained work order)
 
+**Status:** archived — closed post-audit fix record; the fixes are merged into the port build (companion to `docs/reference/omegahive_port_spec.md`).
+
 **Context (all you need):** the port milestone (slices 1–3, merged at `ce869d9`) was audited against its build spec after human review. Five gaps + one cosmetic item. This file is self-contained — no other document required. File:line references are as of `ce869d9`; anchor by function name if lines drifted. **Order: D1 first (critical), then D2–D5 in any order.** All tests need live Postgres: `docker-compose up -d` then `OMEGAHIVE_TEST_DATABASE_URL=... pytest`.
 
 ---
