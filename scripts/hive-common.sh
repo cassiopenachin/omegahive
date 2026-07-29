@@ -204,6 +204,113 @@ order_pin() {  # order_pin <workspace-relative-path>  -> prints sha
   printf '%s\n' "$sha"
 }
 
+# --- predictions section parsing (the ONE parser; hive-launch's gate and
+# hive-score's scorer both call this and nothing else) ------------------------
+#
+# Retro 2026-07-29 D1: the launch-gate was a human reading a `## Predictions`
+# HEADING while hive-score parsed bullet LABELS underneath it — two different
+# checks that could (and did) disagree with no error anywhere. A gate that can
+# disagree with the scorer is the defect, so the regexes live in exactly one
+# place and both callers read their verdict off it.
+
+# predictions_present <order-file> -- exit 0 iff the file carries a
+# `## Predictions` heading at all, independent of whether anything under it
+# parses. The absent/unparsed distinction (D1's "silent and indistinguishable"
+# complaint) starts here.
+predictions_present() {  # predictions_present <order-file>
+  grep -qE '^##[[:space:]]*Predictions[[:space:]]*$' "$1"
+}
+
+# predictions_block <order-file> -- prints the `## Predictions` section body,
+# from the heading to the next heading of any level, exclusive. Empty when the
+# heading is absent — callers that care about absent-vs-unparsed check
+# predictions_present first.
+predictions_block() {  # predictions_block <order-file>
+  awk '
+    /^##[ \t]*Predictions[ \t]*$/ { inblock = 1; next }
+    inblock && /^#/                { inblock = 0 }
+    inblock                        { print }
+  ' "$1"
+}
+
+# predictions_declared_unpredicted <block-text> -- the design-partner
+# authoring rule's one-line disposition ("one line declaring the task
+# deliberately unpredicted and why"), for an order that carries the heading but
+# means to skip prediction on purpose. Recognized by a literal phrase so it is
+# distinguishable from a mislabeled section (D1's failure mode) rather than
+# inferred from an empty parse.
+predictions_declared_unpredicted() {  # predictions_declared_unpredicted <block-text>
+  printf '%s' "$1" | grep -qiE 'deliberately unpredicted'
+}
+
+# parse_predictions <block-text> -- extracts the three SCORED fields (Named
+# risks is a fourth, required-but-unscored bullet — R2's correction to the
+# retro's "N of 4 fields" framing: hive-score has only ever scored three).
+# Sets PRED_EFFORT_TXT / PRED_QUESTIONS_TXT / PRED_REVIEW_TXT (empty when that
+# field did not parse) and PRED_FIELDS_PARSED (0-3).
+parse_predictions() {  # parse_predictions <block-text>
+  local block="$1" t
+  PRED_EFFORT_TXT=$( { printf '%s' "$block" \
+    | grep -oiE 'Expected effort:[[:space:]]*[0-9][0-9.–—-]*[[:space:]]*worker-hours?' \
+    | head -1 | sed -E 's/^[Ee]xpected effort:[[:space:]]*//'; } || true )
+  PRED_QUESTIONS_TXT=$( { printf '%s' "$block" \
+    | grep -oiE 'Expected questions:[[:space:]]*[0-9][0-9–—-]*' \
+    | head -1 | sed -E 's/^[Ee]xpected questions:[[:space:]]*//'; } || true )
+  PRED_REVIEW_TXT=$( { printf '%s' "$block" \
+    | grep -oiE 'Expected review outcome:[[:space:]]*[^.]+' \
+    | head -1 | sed -E 's/^[Ee]xpected review outcome:[[:space:]]*//'; } || true )
+  PRED_FIELDS_PARSED=0
+  for t in "$PRED_EFFORT_TXT" "$PRED_QUESTIONS_TXT" "$PRED_REVIEW_TXT"; do
+    if [ -n "$t" ]; then PRED_FIELDS_PARSED=$((PRED_FIELDS_PARSED + 1)); fi
+  done
+}
+
+# predictions_missing_fields -- comma-joined names of the scored fields NOT
+# parsed by the last parse_predictions call (e.g. "questions, review outcome").
+# Reads the PRED_*_TXT globals parse_predictions just set.
+predictions_missing_fields() {
+  local out=""
+  [ -n "$PRED_EFFORT_TXT" ]    || out="effort"
+  if [ -z "$PRED_QUESTIONS_TXT" ]; then
+    [ -z "$out" ] && out="questions" || out="$out, questions"
+  fi
+  if [ -z "$PRED_REVIEW_TXT" ]; then
+    [ -z "$out" ] && out="review outcome" || out="$out, review outcome"
+  fi
+  printf '%s' "$out"
+}
+
+# predictions_classify <order-file> -- the ONE classification hive-launch's
+# gate and hive-score's coverage line both read. Sets the global PRED_VERDICT
+# to one of:
+#   absent                 -- no `## Predictions` heading at all
+#   declared-unpredicted   -- the heading, with the one-line disposition
+#   unparsed               -- heading present, 0 of 3 scored fields parse
+#   partial <n>            -- heading present, 1-2 of 3 fields parse
+#   full                   -- heading present, 3 of 3 fields parse
+# Also leaves PRED_EFFORT_TXT/PRED_QUESTIONS_TXT/PRED_REVIEW_TXT/
+# PRED_FIELDS_PARSED set (via parse_predictions), e.g. to quote the verbatim
+# prediction text in a calibration entry. A plain call, never `$(...)`: a
+# command substitution runs in a subshell, and every one of these globals would
+# be set there and vanish the instant the subshell exits.
+predictions_classify() {  # predictions_classify <order-file>
+  local f="$1" block
+  if ! predictions_present "$f"; then
+    PRED_EFFORT_TXT=""; PRED_QUESTIONS_TXT=""; PRED_REVIEW_TXT=""; PRED_FIELDS_PARSED=0
+    PRED_VERDICT="absent"
+    return 0
+  fi
+  block=$(predictions_block "$f")
+  parse_predictions "$block"
+  case "$PRED_FIELDS_PARSED" in
+    3) PRED_VERDICT="full" ;;
+    0)
+      if predictions_declared_unpredicted "$block"; then PRED_VERDICT="declared-unpredicted"
+      else PRED_VERDICT="unparsed"; fi ;;
+    *) PRED_VERDICT="partial $PRED_FIELDS_PARSED" ;;
+  esac
+}
+
 # Commit + push a project's regenerated metrics artifacts. Shared by hive-metrics
 # and hive-score, which write only under projects/<project>/metrics/.
 #
@@ -217,9 +324,14 @@ order_pin() {  # order_pin <workspace-relative-path>  -> prints sha
 # Scoped by pathspec to the project's metrics dir, so unrelated work in the
 # operator's clone is never swept into the commit. Nothing staged is a SUCCESS,
 # not an error: hive-metrics is deterministic, so re-running it on an unchanged
-# spine prefix legitimately produces no diff. Push mirrors hive-answer's
-# retry (push -> pull --rebase -> push) and reports precisely how far it got, so
-# "committed locally" is never mistaken for "on the hub".
+# spine prefix legitimately produces no diff. On a push failure this REFUSES
+# rather than rebasing (retro 2026-07-29 ledger item 13, folded early because
+# item 5 below raises this path's firing rate to every close): the commit stays
+# local and the operator resolves by hand, because an unattended rebase on a
+# shared metrics path — now reached automatically, not run by a watching human
+# — risks a silent conflict resolution nobody sees. hive-answer's own
+# push -> pull --rebase -> push retry is a separate, pre-existing surface and is
+# untouched.
 commit_metrics() {  # commit_metrics <project> <commit-message>  -> 0 committed/nothing-to-do, non-zero otherwise
   local msg="$2" spec="projects/$1/metrics"
   git -C "$OPS_WS" add -- "$spec" || { echo "hive: git add failed for $spec in $OPS_WS" >&2; return 1; }
@@ -230,12 +342,14 @@ commit_metrics() {  # commit_metrics <project> <commit-message>  -> 0 committed/
   git -C "$OPS_WS" commit --quiet -m "$msg" -- "$spec" \
     || { echo "hive: git commit failed for $spec in $OPS_WS (git identity unset, a commit hook, or an index lock?)" >&2; return 1; }
   if ! git -C "$OPS_WS" push --quiet 2>/dev/null; then
-    if ! git -C "$OPS_WS" pull --rebase --quiet; then
-      echo "hive: push failed and rebase failed — committed locally in $OPS_WS, NOT on the hub; resolve by hand" >&2
-      return 1
-    fi
-    git -C "$OPS_WS" push --quiet \
-      || { echo "hive: push failed for $OPS_WS — committed locally, NOT on the hub" >&2; return 1; }
+    {
+      echo "hive: push failed for $OPS_WS — committed LOCALLY, NOT on the hub."
+      echo "  Refusing to rebase a shared metrics path unattended (this path is now reached on every"
+      echo "  close, so an automatic rebase risks a silent conflict resolution nobody is watching for)."
+      echo "  Resolve by hand:"
+      echo "      cd $OPS_WS && git pull --rebase && git push"
+    } >&2
+    return 1
   fi
   echo "  committed + pushed: $spec ($msg)"
 }
