@@ -1,0 +1,117 @@
+% =========================================================================
+\section{Introduction}
+% =========================================================================
+
+Agent collectives fail in a characteristic way: they are busy rather than productive. Chat fills, tokens burn, tasks are claimed enthusiastically and abandoned silently, and at the end of the week nobody can say precisely what got done --- or prove it. The failure is not a model quality problem. It is a coordination-substrate problem: chat makes a poor system of record, agent self-reports make poor evidence, and knowledge that lives only in a session transcript dies with the session.
+
+Ben Goertzel's OmegaHive1 specification named the goal:
+
+\begin{benquote}
+There will be a serious attempt to use the hive to get real work done: research, formalization, software, and written output. At the same time, much of the point is methodological: tweaking the hive approach to discover what makes agent collectives genuinely productive rather than merely busy.
+\benattrib{OmegaHive1, \S1 (Project Overview)}
+\end{benquote}
+
+We built one, and it runs. Since July 13 the hive has closed twenty-three tasks through its full loop --- launch, work, review, close --- eighteen of them worked by launched agent sessions, across two projects and three \emph{waves} --- a wave is the batch of orders composed and launched together against the review throttle.\footnote{Counts as of July 28, 2026, read from the hive's own metrics projection. Every number in this document has the same provenance: it is computed from the event log, not remembered. The denominator is on the same record: zero worker-emit rejections and zero failed reviews across the worked tasks so far; four early hand-seeded duplicates were retired as debris, on the record. Small numbers --- a baseline, not a trend.} Its first workload was itself: the hive built its own launcher, notifier, web UI, metrics, and backup discipline as ordered tasks through its own process. Along the way it caught four of its own defects --- two of them predicted in writing before they fired --- and fixed them the same way.
+
+Two design commitments run through everything that follows. First, \emph{one log}: every coordination fact is an event in a single append-only record, and everything else --- the task board, the web UI, the phone notifications, the metrics --- is a deterministic projection of it. Second, \emph{audit over trust}: no agent's claim about its own work is load-bearing. Work is real when it is committed, pinned, reviewed, and closed by an accountable judgment, and the record of that chain survives every participant.
+
+This document is written for colleagues who know OmegaClaw and the Hyperon ecosystem but have not seen this system. It assumes no other context. One note on names: ``OmegaHive'' in this document names Ben's vision and specifications; the running implementation we call simply \emph{the hive}.
+
+% =========================================================================
+\section{The Idea on One Page}
+% =========================================================================
+
+One append-only event log --- we call it \emph{the spine} --- is the coordination substrate. Four properties, enforced at the write path: \textbf{append-only} (nothing is ever edited or deleted; corrections are new events), \textbf{total order} (every event carries a server-assigned position; no client clock is trusted), \textbf{refs not bulk} (events carry references to content, never the content itself), and \textbf{replay} (every view of the system can be reconstructed from the log alone).
+
+A single gateway is the sole write path. Every emit is checked against one declarative legality specification --- which role may emit which event from which task state --- and the same specification drives the board fold, so an event that would change nothing is refused rather than accepted and ignored. Refusals are themselves recorded events. And no projection is stored: the board is recomputed --- \emph{folded} --- from the log by replaying it through the same legality rules, and so is every other surface. The audit trail is not a feature added to the system; the log \emph{is} the system, and the audit trail is what it looks like when you read it.
+
+Work content lives in two git repositories: a \emph{code repo} (the hive's software) and a \emph{workspace} (orders, reports, questions, decisions --- the project's paper trail). Events point into them with pinned references --- \code{path@sha}, minted only after commit and push --- so a cited document is immutable even though the working tree moves. Chat is where decisions happen, never where they live.
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[node distance=6mm]
+  % spine
+  \node[hboxaccent, minimum width=34mm, minimum height=17mm] (spine) {\textbf{the spine}\\event log\\\footnotesize append-only $\cdot$ total order};
+  \node[hbox, above=9mm of spine, minimum width=30mm] (gw) {\textbf{gateway}\\\footnotesize sole write path $\cdot$ legality check};
+  % actors (left)
+  \node[hbox, left=16mm of gw, yshift=7mm] (op) {operator};
+  \node[hbox, below=3mm of op] (dp) {design partner\\\footnotesize + coordinator, improver};
+  \node[hbox, below=3mm of dp] (wk) {workers\\\footnotesize launched sessions};
+  \node[hbox, below=3mm of wk] (inst) {instruments\\\footnotesize notifier, metrics};
+  % projections (right)
+  \node[hbox, right=16mm of spine, yshift=13mm] (board) {board\\\footnotesize task graph fold};
+  \node[hbox, below=3mm of board] (ui) {web UI\\\footnotesize portfolio, events};
+  \node[hbox, below=3mm of ui] (tg) {notifier\\\footnotesize Telegram pings};
+  \node[hbox, below=3mm of tg] (met) {metrics\\\footnotesize calibration};
+  % workspace
+  \node[hboxdim, below=8mm of spine, minimum width=42mm] (ws) {\textbf{workspace + code repos}\\\footnotesize orders $\cdot$ reports $\cdot$ questions $\cdot$ decisions $\cdot$ PRs};
+  % arrows
+  \draw[harrow] (op.east) -- (gw.west);
+  \draw[harrow] (dp.east) -- (gw.170);
+  \draw[harrow] (wk.east) -- (gw.185);
+  \draw[harrow] (inst.east) -- (gw.200);
+  \draw[harrowaccent] (gw.south) -- node[hlabel, right=1pt]{emit} (spine.north);
+  \draw[harrow] (spine.20) -- (board.west);
+  \draw[harrow] (spine.5) -- (ui.west);
+  \draw[harrow] (spine.-10) -- (tg.west);
+  \draw[harrow] (spine.-25) -- (met.west);
+  \draw[harrow, dashed] (spine.south) -- node[hlabel, left=2pt]{pinned refs} (ws.north);
+\end{tikzpicture}
+\caption{The system in one picture. Every actor writes through one gateway into one log; every surface anyone reads is a deterministic projection of that log; content lives in git, referenced by immutable pins.}
+\end{figure}
+
+Everything else in this document is detail on this picture: what the events are, who may emit them, what the projections show, and how a system this simple runs real multi-agent work.
+
+% =========================================================================
+\section{Vision and Lineage}
+% =========================================================================
+
+\subsection{Ben's OmegaHive1 and 1.1}
+
+OmegaHive1 (June 2026) specified a cooperative hive of OmegaClaw and OpenClaw agents with a dual purpose: real research output, and methodological knowledge about what makes collectives work. Its architecture requirements --- deliberately independent of any particular agent roster --- are the backbone we build against. Four of them shaped us most.
+
+\textbf{Two-tier communications, mechanically curated.} Fast working traffic and human-legible reporting are separate layers, and what gets promoted to humans is decided by rules, not by agents' sense of what is interesting:
+
+\begin{benquote}
+Crucially, the fast tier is curated out of Slack, not hidden from humans: every bus message is persisted and inspectable\ldots{} so the distinction between tiers is editorial, not one of visibility. \ldots{} Mechanical promotion rules are preferred over agent self-reporting of what humans would find interesting.
+\benattrib{OmegaHive1, \S2.2 (Two-tier communications)}
+\end{benquote}
+
+\textbf{Task ownership on a board, not in chat.} All non-trivial work flows through a shared board with explicit ownership, status, and provenance. The 1.1 revision sharpened this to a principle we quote often:
+
+\begin{benquote}
+All non-trivial work enters the task graph. Chat alone is not a task-management system.
+\benattrib{OmegaHive 1.1, \S3.3 (Task graph)}
+\end{benquote}
+
+\textbf{Provenance and editorial discipline.} Documents carry notes-and-sources companions; an editor gates completion on their validity; writers source from the raw record, not from each other's summaries --- serial error propagation through summarization chains is named as the enemy.
+
+\textbf{Governance as mechanism, not prompt.} Permission tiers are enforced ``at the gateway and credential level, not merely in prompts,'' and a human-only recovery path is maintained at all times:
+
+\begin{benquote}
+A human-only, out-of-band recovery path (plain SSH with no agent in the loop) is maintained at all times, so that no failure of the self-managing infrastructure, including the sys-admin agent itself, can lock humans out.
+\benattrib{OmegaHive1, \S2.8 (Fleet management and recovery)}
+\end{benquote}
+
+OmegaHive 1.1 (July 2026) revised the roster model --- ``a small persistent core that owns stable responsibilities, plus a spawn-on-demand layer'' for bounded work --- added an asynchronous task queue with atomic claim, made rejected and expired work first-class evidence rather than embarrassment, added a runtime safety floor and a Tier~1.5 (act only through adjudication), and set the bar in one sentence:
+
+\begin{benquote}
+Every non-trivial task has an owner, contract, audit trail, budget, evidence trail, and completion criterion.
+\benattrib{OmegaHive 1.1, Abstract}
+\end{benquote}
+
+\subsection{Our derivation: three moves}
+
+We derived our design from these requirements with three moves, each a simplification the specs permit but do not demand.
+
+\textbf{One log instead of three stores.} The specs describe a bus, a board, and a queue. We collapsed them: one event log, with the board and the queue as folds over it. Independent stores drift, and reconciliation code is where correctness goes to die; a projection cannot disagree with its source. The two-tier communication requirement survives fully --- the fast tier is the log itself, and the human tier is a mechanically-promoted rendering of it. We derive the channel from the ledger.
+
+\textbf{One gateway, one policy.} Whatever writes, writes through a single gated emit whose legality rules are one declarative structure shared by the acceptance check and the board fold. Enforcement is structural: a document task cannot \emph{reach} done without a passed review, no matter what any agent says --- the transition is unreachable, not discouraged.
+
+\textbf{Functions before residents.} Every role in the specs --- chief of staff, conscience, librarian, editor --- is real, but none starts as a long-lived process. A role is an authority row plus a rehydration bundle --- the committed state a fresh session reads in order to wake as that role: data, not a daemon. Roles become resident agents one at a time, when the evidence says the function earns a seat. Section~7 shows how far along that path we are.
+
+\subsection{The empirical detour that set the course}
+
+Before running real work we ran a coordinator experiment: a funded grid comparing LLM coordinators (strong and cheap models, with and without curated knowledge) against a mechanical greedy policy, each coordinating scripted workers over synthetic task boards --- dependency graphs with joins and scheduled failures, completion scored against a fixed time and call budget. The result was humbling in a useful direction. The mechanical policy completed 20 of 20 seeds at zero cost, because every generated board's single join was already satisfied by one of its branches: the optimal policy was inaction, and the do-nothing policy is free. The LLM cells burned their budgets --- the cheap tier mostly on output the command parser rejected --- and a sensitivity probe that tripled the strong model's wall-clock held completion flat while decisions, prunes, and waste all rose. Not latency, not budget: action bias. The honest verdict: we had not yet posed a question that discriminates coordination quality, and a synthetic coordination environment is valid only if the null policies provably fail it --- a rule we now pre-register for any future attempt. The grid licenses nothing as a comparison; what survives is three narrower findings --- over-intervention is the LLM-coordinator failure mode, below a capability bar the interface dominates cognition, and boards must be validated against null policies before use --- and they are all we carry forward.
+
+Two consequences shaped everything since. \emph{Coordination is not the binding constraint until the spine proves otherwise}: the real hive runs a mechanical coordination core, the LLM consulted only at defined trigger points, and we stopped iterating synthetic experiments --- real coordination episodes accumulate in the log and become replayable test cases when they arrive. And \emph{the hive's first workload is the hive}: four days of running the project as a pseudo-hive --- work orders drafted in chat, a human copy-pasting questions and answers between sessions --- had shown exactly where coordination actually hurts --- questions and answers with no durable home, plan state living in one person's memory, knowledge dying in transcripts. So the substrate of record went live and the hive started building itself through it. Every mechanism in the next two sections was delivered as a work order through the loop it describes.

@@ -1,0 +1,118 @@
+\documentclass[11pt]{article}
+
+% ---------- fonts & base ----------
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{charter}
+\usepackage{courier}
+\usepackage{microtype}
+\usepackage[margin=1.05in,headheight=14pt]{geometry}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.misc,calc,fit,backgrounds}
+\usepackage{tcolorbox}
+\tcbuselibrary{skins,breakable}
+\usepackage{booktabs,longtable,array,ragged2e}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage[hidelinks]{hyperref}
+\usepackage{setspace}
+
+% ---------- palette ----------
+\definecolor{slate}{HTML}{23303E}
+\definecolor{honey}{HTML}{A8720E}
+\definecolor{honeypale}{HTML}{FBF4E2}
+\definecolor{inkgrey}{HTML}{55606C}
+\definecolor{palegrey}{HTML}{F2F3F5}
+
+% ---------- headings ----------
+\titleformat{\section}{\Large\bfseries\color{slate}}{\thesection}{0.7em}{}
+\titleformat{\subsection}{\large\bfseries\color{slate}}{\thesubsection}{0.6em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries\color{inkgrey}}{\thesubsubsection}{0.6em}{}
+\titlespacing{\section}{0pt}{1.4em}{0.7em}
+\titlespacing{\subsection}{0pt}{1.1em}{0.5em}
+
+% ---------- headers ----------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{inkgrey}OmegaHive: A Running Hive}
+\fancyhead[R]{\small\color{inkgrey}\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+\renewcommand{\headrule}{\color{palegrey}\hrule width\headwidth height 0.6pt}
+
+% ---------- excerpt box (Ben's specs) ----------
+\newtcolorbox{benquote}[1][]{
+  enhanced, breakable,
+  colback=honeypale, colframe=honeypale,
+  borderline west={2.2pt}{0pt}{honey},
+  left=8pt, right=8pt, top=6pt, bottom=6pt,
+  boxrule=0pt, arc=1.5pt,
+  fontupper=\small,
+  #1
+}
+\newcommand{\benattrib}[1]{\par\smallskip\raggedleft\footnotesize\color{inkgrey}--- #1\par}
+
+% ---------- aside box (worked examples / stories) ----------
+\newtcolorbox{casebox}[1][]{
+  enhanced, breakable,
+  colback=palegrey, colframe=palegrey,
+  borderline west={2.2pt}{0pt}{slate},
+  left=8pt, right=8pt, top=6pt, bottom=6pt,
+  boxrule=0pt, arc=1.5pt,
+  fontupper=\small,
+  title={}, #1
+}
+
+% ---------- misc ----------
+\newcommand{\code}[1]{\texttt{\small #1}}
+\setlist{itemsep=2pt,topsep=4pt}
+\setlength{\parskip}{0.35em}
+\setlength{\parindent}{0pt}
+\newcolumntype{L}[1]{>{\RaggedRight}p{#1}}
+
+% TikZ shared styles
+\tikzset{
+  hbox/.style={draw=slate, fill=white, rounded corners=2pt, thick, align=center, font=\small, inner sep=5pt},
+  hboxaccent/.style={hbox, draw=honey, fill=honeypale},
+  hboxdim/.style={hbox, draw=inkgrey!60, fill=palegrey},
+  harrow/.style={-{Stealth[length=2.6mm]}, thick, slate},
+  harrowaccent/.style={harrow, honey},
+  hlabel/.style={font=\footnotesize\itshape, text=inkgrey, align=center},
+}
+
+\begin{document}
+
+% =============================== title page ===============================
+\begin{titlepage}
+\thispagestyle{empty}
+\vspace*{1.6cm}
+{\color{honey}\rule{\textwidth}{2.5pt}}\par
+\vspace{1.1cm}
+{\Huge\bfseries\color{slate} OmegaHive: A Running Hive\par}
+\vspace{0.55cm}
+{\LARGE\color{inkgrey} Architecture, operations, and the path\\[2pt] from one operator to many hives\par}
+\vspace{1.6cm}
+{\large Cassio Pennachin \\[3pt] \color{inkgrey} SingularityNET \\[14pt] July 2026\par}
+\vspace{1.2cm}
+{\color{honey}\rule{\textwidth}{1pt}}\par
+\vspace{0.9cm}
+\begin{minipage}{0.92\textwidth}
+\normalsize
+A hive of AI agents has been doing our real work since July~13: building its own tooling, finding its own defects, fixing them through its own process, and keeping an audit trail that lets anyone replay exactly what happened. This document describes the architecture, shows the running system, and lays out the path from today's single-operator hive to credentialed agent \emph{seats} --- durable roles, never long-lived processes --- and deployments beyond our own. It is self-contained: where we build on Ben Goertzel's OmegaHive specifications, the relevant passages are excerpted in place.
+\end{minipage}
+\vfill
+\end{titlepage}
+
+% =============================== toc ===============================
+{\hypersetup{hidelinks}\setstretch{1.05}\setcounter{tocdepth}{1}\tableofcontents}
+\clearpage
+
+\input{front}        % 1 introduction · 2 one page · 3 vision and lineage
+\input{core}         % 4 key concepts · 5 the hive today
+\input{loopfuture}   % 6 improvement loop · 7 full function + path
+\input{visionend}    % 8 fulfilling the vision · 9 running one
+\input{appendix}     % glossary · event reference · sources
+
+\end{document}

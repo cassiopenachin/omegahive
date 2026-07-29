@@ -1,0 +1,80 @@
+% =========================================================================
+\section{The Improvement Loop}
+% =========================================================================
+
+The methodological half of the OmegaHive purpose --- discovering what makes collectives productive --- needs more than intuition accumulating in one operator's head. We made improvement a recorded loop with the same evidence discipline as the work itself.
+
+\textbf{Pains are data.} A step that feels clerical twice gets written into the operating doc's pain list with a proposed fix. Every piece of tooling the hive owns --- the one-command answer path, the launcher, the notifier, the score-at-close automation --- started as a numbered pain, and the pain list records which order retired it.
+
+\textbf{Predictions become calibration.} Every launched order carries committed predictions; every close scores them against the spine. The ledger accumulates per-project --- effort base rates are per-project, because work-shapes differ --- and after one fully-predicted wave we already know things worth knowing: our effort estimates run slightly hot on multi-surface diffs; our question predictions run high (the observed rate is nearly zero --- we read that as orders over-specified for these workers, and the retros watch for the darker reading, silent extrapolation, which numbers this small cannot yet exclude); our review-outcome predictions are the weakest of the three.
+
+\textbf{The improver reads the record, and repairs bind forward.} A dedicated retro function --- woken fresh, no conversational context, inputs strictly the committed record --- scores the closed wave, compares predictions to outcomes, and stages repairs as concrete document edits. Retro~1 produced eight, from prediction-template amendments to a standing rule that a sitting's proposals are committed or explicitly discarded before it ends. The repairs bound the next wave's orders: the loop's output is the loop's next input.
+
+\textbf{The defect ledger.} Four defects found in the hive by the hive, so far:
+
+\begin{center}\small
+\begin{tabular}{@{}L{31mm}L{45mm}L{44mm}@{}}
+\toprule
+\textbf{Defect} & \textbf{How it surfaced} & \textbf{How it resolved} \\
+\midrule
+Launcher refused the pre-tooling backlog & First real launch attempt against hand-seeded tasks & Adopt mode, ordered and shipped by a worker the same week \\
+Board reader broke on wide task ids & First close of a long-named task; predicted in writing in an earlier report's reflection & JSON projection replaced table parsing; regression case pinned \\
+tmux targeting collided on window names & Third launch of a sitting; the fix's review then caught a worse defect the fix itself introduced & Append-by-construction targeting; harness blast-radius lesson recorded (\S5.6) \\
+Notifier silently watched a wrong run & A week of truthful heartbeats about an empty run; the config default had been warned about, in writing, twelve days earlier & Interim env fix same hour; structural fix ordered: one notifier watching every run, so the drift surface ceases to exist \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The pattern across all four: found by use or by review, never by luck; the fix arrived as an ordered task through the loop; and where prevention was possible the fix removed the configuration surface rather than guarding it. Where we grade ourselves honestly: the hive is instrumented and governed at its gates, and its self-knowledge is still descriptive, not predictive --- twenty-odd scored tasks is a baseline, not a trend. The trend is what the next retros are for.
+
+% =========================================================================
+\section{The Hive at Full Function --- and the Path There}
+% =========================================================================
+
+\subsection{The hive, working, a few months out}
+
+Describe the destination as it functions, then earn it. A day in that hive:
+
+The coordinator seat wakes on the wave boundary. It is not a process that survived the night; it is a credential, a memory directory, and a rehydration bundle --- it wakes, reads the committed state, and composes the next wave from the ready order stock against the review throttle. Its authority is real but narrow: it assigns and launches within the throttle, executing wave plans a human committed. It cannot merge, cannot pass review, cannot close. Those transfers never happen.
+
+Design-partner seats --- one per project --- keep the order stock ahead of demand. Each authors orders from its project's committed context, files predictions, and proposes charter and roadmap changes the operator reviews and commits. The improver wakes after every wave close, alone and fresh, and its retros now carry trend claims: calibration curves over dozens of scored tasks per project, repairs whose effect shows up in the next curve.
+
+Workers are unchanged in kind --- launched sessions, spine-speaking, block-honest --- but the contract has descended the instrumentation ladder --- convention, then hooks, then native tools; step 6 below --- so emits fire from hooks and native tools, and report discipline is code, not model memory. Questions land as native tool calls; the notifier's ping carries them to whichever human owns the judgment.
+
+Identity is mechanism now. Every seat holds a per-seat credential, issued at seat creation, revoked at deletion; the gateway derives role and actor from the credential instead of believing flags. An emit-as-coordinator without the credential is not illegal --- it is impossible. The operator's day is judgment at the boundaries: bless the wave cut, answer the questions only a human can, merge, close. Everything clerical about coordination has become substrate.
+
+And there is more than one hive. A colleague's deployment runs the same pinned profile on their own host with their own projects; what travels between deployments is evidence --- calibration ledgers, retro findings, order patterns that worked --- not access. Each hive is sovereign; the discipline is shared.
+
+\subsection{The path from today, in order}
+
+Each step below exists as a named, triggered item in our committed planning docs; none is speculative. What makes this a path rather than a wishlist: every step has a mechanism, an evidence bar, and a reason it cannot be skipped.
+
+\textbf{1. Sole write path.} Today the gateway library is the only writer by convention on a single database role. The step: two database roles --- gateway-writer and read-only --- closing the raw-SQL side door, so ``only the gateway writes'' becomes a property of the database, not of good behavior. Ordered against the design-partner seat now; the first gate bar.
+
+\textbf{2. OS separation.} The stack moves from the operator's account to a dedicated unprivileged hive user --- own namespace, own volumes, own timers. Prepared and rehearsed live (account, rootless runtime, restore rehearsal, replay-identity check); the cutover waits for a calm hour by policy, because access-layer changes are named, never rushed. The second gate bar: agents stop running as the person who can approve things.
+
+\textbf{3. Credential $\to$ identity at the gateway.} Per-seat secrets from which the gateway derives (role, actor). The launch-issued wrapper already has exactly this shape --- the backing swaps from convention to secret with no seat-facing change. The third gate bar, and the gate's open-test in one line: \emph{emit-as-coordinator becomes impossible without the credential, not merely illegal.}
+
+\textbf{4. Review depth before any credential.} The throttle already paces launches to review bandwidth, but review today certifies ``the operator read the result and saw no red flags.'' Before any seat holds authority, the editorial gates get at least a sketch: independent review as a first-class gated step for document-shaped work --- Ben's editor-and-companion-document requirement, landing as legality rows rather than a resident editor. The gate stays shut until this exists; a credentialed coordinator pacing unexamined work would be automation of negligence.
+
+\textbf{5. Seats graduate one at a time.} Rehearsal is the proving ground, and it is already running: coordinator, improver, and design partners operate today with full function and zero authority, every artifact through a human commit-gate. A seat graduates when its rehearsal record says the function works --- the coordinator's bar, for instance: its wave cuts hold up under operator judgment with per-task acts reduced to merge and close, across tenant waves, before it ever holds the launch credential.
+
+\textbf{6. Workers climb the instrumentation ladder.} Convention $\to$ hooks $\to$ native tools backed by the port client, so key derivation, pinning, and emission live inside tools where they are code. Climbs when forgotten-emit frequency says convention is the bottleneck --- treating forgotten emits as the signal, not as agent failure.
+
+\textbf{7. Deployment number one that isn't ours.} The current wave of work strips host assumptions: portable deploy with a bring-up drill on a machine that is not ours, a front-door README an outsider can follow, reference material filed as reference. The first outside deployment turns portability from a claim into a fact, and starts the evidence exchange that makes ``many hives'' mean something.
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[node distance=6mm and 10mm]
+  \node[hbox, minimum width=34mm] (rehearsal) {\textbf{seats in rehearsal}\\\footnotesize full function, zero authority\\every artifact human-committed\\\emph{running today}};
+  \node[hboxaccent, minimum width=34mm, right=26mm of rehearsal] (cred) {\textbf{credentialed seats}\\\footnotesize gateway derives identity\\authority narrow, audited\\\emph{after the gate}};
+  \node[hboxdim, minimum width=23mm, above=8mm of $(rehearsal.east)!0.5!(cred.west)$] (gate) {\textbf{the gate}\\\footnotesize 1 sole write path\\2 OS separation\\3 credential $\to$ identity\\(+ review depth first)};
+  \draw[harrow] (rehearsal.east) -- node[hlabel, below]{graduate on rehearsal evidence,\\one seat at a time} (cred.west);
+  \draw[harrow, dashed] (gate.south) -- ($(rehearsal.east)!0.5!(cred.west)$);
+  \node[hbox, below=8mm of $(rehearsal.east)!0.5!(cred.west)$, minimum width=52mm] (never) {\footnotesize review and close authority: \textbf{never transfers}};
+  \draw[harrow, dashed] (never.north) -- ($(rehearsal.east)!0.5!(cred.west)$);
+\end{tikzpicture}
+\caption{The identity gate. Function is proven in rehearsal before authority exists; authority arrives as a per-seat credential only when all three mechanisms are real; the human judgments at merge and close are permanent.}
+\end{figure}
+
+The ordering is the argument. Function before authority, mechanism before trust, evidence before graduation --- the same shape at every step, which is why we believe the path and not just the destination.

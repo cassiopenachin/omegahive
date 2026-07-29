@@ -1,0 +1,77 @@
+\appendix
+
+% =========================================================================
+\section{Glossary}
+% =========================================================================
+
+\small
+\begin{description}[style=nextline,itemsep=1pt]
+\item[spine] The append-only event log; the single source of truth for coordination facts.
+\item[run] The log's scoping container: one project's bounded span of operation, with its own board and total order.
+\item[event] One coordination fact: actor, role, type, payload of refs and small fields, server-set position.
+\item[gateway] The sole write path. Checks legality, assigns time, records refusals, appends atomically.
+\item[legality table] One declarative specification of which role may emit which event from which task state; shared by the gateway check and the board fold.
+\item[board] The current task graph --- status, owner, dependencies, provenance --- computed by folding the log, never written directly.
+\item[projection] Any view derived deterministically from the log: board, UI, notifier renderings, metrics.
+\item[fold] How a projection is produced: replay the log through the legality rules and accumulate the view. Nothing folded is stored; it is recomputed.
+\item[port] The spine's client interface --- read the log, emit through the gateway --- packaged as the one small library every process uses.
+\item[pin / \code{path@sha}] An immutable reference into a git repo, mintable only for committed, pushed content. The join between the log and all bulk content.
+\item[workspace] The project paper-trail repository: charters, orders, reports, questions, decision logs, indexes.
+\item[order] One task's contract: context, scope, stop-lines, definition of done, committed predictions.
+\item[stop-line] An explicit boundary in an order that the worker must not cross, however tempting.
+\item[result report] The worker's one-file deliverable record: what shipped, how verified, what the operator must do, and a reflection.
+\item[wrapper] The launch-issued emit script with run, role, and actor baked in --- a worker's only write path, and the proto-credential the seat credential will replace.
+\item[instrument] A deterministic emitter (notifier, metrics). Never judges.
+\item[throttle] The launch-time refusal when too many tasks sit in review, across all projects. Review bandwidth is the system's pace-setter.
+\item[predictions / calibration] Committed pre-launch estimates (effort, questions, review outcome, risks), scored at close into an append-only ledger.
+\item[wave] A batch of orders composed against the throttle and launched together; the coordinator's unit of work.
+\item[sitting] One continuous stretch of operator engagement. Sittings compose, judge, and commit; waves launch.
+\item[worker] A launched session working exactly one task under the participation contract.
+\item[design partner] The per-project seat function that authors orders and the project's defining documents.
+\item[coordinator (seat)] The hive-wide seat function that composes waves from the ready order stock against the throttle.
+\item[improver] The seat function that wakes fresh after a wave, scores calibration, and stages repairs.
+\item[seat] A durable role: credential (eventually), memory directory, rehydration bundle, wake pattern. The process is never long-lived.
+\item[rehydration bundle] The committed state a fresh session reads in order to wake as a seat --- the seat's memory, enumerable and auditable.
+\item[rehearsal] A seat operating with full function and zero authority --- every artifact through a human commit-gate --- building the record that argues for its credential.
+\item[the gate] The three mechanisms (sole write path, OS separation, credential-derived identity) that must exist before any seat holds authority.
+\item[generation token] A marker bumped on restore-from-backup so stale readers refuse and re-read instead of silently diverging.
+\item[half-launch] A launch that failed after the board was seeded; survivable by design, with a printed and filed manual finish.
+\end{description}
+\normalsize
+
+% =========================================================================
+\section{Event Reference}
+% =========================================================================
+
+\small
+\begin{center}
+\begin{tabular}{@{}llL{62mm}@{}}
+\toprule
+\textbf{Event} & \textbf{Emitted by} & \textbf{Meaning} \\
+\midrule
+\code{worker.registered} & operator & A worker actor id exists; unknown workers are refused \\
+\code{task.created} & operator/coordinator & Task seeded, order pinned \\
+\code{task.assigned} & coordinator & Ownership granted; owned tasks refuse re-assignment \\
+\code{task.reassigned} & coordinator & Dead-worker replacement; old id never reused \\
+\code{task.accepted} & worker & The session's first act; legality-checked against assignment \\
+\code{task.reported} & worker & Progress / question / finding / result / reflection --- content by pinned ref \\
+\code{task.blocked}, \code{task.unblocked} & worker & Honest stop on an under-determined decision; unblock means \emph{answer consumed} \\
+\code{task.result\_posted} & worker & Result report pinned; the close reads this ref \\
+\code{review.passed} / \code{review.failed} & operator & The human verdict, referencing the result it judges \\
+\code{task.status\_override} & operator & Terminal transitions (done, reopened); review-gated \\
+\code{task.escalated} & any (legality-scoped) & Attention demanded above the current tier \\
+\code{gateway.rejected} & gateway & A refused emit, with machine-readable code and reason \\
+\bottomrule
+\end{tabular}
+\end{center}
+\normalsize
+
+% =========================================================================
+\section{Sources}
+% =========================================================================
+
+\small
+\textbf{Ben's specifications} (excerpted throughout): \emph{OmegaHive1 --- An experimental cooperative hive of OmegaClaw and OpenClaw agents}; \emph{OmegaHive 1.1} (July 5, 2026).
+
+\textbf{The running hive's own record}, from which every operational claim in this document derives: the design document and normative spec (one log, one gateway, roles as configuration); the port, deployment, remote-access, and UI specifications; the worker protocol and operator runbook; the operating manual, decision log, wave briefs, retro, and calibration ledger; and the result reports of the twenty-three closed tasks, each pinned in the spine at its close. The repository and workspace are available to SingularityNET colleagues on request --- and after the current wave, buildable from a clean clone.
+\normalsize
