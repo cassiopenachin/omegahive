@@ -580,6 +580,29 @@ check "the warning says WARNING"            "printf '%s' \"\$PARTOUT\" | grep -F
 check "the warning names the missing fields" \
   "printf '%s' \"\$PARTOUT\" | grep -F 'missing: questions, review outcome' >/dev/null"
 
+# DoD (b) names this case specifically: 2 of 3, not just "partial" in general —
+# the same code branch as the 1-of-3 case above, exercised at the other edge.
+PART2TASK="drill-predictions-partial2"
+PART2REL="projects/$APROJ/orders/2026-07-13-$PART2TASK.md"
+cat > "$WS/$PART2REL" <<'EOF'
+# Order: predictions partial2
+
+## Scope
+Drill fixture: 2 of 3 scored fields.
+
+## Predictions
+
+- Expected effort: 1 worker-hour.
+- Expected questions: 0.
+EOF
+git -C "$WS" add -A && git -C "$WS" commit --quiet -m "drill: order $PART2TASK"
+git -C "$WS" push --quiet origin HEAD:main
+PART2OUT="$("$SCRIPT_DIR/hive-launch" "$PART2REL" --worker "sess-predpartial2-${STAMP}" 2>&1)"
+printf '%s\n' "$PART2OUT"
+check "a 2-of-3 order launches (warns, does not refuse)" "[ \"\$(bstatus '$ARUN' '$PART2TASK')\" = assigned ]"
+check "the 2-of-3 warning names only the one missing field" \
+  "printf '%s' \"\$PART2OUT\" | grep -F 'missing: review outcome' >/dev/null"
+
 ABSTASK="drill-predictions-absent"
 ABSREL="projects/$APROJ/orders/2026-07-13-$ABSTASK.md"
 cat > "$WS/$ABSREL" <<'EOF'
