@@ -10,6 +10,13 @@
 # <order-file> may be a bare filename, a path relative to the workspace root, or
 # a path under the orders dir. The task id is derived from the filename; the
 # worker id defaults to sess-<task>-<MMDD>.
+#
+# It also refuses an order whose `## Predictions` section is present but does
+# not parse (0 of 3 scored fields) — the same parser hive-score uses, so the
+# gate can never disagree with the scorer (retro 2026-07-29 D1). An order with
+# no section at all, or the one-line declared-unpredicted disposition, launches
+# clean; a partial section (1-2 of 3) warns and launches. `--anyway` overrides
+# the refusal (same spelling as the review-WIP throttle override below).
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/hive-common.sh
@@ -175,6 +182,42 @@ ACCEPTANCE="per $REL@$SHA"
 TITLE=$( { grep -m1 -E '^# ' "$OPS_WS/$REL" | sed -E 's/^# +//; s/^Order: *//'; } || true )
 [ -n "$TITLE" ] || TITLE="$TASK"
 TASK_TYPE="task"   # advisory label only; not gated (events/types.py). Edit freely.
+
+# --- predictions launch-gate: refuse an unparseable, never an absent, section --
+# retro 2026-07-29 D1: the gate used to be a human reading a `## Predictions`
+# HEADING while hive-score parsed bullet LABELS underneath it, so a mislabeled
+# section (or a re-worded one) scored `unpredicted` with no error anywhere — the
+# whole tenant project's first wave was lost exactly this way. predictions_classify
+# (hive-common.sh) is the SAME parser hive-score uses; a gate that can disagree
+# with the scorer is the defect this order exists to retire.
+predictions_classify "$OPS_WS/$REL"
+case "$PRED_VERDICT" in
+  unparsed)
+    if [ -z "$ANYWAY" ]; then
+      {
+        echo "hive-launch: refusing to launch '$TASK' — its '## Predictions' section does not parse (0 of 3 scored fields)."
+        echo "  hive-score parses these bullet labels verbatim, case-insensitively, and nothing else"
+        echo "  (design-partner PROTOCOL.md order-authoring rules — copy exactly):"
+        echo "    - Expected effort: <range> — <median x multiplier, justified>"
+        echo "    - Expected questions: <count or range> — <named seams, or a designed round-trip>"
+        echo "    - Expected review outcome: <clean | minor rework | rework> — <why>"
+        echo "    - Named risks: <what could turn the shape of the work>   (required by protocol; not scored)"
+        echo "  The section as written in $REL:"
+        predictions_block "$OPS_WS/$REL" | sed 's/^/    /'
+        echo "  This order would score PERMANENTLY unpredicted with no error anywhere (retro 2026-07-29 D1)."
+        echo "  Fix the labels, or launch it deliberately unpredicted this way: --anyway"
+      } >&2
+      exit 1
+    fi
+    echo "hive-launch: --anyway — launching '$TASK' despite an unparseable predictions section."
+    ;;
+  partial*)
+    N="${PRED_VERDICT#partial }"
+    echo "hive-launch: WARNING '$TASK' predicts only $N of 3 scored fields (missing: $(predictions_missing_fields))." >&2
+    echo "  Launching anyway — partial coverage is a metric hive-score already reports." >&2
+    ;;
+  absent|declared-unpredicted|full) : ;;   # nothing to say — a clean launch
+esac
 
 echo "hive-launch: task=$TASK worker=$WORKER  project=$PROJECT${ADOPT:+  (adopting existing ready task)}"
 echo "  order:  $REL@$SHA"

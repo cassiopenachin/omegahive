@@ -58,6 +58,19 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$TASK" ] || usage
 
+# --review validates against the scored vocabulary, case-insensitively, and
+# stores lowercase. Wave 2 produced `Rework`, `rework`, `Clean`, `clean`, and
+# `minor rework` into the same column (retro 1's instrument note, unenforced
+# since) — `rework` and `minor rework` are two distinct severities, so an
+# uncontrolled column is not just cosmetic.
+if [ -n "$REVIEW_VERDICT" ]; then
+  case "$(printf '%s' "$REVIEW_VERDICT" | tr '[:upper:]' '[:lower:]')" in
+    clean|"minor rework"|rework)
+      REVIEW_VERDICT=$(printf '%s' "$REVIEW_VERDICT" | tr '[:upper:]' '[:lower:]') ;;
+    *) die "--review must be one of: clean | minor rework | rework (case-insensitive), got '$REVIEW_VERDICT'" ;;
+  esac
+fi
+
 command -v jq >/dev/null 2>&1 || die "jq is required"
 
 # --- resolve the order, then the project, then the run -------------------------
@@ -206,14 +219,14 @@ fi
 # --- the order's Predictions section -------------------------------------------
 # The order was resolved up front (it names the project). A closed task with no
 # order file at all is a real, and interesting, case: it scores as unpredicted.
-PRED_BLOCK=""
+# predictions_classify (hive-common.sh) is the SAME parser hive-launch's gate
+# calls — a gate that can disagree with the scorer is the defect D1 already was
+# — and it sets PRED_EFFORT_TXT/PRED_QUESTIONS_TXT/PRED_REVIEW_TXT/
+# PRED_FIELDS_PARSED as a side effect.
+PRED_VERDICT="absent"
+PRED_EFFORT_TXT=""; PRED_QUESTIONS_TXT=""; PRED_REVIEW_TXT=""; PRED_FIELDS_PARSED=0
 if [ -n "$ORDER_REL" ]; then
-  # From the `## Predictions` heading to the next heading of any level, exclusive.
-  PRED_BLOCK=$(awk '
-    /^##[ \t]*Predictions[ \t]*$/ { inblock = 1; next }
-    inblock && /^#/                { inblock = 0 }
-    inblock                        { print }
-  ' "$OPS_WS/$ORDER_REL")
+  predictions_classify "$OPS_WS/$ORDER_REL"
 else
   ORDER_REL="(no order file found)"
 fi
@@ -223,19 +236,6 @@ parse_range() {
   printf '%s' "$1" | sed -E 's/[–—]/-/g' | awk -F- '
     { lo = $1 + 0; hi = (NF > 1 ? $2 + 0 : lo); printf "%s %s", lo, hi }'
 }
-
-# Verbatim slices of the prediction text; empty when the field was not predicted
-# (a no-match grep is the *expected* partial-prediction case, not an error — hence
-# the `|| true` guards under `set -o pipefail`).
-PRED_EFFORT_TXT=$( { printf '%s' "$PRED_BLOCK" \
-  | grep -oiE 'Expected effort:[[:space:]]*[0-9][0-9.–—-]*[[:space:]]*worker-hours?' \
-  | head -1 | sed -E 's/^[Ee]xpected effort:[[:space:]]*//'; } || true )
-PRED_QUESTIONS_TXT=$( { printf '%s' "$PRED_BLOCK" \
-  | grep -oiE 'Expected questions:[[:space:]]*[0-9][0-9–—-]*' \
-  | head -1 | sed -E 's/^[Ee]xpected questions:[[:space:]]*//'; } || true )
-PRED_REVIEW_TXT=$( { printf '%s' "$PRED_BLOCK" \
-  | grep -oiE 'Expected review outcome:[[:space:]]*[^.]+' \
-  | head -1 | sed -E 's/^[Ee]xpected review outcome:[[:space:]]*//'; } || true )
 
 NOT_PREDICTED='*not predicted*'
 
@@ -283,15 +283,18 @@ else
   V_REVIEW="${REVIEW_VERDICT:-unpredicted}"
 fi
 
-# Coverage: how much of the section was there at all — the calibration-gap metric.
-FIELDS=0
-for t in "$PRED_EFFORT_TXT" "$PRED_QUESTIONS_TXT" "$PRED_REVIEW_TXT"; do
-  if [ -n "$t" ]; then FIELDS=$((FIELDS + 1)); fi
-done
-case "$FIELDS" in
-  0) COVERAGE="unpredicted (no usable \`## Predictions\` section)" ;;
-  3) COVERAGE="full" ;;
-  *) COVERAGE="partial ($FIELDS of 3 fields predicted)" ;;
+# Coverage: how much of the section was there at all — the calibration-gap
+# metric. Absent and unparsed are DIFFERENT strings (D1's whole cost was that
+# they read the same to the launch-gate): "nobody predicted" is not "the author
+# predicted and we lost it". The declared-unpredicted disposition scores the
+# same as unparsed here — the coverage line just counts fields, honestly; a
+# reader who wants to know whether it was deliberate reads the order body.
+FIELDS=$PRED_FIELDS_PARSED
+case "$PRED_VERDICT" in
+  absent)   COVERAGE="unpredicted (no \`## Predictions\` section)" ;;
+  full)     COVERAGE="full" ;;
+  partial*) COVERAGE="partial ($FIELDS of 3 fields predicted; missing: $(predictions_missing_fields))" ;;
+  *)        COVERAGE="unpredicted (section present, 0 of 3 fields parsed)" ;;
 esac
 
 # --- append --------------------------------------------------------------------

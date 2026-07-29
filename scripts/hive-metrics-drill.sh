@@ -27,7 +27,13 @@ check(){ if eval "$2"; then ok "$1"; else bad "$1  [cond: $2]"; fi; }
 expect_fail_msg(){
   local d="$1" needle="$2"; shift 2; local out
   if out=$("$@" 2>&1); then bad "$d (expected refusal, got success)"
-  elif printf '%s' "$out" | grep -qF -- "$needle"; then ok "$d"
+  # `grep -q` would do here: printf's whole payload is a single write() of a
+  # value already fully in memory. But it is the SAME shape as the SIGPIPE trap
+  # below (an early -q match closing the reader before the writer is done), so
+  # it gets the same fix on the drill-hygiene sweep (instrument-teeth item 7) —
+  # the two are indistinguishable once the captured output is long enough not to
+  # fit one pipe write.
+  elif printf '%s' "$out" | grep -F -- "$needle" >/dev/null; then ok "$d"
   else bad "$d (refused, but message missing '$needle'); got: $out"; fi
 }
 
@@ -222,6 +228,16 @@ closed(13000, "zeta")
 ev(1600, "worker", "w-beta1", "task.reported", "probe|x",
    {"kind": "question", "ref": "projects/drill/questions/p.md@abc1234"})
 
+# eta — closed debris (mirrors gamma's shape); its order carries a `##
+# Predictions` heading in the D1 dialect (mislabeled bullets, 0 of 3 fields
+# parse). Coverage must read "section present, 0 of 3 fields parsed" — a
+# DIFFERENT string from gamma's "no section" — even though both currently
+# score unpredicted (instrument-teeth item 3 / DoD (d)).
+created(14000, "eta")
+ev(14010, "instrument", "operator", "review.passed", "eta",
+   {"ref_result": "projects/drill/decisions.md@abc1234"})
+closed(14020, "eta", "retired per decision")
+
 json.dump(rows, open(sys.argv[1], "w"), indent=2, sort_keys=True)
 PY
 FIXTURE_SUM="$(sha256sum "$FIXTURE" | cut -d' ' -f1)"
@@ -295,6 +311,22 @@ Still in flight.
 - Expected effort: 1 worker-hour. Expected questions: 0. Expected review outcome: clean.
 EOF
 
+# eta reproduces retro 2026-07-29 D1's dialect verbatim: a `## Predictions`
+# heading present, fully "populated" by its own author's lights, and unparsed
+# by hive-score because the bullet labels are re-worded rather than copied.
+cat > "$ORDERS/2026-07-20-eta.md" <<'EOF'
+# Order: eta
+
+## Scope
+Debris, D1-dialect. Retired by decision, never worked.
+
+## Predictions
+
+- **Effort:** 2 hours.
+- **Questions:** 0.
+- **Review outcome:** clean.
+EOF
+
 # Seed the workspace and give `main` an upstream, so the tools' plain `git push`
 # has somewhere to go.
 git -C "$WS" add -A
@@ -326,7 +358,7 @@ check "the workspace was left clean"        "[ -z \"\$(git -C '$WS' status --por
 NCOMMITS_BEFORE=$(git -C "$WS" rev-list --count HEAD)
 # shellcheck disable=SC2034  # consumed by `check`, which evals its condition string
 RERUN_OUT="$("$M" "$PROJECT")"
-check "a no-change re-run says so"          "printf '%s' \"\$RERUN_OUT\" | grep -qF 'no change to commit'"
+check "a no-change re-run says so"          "printf '%s' \"\$RERUN_OUT\" | grep -F 'no change to commit' >/dev/null"
 check "a no-change re-run adds no commit"   "[ \"\$(git -C '$WS' rev-list --count HEAD)\" = '$NCOMMITS_BEFORE' ]"
 # --no-commit is the escape hatch: written, deliberately not recorded. Commit a
 # deliberately stale artifact first, so a regeneration genuinely has a diff to
@@ -435,10 +467,10 @@ check "--upto never commits the rewound artifact" \
 # the wrong branch silently and no exit code ever notices.
 # shellcheck disable=SC2034  # consumed by `check`, which evals its condition string
 UPTO_OUT="$("$M" "$PROJECT" --upto "$((BETA_CLOSE_SEQ - 1))")"
-check "--upto says why it did not commit"      "printf '%s' \"\$UPTO_OUT\" | grep -qF 'an --upto rebuild is an inspection'"
-check "--upto does NOT advise committing it"   "! printf '%s' \"\$UPTO_OUT\" | grep -qF 'commit it yourself'"
-check "--upto names the restore command"       "printf '%s' \"\$UPTO_OUT\" | grep -qF 'hive-metrics $PROJECT'"
-check "--upto never leaks the seq into prose"  "! printf '%s' \"\$UPTO_OUT\" | grep -qE 'record[0-9]'"
+check "--upto says why it did not commit"      "printf '%s' \"\$UPTO_OUT\" | grep -F 'an --upto rebuild is an inspection' >/dev/null"
+check "--upto does NOT advise committing it"   "! printf '%s' \"\$UPTO_OUT\" | grep -F 'commit it yourself' >/dev/null"
+check "--upto names the restore command"       "printf '%s' \"\$UPTO_OUT\" | grep -F 'hive-metrics $PROJECT' >/dev/null"
+check "--upto never leaks the seq into prose"  "! printf '%s' \"\$UPTO_OUT\" | grep -E 'record[0-9]' >/dev/null"
 "$M" "$PROJECT" >/dev/null   # restore the full artifact
 
 # Without the fixture the tool goes to the real read path — which, with OMEGA_DIR
@@ -478,14 +510,14 @@ verdict() { row "$1" "$2" | awk -F'|' '{ gsub(/^ +| +$/, "", $(NF-1)); print $(N
 "$S" alpha >/dev/null
 check "calibration.md written"        "[ -s '$CAL' ]"
 check "alpha entry recorded"          "[ -n \"\$(entry alpha)\" ]"
-check "alpha predicted effort quoted" "entry alpha | grep -q '1 worker-hour'"
-check "alpha actual effort scored"    "entry alpha | grep -q '1.0h'"
+check "alpha predicted effort quoted" "entry alpha | grep '1 worker-hour' >/dev/null"
+check "alpha actual effort scored"    "entry alpha | grep '1.0h' >/dev/null"
 # All three verdict branches are exercised across alpha/epsilon/zeta, so an
 # inverted or short-circuited comparison cannot pass this drill.
 check "alpha effort verdict = hit"    "[ \"\$(verdict alpha effort)\" = hit ]"
 check "alpha questions verdict = hit" "[ \"\$(verdict alpha questions)\" = hit ]"
-check "alpha review left unscored"    "verdict alpha 'review outcome' | grep -q '^unscored'"
-check "alpha coverage full"           "entry alpha | grep -q '^- coverage: full$'"
+check "alpha review left unscored"    "verdict alpha 'review outcome' | grep '^unscored' >/dev/null"
+check "alpha coverage full"           "entry alpha | grep '^- coverage: full$' >/dev/null"
 # Scoring records the score: the entry is committed and pushed as part of the same
 # act, because the improver seat reads committed instruments and nothing else.
 check "the score was committed"        "log_has '$WS' 'score: alpha on run metrics-drill' 'projects/$PROJECT/metrics'"
@@ -508,22 +540,55 @@ check "--again re-scores"             "[ \"\$(grep -c '^### alpha — ' '$CAL')\
 
 "$S" epsilon >/dev/null
 check "epsilon effort verdict = over" "[ \"\$(verdict epsilon effort)\" = over ]"
-check "epsilon scorable (task.failed closed it)" "entry epsilon | grep -q 'final status .failed.'"
+check "epsilon scorable (task.failed closed it)" "entry epsilon | grep 'final status .failed.' >/dev/null"
 
 "$S" zeta >/dev/null
 check "zeta effort verdict = under"      "[ \"\$(verdict zeta effort)\" = under ]"
 check "zeta questions verdict = under"   "[ \"\$(verdict zeta questions)\" = under ]"
-check "zeta predicted range quoted"      "entry zeta | grep -q '1-2'"
+check "zeta predicted range quoted"      "entry zeta | grep '1-2' >/dev/null"
 
 "$S" beta >/dev/null
-check "beta recorded as partial"      "entry beta | grep -q '^- coverage: partial'"
-check "beta effort prediction quoted" "entry beta | grep -q '4 worker-hours'"
-check "beta absent fields marked"     "entry beta | grep -q 'not predicted'"
+check "beta recorded as partial"      "entry beta | grep '^- coverage: partial' >/dev/null"
+check "beta effort prediction quoted" "entry beta | grep '4 worker-hours' >/dev/null"
+check "beta absent fields marked"     "entry beta | grep 'not predicted' >/dev/null"
 check "beta absent field unpredicted" "[ \"\$(verdict beta questions)\" = unpredicted ]"
 
 "$S" gamma >/dev/null
-check "gamma recorded as unpredicted" "entry gamma | grep -q '^- coverage: unpredicted'"
+check "gamma recorded as unpredicted" "entry gamma | grep '^- coverage: unpredicted' >/dev/null"
 check "gamma effort unpredicted"      "[ \"\$(verdict gamma effort)\" = unpredicted ]"
+check "gamma coverage: no section, verbatim" "entry gamma | grep '^- coverage: unpredicted (no \`## Predictions\` section)\$' >/dev/null"
+
+# eta: a `## Predictions` heading present, D1's mislabeled dialect, 0 of 3
+# fields parse — absent and unparsed must NOT read the same (D1's whole cost
+# was that they did). One parser (predictions_classify, hive-common.sh) is
+# what makes this and hive-launch's gate agree on the same input — asserted
+# end to end (the gate refusing, and both callers reaching the same verdict on
+# a live launch) in hive-tooling-drill.sh, which alone can run hive-launch.
+"$S" eta >/dev/null
+check "eta recorded as unpredicted"   "entry eta | grep '^- coverage: unpredicted' >/dev/null"
+check "eta coverage: section present, unparsed, verbatim" \
+  "entry eta | grep '^- coverage: unpredicted (section present, 0 of 3 fields parsed)\$' >/dev/null"
+check "absent and unparsed are DIFFERENT strings" \
+  "[ \"\$(entry gamma | grep '^- coverage:')\" != \"\$(entry eta | grep '^- coverage:')\" ]"
+check "eta effort unpredicted"        "[ \"\$(verdict eta effort)\" = unpredicted ]"
+
+echo
+echo "metrics drill: --review is validated against the scored vocabulary and lowercased"
+# Wave 2 produced Rework/rework/Clean/clean/minor rework into the same column
+# (retro 1's instrument note, unenforced since) — rework and minor rework are
+# two distinct severities, so an uncontrolled casing is not just cosmetic.
+"$S" alpha --review "Rework" --again --note "review-vocab-check" >/dev/null
+check "mixed-case --review is stored lowercase" "[ \"\$(verdict alpha 'review outcome')\" = rework ]"
+"$S" alpha --review "Minor Rework" --again --note "case-check" >/dev/null
+check "'minor rework' (already valid, mixed case) is accepted and lowercased" \
+  "[ \"\$(verdict alpha 'review outcome')\" = 'minor rework' ]"
+ALPHA_ENTRIES_BEFORE=$(grep -c '^### alpha — ' "$CAL")
+expect_fail_msg "an invalid --review value is refused, not recorded" "must be one of" \
+  "$S" alpha --review "bogus" --again
+expect_fail_msg "the refusal names the three valid values" "clean | minor rework | rework" \
+  "$S" alpha --review "bogus" --again
+check "the invalid --review appended no new entry" \
+  "[ \"\$(grep -c '^### alpha — ' '$CAL')\" = '$ALPHA_ENTRIES_BEFORE' ]"
 
 expect_fail_msg "scoring an open task refused" "not closed" "$S" delta
 # A task with no order file cannot name its project, and guessing one is exactly
@@ -553,7 +618,7 @@ check "no escaped calibration file written" "[ ! -e '$SANDBOX/../escaped' ]"
 # the scratch project is `drill` and its run is `metrics-drill`, so a tool that
 # guessed the run from the name would have found no events at all.
 check "run resolved from project.conf, not the name" "grep -qF '| Run | \`metrics-drill\`' '$MD'"
-check "entries cite the conf's run"                  "entry alpha | grep -qF 'run \`metrics-drill\`'"
+check "entries cite the conf's run"                  "entry alpha | grep -F 'run \`metrics-drill\`' >/dev/null"
 # ...and HIVE_RUN_ID / --run still win over the conf (the documented escape hatch).
 expect_fail_msg "--run overrides the conf" "no events for run 'other-run'" \
   env -u HIVE_SPINE_JSON "$M" "$PROJECT" --run other-run
@@ -561,6 +626,55 @@ expect_fail_msg "--run overrides the conf" "no events for run 'other-run'" \
 mkdir -p "$WS/projects/confless/orders"
 expect_fail_msg "project without a conf refused" "no project.conf for project 'confless'" \
   "$M" confless
+
+# --- 4.5. commit_metrics refuses rather than rebases on a push failure --------
+echo
+echo "metrics drill: commit_metrics refuses rather than rebases on push failure"
+# The pre-decided successor to the inherited push -> pull --rebase -> push retry
+# (retro 2026-07-29 ledger item 13, folded early because item 5 raises this
+# path's firing rate to every close): on a push failure, refuse — commit
+# locally, print the manual step, exit non-zero — rather than rebase a shared
+# metrics path unattended. Proven against a REAL divergence (another writer
+# pushed to the hub), not just a downed remote: under the old behaviour, a
+# `pull --rebase` here would have SUCCEEDED silently, which is exactly the
+# unattended-conflict-resolution risk the fix removes.
+DIVERGE="$SANDBOX/diverge-clone"
+git clone --quiet "$HUB" "$DIVERGE" 2>/dev/null
+# The bare HUB's own HEAD symref was never updated off its init-time default (it
+# only ever received pushes to `main`, not a checkout), so a plain clone leaves
+# no local branch checked out. Without this, the "divergent" commit below would
+# land on an unrelated history and its own push would spuriously fail — track
+# `main` explicitly.
+git -C "$DIVERGE" checkout --quiet -B main origin/main
+git -C "$DIVERGE" config user.email drill@example.invalid
+git -C "$DIVERGE" config user.name  drill
+echo "divergent write" > "$DIVERGE/DIVERGENT.txt"
+git -C "$DIVERGE" add -A
+git -C "$DIVERGE" commit --quiet -m "drill: a divergent write from another clone"
+git -C "$DIVERGE" push --quiet origin HEAD:main
+
+BEFORE_SHA=$(git -C "$WS" rev-parse HEAD)
+DIVERGE_RC=0
+# shellcheck disable=SC2034  # consumed by `check`, which evals its condition string
+DIVERGE_OUT=$("$S" alpha --again --note "diverge-test" 2>&1) || DIVERGE_RC=$?
+check "scoring refuses rather than rebasing when the hub has diverged" "[ '$DIVERGE_RC' -ne 0 ]"
+check "the refusal names the commit as local-only, not on the hub" \
+  "printf '%s' \"\$DIVERGE_OUT\" | grep -F 'committed LOCALLY' >/dev/null"
+check "the refusal states it will not rebase a shared metrics path" \
+  "printf '%s' \"\$DIVERGE_OUT\" | grep -F 'Refusing to rebase' >/dev/null"
+check "the refusal names the manual resolution step" \
+  "printf '%s' \"\$DIVERGE_OUT\" | grep -F 'git pull --rebase && git push' >/dev/null"
+check "the score entry was committed locally despite the refusal" \
+  "log_has '$WS' 'score: alpha on run metrics-drill' 'projects/$PROJECT/metrics'"
+check "the local commit sits on the OLD head, unrebased (single parent = pre-diverge HEAD)" \
+  "[ \"\$(git -C '$WS' log -1 --format=%P HEAD)\" = '$BEFORE_SHA' ]"
+check "the unpushed commit did NOT reach the hub" "! log_has '$HUB' 'diverge-test'"
+
+# Hand-resolution completes it — the refusal is recoverable, not a dead end.
+git -C "$WS" pull --rebase --quiet
+git -C "$WS" push --quiet
+check "manual pull --rebase + push resolves it" "log_has '$HUB' 'score: alpha on run metrics-drill'"
+check "the divergent file made it into the workspace too" "[ -f '$WS/DIVERGENT.txt' ]"
 
 # --- 5. the stop-line: read-only, no emits ------------------------------------
 echo
@@ -570,6 +684,6 @@ check "fixture untouched" "[ \"\$(sha256sum '$FIXTURE' | cut -d' ' -f1)\" = '$FI
 # Strip comments and blanks first: these greps look for *code* that writes, and a
 # prose mention of committing in a comment is not a write path.
 code() { grep -vE '^[[:space:]]*(#|$)' "$1"; }
-check "hive-metrics contains no emit" "! code '$M' | grep -Eq '(^|[^-[:alnum:]_])emit[[:space:]]'"
-check "hive-score contains no emit"   "! code '$S' | grep -Eq '(^|[^-[:alnum:]_])emit[[:space:]]'"
-check "neither tool commits to git"   "! { code '$M'; code '$S'; } | grep -Eq 'git .*(commit|push)'"
+check "hive-metrics contains no emit" "! code '$M' | grep -E '(^|[^-[:alnum:]_])emit[[:space:]]' >/dev/null"
+check "hive-score contains no emit"   "! code '$S' | grep -E '(^|[^-[:alnum:]_])emit[[:space:]]' >/dev/null"
+check "neither tool commits to git"   "! { code '$M'; code '$S'; } | grep -E 'git .*(commit|push)' >/dev/null"
