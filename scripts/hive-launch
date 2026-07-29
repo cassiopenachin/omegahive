@@ -242,13 +242,20 @@ echo "  clones: $WS_ROOT  +  $CODE_ROOT (origin -> $CODE_REPO)"
 # parameters — swapping this for a real per-seat key later changes nothing
 # worker-facing (OPERATIONS.md Phase 2 gate). WORKER/RUN are charset-validated.
 mkdir -p "$WRAPPER_DIR"
+# The compose command is resolved HERE, at issuance, and baked in like the
+# identity is — the wrapper is a standalone file that must not have to source
+# anything. OMEGAHIVE_COMPOSE still overrides at run time, so a host that
+# changes runtime after a launch does not strand its live wrappers.
+resolve_compose
 cat > "$WRAPPER" <<WRAP
 #!/usr/bin/env bash
 # Emit wrapper for worker $WORKER on run $RUN (proto-credential — issued by
 # hive-launch, revoke by deleting this file). --run-id/--role/--actor are baked
 # in; pass only --type/--task/--payload. Never emit as another actor.
 set -euo pipefail
-exec env -C "${OMEGA_DIR}" podman compose run --rm -T cli \\
+COMPOSE="\${OMEGAHIVE_COMPOSE:-$HIVE_COMPOSE}"
+# shellcheck disable=SC2086  # COMPOSE is legitimately two words ("podman compose")
+exec env -C "${OMEGA_DIR}" \$COMPOSE run --rm -T cli \\
   emit --run-id "$RUN" --role worker --actor "$WORKER" "\$@"
 WRAP
 chmod +x "$WRAPPER"
@@ -292,7 +299,9 @@ Your emit command is your wrapper: $WRAPPER
 It bakes in --run-id/--role worker/--actor $WORKER. Everywhere WORKER.md writes
 'hive emit --run-id \$RUN --role worker --actor \$WORKER ...', run '$WRAPPER ...'
 with only the remaining flags (--type/--task/--payload). Never use raw hive emit.
-Container tooling is podman (not docker). Begin by reading both files, then emit
+Container tooling on this host is '$HIVE_COMPOSE' (resolved at launch; WORKER.md's
+setup block writes it as 'podman compose' because deployment #0 runs podman —
+use the command named here). Begin by reading both files, then emit
 task.accepted and start.
 KICK
 

@@ -69,8 +69,58 @@ require_safe_tmux_session() {  # require_safe_tmux_session   (reads HIVE_TMUX_SE
     || die "unsafe HIVE_TMUX_SESSION '$HIVE_TMUX_SESSION' (allowed: A-Za-z0-9._-) — a session name outside this charset cannot be targeted exactly, and tmux would silently act on the wrong session"
 }
 
+# --- container runtime layer (which compose command drives the stack) ---------
+#
+# The deployment spec's generic profile says a host needs only "an OCI runtime +
+# compose", but this file used to shell out to `podman compose` literally, so the
+# whole operator loop broke on a Docker host despite the README's claim. The
+# command is resolved ONCE per shell here and every caller goes through it.
+#
+# Resolution order, and why podman comes first: deployment #0 runs rootless
+# podman, and `podman compose` is what it has always run — a docker-first order
+# would silently move the live deployment onto a different compose route, which
+# the anyhost order's stop-line forbids. A Docker-only host has no `podman` on
+# PATH and therefore lands on the docker route by itself. The one case the
+# ordering gets wrong is a host carrying BOTH runtimes where the operator wants
+# docker; that is what OMEGAHIVE_COMPOSE is for.
+#
+# `podman compose` is deliberate and is NOT `podman-compose`: the latter is the
+# Python reimplementation whose `depends_on: service_healthy` support is
+# unreliable, and our migrations ordering depends on it (deployment spec §7).
+# `podman compose` delegates to a genuine compose v2 provider. Never set
+# OMEGAHIVE_COMPOSE to `podman-compose`.
+#
+# DOCKER_HOST is honored, never clobbered: `podman compose` finds the rootless
+# socket by itself, and the docker route reads whatever the operator exported.
+# The one-line setup where the socket is missing is in the README ("Container
+# runtime").
+: "${OMEGAHIVE_COMPOSE:=}"   # override: the exact compose command, e.g. "docker compose"
+HIVE_COMPOSE=""              # resolved by resolve_compose; empty until first use
+
+# Resolve the compose command into HIVE_COMPOSE, once. Lazy rather than
+# resolved at source time so a script that never touches the stack (or a host
+# still being provisioned) does not die merely for sourcing this file.
+resolve_compose() {  # resolve_compose  (sets HIVE_COMPOSE; idempotent)
+  [ -n "$HIVE_COMPOSE" ] && return 0
+  if [ -n "$OMEGAHIVE_COMPOSE" ]; then
+    HIVE_COMPOSE="$OMEGAHIVE_COMPOSE"
+  elif command -v podman >/dev/null 2>&1; then
+    HIVE_COMPOSE="podman compose"
+  elif command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    HIVE_COMPOSE="docker compose"
+  elif command -v docker-compose >/dev/null 2>&1; then
+    HIVE_COMPOSE="docker-compose"
+  else
+    die "no compose command found (looked for: podman, docker compose, docker-compose) — install one, or set OMEGAHIVE_COMPOSE to the exact command"
+  fi
+}
+
 # The stack CLI, run in the canonical dir (compose file + running pg live there).
-hive() { ( cd "$OMEGA_DIR" && podman compose run --rm -T cli "$@" ); }
+hive() {
+  resolve_compose
+  # shellcheck disable=SC2086  # HIVE_COMPOSE is legitimately two words ("podman compose")
+  ( cd "$OMEGA_DIR" && $HIVE_COMPOSE run --rm -T cli "$@" )
+}
 
 # Emit one governed event on RUN. Role and actor are explicit here (operator-tier
 # emits); the worker's baked-in wrapper is a separate file (see hive-launch). A
@@ -79,11 +129,13 @@ hive() { ( cd "$OMEGA_DIR" && podman compose run --rm -T cli "$@" ); }
 emit() {  # emit <role> <actor> <type> [--task <t>] [--payload <json>]
   local role="$1" actor="$2" type="$3"; shift 3
   local out
-  # Capture stderr too: a stack/DB outage is a podman failure whose error only
+  resolve_compose
+  # Capture stderr too: a stack/DB outage is a runtime failure whose error only
   # goes to stderr — swallowing it would misreport an outage as a governance
-  # refusal. On failure we surface the full output (podman error or the CLI's
-  # `rejected: <CODE>` line) so the operator sees the real cause.
-  if ! out=$( cd "$OMEGA_DIR" && podman compose run --rm -T cli \
+  # refusal. On failure we surface the full output (the runtime's error or the
+  # CLI's `rejected: <CODE>` line) so the operator sees the real cause.
+  # shellcheck disable=SC2086  # HIVE_COMPOSE is legitimately two words ("podman compose")
+  if ! out=$( cd "$OMEGA_DIR" && $HIVE_COMPOSE run --rm -T cli \
       emit --run-id "$RUN" --role "$role" --actor "$actor" --type "$type" "$@" 2>&1 ); then
     echo "$out" >&2
     die "emit failed: $type (role=$role actor=$actor) — see output above (rejected, or the stack is down?)"

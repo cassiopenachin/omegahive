@@ -18,11 +18,12 @@
 # It never touches the durable `omegahive` run: all three projects carry scratch run
 # ids (tooling-drill-<proj>-<stamp>) in their confs, and OPS_WS points at the
 # sandbox workspace so the tooling only ever sees the scratch projects. The one
-# shared resource is the stack itself (podman compose + pg): scratch events land
+# shared resource is the stack itself (the container runtime + pg): scratch events land
 # in the same events table under distinct run_ids, which auto-register — harmless
 # debris in separate runs. Do NOT put `omegahive` in any conf here.
 #
-# Usage: scripts/hive-tooling-drill.sh   (run from anywhere; needs podman + the stack up)
+# Usage: scripts/hive-tooling-drill.sh   (run from anywhere; needs an OCI runtime with
+# compose — see hive-common.sh's resolver — and the stack up)
 
 set -euo pipefail
 
@@ -109,22 +110,34 @@ trap cleanup EXIT
 echo "drill: sandbox=$SANDBOX  projects=$APROJ,$BPROJ,$GPROJ  tmux=$TMUX_SESSION"
 
 # --- stack read/write helpers, parameterized by run ----------------------------
+# Every stack read/write in this drill goes through dcli, whose compose command is
+# resolved ONCE by hive-common.sh's resolver — the drill used to spell `podman
+# compose` six times, which made it a podman-only drill on a repo that claims a
+# generic profile. Sourced in a subshell so the drill's own environment (OMEGA_DIR
+# and friends, which it deliberately re-points at a sandbox) is untouched.
+DRILL_COMPOSE="$( bash -euo pipefail -c \
+  "source '$SCRIPT_DIR/hive-common.sh'; resolve_compose; printf '%s' \"\$HIVE_COMPOSE\"" )"
+echo "drill: compose=$DRILL_COMPOSE"
+dcli() {  # dcli <cli args...> -> runs the stack CLI in the real stack dir
+  # shellcheck disable=SC2086  # DRILL_COMPOSE is legitimately two words ("podman compose")
+  ( cd "$OMEGA_DIR_REAL" && $DRILL_COMPOSE run --rm -T cli "$@" )
+}
+
 bstatus() {  # bstatus <run> <task> -> prints status (wrap-proof JSON read path)
-  ( cd "$OMEGA_DIR_REAL" && podman compose run --rm -T cli board-view "$1" --json ) 2>/dev/null \
+  dcli board-view "$1" --json 2>/dev/null \
     | jq -r --arg t "$2" '.[] | select(.task == $t) | .status'
 }
 btitle() {  # btitle <run> <task> -> the title the launcher seeded on task.created
-  ( cd "$OMEGA_DIR_REAL" && podman compose run --rm -T cli report "$1" --json ) 2>/dev/null \
+  dcli report "$1" --json 2>/dev/null \
     | jq -r --arg t "$2" '[ .[] | select(.event_type == "task.created" and .task_id == $t) ]
                           | last | .payload.title // empty'
 }
 bcount_review() {  # bcount_review <run> -> count of in_review tasks on that run
-  ( cd "$OMEGA_DIR_REAL" && podman compose run --rm -T cli board-view "$1" --json ) 2>/dev/null \
+  dcli board-view "$1" --json 2>/dev/null \
     | jq -r '[.[] | select(.status == "in_review")] | length'
 }
 raw_emit() {  # raw_emit <run> <role> <actor> <type> [extra emit args...] — seed a board directly
-  ( cd "$OMEGA_DIR_REAL" && podman compose run --rm -T cli \
-      emit --run-id "$1" --role "$2" --actor "$3" --type "$4" "${@:5}" ) >/dev/null 2>&1
+  dcli emit --run-id "$1" --role "$2" --actor "$3" --type "$4" "${@:5}" >/dev/null 2>&1
 }
 # Drive a task to in_review via raw emits (no launch/clones) — a cheap throttle
 # fixture that still mirrors reality: it also authors the task's order (so a
@@ -211,7 +224,7 @@ export OPS_WS="$WS"
 export CANON_ROOT="$CANON"
 export WORK_ROOT="$WORK"
 export WRAPPER_DIR="$WRAPPERS"
-# OMEGA_DIR is left at its real default so `podman compose ... cli` finds the stack.
+# OMEGA_DIR is left at its real default so the stack CLI (dcli) finds the stack.
 # Ensure NOTHING from the operator's shell forces a run/repo/checkout: identity must
 # come from the confs (and CANON_CODE must derive per-project from CANON_ROOT).
 unset HIVE_RUN_ID CANON_CODE CODE_REPO RUN_ID PROJECT 2>/dev/null || true
@@ -448,10 +461,10 @@ echo "== portfolio: both projects on one board, active by default, per-run reads
 # `tooling-drill-*` — so this section asserts BOTH halves: the runs are there when the
 # exclusion is cleared, and gone when it is not.
 pf() {  # pf <args...> -> portfolio JSON
-  ( cd "$OMEGA_DIR_REAL" && podman compose run --rm -T cli portfolio --json "$@" ) 2>/dev/null
+  dcli portfolio --json "$@" 2>/dev/null
 }
 bview() {  # bview <run> <args...> -> whatever board-view prints for that run
-  ( cd "$OMEGA_DIR_REAL" && podman compose run --rm -T cli board-view "$@" ) 2>/dev/null
+  dcli board-view "$@" 2>/dev/null
 }
 RV_BEFORE="$(bcount_review "$ARUN")"
 # shellcheck disable=SC2034  # read inside check's eval, which shellcheck cannot see
