@@ -282,6 +282,18 @@ check "close reported the scoring"           "printf '%s' \"\$ACLOSE\" | grep -q
 check "the score commit touched only the metrics dir" \
   "[ -z \"\$(git -C '$WS' show --name-only --format= HEAD | grep -v '^projects/$APROJ/metrics/')\" ]"
 
+# Close also regenerates the project's tasks.md/tasks.csv (instrument-teeth item
+# 5, retiring R6's surviving manual half) — its own committed act, separate from
+# the score's, since hive-metrics and hive-score each call commit_metrics on
+# their own regenerated files.
+check "close ALSO regenerated the project's tasks.md/tasks.csv" \
+  "[ -s '$WS/projects/$APROJ/metrics/tasks.md' ] && [ -s '$WS/projects/$APROJ/metrics/tasks.csv' ]"
+check "the metrics regeneration is its own committed act" \
+  "log_has '$WS' 'metrics: refresh $APROJ on run $ARUN' 'projects/$APROJ/metrics'"
+check "the metrics regeneration reached the hub" "log_has '$HUB' 'metrics: refresh $APROJ on run $ARUN'"
+check "the regenerated tasks.md lists the just-closed task" "grep -q 'alpha-demo' '$WS/projects/$APROJ/metrics/tasks.md'"
+check "close reported the metrics regeneration" "printf '%s' \"\$ACLOSE\" | grep -qF 'metrics regenerated'"
+
 # ==============================================================================
 echo
 echo "== SECOND project '$BPROJ': full lifecycle on its own run =="
@@ -497,6 +509,127 @@ check "the fallback title IS the task id"       "[ \"\$(btitle '$ARUN' '$NHTASK'
 check "a titled order still uses its heading"   "[ \"\$(btitle '$ARUN' alpha-demo)\" = 'alpha demo' ]"
 
 echo
+echo "== predictions launch-gate: refuses unparseable, not absent; warns on partial =="
+# retro 2026-07-29 D1: the gate used to be a human reading a `## Predictions`
+# HEADING while hive-score parsed bullet LABELS underneath it, so a mislabeled
+# section scored `unpredicted` with no error anywhere — the whole tenant
+# project's first wave was lost exactly this way. hive-launch now runs the
+# SAME parser (predictions_classify, hive-common.sh) hive-score uses.
+cal_entry() {  # cal_entry <project> <task> -> that task's LAST calibration entry
+  awk -v t="### $2 — " '
+    index($0, t) == 1 { buf = ""; inb = 1; next }
+    /^### / { inb = 0 }
+    inb { buf = buf $0 "\n" }
+    END { printf "%s", buf }
+  ' "$WS/projects/$1/metrics/calibration.md"
+}
+
+BADTASK="drill-predictions-bad"
+BADREL="projects/$APROJ/orders/2026-07-13-$BADTASK.md"
+cat > "$WS/$BADREL" <<'EOF'
+# Order: predictions bad
+
+## Scope
+Drill fixture: mislabeled predictions section (retro 2026-07-29 D1's dialect).
+
+## Predictions
+
+- **Effort:** 2 hours.
+- **Questions:** 0.
+- **Review outcome:** clean.
+EOF
+git -C "$WS" add -A && git -C "$WS" commit --quiet -m "drill: order $BADTASK"
+git -C "$WS" push --quiet origin HEAD:main
+expect_fail_msg "an order in the D1 dialect refuses at launch" \
+  "does not parse (0 of 3 scored fields)" \
+  "$SCRIPT_DIR/hive-launch" "$BADREL" --worker "sess-predbad-${STAMP}"
+expect_fail_msg "the refusal names the four literal labels (effort)" \
+  "Expected effort:" "$SCRIPT_DIR/hive-launch" "$BADREL" --worker "sess-predbad-${STAMP}"
+expect_fail_msg "the refusal names the four literal labels (review outcome)" \
+  "Expected review outcome:" "$SCRIPT_DIR/hive-launch" "$BADREL" --worker "sess-predbad-${STAMP}"
+expect_fail_msg "the refusal names Named risks as required-but-unscored" \
+  "Named risks:" "$SCRIPT_DIR/hive-launch" "$BADREL" --worker "sess-predbad-${STAMP}"
+expect_fail_msg "the refusal quotes the offending lines" \
+  '**Effort:**' "$SCRIPT_DIR/hive-launch" "$BADREL" --worker "sess-predbad-${STAMP}"
+expect_fail_msg "the refusal names --anyway as the escape hatch" \
+  "--anyway" "$SCRIPT_DIR/hive-launch" "$BADREL" --worker "sess-predbad-${STAMP}"
+check "the refusal seeded no board state" "[ -z \"\$(bstatus '$ARUN' '$BADTASK')\" ]"
+check "the refusal provisioned nothing" "[ ! -e '$WORK/sess-predbad-${STAMP}' ]"
+
+"$SCRIPT_DIR/hive-launch" "$BADREL" --worker "sess-predbad-${STAMP}" --anyway >/dev/null
+check "--anyway launches the D1-dialect order -> assigned" "[ \"\$(bstatus '$ARUN' '$BADTASK')\" = assigned ]"
+
+PARTTASK="drill-predictions-partial"
+PARTREL="projects/$APROJ/orders/2026-07-13-$PARTTASK.md"
+cat > "$WS/$PARTREL" <<'EOF'
+# Order: predictions partial
+
+## Scope
+Drill fixture: 1 of 3 scored fields.
+
+## Predictions
+
+- Expected effort: 1 worker-hour.
+EOF
+git -C "$WS" add -A && git -C "$WS" commit --quiet -m "drill: order $PARTTASK"
+git -C "$WS" push --quiet origin HEAD:main
+PARTOUT="$("$SCRIPT_DIR/hive-launch" "$PARTREL" --worker "sess-predpartial-${STAMP}" 2>&1)"
+printf '%s\n' "$PARTOUT"
+check "a 1-of-3 order launches (warns, does not refuse)" "[ \"\$(bstatus '$ARUN' '$PARTTASK')\" = assigned ]"
+check "the warning says WARNING"            "printf '%s' \"\$PARTOUT\" | grep -F 'WARNING' >/dev/null"
+check "the warning names the missing fields" \
+  "printf '%s' \"\$PARTOUT\" | grep -F 'missing: questions, review outcome' >/dev/null"
+
+ABSTASK="drill-predictions-absent"
+ABSREL="projects/$APROJ/orders/2026-07-13-$ABSTASK.md"
+cat > "$WS/$ABSREL" <<'EOF'
+# Order: predictions absent
+
+## Scope
+Drill fixture: no predictions section at all — a recorded metric, not an error.
+EOF
+git -C "$WS" add -A && git -C "$WS" commit --quiet -m "drill: order $ABSTASK"
+git -C "$WS" push --quiet origin HEAD:main
+# shellcheck disable=SC2034  # consumed by `check`, which evals its condition string
+ABSOUT="$("$SCRIPT_DIR/hive-launch" "$ABSREL" --worker "sess-predabsent-${STAMP}" 2>&1)"
+check "an order with no Predictions section launches" "[ \"\$(bstatus '$ARUN' '$ABSTASK')\" = assigned ]"
+check "no warning is printed for an absent section" "! printf '%s' \"\$ABSOUT\" | grep -F 'WARNING' >/dev/null"
+
+DECTASK="drill-predictions-declared"
+DECREL="projects/$APROJ/orders/2026-07-13-$DECTASK.md"
+cat > "$WS/$DECREL" <<'EOF'
+# Order: predictions declared
+
+## Scope
+Drill fixture: the protocol's one-line declared-unpredicted disposition.
+
+## Predictions
+
+Deliberately unpredicted: pure housekeeping, no forecast worth making.
+EOF
+git -C "$WS" add -A && git -C "$WS" commit --quiet -m "drill: order $DECTASK"
+git -C "$WS" push --quiet origin HEAD:main
+# shellcheck disable=SC2034  # consumed by `check`, which evals its condition string
+DECOUT="$("$SCRIPT_DIR/hive-launch" "$DECREL" --worker "sess-preddeclared-${STAMP}" 2>&1)"
+check "the declared-unpredicted disposition launches with no refusal" \
+  "[ \"\$(bstatus '$ARUN' '$DECTASK')\" = assigned ]"
+check "no warning is printed for the declared disposition" "! printf '%s' \"\$DECOUT\" | grep -F 'WARNING' >/dev/null"
+check "the declared disposition needed no --anyway" "! printf '%s' \"\$DECOUT\" | grep -F 'anyway' >/dev/null"
+
+echo
+echo "== one parser, two callers: the D1-dialect order agrees at launch and at score =="
+# DoD (c): the SAME input yields the SAME verdict from both callers. The launch
+# above already refused this order as unparseable (0 of 3 fields); driving it
+# to a close now proves hive-score's independently-computed coverage agrees.
+BADWRAP="$WRAPPERS/sess-predbad-${STAMP}.sh"
+"$BADWRAP" --type task.accepted --task "$BADTASK" >/dev/null
+"$BADWRAP" --type task.result_posted --task "$BADTASK" \
+  --payload "$(jq -cn --arg r "projects/$APROJ/reports/2026-07-13-$BADTASK-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
+"$SCRIPT_DIR/hive-close" "$BADTASK" --reason "predictions-gate drill close" >/dev/null
+check "the same D1-dialect order scores 'section present, 0 of 3 fields parsed'" \
+  "cal_entry '$APROJ' '$BADTASK' | grep -F 'coverage: unpredicted (section present, 0 of 3 fields parsed)' >/dev/null"
+
+echo
 echo "== adopt a pre-seeded ready task (register + assign only, no task.created) =="
 # The pre-tooling backlog was seeded as unowned `ready` tasks via raw task.created.
 # hive-launch must ADOPT such a task on its project's run: register + assign only.
@@ -663,10 +796,12 @@ check "the ISSUED invocation carries the autonomy flag" \
 check "the drill's HIVE_WORKER_CMD override really drove the panes" "[ -s '$SANDBOX/kickoff.txt' ]"
 
 echo
-echo "== a scoring failure is LOUD but never makes a completed close look failed =="
-# The close→score coupling's blast radius, asserted rather than reasoned about.
-# Injection is the realistic failure: the workspace remote is unreachable, so the
-# score's push fails after the close has already emitted. The close must stand.
+echo "== a regeneration/scoring failure is LOUD but never makes a completed close look failed =="
+# The close→(metrics, score) coupling's blast radius, asserted rather than
+# reasoned about. Injection is the realistic failure: the workspace remote is
+# unreachable, so BOTH the metrics regeneration's push and the score's push
+# fail after the close has already emitted. The close must stand, and each
+# failure must be its own loud, separate complaint (instrument-teeth item 5).
 SFTASK="drill-scorefail"
 SFORDER=$(add_order "$APROJ" "2026-07-13-$SFTASK" "score failure")
 SFWORKER="sess-scorefail-${STAMP}"
@@ -675,22 +810,36 @@ SFWRAP="$WRAPPERS/$SFWORKER.sh"
 "$SFWRAP" --type task.accepted --task "$SFTASK" >/dev/null
 "$SFWRAP" --type task.result_posted --task "$SFTASK" \
   --payload "$(jq -cn --arg r "projects/$APROJ/reports/2026-07-13-$SFTASK-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
+COMMITS_BEFORE_SF=$(git -C "$WS" rev-list --count HEAD)
 git -C "$WS" remote set-url origin "$SANDBOX/nonexistent.git"
 SFRC=0
 SFOUT="$("$SCRIPT_DIR/hive-close" "$SFTASK" --reason "score-failure drill" 2>&1)" || SFRC=$?
 git -C "$WS" remote set-url origin "$HUB"
 printf '%s\n' "$SFOUT"
-check "the close still exits 0 despite the scoring failure" "[ '$SFRC' -eq 0 ]"
+check "the close still exits 0 despite both regeneration failures" "[ '$SFRC' -eq 0 ]"
 check "the close really did land on the board"              "[ \"\$(bstatus '$ARUN' '$SFTASK')\" = done ]"
-check "the failure is loud, not swallowed"                  "printf '%s' \"\$SFOUT\" | grep -qF 'close SUCCEEDED'"
-check "the complaint names the one recovery command"        "printf '%s' \"\$SFOUT\" | grep -qF 'hive-score $SFTASK --project $APROJ'"
-check "the complaint says the close is not in doubt"        "printf '%s' \"\$SFOUT\" | grep -qF 'is durable on the spine'"
-# The push failed; the local commit is still there, which is what makes the
-# recovery a push rather than a rescore.
-check "the score entry survived locally"                    "grep -q '^### $SFTASK — closed' '$WS/projects/$APROJ/metrics/calibration.md'"
+check "the scoring failure is loud, not swallowed"           "printf '%s' \"\$SFOUT\" | grep -qF 'close SUCCEEDED'"
+check "the scoring complaint names the one recovery command" "printf '%s' \"\$SFOUT\" | grep -qF 'hive-score $SFTASK --project $APROJ'"
+check "the scoring complaint says the close is not in doubt" "printf '%s' \"\$SFOUT\" | grep -qF 'is durable on the spine'"
+check "the metrics-regeneration failure is ALSO loud"        "printf '%s' \"\$SFOUT\" | grep -qF 'regenerating'"
+check "the metrics complaint names its own recovery command" "printf '%s' \"\$SFOUT\" | grep -qF 'hive-metrics $APROJ'"
+# Both pushes failed; both local commits are still there (two NEW commits —
+# metrics, then score — despite neither reaching the hub), which is what makes
+# the recovery a push rather than a rescore/re-regenerate. commit_metrics
+# REFUSED rather than rebased: each new commit has exactly one parent, never a
+# merge commit from an attempted (and here impossible) pull --rebase.
+check "the score entry survived locally"    "grep -q '^### $SFTASK — closed' '$WS/projects/$APROJ/metrics/calibration.md'"
+check "two new LOCAL commits landed despite both push failures" \
+  "[ \"\$(git -C '$WS' rev-list --count HEAD)\" = '$((COMMITS_BEFORE_SF + 2))' ]"
+check "neither new commit is a rebase/merge (single parent each)" \
+  "[ \"\$(git -C '$WS' log -1 --format=%P HEAD | wc -w)\" = 1 ] && [ \"\$(git -C '$WS' log -1 --format=%P HEAD~1 | wc -w)\" = 1 ]"
+HUB_COMMITS_BEFORE_SF=$(git -C "$HUB" rev-list --count main)
 git -C "$WS" push --quiet origin HEAD:main
-check "and pushes cleanly once the remote is back"          "log_has '$HUB' 'score: $SFTASK on run $ARUN'"
-# --no-score is the deliberate opt-out: close, and score later by hand.
+check "and both push cleanly once the remote is back" \
+  "[ \"\$(git -C '$HUB' rev-list --count main)\" = '$((HUB_COMMITS_BEFORE_SF + 2))' ]"
+# --no-score is the deliberate opt-out: close, and regenerate/score later by
+# hand — instrument-teeth item 5 bundles the metrics regeneration under the
+# SAME flag, so --no-score now skips both, not just the calibration entry.
 NSTASK="drill-noscore"
 NSORDER=$(add_order "$APROJ" "2026-07-13-$NSTASK" "no score")
 NSWORKER="sess-noscore-${STAMP}"
@@ -699,9 +848,12 @@ NSWRAP="$WRAPPERS/$NSWORKER.sh"
 "$NSWRAP" --type task.accepted --task "$NSTASK" >/dev/null
 "$NSWRAP" --type task.result_posted --task "$NSTASK" \
   --payload "$(jq -cn --arg r "projects/$APROJ/reports/2026-07-13-$NSTASK-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
+COMMITS_BEFORE_NS=$(git -C "$WS" rev-list --count HEAD)
 "$SCRIPT_DIR/hive-close" "$NSTASK" --reason "no-score drill" --no-score >/dev/null
 check "--no-score closes the task"        "[ \"\$(bstatus '$ARUN' '$NSTASK')\" = done ]"
 check "--no-score records no calibration" "! grep -q '^### $NSTASK — closed' '$WS/projects/$APROJ/metrics/calibration.md'"
+check "--no-score regenerates no metrics either (no new commit at all)" \
+  "[ \"\$(git -C '$WS' rev-list --count HEAD)\" = '$COMMITS_BEFORE_NS' ]"
 # ...and scoring it afterwards works, standalone, committing as one act.
 "$SCRIPT_DIR/hive-score" "$NSTASK" --review "clean" </dev/null >/dev/null
 check "standalone hive-score records the entry"   "grep -q '^### $NSTASK — closed' '$WS/projects/$APROJ/metrics/calibration.md'"
