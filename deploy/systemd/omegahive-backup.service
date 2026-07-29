@@ -9,9 +9,19 @@ Type=oneshot
 Environment=DOCKER_HOST=unix://%t/podman/podman.sock
 # Where the dumps land (host bind mount) and how many to keep. compose reads these from
 # the service environment (${OMEGAHIVE_BACKUP_DIR} / OMEGAHIVE_BACKUP_KEEP) — the same dir
-# the workspace bundle uses, so one directory restores both stores. Defaults suit Beastie.
+# the workspace bundle uses, so one directory restores both stores.
 Environment=OMEGAHIVE_BACKUP_DIR=%h/omegahive-backups
 Environment=OMEGAHIVE_BACKUP_KEEP=14
-# Beastie's checkout (deployment #0); adjust WorkingDirectory per host.
+# THREE deployment-#0 facts follow, each of which a second host must adjust. They are
+# recorded as such in docs/deployments/deployment-0-beastie.md, not general truths:
+#   1. Requires/After=podman.socket and the DOCKER_HOST above assume rootless Podman. On
+#      Docker, drop all three lines and let the system socket answer.
+#   2. WorkingDirectory is Beastie's checkout path.
+#   3. ExecStart names Beastie's compose binary. Use whatever compose command the host
+#      has (docker compose / docker-compose / podman compose). A unit file cannot resolve
+#      it the way the scripts do (hive-common.sh resolve_compose), so it is spelled out
+#      here and belongs in that host's host-facts table.
+# On a host with no systemd --user, use deploy/cron/omegahive-crontab.example instead —
+# it invokes this same command.
 WorkingDirectory=%h/src/SNET/omegahive
 ExecStart=%h/.local/bin/docker-compose --profile ops run --rm backup

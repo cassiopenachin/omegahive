@@ -9,10 +9,19 @@
 # (git is the workspace transport, already present — not a host language runtime the
 # deployment spec bans). Rotation keeps the newest OMEGAHIVE_BACKUP_KEEP bundles.
 #
-# Config via env (the systemd unit sets these; defaults suit Beastie):
+# Config via env (the systemd unit or the crontab sets these). The defaults below are
+# DEPLOYMENT-#0 FACTS — the Beastie operator layout, recorded in
+# docs/deployments/deployment-0-beastie.md — not general truths; a second host will differ:
 #   OMEGAHIVE_HUB_REPO   bare hub repo to bundle   (default ~/repos/hive-workspace.git)
 #   OMEGAHIVE_BACKUP_DIR destination directory     (default ~/omegahive-backups)
 #   OMEGAHIVE_BACKUP_KEEP bundles to retain        (default 14)
+#
+# OMEGAHIVE_HUB_REPO must be the WS_HUB this host's workspace actually uses —
+# scripts/hive-init-workspace prints that path when it creates the hub. A mismatch fails
+# loudly below ("hub repo not found") rather than quietly bundling nothing.
+#
+# Scheduling: deploy/systemd/omegahive-bundle.{service,timer} on a systemd host,
+# deploy/cron/omegahive-crontab.example where there is no systemd --user.
 set -eu
 
 hub="${OMEGAHIVE_HUB_REPO:-${HOME}/repos/hive-workspace.git}"

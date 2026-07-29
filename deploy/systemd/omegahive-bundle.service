@@ -4,7 +4,13 @@ Description=OmegaHive workspace backup (git bundle of the bare hub)
 [Service]
 Type=oneshot
 # Host-side: git bundles the bare hub repo into the shared backup dir (deploy/git_bundle.sh,
-# installed to ~/.local/bin — see deployments record). Defaults suit Beastie; override per host.
+# installed to ~/.local/bin — see deployments record).
+#
+# The three paths below are deployment-#0 values, recorded in
+# docs/deployments/deployment-0-beastie.md. OMEGAHIVE_HUB_REPO in particular must match
+# the WS_HUB this host's workspace bootstrap actually created (scripts/hive-init-workspace
+# prints it) — bundling the wrong path backs up nothing and git_bundle.sh exits 1.
+# On a host with no systemd --user, use deploy/cron/omegahive-crontab.example instead.
 Environment=OMEGAHIVE_HUB_REPO=%h/repos/hive-workspace.git
 Environment=OMEGAHIVE_BACKUP_DIR=%h/omegahive-backups
 Environment=OMEGAHIVE_BACKUP_KEEP=14

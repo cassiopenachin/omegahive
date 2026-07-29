@@ -20,7 +20,13 @@ It is the reference implementation of the OmegaHive spec ([docs/reference/omegah
 
 ## Deploying a hive
 
-Requirements: Docker or rootless Podman with the compose plugin, and Python 3.12 if you want the CLI outside containers. Developed and operated on Fedora with rootless podman — SELinux volume labels and user-level systemd units are the supported path; plain Docker works too.
+Requirements: an OCI runtime with compose — Docker or rootless Podman — and Python 3.12 only if you want the CLI outside containers. The operator scripts resolve the compose command themselves (`podman compose`, `docker compose`, or `docker-compose`, whichever the host has); set `OMEGAHIVE_COMPOSE` to the exact command to override, which is what a host carrying both runtimes needs. For rootless Podman, compose talks the Docker API over Podman's socket, which is one line to enable:
+
+```bash
+systemctl --user enable --now podman.socket    # rootless Podman only
+```
+
+Two things are **Fedora-family specifics**, not general requirements: the `:z`/`:Z` SELinux labels on the compose bind mounts (harmless on other hosts — Docker ignores them, and they are required wherever SELinux is enforcing), and user-level systemd units for scheduled backups (see [Scheduled backups](#scheduled-backups) for the cron alternative). Deployment #0 runs Fedora with rootless Podman and is recorded in [docs/deployments/deployment-0-beastie.md](docs/deployments/deployment-0-beastie.md); nothing there is a requirement for a second host.
 
 ```bash
 git clone <this repo> && cd omegahive
@@ -30,11 +36,29 @@ docker compose run --rm migrate # applies migrations/ to the spine
 docker compose run --rm test    # full suite against live Postgres — your first health check
 ```
 
-Give it a heartbeat with the built-in demo: `docker compose run --rm seed` plans a small project, then the `coordinator` / `worker` / `review` services run it to completion while `board-view` shows the board evolving. The `backup` service plus the `deploy/systemd/` timer units cover scheduled dumps; run `omegahive deploy-checks` after any environment change (it verifies credential scope and structural security facts).
+Give it a heartbeat with the built-in demo: `docker compose run --rm seed` plans a small project, then the `coordinator` / `worker` / `review` services run it to completion while `board-view` shows the board evolving. Run `omegahive deploy-checks` after any environment change (it verifies credential scope and structural security facts).
 
-For a real deployment — the secrets layout (per-service env files, never in images or logs), the key-isolation proxy for LLM provider keys, remote access over Tailscale, and recovery/restore discipline — read [docs/omegahive_deployment_spec.md](docs/omegahive_deployment_spec.md) and [docs/deployments/omegahive_remote_access_spec.md](docs/deployments/omegahive_remote_access_spec.md) before trusting it with anything you'd miss.
+For a real deployment — the secrets layout (per-service env files, never in images or logs), the key-isolation proxy for LLM provider keys, and recovery/restore discipline — read [docs/omegahive_deployment_spec.md](docs/omegahive_deployment_spec.md) before trusting it with anything you'd miss. Two host-side bootstraps are one command each: `scripts/hive-init-secrets` (the secrets directory) and `scripts/hive-init-workspace` (the workspace hub and clone the operator loop reads from).
 
-There is a read-only operator web UI (FastAPI, `src/omegahive/ui/`) — the portfolio (every live run on one page, and the UI's entry point), per-run board lanes, filtered log, and metrics — designed to be served over a tailnet; see [docs/omegahive_ui_spec.md](docs/omegahive_ui_spec.md).
+**The web UI, and how you reach it.** There is a read-only operator web UI (FastAPI, `src/omegahive/ui/`) — the portfolio (every live run on one page, and the UI's entry point), per-run board lanes, filtered log, and metrics; see [docs/omegahive_ui_spec.md](docs/omegahive_ui_spec.md). The default access path on any host is the loopback publish:
+
+```bash
+docker compose up -d ui                        # then: http://127.0.0.1:8811/omegahive
+ssh -L 8811:127.0.0.1:8811 <host>              # to reach it from another machine
+```
+
+The UI publishes on `127.0.0.1` only — never `0.0.0.0` — and that is the security posture rather than a default to relax; `OMEGAHIVE_UI_HOST_PORT` and `OMEGAHIVE_UI_BASE_PATH` tune the port and serving prefix. An off-host ingress is a **per-deployment addition, not a requirement**: deployment #0 puts a reverse proxy on `:8443` in front and reaches it over a tailnet ([its record](docs/deployments/deployment-0-beastie.md), [remote-access spec](docs/deployments/omegahive_remote_access_spec.md)), and no ingress ships in this repo. A second deployment needs nothing beyond the tunnel above.
+
+#### Scheduled backups
+
+The `backup` service does a containerized `pg_dump`; `deploy/git_bundle.sh` bundles the workspace hub. Both land in one directory (`OMEGAHIVE_BACKUP_DIR`), so one directory restores both stores. Two scheduling paths invoke the same two commands — pick by what the host has:
+
+| Host | Path |
+|---|---|
+| systemd (Fedora-family; deployment #0) | `deploy/systemd/*.{service,timer}` — copy to `~/.config/systemd/user/`, `systemctl --user enable --now omegahive-backup.timer omegahive-bundle.timer`. Needs `loginctl enable-linger <user>` so timers run without a login session. |
+| no systemd `--user` | `deploy/cron/omegahive-crontab.example` — fill in the placeholders and `crontab -e`. It sets the environment cron does not give a job (PATH, and `DOCKER_HOST` for rootless Podman). |
+
+The unit files' paths and compose binary are deployment-#0 values, flagged as such in the files themselves — adjust them per host. macOS/launchd is sketched in the crontab example as a **note, not a tested path**. Whichever you use, run both commands by hand once and confirm two files appear in the backup directory: an unverified backup schedule is a belief, not a backup.
 
 ## Operating a hive: the CLI
 
@@ -115,7 +139,9 @@ $EDITOR "$OMEGAHIVE_SECRETS_DIR/notifier.env"
 
 `HEARTBEAT_HOUR_UTC` is config, not a secret: it rides the compose environment (`environment: HEARTBEAT_HOUR_UTC=${HEARTBEAT_HOUR_UTC:-6}`), not `notifier.env`.
 
-**Deep links (optional).** Set `OMEGAHIVE_UI_BASE_URL` to the external origin+prefix your phone already uses to reach the web UI (the same `:8443` origin plus the serving prefix, e.g. `https://<host>:8443/omegahive`) and every task id in a message — page or heartbeat open-block — becomes a tap-through link to the board view of **the run that event came from** (`…/run/<run>/board`, assembled from the event itself, never from static config; the UI serves no per-task page, so the board is the target). It is config, not a secret, and rides the compose environment (`OMEGAHIVE_UI_BASE_URL=${OMEGAHIVE_UI_BASE_URL:-}`) beside `HEARTBEAT_HOUR_UTC`, not `notifier.env`. Leave it unset and messages render exactly as before — the link is purely additive. **Tailnet-only, by design:** the links resolve only on devices inside the tailnet (your phone runs Tailscale; that is why they open at all). That is the point, not a bug — the UI is never exposed off the tailnet, so a link that only works there is the whole security posture, not a limitation.
+**Deep links (optional).** Set `OMEGAHIVE_UI_BASE_URL` to whatever origin+prefix your own devices use to reach the web UI, and every task id in a message — page or heartbeat open-block — becomes a tap-through link to the board view of **the run that event came from** (`…/run/<run>/board`, assembled from the event itself, never from static config; the UI serves no per-task page, so the board is the target). With the default loopback access that is `http://127.0.0.1:8811/omegahive` (links open on the host, or through an SSH tunnel); with an ingress in front it is that ingress's origin — deployment #0 uses `https://<host>:8443/omegahive` over its tailnet. It is config, not a secret, and rides the compose environment (`OMEGAHIVE_UI_BASE_URL=${OMEGAHIVE_UI_BASE_URL:-}`) beside `HEARTBEAT_HOUR_UTC`, not `notifier.env`. Leave it unset and messages render exactly as before — the link is purely additive.
+
+**A link that only resolves on your own devices is a feature, not a limitation.** The UI is never published beyond loopback by anything in this repo, so a deep link works exactly where you have already arranged access and nowhere else. Deployment #0 arranges that with a tailnet; a tunnel does the same job for one machine. Either way the link's reach is the access you built, which is the posture rather than a gap in it.
 
 **Run it persistently** (survives reboot via `restart: unless-stopped`; its per-run read cursors + heartbeat state persist on the `omegahive-notifier` volume, so a restart resumes without replay or a double heartbeat):
 
