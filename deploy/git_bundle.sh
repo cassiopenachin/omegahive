@@ -46,6 +46,7 @@ echo "bundle written: ${out}"
 
 # Rotation: keep the newest ${keep}, delete older. Timestamped names sort by age.
 n=0
+# shellcheck disable=SC2012  # names are this script's own `hive-workspace-<ISO stamp>.bundle`
 for f in $(ls -1 "${dir}"/hive-workspace-*.bundle 2>/dev/null | sort -r); do
     n=$((n + 1))
     if [ "${n}" -gt "${keep}" ]; then
