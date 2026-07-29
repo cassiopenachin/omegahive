@@ -293,6 +293,7 @@ predictions_missing_fields() {
 # prediction text in a calibration entry. A plain call, never `$(...)`: a
 # command substitution runs in a subshell, and every one of these globals would
 # be set there and vanish the instant the subshell exits.
+# shellcheck disable=SC2034  # PRED_VERDICT is read by hive-launch/hive-score, which source this file
 predictions_classify() {  # predictions_classify <order-file>
   local f="$1" block
   if ! predictions_present "$f"; then
