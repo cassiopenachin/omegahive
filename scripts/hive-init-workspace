@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+# hive-init-workspace — bootstrap the WORKSPACE side of a deployment: the bare hub,
+# the operator's clone, and a project skeleton with a committed project.conf.
+#
+# Why this exists: the operator loop requires a workspace hub (WS_HUB), an operator
+# clone (OPS_WS), and a per-project project.conf, and the omegahive repo could describe
+# all three but create none of them. A fresh deployer had a documented pointer to
+# artifacts that nothing would make — the last hard coupling to deployment #0, where
+# they happen to already exist. A documented-only path was considered and rejected
+# (toil and error surface; operator decision 2026-07-28): the script is the path and
+# the prose is its caption.
+#
+# What it creates:
+#
+#   $WS_HUB                        bare repo, HEAD on main — clone source and push target
+#   $OPS_WS                        the operator's clone (origin -> WS_HUB)
+#     README.md                    workspace caption, from the committed template
+#     projects/<name>/project.conf RUN_ID + CODE_REPO, from the committed template
+#     projects/<name>/{orders,reports,questions,metrics}/
+#
+# What it deliberately does NOT create: the workspace protocol docs (WORKER.md,
+# OPERATIONS.md, INDEX.md, RUNBOOK.md). The repo ships the bootstrap, not the doctrine —
+# the seeded README says so and lists them. A worker cannot run until WORKER.md exists.
+#
+# IDEMPOTENT, and it never clobbers. Re-running adds only what is missing:
+#   * an existing hub is REUSED if it is a bare git repo, and refused otherwise
+#   * an existing clone is REUSED if its origin already points at the hub, refused otherwise
+#   * an existing project.conf is KEPT verbatim — never rewritten
+# Nothing is ever deleted, force-pushed, or overwritten.
+#
+# Usage:
+#   scripts/hive-init-workspace <project> --code-repo <git-url>
+#   scripts/hive-init-workspace myproj --code-repo git@github.com:me/myproj.git \
+#       --hub ~/repos/hive-workspace.git --clone ~/workspaces/hive
+#
+# Options (all optional except --code-repo):
+#   --code-repo <url>  origin the worker's code clone is re-pointed to (required on first
+#                      seed of a project; recorded in project.conf)
+#   --run-id <id>      the project's run id (default: the project name, the convention)
+#   --hub <path>       bare hub path      (default: $WS_HUB,  else ~/repos/hive-workspace.git)
+#   --clone <path>     operator clone     (default: $OPS_WS,  else ~/workspaces/hive)
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TEMPLATE_DIR="$ROOT/deploy/workspace-template"
+
+die() { echo "hive-init-workspace: $*" >&2; exit 1; }
+
+usage() { sed -n '2,45p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+# Defaults mirror hive-common.sh's deployment layer, so the bootstrap lands exactly
+# where the tooling will look for it.
+HUB="${WS_HUB:-$HOME/repos/hive-workspace.git}"
+CLONE="${OPS_WS:-$HOME/workspaces/hive}"
+PROJECT=""; CODE_REPO_ARG=""; RUN_ID_ARG=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help)    usage 0 ;;
+    --code-repo)  CODE_REPO_ARG="${2:-}"; shift 2 ;;
+    --run-id)     RUN_ID_ARG="${2:-}";    shift 2 ;;
+    --hub)        HUB="${2:-}";           shift 2 ;;
+    --clone)      CLONE="${2:-}";         shift 2 ;;
+    -*)           die "unknown option: $1 (--help for usage)" ;;
+    *)            [ -z "$PROJECT" ] || die "more than one project named ('$PROJECT' then '$1') — one per run"
+                  PROJECT="$1"; shift ;;
+  esac
+done
+
+[ -n "$PROJECT" ] || { echo "hive-init-workspace: no project named" >&2; usage 2; }
+# Same charset guard the tooling applies to run ids: the project name becomes a run id,
+# a directory, and a tmux target, and a name outside this set cannot be targeted exactly.
+[[ "$PROJECT" =~ ^[A-Za-z0-9._-]+$ ]] \
+  || die "unsafe project name '$PROJECT' (allowed: A-Za-z0-9._-)"
+RUN_ID="${RUN_ID_ARG:-$PROJECT}"
+[[ "$RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]] || die "unsafe run id '$RUN_ID' (allowed: A-Za-z0-9._-)"
+
+[ -d "$TEMPLATE_DIR" ] || die "committed template dir missing: $TEMPLATE_DIR"
+
+# A commit is made below; without an identity git fails halfway through, having already
+# created the hub. Check first so the refusal costs nothing.
+if ! git config --get user.email >/dev/null 2>&1 || ! git config --get user.name >/dev/null 2>&1; then
+  die "git identity unset — run: git config --global user.name '<you>' && git config --global user.email '<you@host>'"
+fi
+
+# Refuse a missing --code-repo BEFORE creating anything. Checked late, this refusal
+# fired after the project's subdirectories already existed, so a rejected run left a
+# stray empty skeleton behind — the cheapest refusal has to come first.
+if [ -z "$CODE_REPO_ARG" ] && [ ! -e "$CLONE/projects/$PROJECT/project.conf" ]; then
+  die "project '$PROJECT' has no project.conf yet, so --code-repo <git-url> is required to seed one"
+fi
+
+echo "hive-init-workspace: project '$PROJECT' (run '$RUN_ID')"
+echo "  hub:   $HUB"
+echo "  clone: $CLONE"
+
+# --- the bare hub -------------------------------------------------------------
+# `-b main` pins HEAD: the tooling resolves pins against origin/main (order_pin), so a
+# hub defaulting to `master` would make every pin unresolvable. Requires git >= 2.28.
+if [ -e "$HUB" ]; then
+  # Reuse only a genuine bare repo. Anything else at this path is the clobber case.
+  if [ "$(git -C "$HUB" rev-parse --is-bare-repository 2>/dev/null || echo false)" = "true" ]; then
+    echo "  hub:   KEPT (already a bare repo — not touched)"
+  else
+    die "refusing to clobber: $HUB exists and is not a bare git repository. Move it aside, or pass --hub <other path>."
+  fi
+else
+  mkdir -p "$(dirname "$HUB")"
+  git init --quiet --bare -b main "$HUB"
+  echo "  hub:   CREATED (bare, HEAD on main)"
+fi
+
+# --- the operator's clone -----------------------------------------------------
+hub_abs="$(cd "$HUB" && pwd)"
+if [ -e "$CLONE" ]; then
+  [ -d "$CLONE/.git" ] || die "refusing to clobber: $CLONE exists and is not a git clone. Move it aside, or pass --clone <other path>."
+  got="$(git -C "$CLONE" remote get-url origin 2>/dev/null || true)"
+  got_abs="$( [ -d "$got" ] && (cd "$got" && pwd) || printf '%s' "$got" )"
+  [ "$got_abs" = "$hub_abs" ] \
+    || die "refusing to reuse: $CLONE has origin '$got', not the hub '$hub_abs'. Pass --clone <other path>, or re-point that clone yourself."
+  echo "  clone: KEPT (origin already points at the hub)"
+else
+  mkdir -p "$(dirname "$CLONE")"
+  # An empty hub clones with a warning and no commits; that is expected on first run.
+  git clone --quiet "$hub_abs" "$CLONE" 2>/dev/null || die "failed to clone $hub_abs -> $CLONE"
+  echo "  clone: CREATED"
+fi
+
+# A clone of an empty hub has no branch yet. Put it on main explicitly so the first
+# commit lands where the pins will be resolved.
+if ! git -C "$CLONE" rev-parse --verify HEAD >/dev/null 2>&1; then
+  git -C "$CLONE" checkout --quiet -B main
+fi
+
+# --- the workspace skeleton ---------------------------------------------------
+seeded_any=""
+
+if [ -e "$CLONE/README.md" ]; then
+  echo "  README.md: KEPT"
+else
+  cp "$TEMPLATE_DIR/README.md" "$CLONE/README.md"
+  echo "  README.md: seeded from template"
+  seeded_any=1
+fi
+
+pdir="$CLONE/projects/$PROJECT"
+for d in orders reports questions metrics; do
+  if [ ! -d "$pdir/$d" ]; then
+    mkdir -p "$pdir/$d"
+    # An empty directory does not survive a git clone; the worker needs these to exist.
+    : > "$pdir/$d/.gitkeep"
+    seeded_any=1
+  fi
+done
+
+conf="$pdir/project.conf"
+if [ -e "$conf" ]; then
+  echo "  projects/$PROJECT/project.conf: KEPT (not rewritten)"
+else
+  [ -n "$CODE_REPO_ARG" ] \
+    || die "project '$PROJECT' has no project.conf yet, so --code-repo <git-url> is required to seed one"
+  # Placeholder substitution, not shell expansion: the template is data.
+  awk -v proj="$PROJECT" -v run="$RUN_ID" -v repo="$CODE_REPO_ARG" '
+    { gsub(/@PROJECT@/, proj); gsub(/@CODE_REPO@/, repo); }
+    /^RUN_ID=/ { print "RUN_ID=" run; next }
+    { print }
+  ' "$TEMPLATE_DIR/project.conf" > "$conf"
+  echo "  projects/$PROJECT/project.conf: seeded (RUN_ID=$RUN_ID, CODE_REPO=$CODE_REPO_ARG)"
+  seeded_any=1
+fi
+
+# --- commit + push so the hub is the source of truth --------------------------
+# The tooling refuses to launch an order that is not on the hub, so a skeleton that
+# exists only in the operator's clone is not yet usable.
+if [ -n "$seeded_any" ] || [ -n "$(git -C "$CLONE" status --porcelain)" ]; then
+  git -C "$CLONE" add -A
+  if git -C "$CLONE" diff --cached --quiet; then
+    echo "  commit: nothing to commit"
+  else
+    git -C "$CLONE" commit --quiet -m "workspace: seed project $PROJECT (hive-init-workspace)"
+    echo "  commit: created"
+  fi
+fi
+if [ -n "$(git -C "$CLONE" log origin/main..HEAD --oneline 2>/dev/null || git -C "$CLONE" log --oneline 2>/dev/null)" ]; then
+  git -C "$CLONE" push --quiet -u origin main 2>/dev/null \
+    || die "push to the hub failed ($hub_abs) — the skeleton is committed locally but not on the hub; resolve and re-run"
+  echo "  push:   hub updated (origin/main)"
+else
+  echo "  push:   nothing to push"
+fi
+
+cat <<EOF
+
+Point the tooling at this workspace — add to the operator's shell profile:
+
+    export WS_HUB="$hub_abs"
+    export OPS_WS="$CLONE"
+
+Then, in this order:
+
+  1. Author the protocol docs. $CLONE/README.md lists them; WORKER.md is the one a
+     launched worker actually reads, so the loop does not run until it exists.
+  2. Make sure the project's code checkout exists where the tooling derives it:
+     CANON_ROOT/<repo basename of CODE_REPO>  (default CANON_ROOT: \$HOME/src/SNET)
+  3. Write the first order at projects/$PROJECT/orders/<YYYY-MM-DD>-<task>.md, commit,
+     push, then: hive-launch projects/$PROJECT/orders/<that file>.md
+EOF
