@@ -438,7 +438,6 @@ def portfolio_cmd(
 
 @app.command("notify")
 def notify_cmd(
-    run_id: str = typer.Option(..., "--run-id", help="run to follow (its attention events)"),
     interval: float = typer.Option(
         10.0, "--interval", help="seconds between spine polls (the batch window)"
     ),
@@ -447,13 +446,25 @@ def notify_cmd(
     ),
     state_file: str = typer.Option(
         "/var/lib/omegahive/notifier/cursor.json", "--state-file",
-        help="persisted read cursor (the notifier's own volume) — restart resumes here",
+        help="persisted read cursors (the notifier's own volume) — restart resumes here",
+    ),
+    exclude: str | None = typer.Option(
+        None, "--exclude", help="comma-separated run-id globs to treat as scratch runs "
+                                "(default tooling-drill-*; empty string excludes none)"
+    ),
+    window_days: int | None = typer.Option(
+        None, "--days", help=f"active window in days (default {WINDOW_DAYS})"
     ),
 ) -> None:
-    """Follow the spine's read path and ping Telegram on each attention event —
+    """Follow **every active run** and ping Telegram on each attention event —
     `task.reported(kind=question)`, `task.blocked`, `task.escalated`, `task.result_posted` —
-    plus one unconditional daily heartbeat at `HEARTBEAT_HOUR_UTC` (default 06:00Z). Outbound
-    only: no inbound webhook, no ack path, no bot commands.
+    plus one unconditional daily portfolio heartbeat at `HEARTBEAT_HOUR_UTC` (default
+    06:00Z). Outbound only: no inbound webhook, no ack path, no bot commands.
+
+    **There is no run id.** The notifier is a portfolio surface like the board: runs are
+    discovered from the spine's own registry through the same active-run cut `hive portfolio`
+    applies, so a run entering or leaving the window needs no redeploy — and no run identity
+    can drift out of date. Every message names its run and deep-links to that run's board.
 
     The bot token and chat id come from the environment (`TELEGRAM_BOT_TOKEN`,
     `TELEGRAM_CHAT_ID`) — the per-service secrets env-file (`notifier.env`, deployment
@@ -461,8 +472,9 @@ def notify_cmd(
     The token is never logged and never placed in a message. `HEARTBEAT_HOUR_UTC` is config
     (compose environment), not a secret. `OMEGAHIVE_UI_BASE_URL` (also config) is the external
     origin+prefix the operator's phone uses (e.g. https://host:8443/omegahive); when set, the
-    task id in each message deep-links to the run's board view over the tailnet. Unset, the
-    render is unchanged.
+    task id in each message deep-links to that run's board view over the tailnet. Unset, the
+    render is unchanged. `OMEGAHIVE_PORTFOLIO_EXCLUDE` / `OMEGAHIVE_ACTIVE_WINDOW_DAYS` tune
+    the run cut exactly as they do for the board (the `--exclude` / `--days` flags override).
     """
     from .notifier import CursorStore, NotifierService, PortSpineReader, TelegramClient
 
@@ -489,16 +501,21 @@ def notify_cmd(
     # unchanged. Trailing slash is normalized in the render layer.
     ui_base_url = os.environ.get("OMEGAHIVE_UI_BASE_URL", "").strip() or None
 
+    globs = (
+        None if exclude is None
+        else tuple(part.strip() for part in exclude.split(",") if part.strip())
+    )
+
     store = CursorStore(state_file)
     reader = PortSpineReader(
         connect,  # a fresh connection per (re)build; the follower outlives a pg restart
         Actor(role="instrument", id="notifier"),  # read-only observer: full-stream visibility
-        run_id,
-        generation=store.load().generation,
+        window_days=window_days,
+        exclude=globs,
     )
     sender = TelegramClient(token, chat_id, api_base=api_base)
     NotifierService(
-        reader, sender, store, run_id=run_id,
+        reader, sender, store,
         batch_threshold=batch_threshold, heartbeat_hour=heartbeat_hour,
         ui_base_url=ui_base_url,
     ).run(interval)
