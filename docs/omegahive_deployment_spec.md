@@ -1,6 +1,6 @@
 # OmegaHive — Deployment & Operations Spec
 
-**Status:** v2 (Jul 7 2026). Covers repository hygiene, the OmegaClaw fork program, deployment topology and provenance, operating procedures, and the bring-up of **Beastie (deployment #0)**. Standalone: everything needed to execute is in this document; companions are cited for depth, not required — [omegahive_port_spec.md](omegahive_port_spec.md) (the substrate being deployed), [omegahive_design_1_1.md](omegahive_design_1_1.md) (the architecture), [omegahive_c2_battery_spec.md](omegahive_c2_battery_spec.md) (the qualification battery that runs on these deployments). Revision record: §9.
+**Status:** v2 (Jul 7 2026). Covers repository hygiene, the OmegaClaw fork program, deployment topology and provenance, operating procedures, and the bring-up of **Beastie (deployment #0)**. Standalone: everything needed to execute is in this document; companions are cited for depth, not required — [omegahive_port_spec.md](reference/omegahive_port_spec.md) (the substrate being deployed), [omegahive_design_1_1.md](omegahive_design_1_1.md) (the architecture), [omegahive_c2_battery_spec.md](reference/omegahive_c2_battery_spec.md) (the qualification battery that runs on these deployments). Revision record: §9.
 
 ## 0. Execution model — what depends on what
 
@@ -85,6 +85,8 @@ Distilled from the deployment's recovery snapshot and operating records; each le
 - **Worth keeping:** Telegram as a human surface only (an adapter, never the coordination medium); allowlist-based channel trust; a loopback-only gateway; approval-backed exec allowlists; secret scans before pushes.
 
 ## 7. Beastie bring-up (deployment #0)
+
+**Completed milestone** (Jul 7 2026) — see `docs/deployments/deployment-0-beastie.md` for the acceptance record. Kept below as the executed procedure, not a pending checklist.
 
 Goal: the port's acceptance run and the core deployment checks on hive-owned hardware — proving the profile on a machine nobody hand-built, before any agent lands on it.
 

@@ -1,6 +1,6 @@
 # OmegaHive 1.1 — An Experimental Cooperative Hive of OmegaClaw and OpenClaw Agents
 
-> **Provenance:** text-faithful conversion of Ben Goertzel's `omegahive_1_1.pdf` (Jul 5 2026), extracted Jul 6 2026 for reference alongside [omegahive_design_1_1.md](omegahive_design_1_1.md) (our implementation design, which maps every component of this spec). Layout is flattened from the PDF; tables appear as aligned text. The PDF remains the authoritative formatting.
+> **Status:** reference source — upstream spec text, kept for provenance; consult, don't start here. **Provenance:** text-faithful conversion of Ben Goertzel's `omegahive_1_1.pdf` (Jul 5 2026), extracted Jul 6 2026 for reference alongside [omegahive_design_1_1.md](../omegahive_design_1_1.md) (our implementation design, which maps every component of this spec). Layout is flattened from the PDF; tables appear as aligned text. The PDF remains the authoritative formatting.
 
                               OmegaHive 1.1
                       An Experimental Cooperative Hive

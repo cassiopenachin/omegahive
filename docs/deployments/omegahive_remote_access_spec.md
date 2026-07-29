@@ -1,6 +1,6 @@
 # OmegaHive — Beastie Remote Access Spec
 
-**Status:** v1. Covers remote access for Beastie (deployment #0) during and after a 5-week unattended absence. Governed by [omegahive_deployment_spec.md](omegahive_deployment_spec.md) §4 (secrets), §5 (recovery, environment-change rule), §7 (host-facts).
+**Status:** v1 — deployment-#0 practice record. Covers remote access for Beastie (deployment #0) during and after a 5-week unattended absence. Governed by [omegahive_deployment_spec.md](../omegahive_deployment_spec.md) §4 (secrets), §5 (recovery, environment-change rule), §7 (host-facts).
 
 ## 1. Decision
 

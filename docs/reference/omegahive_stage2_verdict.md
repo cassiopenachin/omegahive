@@ -1,6 +1,6 @@
 # Stage 2 verdict and stage 3 direction
 
-**Status:** closes the stage-2 coordinator ladder (spec: `omegahive_stage2_spec.md`, run record: `ladder/records/2026-07-09/vanilla-half-record.md`, battery evidence: `docs/evidence/omegahive_c2_v0a_r1.md`). Decided Jul 10 2026. This document states what the experiments established, what we now assume, and what stages 3+ do about it.
+**Status:** reference — decision record; governs, describes the past. Closes the stage-2 coordinator ladder (spec: `docs/archive/omegahive_stage2_spec.md`, run record: `ladder/records/2026-07-09/vanilla-half-record.md`, battery evidence: `docs/evidence/omegahive_c2_v0a_r1.md`). Decided Jul 10 2026. This document states what the experiments established, what we now assume, and what stages 3+ do about it.
 
 ## 1. What ran and what it licenses
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # precheck.sh — verify the additive `hive`-user prep, read-only.
 #
-# Part A of the hive-user migration (docs/omegahive_hive_user_migration.md) is a short list
+# Part A of the hive-user migration (docs/archive/omegahive_hive_user_migration.md) is a short list
 # of host commands the OPERATOR runs with sudo. This script runs NO sudo and changes
 # nothing: it is the "did that land?" half, safe to run before, between, and after those
 # commands, by any user, any number of times.

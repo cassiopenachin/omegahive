@@ -1,6 +1,6 @@
 # OmegaHive ↔ OmegaClaw Binding — Q1 Design Options
 
-**Status:** Design comparison for the coordinator↔board binding. The decision that matters; concrete options with pseudo-code, a recommendation, and the deciding argument.
+**Status:** archived — decided deliberation (Q1). Design comparison for the coordinator↔board binding. The decision that matters; concrete options with pseudo-code, a recommendation, and the deciding argument. Superseded as a live surface by `omegahive_design_1_1.md` §3.4, which restates the binding decisions the design review folded in; kept for the argument that led there.
 
 ## Fixed going in
 

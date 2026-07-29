@@ -1,5 +1,7 @@
 # V3 — KB, op sheet, persona (self-contained work order)
 
+**Status:** archived — closed authoring work order; the v2 deliverables (`qual/personas/coordinator-v2/`, `qual/catalogs/board-ops-v2.yaml`) shipped.
+
 **Supersession (v2 artifacts replace all prior drafts):** the pre-existing flat `qual/personas/coordinator-v1.txt` (a 5-op draft predating `prune`) and `qual/catalogs/board-ops-v1.yaml` are superseded — your deliverables are **`coordinator-v2/`** and **`qual/catalogs/board-ops-v2.yaml`** (same 6-op set as v1's catalog, descriptions aligned to the §2 table). `git rm` the stale flat persona draft in the same PR (git history preserves it); leave `board-ops-v1.yaml` in place until its referencing scenarios migrate.
 
 **Context (all you need):** you are authoring the three text artifacts for the stage-2 coordinator ladder ([omegahive_stage2_spec.md](omegahive_stage2_spec.md) — read §5.1, §5.4, §5.5 first; they are the contract). Deliverables: `persona-coordinator-v1` (one `prompt.txt` + the R1 system-prompt variant), the **op-reference sheet**, and `coordination-kb-v1` (one markdown file, 3–5 pages). All three are hash-pinned experiment inputs.

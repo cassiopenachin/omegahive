@@ -1,6 +1,6 @@
 # OmegaHive — Plan & Path
 
-> **OBSOLETE (Jul 6 2026).** Superseded by [omegahive_design_1_1.md](omegahive_design_1_1.md) §7 (the stage plan: 0 baseline → 1 port → 2 coordinator spike → 3 first executor → 4 contracts/operator pack → 5 compute plane → 6 residency) and [omegahive_test_plan.md](omegahive_test_plan.md) (gates and experiments; the old milestone names map port=1, spike=2, first-executor=3+4, compute plane=5). Triage Stage A's result and its consequences live in design A7 and the test plan §4; the coordinator-binding decisions live on in [omegahive_omegaclaw_binding.md](omegahive_omegaclaw_binding.md) as amended by design §3.4. Retained for history only — do not update.
+> **OBSOLETE (Jul 6 2026).** Superseded by [omegahive_design_1_1.md](../omegahive_design_1_1.md) §7 (the stage plan: 0 baseline → 1 port → 2 coordinator spike → 3 first executor → 4 contracts/operator pack → 5 compute plane → 6 residency) and [omegahive_test_plan.md](../omegahive_test_plan.md) (gates and experiments; the old milestone names map port=1, spike=2, first-executor=3+4, compute plane=5). Triage Stage A's result and its consequences live in design A7 and the test plan §4; the coordinator-binding decisions live on in [omegahive_omegaclaw_binding.md](omegahive_omegaclaw_binding.md) as amended by design §3.4. Retained for history only — do not update.
 
 **Status:** The operational plan (updated Jul 2 2026) for the **unified path**: one program joining a coordination substrate built bottom-up (the event spine, gateway, and board in the `omegahive` repo) with a live agent deployment built top-down (real OmegaClaw and OpenClaw agents working over Telegram). The conceptual destination is [omegahive_architecture.md](omegahive_architecture.md); the coordinator binding design is [omegahive_omegaclaw_binding.md](omegahive_omegaclaw_binding.md).
 
@@ -52,7 +52,7 @@ Everything code review identified that a real binding needs. All of it is omegah
 
 Plus the **OmegaClaw fork**: hive work happens on a fork of OmegaClaw-Core, with an explicit step to **review the live deployment's local patches and clean them up — or discard and redo them properly** (Telegram allowlists and attachment ingestion, loop idle-gating and the `continue-thinking` skill, send-normalization, the OpenClaw provider with its subprocess bridge). Nothing lands upstream before the mid-July release; value gets proven on the fork first.
 
-The milestone is executed as **two parallel tracks with a one-way interface**: the port build proper, contained in the omegahive repo ([omegahive_port_spec.md](omegahive_port_spec.md)), and the cross-repo git-hygiene + fork program ([omegahive_repo_hygiene_spec.md](omegahive_repo_hygiene_spec.md)), which delivers the pinned fork image and container policy that the port's environment slice consumes.
+The milestone is executed as **two parallel tracks with a one-way interface**: the port build proper, contained in the omegahive repo ([omegahive_port_spec.md](../reference/omegahive_port_spec.md)), and the cross-repo git-hygiene + fork program ([omegahive_repo_hygiene_spec.md](omegahive_repo_hygiene_spec.md)), which delivers the pinned fork image and container policy that the port's environment slice consumes.
 
 ### spike — the coordinator ladder (the H2 experiment)
 
