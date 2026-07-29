@@ -1,0 +1,55 @@
+% =========================================================================
+\section{Fulfilling the OmegaHive Vision}
+% =========================================================================
+
+The claim ``we implement Ben's vision'' should be a table, not a paragraph. Below, each architecture requirement from OmegaHive1 \S2 and the load-bearing 1.1 additions, against the running system --- rows cite their source as (OH1, \S$n$) for OmegaHive1 and (1.1) for the OmegaHive 1.1 revision. \emph{Running} means live today under real work; \emph{rehearsal} means the function operates with a human commit-gate and no authority; \emph{gated} means designed and deliberately blocked on the identity gate; \emph{divergent} means we satisfy the requirement's purpose by a different mechanism, argued afterwards.
+
+\small
+\renewcommand{\arraystretch}{1.25}
+\begin{longtable}{@{}L{37mm}L{57mm}L{20mm}@{}}
+\toprule
+\textbf{Requirement (Ben)} & \textbf{Mechanism (running hive)} & \textbf{Status} \\
+\multicolumn{3}{@{}l@{}}{\footnotesize\itshape OH1 = OmegaHive1; 1.1 = the OmegaHive 1.1 revision.} \\
+\midrule
+\endhead
+Agent substrate: OmegaClaw + skill-executing agents, LLMs hosted elsewhere (OH1, \S2.1) & Workers are launched CLI coding-agent sessions; OmegaClaw binds through the same port (a small patched fork, built and test-qualified --- no OmegaClaw agent is in the daily loop yet); the host runs only glue and shared services & running (sessions); binding built, unused daily \\
+Two-tier communications; fast tier persisted and inspectable; mechanical promotion rules (OH1, \S2.2) & The spine is the fast tier, persisted by construction; the notifier renders attention events to Telegram by rule, never by agent judgment; the UI is the searchable viewer & running \\
+Shared knowledge resources, actively curated (OH1, \S2.3) & The workspace: charters, orders, reports, decisions, indexes --- one repo, one map, conventions enforced by protocol docs. Files and git, deliberately: shared Atomspaces arrive with OmegaClaw residents, not before & running; divergent (git, not Atomspace) \\
+Task ownership: all non-trivial work on a board with ownership, status, provenance (OH1, \S2.4; 1.1, \S3.3) & Every work item is a board task folded from the log; ownership and status are legality-governed transitions; provenance is the pin discipline & running \\
+Provenance and editorial discipline: notes-and-sources companions; an editor gates completion (OH1, \S2.5) & Every claim-bearing artifact enters the record as \code{path@sha}; results carry a structured report; review-before-done is unreachable to skip. The dedicated editorial gate for outward documents: designed, blocked behind the identity gate & running (pins, review); gated (editorial seats) \\
+Governance in a version-controlled constitution injected into context (OH1, \S2.6) & Charter, operating manual, worker protocol, seat protocols --- versioned files that \emph{are} each session's context; anything decided in chat lands in them the same sitting & running \\
+Reflective conscience monitoring values and dynamics (OH1, \S2.6) & The improver: wakes fresh, reads only the record, scores calibration, stages repairs. Function first, resident later; a values-and-dynamics scope beyond calibration is future seat work & rehearsal \\
+Permission tiers enforced at gateway and credential level, not in prompts (OH1, \S2.6) & Legality table at the gateway (running); launch-issued wrapper as proto-credential (running); per-seat credentials from which the gateway derives identity (the gate itself) & running $\to$ gated \\
+Evaluation on two independent tracks: deterministic metrics, plus qualitative review that reads them (OH1, \S2.7) & Metrics are deterministic folds with clock ownership labeled; the improver reads them plus the record and writes the retro; disagreement between the tracks is treated as signal & running \\
+Fleet from shared images, config-injected; one-command redeploy (OH1, \S2.8) & One pinned image serves library, CLI, migrations, tests; deployments are lockfile-identified; deploy is scripted and checked & running \\
+Human-only out-of-band recovery path, always (OH1, \S2.8) & Plain keys-only SSH over the tailnet, no agent in the loop; access-layer changes are named operator acts, never automated & running \\
+Small persistent core + spawn-on-demand workers (1.1) & Seats (durable state, ephemeral process) are the persistent core; launched workers are the spawn layer, one per bounded task & running (workers); rehearsal (seats) \\
+Async task queue: atomic claim, structured returns, backpressure (1.1) & The board fold over the log: acceptance is atomic and legality-gated, results are structured events, the review throttle is the backpressure & running \\
+Rejected / expired / cancelled work is evidence, not embarrassment (1.1, \S4.4) & Refusals are recorded events, styled visibly in the UI, counted in metrics; failed and retired tasks close honestly on the record & running \\
+Model and resource governance as a first-class surface (1.1) & Per-session budgets ride the worker CLI's own accounting; model choice is per-launch configuration. A resource-manager function with its own seat: deferred, trigger named (multi-model executor volume) & partial; deferred with trigger \\
+Layered memory with active curation (1.1) & The workspace layers (charter / operating docs / decisions / reports) plus per-seat memory directories; a memory-curator seat waits for the volume that earns it & partial; rehearsal \\
+Runtime safety floor inherited by every agent (1.1) & Wrapper-only write path, deny rules, containerized stack, secrets manifest with scoped env; OS-level separation is gate bar two & running $\to$ gated \\
+Tier 1.5: act only through adjudication (1.1) & Rehearsal mode is exactly this, applied to whole seats: full function, every act through a human commit-gate & running \\
+\bottomrule
+\end{longtable}
+\normalsize
+
+\subsection{Where we deliberately diverge, and why}
+
+\textbf{One log instead of bus + board + queue.} Three stores that must agree are two reconciliation bugs waiting to happen; consistency across stores is the failure mode, not the feature. Ben's requirements for each tier survive as projections of one record. What would change our mind: a working-traffic volume the log's write path cannot carry --- at which point the fast tier shards \emph{below} the spine, with the spine keeping the coordination facts. Nothing today is within orders of magnitude of that.
+
+\textbf{Session workers instead of resident agent containers as the default executor.} Residency pays a continuous token cost to keep being, and free-running was the precise failure our coordinator grid measured. Sessions are trigger-driven, watchable, and free while blocked --- and OmegaClaw keeps its real niches: Ben-ecosystem compatibility, and cheap-model executors where API pricing applies in any wrapper. The substrate is indifferent: both bind through the same port, and a resident executor is a launch-configuration choice, not an architecture change.
+
+\textbf{Telegram + web UI instead of Slack as the human tier.} One operator on a phone needed pushes and deep links, not channels. The promotion-rules requirement is fully honored --- rendering is mechanical, the raw record is always inspectable. The 1.1 revision made the human layer platform-pluggable, which is the posture we built; a Slack surface for a multi-human hive is a renderer, not a redesign.
+
+\textbf{Functions before residents, one at a time.} Ben's roster describes fifteen agents; we run their functions with one operator, launched workers, and three rehearsing seats. This is sequencing, not disagreement: every non-execution agent is unproven until its function has a track record, and rehearsal is how a function earns its seat. The same sequencing covers the shared services: no Lean pool, browser rig, or Atomspace server runs here today --- each arrives as ordered infrastructure with the first project whose work needs it, and the substrate is indifferent to which services surround it. The roster is the destination; the gate is the road.
+
+\textbf{A human trust anchor, for now.} Where the specs place governance in configuration a conscience agent can act on, we place final authority in operator judgments at merge and close --- and the identity gate is the machinery for delegating everything \emph{below} that line safely. Review authority itself never transfers. If a future editorial-gate track record ever argues for moving that line, it will have to argue against a written rule, on the record, which is exactly how we want that conversation to happen.
+
+% =========================================================================
+\section{Running One}
+% =========================================================================
+
+A deployment is a lockfile: pinned images, pinned fork, policy hash, plus its secrets directory and its backups. The current wave of work makes the claim ``runs on your machine'' literal --- compose-runtime neutrality, a scripted secrets and workspace bootstrap, a front-door README, and the reference material filed where reference material belongs --- with a bring-up drill executed verbatim on a machine that is not ours as the acceptance test.
+
+What we want from colleagues is not admiration but replication. Run one: your host, your projects, your judgment at the gates. The interesting questions --- does the discipline transfer, do the calibration curves look like ours, what does a second operator's pain list contain --- only have answers at $N \geq 2$. We will trade evidence: calibration ledgers, retro findings, order patterns, defect stories. Whatever survives both of us is the architecture.
