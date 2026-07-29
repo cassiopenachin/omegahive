@@ -185,6 +185,12 @@ services:
       # no token and no complaint until startup. The default makes the documented location
       # the actual location, so `hive-init-secrets` and this file cannot disagree. An
       # exported OMEGAHIVE_SECRETS_DIR still wins (deployment #0 exports exactly this path).
+      #
+      # One residual case the default does NOT cover: if HOME itself is unset, compose warns
+      # and substitutes a blank string, giving `/.config/omegahive/secrets/notifier.env` —
+      # skipped in silence again. systemd USER units and cron both provide HOME, so the
+      # shipped scheduling paths are fine; a systemd SYSTEM unit or a bare container is not.
+      # Set OMEGAHIVE_SECRETS_DIR explicitly in any HOME-less context.
       - path: ${OMEGAHIVE_SECRETS_DIR:-${HOME}/.config/omegahive/secrets}/notifier.env   # TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
         required: false
     volumes:

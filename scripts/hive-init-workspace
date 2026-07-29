@@ -94,16 +94,25 @@ echo "hive-init-workspace: project '$PROJECT' (run '$RUN_ID')"
 echo "  hub:   $HUB"
 echo "  clone: $CLONE"
 
+# --- validate BOTH paths before creating EITHER --------------------------------
+# Every refusal that can be decided from inspection alone is decided here, before the
+# first mkdir. Checking the clone's suitability after `git init --bare` left a fully
+# initialised hub behind on a refused run, and the operator's next attempt then reported
+# "hub: KEPT (already a bare repo)" — hiding the fact that the failed run had created it.
+if [ -e "$HUB" ] \
+   && [ "$(git -C "$HUB" rev-parse --is-bare-repository 2>/dev/null || echo false)" != "true" ]; then
+  die "refusing to clobber: $HUB exists and is not a bare git repository. Move it aside, or pass --hub <other path>."
+fi
+if [ -e "$CLONE" ] && [ ! -d "$CLONE/.git" ]; then
+  die "refusing to clobber: $CLONE exists and is not a git clone. Move it aside, or pass --clone <other path>."
+fi
+
 # --- the bare hub -------------------------------------------------------------
 # `-b main` pins HEAD: the tooling resolves pins against origin/main (order_pin), so a
 # hub defaulting to `master` would make every pin unresolvable. Requires git >= 2.28.
 if [ -e "$HUB" ]; then
-  # Reuse only a genuine bare repo. Anything else at this path is the clobber case.
-  if [ "$(git -C "$HUB" rev-parse --is-bare-repository 2>/dev/null || echo false)" = "true" ]; then
-    echo "  hub:   KEPT (already a bare repo — not touched)"
-  else
-    die "refusing to clobber: $HUB exists and is not a bare git repository. Move it aside, or pass --hub <other path>."
-  fi
+  # Already validated above as a genuine bare repo.
+  echo "  hub:   KEPT (already a bare repo — not touched)"
 else
   mkdir -p "$(dirname "$HUB")"
   git init --quiet --bare -b main "$HUB"
@@ -113,7 +122,6 @@ fi
 # --- the operator's clone -----------------------------------------------------
 hub_abs="$(cd "$HUB" && pwd)"
 if [ -e "$CLONE" ]; then
-  [ -d "$CLONE/.git" ] || die "refusing to clobber: $CLONE exists and is not a git clone. Move it aside, or pass --clone <other path>."
   got="$(git -C "$CLONE" remote get-url origin 2>/dev/null || true)"
   got_abs="$( [ -d "$got" ] && (cd "$got" && pwd) || printf '%s' "$got" )"
   [ "$got_abs" = "$hub_abs" ] \
@@ -159,8 +167,17 @@ if [ -e "$conf" ]; then
 else
   [ -n "$CODE_REPO_ARG" ] \
     || die "project '$PROJECT' has no project.conf yet, so --code-repo <git-url> is required to seed one"
-  # Placeholder substitution, not shell expansion: the template is data.
-  awk -v proj="$PROJECT" -v run="$RUN_ID" -v repo="$CODE_REPO_ARG" '
+  # Placeholder substitution treating the values as literal DATA. Two awk traps are
+  # deliberately avoided: `-v` interprets backslash escapes in the assigned value (so a
+  # `\p` in a URL is silently eaten), and gsub() treats `&` in the REPLACEMENT as "the
+  # text that matched" (so `?b=1&c=2` substituted itself back in and produced
+  # `?b=1@CODE_REPO@c=2`). Values therefore arrive via ENVIRON, and `&` is escaped before
+  # it reaches gsub. Rare in a git URL, silent when it happens, and committed + pushed.
+  P="$PROJECT" R="$RUN_ID" C="$CODE_REPO_ARG" awk '
+    BEGIN {
+      proj = ENVIRON["P"]; run = ENVIRON["R"]; repo = ENVIRON["C"];
+      gsub(/&/, "\\\\&", proj); gsub(/&/, "\\\\&", repo);
+    }
     { gsub(/@PROJECT@/, proj); gsub(/@CODE_REPO@/, repo); }
     /^RUN_ID=/ { print "RUN_ID=" run; next }
     { print }
@@ -172,13 +189,24 @@ fi
 # --- commit + push so the hub is the source of truth --------------------------
 # The tooling refuses to launch an order that is not on the hub, so a skeleton that
 # exists only in the operator's clone is not yet usable.
-if [ -n "$seeded_any" ] || [ -n "$(git -C "$CLONE" status --porcelain)" ]; then
-  git -C "$CLONE" add -A
-  if git -C "$CLONE" diff --cached --quiet; then
+#
+# STAGED BY PATHSPEC, never `add -A`. The operator's workspace clone is a working repo
+# full of drafts, and `add -A` swept every one of them into this commit and pushed it —
+# which is worse than untidy: the README promises hive-launch refuses an order that is not
+# on the hub, so an unfinished draft order silently became pushed, pinnable and launchable.
+# Only the two paths this script creates are staged, and only when it created something
+# (a dirty tree alone is no longer a reason to commit, for the same reason).
+if [ -n "$seeded_any" ]; then
+  git -C "$CLONE" add -- "README.md" "projects/$PROJECT"
+  if git -C "$CLONE" diff --cached --quiet -- "README.md" "projects/$PROJECT"; then
     echo "  commit: nothing to commit"
   else
-    git -C "$CLONE" commit --quiet -m "workspace: seed project $PROJECT (hive-init-workspace)"
-    echo "  commit: created"
+    git -C "$CLONE" commit --quiet -m "workspace: seed project $PROJECT (hive-init-workspace)" \
+      -- "README.md" "projects/$PROJECT"
+    echo "  commit: created (only README.md + projects/$PROJECT staged)"
+  fi
+  if [ -n "$(git -C "$CLONE" status --porcelain)" ]; then
+    echo "  note:   other uncommitted changes in this clone were left ALONE (not staged, not pushed)"
   fi
 fi
 if [ -n "$(git -C "$CLONE" log origin/main..HEAD --oneline 2>/dev/null || git -C "$CLONE" log --oneline 2>/dev/null)" ]; then

@@ -16,9 +16,10 @@
 # cron entry copied without these lines fails with "command not found" or a compose
 # error about a missing Docker endpoint.
 #
-# Replace <deployuser> with the account that owns the deployment, and <checkout> with
-# the absolute path of the omegahive checkout. Cron does not expand ~ or $HOME in the
-# command position, so absolute paths are not optional here.
+# Replace <deployuser> with the account that owns the deployment, and <checkout> with the
+# omegahive checkout's path RELATIVE TO that account's home (e.g. src/SNET/omegahive), so
+# the `cd` line below reads /home/<deployuser>/<checkout>. Cron does not expand ~ or $HOME
+# in the command position, so the paths here are spelled out in full rather than shortened.
 
 SHELL=/bin/sh
 PATH=/usr/local/bin:/usr/bin:/bin:/home/<deployuser>/.local/bin

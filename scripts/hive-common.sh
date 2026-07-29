@@ -100,18 +100,28 @@ HIVE_COMPOSE=""              # resolved by resolve_compose; empty until first us
 # Resolve the compose command into HIVE_COMPOSE, once. Lazy rather than
 # resolved at source time so a script that never touches the stack (or a host
 # still being provisioned) does not die merely for sourcing this file.
+# Each candidate is probed by RUNNING it, never by `command -v` alone. `podman compose`
+# in particular is a thin shim that execs an EXTERNAL compose provider, so podman can be
+# on PATH and `podman compose` still fail with "looking up compose provider failed" —
+# which is a whole class of host (podman from apt, no provider installed, Docker's compose
+# plugin present and working). Probing by presence picked podman there and killed the
+# operator loop while deploy_checks.sh independently resolved to a working `docker
+# compose`, so the two harnesses disagreed and deploy-checks came back green over a dead
+# loop. One subprocess per candidate, once per shell, buys that away.
 resolve_compose() {  # resolve_compose  (sets HIVE_COMPOSE; idempotent)
   [ -n "$HIVE_COMPOSE" ] && return 0
   if [ -n "$OMEGAHIVE_COMPOSE" ]; then
+    # An explicit override is taken at its word, not probed: the operator may be pointing
+    # at something not yet running, and second-guessing them here would be the surprise.
     HIVE_COMPOSE="$OMEGAHIVE_COMPOSE"
-  elif command -v podman >/dev/null 2>&1; then
+  elif command -v podman >/dev/null 2>&1 && podman compose version >/dev/null 2>&1; then
     HIVE_COMPOSE="podman compose"
   elif command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     HIVE_COMPOSE="docker compose"
-  elif command -v docker-compose >/dev/null 2>&1; then
+  elif command -v docker-compose >/dev/null 2>&1 && docker-compose version >/dev/null 2>&1; then
     HIVE_COMPOSE="docker-compose"
   else
-    die "no compose command found (looked for: podman, docker compose, docker-compose) — install one, or set OMEGAHIVE_COMPOSE to the exact command"
+    die "no WORKING compose command found (probed: podman compose, docker compose, docker-compose) — install one, or set OMEGAHIVE_COMPOSE to the exact command. Note that podman alone is not enough: 'podman compose' needs an external compose provider."
   fi
 }
 

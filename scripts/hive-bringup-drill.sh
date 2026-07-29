@@ -20,40 +20,42 @@
 #   H  spine            — a governed emit lands and the board folds it back
 #   I  UI               — the loopback publish answers on its base path
 #   J  backups          — the pg dump AND the workspace bundle, each run BY HAND once
-#   K  the loop         — delegates to hive-tooling-drill.sh (launch/answer/close, every
-#                         refusal path) against this freshly built stack
+#   K  the loop         — NOT run here; prints the hive-tooling-drill.sh command to run
+#                         deliberately afterwards, and why it is not isolated
 #
-# WHAT IT DOES NOT COVER, deliberately: a real worker session. K drives the loop with a
-# no-op worker command, which proves the plumbing, not that an agent can do the work. The
-# "one task launched -> worked -> closed" leg of a bring-up needs a human watching a real
-# session and belongs in the deployment record's narration.
+# WHAT IT DOES NOT COVER: the operator loop (phase K prints the command instead of
+# running it, because that drill is not project-isolated — see K) and a real worker
+# session doing real work. Even the loop drill uses a no-op worker command, which proves
+# plumbing rather than that an agent can do the work, so the "one task launched -> worked
+# -> closed" leg of a bring-up needs a human watching a real session and belongs in the
+# deployment record's narration.
 #
 # BLAST RADIUS: none, by construction. Everything happens in a mktemp sandbox and on the
 # scratch compose overlay (deploy/hive-user/compose.scratch.yml), which isolates project
 # name, container names, host ports (5433/8812, not 5432/8811) and — the one that matters
 # for a repo build — the IMAGE TAG: it builds `omegahive:scratch`, never the canonical
 # `omegahive:dev` the live stack runs on. The drill refuses to start if the ports it was
-# handed are the live ones. It never reads or writes the live spine, the live secrets
-# directory, or the live workspace hub.
+# handed are the live ones, and pins OMEGAHIVE_SECRETS_DIR at the sandbox so compose
+# cannot resolve the real one. Phases A-J never read or write the live spine, the live
+# secrets directory, or the live workspace hub. Phase K would have, which is why it no
+# longer runs.
 #
 # Usage:
 #   scripts/hive-bringup-drill.sh                 # full drill, tears down after
 #   scripts/hive-bringup-drill.sh --dry-run       # print the plan, touch nothing
 #   scripts/hive-bringup-drill.sh --keep          # leave the sandbox + stack up to poke at
 #   scripts/hive-bringup-drill.sh --no-stack      # A-E only (no container runtime needed)
-#   scripts/hive-bringup-drill.sh --no-loop       # skip K (the slow one)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-DRY=""; KEEP=""; NO_STACK=""; NO_LOOP=""
+DRY=""; KEEP=""; NO_STACK=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --dry-run)  DRY=1 ;;
     --keep)     KEEP=1 ;;
     --no-stack) NO_STACK=1 ;;
-    --no-loop)  NO_LOOP=1 ;;
     -h|--help)  sed -n '2,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1 (--help for usage)" >&2; exit 2 ;;
   esac
@@ -110,7 +112,7 @@ cleanup() {
   if [ -z "$DRY" ] && [ -z "$NO_STACK" ] && [ "${#COMPOSE_ARGS[@]}" -gt 0 ]; then
     if [ -n "$KEEP" ]; then
       echo; echo "drill: --keep — stack LEFT UP and sandbox kept at $SANDBOX"
-      echo "       tear down with: $COMPOSE ${COMPOSE_ARGS[*]} down -v && rm -rf $SANDBOX"
+      echo "       tear down with: (cd $CLONE && $COMPOSE ${COMPOSE_ARGS[*]} down -v) && rm -rf $SANDBOX"
     else
       echo; echo "drill: tearing down the scratch stack"
       # -v is safe and wanted here: these are the SCRATCH project's volumes, never the
@@ -204,9 +206,16 @@ fi
 phase "F. stack up (scratch overlay — never the live stack, never the canonical image tag)"
 COMPOSE_ARGS=( -p omegahive-scratch -f docker-compose.yml -f deploy/hive-user/compose.scratch.yml )
 dc() {
+  # OMEGAHIVE_SECRETS_DIR is pinned to the sandbox deliberately. Without it, compose
+  # inherits the operator's exported value and resolves the LIVE secrets directory —
+  # `compose config` inlines env_file contents into the resolved environment, so the
+  # drill was reading real credentials (into a discarded grep, but reading them), and
+  # phase D's sandbox dir was decorative. The header promises it never reads the live
+  # secrets directory; this is what makes that true.
   # shellcheck disable=SC2086  # COMPOSE may legitimately be two words
   ( cd "$CLONE" && env OMEGAHIVE_BACKUP_DIR="$BACKUPS" OMEGAHIVE_SCRATCH_PG_PORT="$PG_PORT" \
-      OMEGAHIVE_SCRATCH_UI_PORT="$UI_PORT" $COMPOSE "${COMPOSE_ARGS[@]}" "$@" )
+      OMEGAHIVE_SCRATCH_UI_PORT="$UI_PORT" OMEGAHIVE_SECRETS_DIR="$SECRETS" \
+      $COMPOSE "${COMPOSE_ARGS[@]}" "$@" )
 }
 mkdir -p "$BACKUPS"
 # Exactly one published port per service, or the overlay's !override has regressed and the
@@ -219,15 +228,27 @@ if [ -z "$DRY" ]; then
   fi
 fi
 run dc build --quiet
-check "built the scratch image tag, not the canonical one" \
-  bash -c "dc config | grep -q 'omegahive:scratch'"
+# NEVER route a dc() call through `check`/`bash -c`: shell functions are not inherited by
+# a child bash, so `bash -c "dc config"` does not find this function — it finds
+# /usr/bin/dc, the GNU desk calculator (package `bc`), which cannot open a file named
+# `config`, falls back to reading STDIN, and hangs the drill forever on the operator's
+# terminal. On a host without `bc` it instead fails, so the check reported [FAIL]
+# regardless of reality. Both call sites are now in-process.
+if [ -z "$DRY" ]; then
+  if dc config 2>/dev/null | grep -q 'omegahive:scratch'; then
+    ok "built the scratch image tag, not the canonical one"
+  else
+    bad "scratch image tag absent from the resolved config — a build here could hit the canonical tag"
+  fi
+fi
 run dc up -d postgres
 if [ -z "$DRY" ]; then
+  healthy=""
   for _ in $(seq 1 30); do
-    dc ps postgres 2>/dev/null | grep -qi healthy && break
+    if dc ps postgres 2>/dev/null | grep -qi healthy; then healthy=1; break; fi
     sleep 2
   done
-  check "postgres is healthy" bash -c "dc ps postgres | grep -qi healthy"
+  if [ -n "$healthy" ]; then ok "postgres is healthy"; else bad "postgres did not become healthy within 60s"; fi
 fi
 
 # --- G. migrations ------------------------------------------------------------
@@ -294,25 +315,41 @@ if [ -z "$DRY" ]; then
 fi
 
 # --- K. the operator loop -----------------------------------------------------
-# Delegated, not reimplemented: hive-tooling-drill.sh already covers launch/answer/close
-# and every refusal path across three projects. Pointing OMEGA_DIR at the sandbox clone
-# makes it run against THIS freshly built stack instead of the host's live one.
-phase "K. operator loop (delegated to hive-tooling-drill.sh against this stack)"
-if [ -n "$NO_LOOP" ]; then
-  echo "  skipped (--no-loop)"
-elif ! command -v tmux >/dev/null 2>&1; then
-  echo "  SKIPPED: tmux is not installed — hive-tooling-drill.sh needs it to seat a worker pane."
-  echo "  This is a real gap on a fresh host: install tmux, then run"
-  echo "    OMEGA_DIR=$CLONE OMEGAHIVE_COMPOSE='$COMPOSE' $CLONE/scripts/hive-tooling-drill.sh"
-elif [ -z "$DRY" ]; then
-  if env OMEGA_DIR="$CLONE" OMEGAHIVE_COMPOSE="$COMPOSE" \
-        "$CLONE/scripts/hive-tooling-drill.sh" >"$SANDBOX/loop.log" 2>&1; then
-    ok "hive-tooling-drill.sh green against the fresh stack"
-  else
-    bad "hive-tooling-drill.sh FAILED (see $SANDBOX/loop.log — re-run with --keep to inspect)"
-    tail -20 "$SANDBOX/loop.log" | sed 's/^/    | /'
-  fi
-fi
+# NOT EXECUTED HERE, and that is a correction rather than a limitation.
+#
+# This phase used to run hive-tooling-drill.sh with OMEGA_DIR pointed at the sandbox
+# clone, believing that aimed it at the freshly built stack. It does not. OMEGA_DIR only
+# changes the DIRECTORY compose runs in; project identity comes from docker-compose.yml's
+# own `name: omegahive`, and the tooling drill's stack calls carry no `-p` and no scratch
+# overlay. So the phase resolved to project `omegahive`, image `omegahive:dev`, volumes
+# `omegahive_*`, container `omegahive-pg`, host port 5432 — every resource this script's
+# header promises it never touches. On a host with a live stack it wrote drill events into
+# the live spine; on a fresh host it would CREATE that stack on port 5432, the very port
+# the preflight exits 1 to avoid, and teardown (scoped to `omegahive-scratch`) would leave
+# it running afterwards.
+#
+# The tooling drill's own contract has always permitted using the host's live stack — it
+# is the bring-up drill that made the isolation promise, so the bring-up drill is what
+# changes. Isolating it properly needs a project/overlay parameter the tooling drill does
+# not have; adding one unverified, for a phase that has never once executed, would be
+# speculative. So it is a named manual step with the caveat stated.
+phase "K. operator loop (manual — NOT run by this script)"
+cat <<EOF
+  The launch/answer/close loop and every refusal path are covered by a separate drill.
+  Run it deliberately, after this script finishes:
+
+      $CLONE/scripts/hive-tooling-drill.sh
+
+  Read this before you do:
+    * It uses the DEFAULT compose project ('omegahive'), not the scratch overlay this
+      script used. On a host with a live stack it therefore touches that live stack's
+      spine and volumes (its scratch RUN IDS keep the durable run's data separate, which
+      is its actual safety property — project isolation is not).
+    * On a fresh host that is exactly what you want: it exercises the real stack you just
+      brought up. Bring the stack up on the default project first.
+    * It needs tmux to seat a worker pane.$(command -v tmux >/dev/null 2>&1 || echo "
+      tmux is NOT installed here — install it first, or the loop cannot be drilled.")
+EOF
 
 phase "done"
 echo "  A real worker session doing real work is NOT covered here — K drives the loop with a"

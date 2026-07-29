@@ -135,7 +135,7 @@ $EDITOR "$OMEGAHIVE_SECRETS_DIR/notifier.env"
 # TELEGRAM_BOT_TOKEN=…   TELEGRAM_CHAT_ID=…
 ```
 
-`hive-init-secrets` is the bootstrap for **every** per-service env-file, not just the notifier's: it creates the directory, seeds each `<service>.env` from its committed `<service>.env.example` with the right modes, and never overwrites a file that already exists. `OMEGAHIVE_SECRETS_DIR` defaults to `$HOME/.config/omegahive/secrets` — the canonical location from [the deployment spec](docs/omegahive_deployment_spec.md) §4, and the same default the compose file interpolates, so the pointer and the directory cannot disagree. Set the variable only to move the directory.
+`hive-init-secrets` creates the directory and seeds a `<service>.env` at 0600 from each committed `<service>.env.example`, never overwriting a file that already exists. Today the repo ships exactly one such example, `notifier.env.example`, so that is the one file it seeds — the other services named in `secrets-manifest.yaml` (`postgres.env`, `gateway.env`, `harness.env`) have no committed example yet and must be created by hand until they do. `OMEGAHIVE_SECRETS_DIR` defaults to `$HOME/.config/omegahive/secrets` — the canonical location from [the deployment spec](docs/omegahive_deployment_spec.md) §4, and the same default the compose file interpolates, so the pointer and the directory cannot disagree. Set the variable only to move the directory.
 
 `HEARTBEAT_HOUR_UTC` is config, not a secret: it rides the compose environment (`environment: HEARTBEAT_HOUR_UTC=${HEARTBEAT_HOUR_UTC:-6}`), not `notifier.env`.
 
