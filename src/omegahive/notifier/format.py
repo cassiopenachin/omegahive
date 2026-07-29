@@ -1,18 +1,26 @@
 """Render notifications as Telegram **HTML** — pointers only, never content.
 
 A notification is a *render* of an event, not a record: the pinned ref's audit home is
-the spine, so a message is deliberately lossy in favour of a phone-glance read. Each
-attention event becomes one sentence — who + what + about-what:
+the spine, so a message is deliberately lossy in favour of a phone-glance read. One
+notifier watches every active run, so **every message names its run**: the run is the
+first thing after the glyph, and the reader never has to know which instance sent it.
+Each attention event becomes one sentence — where + who + what + about-what:
 
-    ❓ sess-notifier-0713 asks on telegram-notifier: <code>2026-07-13-cursor-baseline</code>
-    ⛔ sess-port-0712 is blocked on port-sha: needs the baseline decision
-    📄 sess-x posted a result on t1: <code>2026-07-13-t1-result</code> (+1 more)
+    ❓ omegahive · sess-notifier-0713 asks on telegram-notifier: <code>2026-07-13-cursor</code>
+    ⛔ plnbench · sess-port-0712 is blocked on port-sha: needs the baseline decision
+    📄 omegahive · sess-x posted a result on t1: <code>2026-07-13-t1-result</code> (+1 more)
 
 The actor id is the envelope's, the task id is as-recorded, and the "about-what" is the
 ref path's **basename** (question/result files are topic-named — the name is the signal;
 the sha is dropped) or the one-line **reason** (blocked/escalated). Two shapes: one
 message per event when a poll surfaces one or two, and a single summary when a burst
-(>= the batch threshold) lands in one interval, so a busy board pings once.
+(>= the batch threshold) lands in one interval, so a busy board pings once — the burst is
+counted across the whole spine, so two runs waking together still ping once.
+
+**The heartbeat is a portfolio message**: one a day, every run on its own line, each run's
+24h delta beside the spine head. The comparison is the point — a run sitting at `+0`
+beside live runs reads as the anomaly it is, which is exactly what a single-run notifier
+truthfully describing the wrong run could never show.
 
 **Parse mode is HTML** with full escaping: bare `*.md` filenames autolink in Telegram
 clients (`.md` is a real TLD), so path fragments must be wrapped in `<code>` and every
@@ -20,8 +28,9 @@ dynamic value escaped, or the message misrenders (or 400s and gets dropped).
 
 **Deep links (optional).** When a UI base URL is configured, the task id in each sentence
 (and in the heartbeat's open-blocks line) becomes an `<a href>` into the deployed board
-view for the run, so a buzz opens the page over the tailnet without an SSH. The link is
-purely additive: with no base URL the render is byte-identical to the link-free form.
+view for **the event's own run** — assembled from the event, never from static config, so
+one notifier's links land on the right board every time. The link is purely additive: with
+no base URL the render is byte-identical to the link-free form.
 """
 
 from __future__ import annotations
@@ -30,7 +39,7 @@ from html import escape
 from pathlib import PurePosixPath
 
 from .events import Notification
-from .heartbeat import HeartbeatState
+from .heartbeat import RunDelta
 
 # Telegram caps a message at 4096 chars. Bound the summary by BOTH a line count and a byte
 # budget: long ref paths mean line *count* alone doesn't bound length, and an over-limit
@@ -38,6 +47,16 @@ from .heartbeat import HeartbeatState
 # tail spills into a `… and N more` so a huge burst still sends as one valid message.
 _MAX_SUMMARY_LINES = 25
 _MAX_SUMMARY_CHARS = 3800  # headroom under 4096 for the header + the "… and N more" line
+
+# The heartbeat must stay one phone screen. Per-run lines are capped (the portfolio order's
+# named risk: legibility on a phone) and the overflow is stated, never dropped silently.
+_MAX_RUN_LINES = 8
+_MAX_BLOCK_ENTRIES = 6
+_MAX_HEARTBEAT_CHARS = 3800
+
+# Attention counts in a run's heartbeat line, in message order. The glyphs are the same
+# shape-distinct vocabulary the pings use — no colour carries meaning anywhere here.
+_COUNT_GLYPHS = (("question", "❓"), ("blocked", "⛔"), ("escalated", "⬆"), ("result", "📄"))
 
 # who + what: the verb phrase per trigger type. The "about-what" (basename or reason) is
 # appended after a colon by _sentence().
@@ -86,11 +105,16 @@ def _task_cell(n: Notification, base_url: str | None) -> str:
 
 
 def _sentence(n: Notification, base_url: str | None = None) -> str:
-    """One attention event as an escaped HTML sentence: glyph + actor + verb + task +
+    """One attention event as an escaped HTML sentence: glyph + run + actor + verb + task +
     about-what. Question/result carry the ref basename in <code>; blocked/escalated carry
-    the one-line reason as escaped prose. With a base URL the task id deep-links to the board."""
+    the one-line reason as escaped prose. With a base URL the task id deep-links to the board.
+
+    The run is named on every line because one notifier serves the whole portfolio: without
+    it, two runs' pages are indistinguishable in the channel."""
     verb = _VERB.get(n.event_type, "touched")
-    head = f"{n.glyph} {escape(n.actor_id)} {verb} {_task_cell(n, base_url)}"
+    head = (
+        f"{n.glyph} {escape(n.run_id)} · {escape(n.actor_id)} {verb} {_task_cell(n, base_url)}"
+    )
     if n.event_type in ("task.reported", "task.result_posted"):
         if n.ref:
             tail = f": {_code(_basename(n.ref))}"
@@ -111,12 +135,12 @@ def render_one(n: Notification, base_url: str | None = None) -> str:
 
 
 def render_batch(notifs: list[Notification], base_url: str | None = None) -> str:
-    """A burst folded into one summary: a header count, then one sentence per event. Runs
-    are homogeneous per notifier instance, so the run id sits once in the header. Overflow
-    past the line/byte cap collapses into a `… and N more`. `base_url`, when set, deep-links
-    each task id to the board."""
-    run = notifs[0].run_id if notifs else "?"
-    head = f"🐝 {escape(run)} · {len(notifs)} attention events"
+    """A burst folded into one summary: a header count, then one sentence per event. A burst
+    is counted across the whole spine, so the header says how many runs it spans and each
+    sentence names its own run. Overflow past the line/byte cap collapses into a
+    `… and N more`. `base_url`, when set, deep-links each task id to its run's board."""
+    runs = len({n.run_id for n in notifs})
+    head = f"🐝 {len(notifs)} attention events · {runs} run{'' if runs == 1 else 's'}"
     lines = [head]
     used = len(head)
     shown = 0
@@ -138,46 +162,75 @@ def _fmt_age_hours(hours: int) -> str:
 
 
 def _hb_block(tid: str, run_id: str, base_url: str | None) -> str:
-    """A task id in the heartbeat's open-blocks line: an <a href> into the board view when a
-    base URL is set, else the <code>-wrapped id (byte-identical to before). Both forms stop
-    Telegram autolinking the bare id."""
+    """A task id in the heartbeat's open-blocks line: an <a href> into **its own run's**
+    board view when a base URL is set, else the <code>-wrapped id. Both forms stop Telegram
+    autolinking the bare id."""
     if not base_url:
         return _code(tid)
     return f'<a href="{escape(_board_href(base_url, run_id))}">{escape(tid)}</a>'
 
 
+def _run_line(d: RunDelta) -> str:
+    """One run's heartbeat line: how far it moved in 24h, what landed, and — only when it
+    is not zero — how far behind the reader is. A run with no attention at all reads
+    `quiet`, so the eye lands on the shape rather than counting four zeros."""
+    if d.quiet:
+        body = "quiet"
+    else:
+        body = " ".join(f"{glyph}{d.counts.get(key, 0)}" for key, glyph in _COUNT_GLYPHS)
+    line = f"{escape(d.run_id)} {d.delta:+d}/24h · {body}"
+    if d.lag:
+        line += f" · lag {d.lag}"
+    return line
+
+
 def render_heartbeat(
-    run_id: str,
     date: str,
     hour: int,
-    head: int,
-    cursor: int | None,
-    hb: HeartbeatState,
-    open_block_ages: list[tuple[str, int]],
+    deltas: list[RunDelta],
+    open_block_ages: list[tuple[str, str, int]],
     base_url: str | None = None,
+    *,
+    max_run_lines: int = _MAX_RUN_LINES,
 ) -> str:
-    """The once-a-day liveness message (HTML). Four lines, derived only from the notifier's
-    own cursor stream and state — no board fold. `open_block_ages` is a list of
-    (task_id, age_hours) the caller computes against 'now'. `base_url`, when set, deep-links
-    each open-block task id to the run's board view."""
-    prev = hb.head if hb.head is not None else head
-    delta = head - prev
-    lag = 0 if cursor is None else max(0, head - cursor)
-    c = hb.counts
+    """The once-a-day portfolio liveness message (HTML), derived only from the notifier's
+    own cursor streams and state — no board fold.
+
+    One header (the spine head and how many runs are followed), then one line per run in
+    portfolio order — most recently active first — each carrying that run's 24h delta and
+    attention counts. Then open blocks across every run, each linked to its own run's board.
+
+    `deltas` are the per-run rows the service computed; `open_block_ages` is a list of
+    (run_id, task_id, age_hours) against 'now'. Both overflow into a stated `… and N more`
+    rather than being silently cut: the message stays one phone screen, but never lies
+    about being complete."""
+    head = max((d.head for d in deltas), default=0)
+    runs = len(deltas)
     lines = [
-        f"{escape(run_id)} daily · {date} {hour:02d}:00Z",
-        f"spine head {head} ({delta:+d}/24h) · cursor lag {lag}",
-        (
-            f"attention last 24h: {c.get('question', 0)} question, "
-            f"{c.get('blocked', 0)} blocked, {c.get('escalated', 0)} escalated, "
-            f"{c.get('result', 0)} result"
-        ),
+        f"🐝 hive daily · {date} {hour:02d}:00Z",
+        f"spine head {head} · {runs} run{'' if runs == 1 else 's'}",
     ]
+    used = sum(len(line) + 1 for line in lines)
+    shown = 0
+    for d in deltas:
+        line = _run_line(d)
+        if shown >= max_run_lines or used + len(line) + 1 > _MAX_HEARTBEAT_CHARS:
+            break
+        lines.append(line)
+        used += len(line) + 1
+        shown += 1
+    if shown < runs:
+        lines.append(f"… and {runs - shown} more run(s)")
+
     if open_block_ages:
+        head_entries = open_block_ages[:_MAX_BLOCK_ENTRIES]
         blocks = ", ".join(
-            f"{_hb_block(tid, run_id, base_url)} ({_fmt_age_hours(age)})"
-            for tid, age in open_block_ages
+            f"{_hb_block(tid, run_id, base_url)} ({escape(run_id)}, {_fmt_age_hours(age)})"
+            for run_id, tid, age in head_entries
         )
+        extra = len(open_block_ages) - len(head_entries)
+        if extra > 0:
+            blocks += f", … and {extra} more"
         lines.append(f"open blocks: {blocks}")
     else:
         lines.append("open blocks: none")

@@ -74,18 +74,34 @@ Two sibling CLIs ship in the repo: `qual` (the model-qualification battery — c
 
 A small long-running service (`omegahive notify`, the compose `notifier` service) follows the spine's **read path** and sends Telegram messages so the operator doesn't have to poll the board. It is **outbound only** — one POST to `sendMessage`, no `getUpdates`, no webhook, no ack path, no bot commands — so it adds no inbound trust surface. It carries **refs, never file content**; messages are a lossy phone-glance *render* of an event (the audit home is the spine), rendered as HTML with full escaping.
 
-It pages on four attention events — `task.reported(kind=question)`, `task.blocked`, `task.escalated`, and `task.result_posted` (the result that prompts your close action) — folding a burst in one poll interval into a single summary. Everything else is silence, by design.
+**One notifier watches every run.** Like the board, it is a portfolio surface: runs are discovered from the spine's own registry through the same active-run cut `hive portfolio` applies, so a project waking up or going quiet needs no redeploy. There is deliberately **no run id to configure** — a stale one in a deploy env is how the pager spent a week truthfully reporting an empty acceptance run while the real spine moved, and the fix was to delete the setting rather than guard it.
 
-On top of the pages it sends **one unconditional daily heartbeat** at `HEARTBEAT_HOUR_UTC` (default `06:00Z`) — even, and especially, when nothing happened:
+It pages on four attention events — `task.reported(kind=question)`, `task.blocked`, `task.escalated`, and `task.result_posted` (the result that prompts your close action) — folding a burst in one poll interval into a single summary. Everything else is silence, by design. Every message names its run, and the task id links to **that run's** board:
 
 ```
-omegahive daily · 2026-07-14 06:00Z
-spine head 1042 (+17/24h) · cursor lag 0
-attention last 24h: 1 question, 0 blocked, 0 escalated, 1 result
-open blocks: port-sha (26h)
+❓ omegahive · sess-notifier-0728 asks on notifier-portfolio: 2026-07-28-cutover-semantics
+⛔ plnbench · sess-slice-0728 is blocked on pw-libpln-slice: needs the active-run cut pinned
+
+🐝 3 attention events · 2 runs
+❓ omegahive · sess-a asks on alpha-t1: 2026-07-28-alpha-one
+⛔ plnbench · sess-b is blocked on beta-t1: needs the cutover decision
+📄 omegahive · sess-a posted a result on alpha-t1: 2026-07-28-alpha-result
 ```
 
-The heartbeat makes silence informative: for a long unattended window, a missing heartbeat means the stack or host is down (SSH and check), not that the hive is quiet. It is derived **only** from the notifier's own cursor stream and state file — no board fold, no extra read scope.
+On top of the pages it sends **one unconditional daily heartbeat** at `HEARTBEAT_HOUR_UTC` (default `06:00Z`) — one message for the whole portfolio, even and especially when nothing happened:
+
+```
+🐝 hive daily · 2026-07-28 06:00Z
+spine head 15538 · 3 runs
+omegahive +241/24h · ❓2 ⛔1 ⬆0 📄3
+plnbench +34/24h · ❓0 ⛔0 ⬆0 📄1
+sandbox +0/24h · quiet
+open blocks: port-sha (omegahive, 26h), slice (plnbench, 3h)
+```
+
+The comparison is the point: a run sitting at `+0` beside live runs reads as the anomaly it is, which is exactly what a single-run pager could never show. Runs are listed most-recently-active first (the portfolio's order) and capped at eight lines, with any overflow stated (`… and N more run(s)`), so the message stays one phone screen without ever implying it is complete when it isn't. `lag N` appears on a run's line only when the notifier is actually behind that run's head.
+
+The heartbeat makes silence informative: for a long unattended window, a missing heartbeat means the stack or host is down (SSH and check), not that the hive is quiet. It is derived **only** from the notifier's own cursor streams and state file — no board fold, no extra read scope.
 
 **Setup.** Create a bot with [@BotFather](https://t.me/BotFather) (`/newbot`), then put the token and your chat id in a per-service secrets env-file — never in the repo, an image, or a log:
 
@@ -96,15 +112,15 @@ install -m600 /dev/null "$OMEGAHIVE_SECRETS_DIR/notifier.env"   # then edit — 
 
 `HEARTBEAT_HOUR_UTC` is config, not a secret: it rides the compose environment (`environment: HEARTBEAT_HOUR_UTC=${HEARTBEAT_HOUR_UTC:-6}`), not `notifier.env`.
 
-**Deep links (optional).** Set `OMEGAHIVE_UI_BASE_URL` to the external origin+prefix your phone already uses to reach the web UI (the same `:8443` origin plus the serving prefix, e.g. `https://<host>:8443/omegahive`) and every task id in a message — page or heartbeat open-block — becomes a tap-through link to that run's board view (`…/run/<run>/board`; the UI serves no per-task page, so the board is the target). It is config, not a secret, and rides the compose environment (`OMEGAHIVE_UI_BASE_URL=${OMEGAHIVE_UI_BASE_URL:-}`) beside `HEARTBEAT_HOUR_UTC`, not `notifier.env`. Leave it unset and messages render exactly as before — the link is purely additive. **Tailnet-only, by design:** the links resolve only on devices inside the tailnet (your phone runs Tailscale; that is why they open at all). That is the point, not a bug — the UI is never exposed off the tailnet, so a link that only works there is the whole security posture, not a limitation.
+**Deep links (optional).** Set `OMEGAHIVE_UI_BASE_URL` to the external origin+prefix your phone already uses to reach the web UI (the same `:8443` origin plus the serving prefix, e.g. `https://<host>:8443/omegahive`) and every task id in a message — page or heartbeat open-block — becomes a tap-through link to the board view of **the run that event came from** (`…/run/<run>/board`, assembled from the event itself, never from static config; the UI serves no per-task page, so the board is the target). It is config, not a secret, and rides the compose environment (`OMEGAHIVE_UI_BASE_URL=${OMEGAHIVE_UI_BASE_URL:-}`) beside `HEARTBEAT_HOUR_UTC`, not `notifier.env`. Leave it unset and messages render exactly as before — the link is purely additive. **Tailnet-only, by design:** the links resolve only on devices inside the tailnet (your phone runs Tailscale; that is why they open at all). That is the point, not a bug — the UI is never exposed off the tailnet, so a link that only works there is the whole security posture, not a limitation.
 
-**Run it persistently** (survives reboot via `restart: unless-stopped`; its read cursor + heartbeat state persist on the `omegahive-notifier` volume, so a restart resumes without replay or a double heartbeat):
+**Run it persistently** (survives reboot via `restart: unless-stopped`; its per-run read cursors + heartbeat state persist on the `omegahive-notifier` volume, so a restart resumes without replay or a double heartbeat):
 
 ```bash
-OMEGAHIVE_RUN_ID=omegahive docker compose up -d notifier
+docker compose up -d notifier      # no run id — it follows every active run
 ```
 
-**Run-id caveat.** The compose default `--run-id` is `accept` (the acceptance run); the durable project spine is `omegahive`. Set `OMEGAHIVE_RUN_ID=omegahive` in the shell or `.env`, or the notifier follows — and pages on — the wrong run.
+**Which runs it follows** is the board's cut, not a second opinion: a run in the spine's registry with real wall-clock activity inside `OMEGAHIVE_ACTIVE_WINDOW_DAYS` (default 7) that does not match `OMEGAHIVE_PORTFOLIO_EXCLUDE` (default `tooling-drill-*`, so drill debris never pages). `omegahive notify --days N` / `--exclude <globs>` override per invocation. **A run the notifier has never seen arms at its head** — it is never paged for a backlog that predates their meeting. A run that falls out of the window **keeps its cursor**: it left because it went quiet, so the cursor is already at its head and resuming replays nothing, while forgetting it would swallow the first question asked when the project wakes up. Its open blocks leave the heartbeat with it, though — the message shows exactly the cut it claims.
 
 ### Operator tooling: the launch / answer / close loop
 
