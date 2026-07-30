@@ -5,6 +5,28 @@ name: omegahive
 # acceptance actors, board-view, tests, lint, and the containerized pg_dump backup.
 # A host needs only an OCI runtime (rootless Podman) + compose v2; no host runtimes.
 
+# KNOWN HOST COUPLING, not yet fixed here — read before running `compose build`.
+#
+# This anchor carries `image:` AND `build: .`, and 13 services merge it. Because they all
+# name ONE tag, a plain `compose build` (no service argument) asks for 13 build targets
+# writing the same tag. Docker Compose v5 builds via buildx bake, which runs them in
+# PARALLEL: the first writer wins and the other twelve fail with
+# `failed to solve: image "omegahive:dev": already exists`, aborting the build. Proven on
+# a macOS/Docker 29.2.1 host, 2026-07-29. Podman never shows it — `podman compose` does
+# not parallelize build targets this way — so this is a coupling in the compose FILE,
+# surviving even after the operator scripts learned to resolve the compose COMMAND.
+#
+# Until it is fixed, build ONE service and let the other twelve consume the tag:
+#     docker compose build cli
+# The documented quickstart below is unaffected: `compose run --rm <svc>` builds only that
+# service's image, never all 13. `deploy/hive-user/compose.scratch.yml` already resets
+# `build` on all but `cli` (its isolation 5), and the bring-up drill asserts that exactly
+# one build target survives before it builds anything.
+#
+# The structural fix — one service owning `build:` here, the rest referencing the image —
+# is deliberately NOT applied yet: it changes the auto-build behaviour of the live stack's
+# own compose file, and it cannot be verified on deployment #0, which has no docker CLI
+# and a compose route that does not exhibit the bug. It wants a Docker host to prove on.
 x-omega: &omega
   image: omegahive:dev
   build: .

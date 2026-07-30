@@ -76,6 +76,34 @@ check() {
   if "$@" >/dev/null 2>&1; then ok "$label"; else bad "$label"; fi
 }
 
+# file_mode <path> — the octal permission bits, portably, or empty if unreadable.
+#
+# This exists because the drill is the ONE script here whose whole job is to run on a
+# foreign host, and it used GNU `stat -c %a`. macOS ships BSD stat, which rejects `-c`
+# and spells this `-f %Lp`. Worse than failing: the old form swallowed the error with
+# `2>/dev/null || true`, so an UNREADABLE mode was reported as a WRONG mode, and the
+# drill's output accused the secrets bootstrap of being broken on macOS when the
+# bootstrap was correct (it sets modes with plain POSIX chmod). A harness that
+# mislabels its own defects as the system's is worse than no harness.
+file_mode() {  # file_mode <path>  -> prints octal bits, or nothing
+  stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null || true
+}
+
+# check_mode <path> <expected-octal> <label> — assert a mode, keeping "cannot read"
+# distinguishable from "wrong value". The three outcomes get three different messages.
+check_mode() {  # check_mode <path> <expected> <label>
+  local path="$1" want="$2" label="$3" got
+  if [ ! -e "$path" ]; then bad "$label: does not exist ($path)"; return; fi
+  got="$(file_mode "$path")"
+  if [ -z "$got" ]; then
+    bad "$label: could not read the mode on this host — neither 'stat -c' (GNU) nor 'stat -f' (BSD) worked. This is a DRILL defect, not a finding about $label."
+  elif [ "$got" = "$want" ]; then
+    ok "$label is $want"
+  else
+    bad "$label is $got, expected $want"
+  fi
+}
+
 # --- A. preflight -------------------------------------------------------------
 phase "A. preflight"
 
@@ -161,10 +189,8 @@ phase "D. secrets bootstrap (scripts/hive-init-secrets)"
 SECRETS="$SANDBOX/secrets"
 run env OMEGAHIVE_SECRETS_DIR="$SECRETS" "$CLONE/scripts/hive-init-secrets"
 if [ -z "$DRY" ]; then
-  mode="$(stat -c %a "$SECRETS" 2>/dev/null || true)"
-  if [ "$mode" = "700" ]; then ok "secrets dir is 0700"; else bad "secrets dir is not 0700 (got ${mode:-<none>})"; fi
-  mode="$(stat -c %a "$SECRETS/notifier.env" 2>/dev/null || true)"
-  if [ "$mode" = "600" ]; then ok "notifier.env is 0600"; else bad "notifier.env is not 0600 (got ${mode:-<none>})"; fi
+  check_mode "$SECRETS" 700 "secrets dir"
+  check_mode "$SECRETS/notifier.env" 600 "notifier.env"
   # No-overwrite is the property that protects a live credential on a re-run.
   echo "SENTINEL=keepme" >> "$SECRETS/notifier.env"
   env OMEGAHIVE_SECRETS_DIR="$SECRETS" "$CLONE/scripts/hive-init-secrets" >/dev/null
@@ -218,43 +244,79 @@ dc() {
       $COMPOSE "${COMPOSE_ARGS[@]}" "$@" )
 }
 mkdir -p "$BACKUPS"
-# Exactly one published port per service, or the overlay's !override has regressed and the
-# next `up` collides with the live stack. Checked BEFORE any `up`.
+
+# abort <msg> — a phase could not proceed. Counts as a FAILED CHECK, not just an early
+# exit: when the mac run's build died here, the summary still read "20 passed, 2 failed"
+# naming two unrelated false failures, so a reader saw the wrong two problems and missed
+# the one that actually stopped the drill. Silence about a stopped phase is the worst
+# possible output from a harness whose whole job is to report what does not work.
+abort() {
+  bad "$1"
+  echo "  drill: phase aborted — later phases did NOT run, so their absence is not a pass" >&2
+  exit 1
+}
+
+# Two structural assertions BEFORE any build or up, both derived from the resolved config.
+# Checked in-process: NEVER route a dc() call through `check`/`bash -c`, because shell
+# functions are not inherited by a child bash — `bash -c "dc config"` does not find this
+# function, it finds /usr/bin/dc, the GNU desk calculator (package `bc`), which cannot
+# open a file named `config`, falls back to reading STDIN, and hangs the drill forever on
+# the operator's terminal.
 if [ -z "$DRY" ]; then
-  if dc config 2>/dev/null | grep -qE 'published: "?(5432|8811)"?'; then
-    bad "scratch config publishes a LIVE port — refusing to continue"; exit 1
+  cfg="$(dc config 2>/dev/null || true)"
+  [ -n "$cfg" ] || abort "could not resolve the scratch compose config at all (is the runtime up?)"
+
+  # 1. No live port, or the overlay's !override has regressed and the next `up` lands on
+  #    a running deployment.
+  if printf '%s' "$cfg" | grep -qE 'published: "?(5432|8811)"?'; then
+    abort "scratch config publishes a LIVE port (5432/8811) — refusing to touch a live stack"
+  fi
+  ok "scratch config publishes no live port (5432/8811 absent)"
+
+  # 2. Exactly ONE build target. The base file's x-omega anchor carries `build: .` and 13
+  #    services merge it; retagging them all to one image gives 13 targets writing one tag,
+  #    and Compose v5's buildx bake runs them in PARALLEL — first writer wins, the other
+  #    twelve die on `already exists` and the build aborts. That is what killed phase F on
+  #    the macOS/Docker host (2026-07-29) while Beastie never saw it, because `podman
+  #    compose` does not parallelize this way. The overlay resets `build` on all but `cli`;
+  #    this asserts the reset is still in place, since the failure only shows on Docker.
+  targets="$(printf '%s' "$cfg" | grep -cE '^[[:space:]]{4}build:' || true)"
+  if [ "${targets:-0}" -eq 1 ]; then
+    ok "exactly one build target in the scratch config (13 targets on one tag is the Docker abort)"
   else
-    ok "scratch config publishes no live port (5432/8811 absent)"
+    abort "scratch config has ${targets:-0} build targets, expected 1 — on Docker this aborts the build with 'already exists'"
   fi
 fi
-run dc build --quiet
-# NEVER route a dc() call through `check`/`bash -c`: shell functions are not inherited by
-# a child bash, so `bash -c "dc config"` does not find this function — it finds
-# /usr/bin/dc, the GNU desk calculator (package `bc`), which cannot open a file named
-# `config`, falls back to reading STDIN, and hangs the drill forever on the operator's
-# terminal. On a host without `bc` it instead fails, so the check reported [FAIL]
-# regardless of reality. Both call sites are now in-process.
+
+# Build the ONE target by name rather than everything: explicit about which service owns
+# the build, and it does not depend on the overlay's reset to be the only thing standing
+# between this drill and a parallel-write collision.
 if [ -z "$DRY" ]; then
-  if dc config 2>/dev/null | grep -q 'omegahive:scratch'; then
-    ok "built the scratch image tag, not the canonical one"
-  else
-    bad "scratch image tag absent from the resolved config — a build here could hit the canonical tag"
-  fi
+  if ! dc build --quiet cli; then abort "build of the scratch image failed"; fi
+  ok "built omegahive:scratch from a single target (cli)"
+else
+  run dc build --quiet cli
 fi
-run dc up -d postgres
+if [ -z "$DRY" ]; then
+  if ! dc up -d postgres; then abort "postgres failed to start"; fi
+else
+  run dc up -d postgres
+fi
 if [ -z "$DRY" ]; then
   healthy=""
   for _ in $(seq 1 30); do
     if dc ps postgres 2>/dev/null | grep -qi healthy; then healthy=1; break; fi
     sleep 2
   done
-  if [ -n "$healthy" ]; then ok "postgres is healthy"; else bad "postgres did not become healthy within 60s"; fi
+  if [ -n "$healthy" ]; then ok "postgres is healthy"; else abort "postgres did not become healthy within 60s"; fi
 fi
 
 # --- G. migrations ------------------------------------------------------------
 phase "G. migrations"
 if [ -z "$DRY" ]; then
-  if dc run --rm migrate >/dev/null 2>&1; then ok "migrations applied"; else bad "migrations FAILED"; fi
+  # Everything after this reads the spine, so a failed migration makes every later check
+  # meaningless rather than merely red.
+  if dc run --rm migrate >/dev/null 2>&1; then ok "migrations applied"; else abort "migrations FAILED"; fi
 else
   run dc run --rm migrate
 fi
