@@ -47,7 +47,41 @@ OMEGA_DIR_REAL="${OMEGA_DIR:-$HOME/src/SNET/omegahive}"   # the real stack dir (
 # trap and this block (a git clone, a push, an operator's Ctrl-C) would fire that
 # trap. Order is the guard; cleanup's own check below is the backstop.
 unset TMUX TMUX_PANE 2>/dev/null || true
-export TMUX_TMPDIR="$SANDBOX/tmux"
+
+# WHERE the socket goes is a portability question, not a detail. tmux binds
+# $TMUX_TMPDIR/tmux-<uid>/default through sockaddr_un, whose sun_path holds 104 bytes on
+# macOS and 108 on Linux — a hard kernel limit, not a tunable. The sandbox lives under
+# $TMPDIR: on Linux that is /tmp and the socket path comes to ~61 bytes with 47 to spare,
+# but macOS gives each user a path like /var/folders/<2>/<28>/T/ and the same socket came
+# to 112 bytes. tmux then failed with "File name too long" AFTER hive-launch had seeded
+# the board — a half-launch, the most expensive way to discover a path limit.
+#
+# So the directory is chosen to FIT, measured on the RESOLVED path (macOS /tmp is a
+# symlink to /private/tmp, which adds 8 bytes tmux will see and we would not).
+tmux_socket_len() {  # tmux_socket_len <dir> -> byte length of the socket path tmux would bind
+  local d="$1" real sock
+  mkdir -p "$d" 2>/dev/null || true
+  real="$( cd "$d" 2>/dev/null && pwd -P )" || real="$d"
+  sock="$real/tmux-$(id -u)/default"
+  printf '%s' "${#sock}"
+}
+
+# DRILL_TMUX_DIR is what cleanup checks before it kills anything, so it is the ONE
+# authority on "this drill's server" — keep the two in step.
+DRILL_TMUX_DIR="$SANDBOX/tmux"
+DRILL_TMUX_SHORT=""    # non-empty only when the socket had to live outside the sandbox
+if [ "$(tmux_socket_len "$DRILL_TMUX_DIR")" -gt 100 ]; then
+  # Only the SOCKET moves; the sandbox stays under $TMPDIR where it belongs.
+  DRILL_TMUX_SHORT="$(mktemp -d /tmp/hvd.XXXXXX)" \
+    || { echo "drill: sandbox path is too long for a tmux socket and /tmp is not usable" >&2; exit 1; }
+  DRILL_TMUX_DIR="$DRILL_TMUX_SHORT"
+  if [ "$(tmux_socket_len "$DRILL_TMUX_DIR")" -gt 100 ]; then
+    echo "drill: cannot place a tmux socket within sockaddr_un's limit (tried the sandbox and $DRILL_TMUX_DIR)" >&2
+    exit 1
+  fi
+  echo "drill: tmux socket at $DRILL_TMUX_DIR (the sandbox path is too long for sockaddr_un on this host)"
+fi
+export TMUX_TMPDIR="$DRILL_TMUX_DIR"
 mkdir -p "$TMUX_TMPDIR"
 
 # The two scratch projects and their runs (run id = project name convention, but
@@ -95,12 +129,30 @@ cleanup() {
   # Kill ONLY the drill's own server. The check is not paranoia: an unguarded
   # `tmux kill-server` reaching the default socket would take down the operator's
   # live `hive` session and every worker pane in it. Refuse rather than guess.
-  if [ "${TMUX_TMPDIR:-}" = "$SANDBOX/tmux" ]; then
+  # Compared against DRILL_TMUX_DIR, the value this drill actually chose — which is not
+  # always "$SANDBOX/tmux" now that an over-long sandbox path relocates the socket. A
+  # stale literal here would silently take the WARNING branch and leak a server, or worse,
+  # match nothing and let a future edit reach the default socket.
+  #
+  # TMUX is checked FIRST and is the load-bearing half. tmux honours $TMUX — the socket of
+  # the server you are currently inside — ABOVE TMUX_TMPDIR, so a set $TMUX makes
+  # TMUX_TMPDIR decorative and sends every call, `kill-server` included, to the operator's
+  # own server. Demonstrated the hard way on 2026-08-01: a hand-run verification that set
+  # TMUX_TMPDIR but did not unset TMUX created its probe session on the live server and
+  # then killed it, destroying the operator's `hive` and `work` sessions and every process
+  # in them. The `unset TMUX TMUX_PANE` at the top of this script is what normally prevents
+  # that; this is the backstop for the case where it was bypassed or a future edit moves it.
+  if [ -n "${TMUX:-}" ]; then
+    echo "drill: WARNING not killing any tmux server — TMUX is set ($TMUX), so tmux would" >&2
+    echo "       target THAT server regardless of TMUX_TMPDIR. Refusing; a stale drill server" >&2
+    echo "       may be left behind, which is strictly better than killing the operator's." >&2
+  elif [ -n "${DRILL_TMUX_DIR:-}" ] && [ "${TMUX_TMPDIR:-}" = "$DRILL_TMUX_DIR" ]; then
     tmux kill-server 2>/dev/null || true
   else
-    echo "drill: WARNING not killing any tmux server — TMUX_TMPDIR is not the sandbox's" >&2
+    echo "drill: WARNING not killing any tmux server — TMUX_TMPDIR is not this drill's" >&2
   fi
   rm -rf "$SANDBOX"
+  if [ -n "${DRILL_TMUX_SHORT:-}" ]; then rm -rf "$DRILL_TMUX_SHORT"; fi
   echo
   echo "drill: runs=$ARUN,$BRUN,$GRUN  PASS=$PASS  FAIL=$FAIL  (scratch events remain under those runs)"
   [ "$FAIL" -eq 0 ] || echo "drill: FAILURES PRESENT"
