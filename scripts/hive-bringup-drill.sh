@@ -398,17 +398,29 @@ fi
 phase "K. operator loop (manual — NOT run by this script)"
 cat <<EOF
   The launch/answer/close loop and every refusal path are covered by a separate drill.
-  Run it deliberately, after this script finishes:
+  Run it deliberately, after this script finishes — COPY THE WHOLE COMMAND, the two
+  environment variables are load-bearing:
 
+      OMEGA_DIR=$CLONE \\
+      OMEGAHIVE_COMPOSE='$COMPOSE' \\
       $CLONE/scripts/hive-tooling-drill.sh
 
-  Read this before you do:
+  Why each one:
+    * OMEGA_DIR is the canonical STACK directory — where docker-compose.yml lives and
+      every compose call runs. It defaults to deployment #0's layout
+      (\$HOME/src/SNET/omegahive), which does not exist here, and the drill's own
+      sandboxing does NOT cover it. Omitting it fails on the first emit.
+    * OMEGAHIVE_COMPOSE pins the same compose command this script resolved, so the loop
+      drill cannot pick a different one.
+
+  Read this before you run it:
     * It uses the DEFAULT compose project ('omegahive'), not the scratch overlay this
       script used. On a host with a live stack it therefore touches that live stack's
       spine and volumes (its scratch RUN IDS keep the durable run's data separate, which
       is its actual safety property — project isolation is not).
-    * On a fresh host that is exactly what you want: it exercises the real stack you just
-      brought up. Bring the stack up on the default project first.
+    * So bring a stack up on the default project first:
+          (cd $CLONE && $COMPOSE up -d postgres && $COMPOSE run --rm migrate)
+      On a fresh host that is exactly what you want — it exercises a real stack.
     * It needs tmux to seat a worker pane.$(command -v tmux >/dev/null 2>&1 || echo "
       tmux is NOT installed here — install it first, or the loop cannot be drilled.")
 EOF

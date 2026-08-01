@@ -125,8 +125,32 @@ resolve_compose() {  # resolve_compose  (sets HIVE_COMPOSE; idempotent)
   fi
 }
 
+# Refuse a bad OMEGA_DIR with a message that names the actual problem.
+#
+# OMEGA_DIR defaults to deployment #0's layout ($HOME/src/SNET/omegahive), which is
+# acceptable ONLY because it is env-overridable — and that argument holds only if a wrong
+# value fails legibly. It did not. `hive()` and `emit()` both run `cd "$OMEGA_DIR" && …`
+# inside a command substitution, so on any host without that exact path bash printed a
+# bare `cd: …: No such file or directory` and emit() then died with "rejected, or the
+# stack is down?" — a MISDIAGNOSIS pointing at the gateway or the database when the real
+# fault is a config pointer. It is the first thing a fresh deployer hits on a non-Beastie
+# host (observed on macOS, 2026-08-01), and it sent the reader looking in the wrong place.
+#
+# Cheap enough to run on every call: two shell builtins, no subprocess.
+require_omega_dir() {  # require_omega_dir  (reads OMEGA_DIR)
+  [ -d "$OMEGA_DIR" ] || die "OMEGA_DIR does not exist: $OMEGA_DIR
+  This is the canonical STACK directory — where docker-compose.yml lives and every compose
+  call runs. The default is deployment #0's operator layout and is almost certainly wrong
+  on any other host. Point it at this host's checkout:
+      export OMEGA_DIR=/path/to/omegahive"
+  [ -f "$OMEGA_DIR/docker-compose.yml" ] || die "OMEGA_DIR has no docker-compose.yml: $OMEGA_DIR
+  The directory exists but is not an omegahive checkout, so no compose command can run
+  there. Point OMEGA_DIR at the checkout that holds docker-compose.yml."
+}
+
 # The stack CLI, run in the canonical dir (compose file + running pg live there).
 hive() {
+  require_omega_dir
   resolve_compose
   # shellcheck disable=SC2086  # HIVE_COMPOSE is legitimately two words ("podman compose")
   ( cd "$OMEGA_DIR" && $HIVE_COMPOSE run --rm -T cli "$@" )
@@ -139,6 +163,7 @@ hive() {
 emit() {  # emit <role> <actor> <type> [--task <t>] [--payload <json>]
   local role="$1" actor="$2" type="$3"; shift 3
   local out
+  require_omega_dir
   resolve_compose
   # Capture stderr too: a stack/DB outage is a runtime failure whose error only
   # goes to stderr — swallowing it would misreport an outage as a governance
