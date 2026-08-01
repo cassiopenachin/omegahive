@@ -36,9 +36,31 @@ docker compose run --rm migrate # applies migrations/ to the spine
 docker compose run --rm test    # full suite against live Postgres — your first health check
 ```
 
-Give it a heartbeat with the built-in demo: `docker compose run --rm seed` plans a small project, then the `coordinator` / `worker` / `review` services run it to completion while `board-view` shows the board evolving. Run `omegahive deploy-checks` after any environment change (it verifies credential scope and structural security facts).
+Give it a heartbeat with the built-in demo: `docker compose run --rm seed` plans a small project, then the `coordinator` / `worker` / `review` services run it to completion while `board-view` shows the board evolving. Run `scripts/deploy_checks.sh` after any environment change — seven checks, from the acceptance run through the structural security facts (see [Who may write](#who-may-write-the-two-role-split) below) to the per-container credential scan.
 
 For a real deployment — the secrets layout (per-service env files, never in images or logs), the key-isolation proxy for LLM provider keys, and recovery/restore discipline — read [docs/omegahive_deployment_spec.md](docs/omegahive_deployment_spec.md) before trusting it with anything you'd miss. Two host-side bootstraps are one command each: `scripts/hive-init-secrets` (the secrets directory) and `scripts/hive-init-workspace` (the workspace hub and clone the operator loop reads from).
+
+#### Who may write: the two-role split
+
+The spine takes writes from **one credential and no other**. `migrations/0003_two_roles.sql` creates two database roles — `hive_gateway`, which holds INSERT/UPDATE on the log, and `hive_reader`, which holds SELECT and nothing else — and each service is handed only the one it needs. The UI, the notifier and every read-side CLI path connect as `hive_reader` and are therefore *structurally* incapable of appending to the log; a direct `INSERT` from any of them fails on privilege, not on a convention someone might forget. Schema changes are a third credential again (the database owner), held only by `migrate`, `test` and `backup`.
+
+Three files carry the three credentials, and which services see which is the whole mechanism:
+
+| file | variable | role | reaches |
+|---|---|---|---|
+| `.env` | `OMEGAHIVE_DATABASE_URL` | `hive_reader` | every service |
+| `gateway.env` | `OMEGAHIVE_GATEWAY_DATABASE_URL` | `hive_gateway` | the services that emit |
+| `owner.env` | `OMEGAHIVE_OWNER_DATABASE_URL` | the owner | `migrate`, `test`, `backup` |
+
+`.env` reaches every container, so nothing stronger than the read credential may ever live in it — that is the rule the split exists to make enforceable rather than remembered.
+
+A fresh deployment gets the roles from the migration but no passwords, so they cannot yet authenticate: **the cutover is a separate, reversible operator act**, not something a `git pull` performs. Until you write `gateway.env` and `owner.env`, the variables stay unset, both connection helpers fall back to the read DSN, and the stack behaves exactly as it did under one role. Cutting over is: set the two passwords, write the two files (`scripts/hive-init-secrets` seeds them from `gateway.env.example` / `owner.env.example`), point `.env` at `hive_reader`, restart. Going back is deleting the two files and restarting; `scripts/roles_rollback.sh` (run in the `backup` service, which holds the owner credential) undoes the migration itself. Verify either direction with `docker compose run --rm deploy-checks`, whose check 6 attempts a real append on each credential and reports `PENDING` on a deployment that has not cut over.
+
+#### What each container may see
+
+`secrets-manifest.yaml` declares the environment-variable **names** every service is allowed to carry, and `scripts/credential_scope_scan.sh` enforces it: for each running container it diffs the actual key names against that service's row. A name present and undeclared exits non-zero and names the service and the key; a declared name the container lacks is reported and does not fail; a running service with no row at all is a hard failure, because an undeclared service is not an exempt one. There is no exception list — a legitimately-present variable is fixed by declaring it in a line a reviewer can see.
+
+The scan reads **key names only**. It never reads, prints, logs or compares a value, so its output is safe to paste into a shared terminal; that constraint is asserted by `tests/test_credential_scan.py`, not trusted. `scripts/deploy_checks.sh` runs it as check 7, and `scripts/credential_scope_scan.sh -p <project>` points it at any compose project.
 
 **The web UI, and how you reach it.** There is a read-only operator web UI (FastAPI, `src/omegahive/ui/`) — the portfolio (every live run on one page, and the UI's entry point), per-run board lanes, filtered log, and metrics; see [docs/omegahive_ui_spec.md](docs/omegahive_ui_spec.md). The default access path on any host is the loopback publish:
 
