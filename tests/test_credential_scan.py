@@ -22,6 +22,7 @@ from omegahive.deploy.credential_scan import (
     ManifestError,
     Observation,
     load_manifest,
+    load_manifest_file,
     main,
     scan,
 )
@@ -54,10 +55,8 @@ services:
 
 
 @pytest.fixture
-def manifest(tmp_path: Path) -> Path:
-    path = tmp_path / "secrets-manifest.yaml"
-    path.write_text(_MANIFEST)
-    return path
+def manifest() -> str:
+    return _MANIFEST
 
 
 def _obs(service: str, *keys: str, container: str = "c1") -> Observation:
@@ -113,29 +112,36 @@ def test_groups_apply_only_where_they_are_included(manifest):
 def test_two_rows_claiming_one_service_is_refused(tmp_path: Path):
     """Ambiguity is not resolved silently: with two candidate whitelists there is no
     single answer to what the service may carry."""
-    path = tmp_path / "m.yaml"
-    path.write_text(
-        "services:\n"
-        "  a: {compose_services: [ui], allowed: [X]}\n"
-        "  b: {compose_services: [ui], allowed: [Y]}\n"
-    )
     with pytest.raises(ManifestError, match="claimed by two rows"):
-        load_manifest(path)
+        load_manifest(
+            "services:\n"
+            "  a: {compose_services: [ui], allowed: [X]}\n"
+            "  b: {compose_services: [ui], allowed: [Y]}\n"
+        )
 
 
-def test_a_row_with_no_compose_services_is_refused(tmp_path: Path):
-    path = tmp_path / "m.yaml"
-    path.write_text("services:\n  a: {allowed: [X]}\n")
+def test_a_row_with_no_compose_services_is_refused():
     with pytest.raises(ManifestError, match="declares no `compose_services:`"):
-        load_manifest(path)
+        load_manifest("services:\n  a: {allowed: [X]}\n")
 
 
-def test_an_unknown_group_is_refused(tmp_path: Path):
+def test_a_scalar_compose_services_is_refused():
+    """`compose_services: cli` iterates as CHARACTERS, registering rows for 'c', 'l', 'i'
+    — after which the real service reports UNMAPPED and the message says no row declares
+    it, while one plainly does. Refuse the shape instead."""
+    with pytest.raises(ManifestError, match="must be a list"):
+        load_manifest("services:\n  a: {compose_services: cli, allowed: [X]}\n")
+
+
+def test_malformed_yaml_is_a_manifest_error_not_a_traceback():
+    with pytest.raises(ManifestError, match="not parseable as YAML"):
+        load_manifest("services:\n  a: {compose_services: [ui]\n   oops\n")
+
+
+def test_an_unknown_group_is_refused():
     """A typo in `includes:` must not silently narrow a whitelist into false over-scope."""
-    path = tmp_path / "m.yaml"
-    path.write_text("services:\n  a: {compose_services: [ui], includes: [nope]}\n")
     with pytest.raises(ManifestError, match="not defined"):
-        load_manifest(path)
+        load_manifest("services:\n  a: {compose_services: [ui], includes: [nope]}\n")
 
 
 def test_the_observation_record_has_nowhere_to_put_a_value():
@@ -149,16 +155,26 @@ def test_the_observation_record_has_nowhere_to_put_a_value():
     assert "s3cret" not in repr(obs)
 
 
-def test_main_reads_the_manifest_carried_on_stdin(manifest, monkeypatch, capsys):
+def test_main_uses_the_manifest_carried_on_stdin_and_not_the_packaged_one(
+    monkeypatch, capsys
+):
     """The host collector sends the checkout's manifest text with the observations, so an
-    edited-but-not-rebuilt manifest can never be scanned against silently."""
+    edited-but-not-rebuilt manifest can never be scanned against silently.
+
+    The observation is chosen so the two manifests DISAGREE: `probe-svc` exists only in the
+    stdin manifest, so a clean verdict is reachable only if that manifest was honoured — the
+    packaged one would report UNMAPPED and exit 1. An observation both manifests judge the
+    same way would pass whether or not the stdin text was read at all.
+    """
     payload = {
-        "manifest": manifest.read_text(),
-        "observations": [{"container": "c1", "service": "ui", "env_keys": ["NOPE"]}],
+        "manifest": "services:\n  probe: {compose_services: [probe-svc], allowed: [ONLY_HERE]}\n",
+        "observations": [
+            {"container": "c1", "service": "probe-svc", "env_keys": ["ONLY_HERE"]}
+        ],
     }
     monkeypatch.setattr("sys.stdin", _Stdin(json.dumps(payload)))
-    assert main([]) == 1
-    assert "NOPE" in capsys.readouterr().out
+    assert main([]) == 0
+    assert "probe-svc" in capsys.readouterr().out
 
 
 def test_main_refuses_an_empty_scan(monkeypatch):
@@ -167,12 +183,20 @@ def test_main_refuses_an_empty_scan(monkeypatch):
     assert main([]) == 1
 
 
+def test_main_refuses_an_empty_observation_list(monkeypatch):
+    """An empty LIST makes the same claim as empty stdin, and `clean` is the one answer
+    that must not come back from a scan that looked at nothing."""
+    monkeypatch.setattr("sys.stdin", _Stdin(json.dumps({"manifest": _MANIFEST,
+                                                        "observations": []})))
+    assert main([]) == 1
+
+
 def test_every_compose_service_is_declared_exactly_once():
     """The regression that keeps the manifest from going decorative again: add a service
     to docker-compose.yml without a row here and this fails, rather than the scan quietly
     reporting UNMAPPED on a host months later."""
     compose = yaml.safe_load((REPO / "docker-compose.yml").read_text())
-    declared = load_manifest(REPO / "secrets-manifest.yaml")
+    declared = load_manifest_file(REPO / "secrets-manifest.yaml")
     undeclared = sorted(set(compose["services"]) - set(declared))
     assert not undeclared, f"compose services with no secrets-manifest.yaml row: {undeclared}"
     unknown = sorted(set(declared) - set(compose["services"]))

@@ -30,9 +30,6 @@ REF = "docs/omegahive_ui_spec.md@" + "abcdef12" * 5  # a well-formed path@<40-he
 @pytest.fixture
 def cli_db(monkeypatch):
     """Point the CLI's connection at the test DB; delete this run's rows on teardown."""
-    # Both connection helpers: the CLI's write commands go through connect_gateway()
-    # (the two-role write path), and an unpatched one would quietly reach the real
-    # deployment DSN instead of this run's scratch database.
     monkeypatch.setattr(cli, "connect", lambda *a, **k: connect(TEST_DATABASE_URL))
     monkeypatch.setattr(cli, "connect_gateway", lambda *a, **k: connect(TEST_DATABASE_URL))
     yield

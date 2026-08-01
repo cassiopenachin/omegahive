@@ -49,11 +49,11 @@ x-omega: &omega
 # which is exactly why nothing stronger may live there: a file every container reads
 # grants every container what it holds. The two write-capable credentials are per-service
 # env-files under ${OMEGAHIVE_SECRETS_DIR} instead, merged in below by the services that
-# need them — env_file entries are applied in order, so a later file's value wins.
+# need them.
 #
-#   .env         OMEGAHIVE_DATABASE_URL          hive_reader   every service
-#   gateway.env  OMEGAHIVE_GATEWAY_DATABASE_URL  hive_gateway  the services that emit
-#   owner.env    OMEGAHIVE_OWNER_DATABASE_URL    the owner     migrate / test / backup
+# Which service gets which is stated once, enforceably, in secrets-manifest.yaml — every
+# row's `compose_services:` is what the credential scan checks the running containers
+# against, so that file is the copy that cannot quietly go stale.
 #
 # ORDER IS LOAD-BEARING in `<<: [*gateway-env, *omega]`. A YAML merge key with a SEQUENCE
 # resolves earlier entries first and never lets a later one override them, so the credential

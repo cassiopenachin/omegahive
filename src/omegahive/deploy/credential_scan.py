@@ -32,18 +32,13 @@ which is a diffable, reviewable line — never by teaching this scanner to look 
 
 from __future__ import annotations
 
-import argparse
 import json
 import sys
-import tempfile
-from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
-
-MANIFEST_PATH = Path(__file__).resolve().parents[3] / "secrets-manifest.yaml"
 
 OK, OVER, MISSING, UNMAPPED = "OK", "OVER", "MISSING", "UNMAPPED"
 
@@ -136,8 +131,12 @@ class Report:
         return "\n".join(lines)
 
 
-def load_manifest(path: Path | None = None) -> dict[str, tuple[str, frozenset[str]]]:
+def load_manifest(text: str) -> dict[str, tuple[str, frozenset[str]]]:
     """compose service name -> (declaring row name, the env-var names it may carry).
+
+    Takes the manifest TEXT rather than a path: the host collector sends this checkout's
+    file along with the observations, so an edited-but-not-rebuilt manifest can never be
+    scanned against silently. `load_manifest_file` is the convenience wrapper for tests.
 
     Every row states the compose services it covers (`compose_services:`) because the two
     namings genuinely differ: one `gateway` row covers several compose services, and a row
@@ -148,7 +147,12 @@ def load_manifest(path: Path | None = None) -> dict[str, tuple[str, frozenset[st
     eight times — a group is still a written, diffable declaration, not an exemption: a
     row that does not include a group does not get its names.
     """
-    raw = yaml.safe_load((path or MANIFEST_PATH).read_text()) or {}
+    try:
+        raw = yaml.safe_load(text) or {}
+    except yaml.YAMLError as exc:
+        raise ManifestError(f"not parseable as YAML: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ManifestError("manifest is not a mapping")
     rows = raw.get("services")
     if not isinstance(rows, dict):
         raise ManifestError("manifest has no `services:` mapping")
@@ -176,6 +180,14 @@ def load_manifest(path: Path | None = None) -> dict[str, tuple[str, frozenset[st
                 f"row '{row_name}' declares no `compose_services:` — a row that names no "
                 "service cannot whitelist one"
             )
+        # A bare scalar (`compose_services: cli`) is an easy YAML slip and iterates as
+        # CHARACTERS, registering rows for 'c', 'l', 'i' — after which the real service
+        # reports UNMAPPED and the message says no row declares it, while one plainly does.
+        if not isinstance(services, list):
+            raise ManifestError(
+                f"row '{row_name}': `compose_services:` must be a list, got "
+                f"{type(services).__name__}"
+            )
         for svc in services:
             svc = str(svc)
             if svc in by_service:
@@ -188,9 +200,14 @@ def load_manifest(path: Path | None = None) -> dict[str, tuple[str, frozenset[st
     return by_service
 
 
-def scan(observations: list[Observation], manifest_path: Path | None = None) -> Report:
-    """Diff each observation against its row. All I/O but the manifest is the caller's."""
-    by_service = load_manifest(manifest_path)
+def load_manifest_file(path: Path) -> dict[str, tuple[str, frozenset[str]]]:
+    """load_manifest for a path on disk — the form tests and ad-hoc checks want."""
+    return load_manifest(path.read_text())
+
+
+def scan(observations: list[Observation], manifest_text: str) -> Report:
+    """Diff each observation against its row. All I/O is the caller's."""
+    by_service = load_manifest(manifest_text)
 
     report = Report()
     for obs in sorted(observations, key=lambda o: (o.service, o.container)):
@@ -210,15 +227,15 @@ def scan(observations: list[Observation], manifest_path: Path | None = None) -> 
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="diff running containers' env-var NAMES against secrets-manifest.yaml"
-    )
-    parser.add_argument(
-        "--manifest",
-        default=None,
-        help="manifest path (default: the packaged one, or the text carried on stdin)",
-    )
-    args = parser.parse_args(argv)
+    """Read `{"manifest": <yaml text>, "observations": [...]}` on stdin; print the report.
+
+    Exit 0 clean, 1 findings or unusable input. The collector
+    (scripts/credential_scope_scan.sh) reserves exit 2 for "the scan could not run at all",
+    which it decides before ever reaching this process.
+    """
+    if argv:
+        print(f"unexpected arguments: {argv} (this reads stdin only)", file=sys.stderr)
+        return 1
 
     payload = sys.stdin.read().strip()
     if not payload:
@@ -228,39 +245,28 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-
-    # Two accepted shapes. A bare list uses the manifest baked into this image, which is
-    # only as fresh as the last build; an object may carry the manifest TEXT alongside the
-    # observations, and the host collector always sends that form so an edited-but-not-yet-
-    # rebuilt manifest can never be scanned against silently.
-    manifest_text: str | None = None
     try:
         data = json.loads(payload)
-        if isinstance(data, dict):
-            manifest_text = data.get("manifest")
-            data = data["observations"]
-        observations = [Observation.from_json(o) for o in data]
+        manifest_text = data["manifest"]
+        observations = [Observation.from_json(o) for o in data["observations"]]
     except (json.JSONDecodeError, ManifestError, KeyError, TypeError) as exc:
         print(f"could not read the observations: {exc}", file=sys.stderr)
         return 1
+    if not isinstance(manifest_text, str):
+        print("the `manifest` field must be the manifest's text", file=sys.stderr)
+        return 1
+    if not observations:
+        # An empty LIST is the same claim as empty stdin: the collector found nothing to
+        # look at. It refuses that case itself, so reaching here means something is wrong
+        # with the handoff — and "clean" is the one answer that must not be printed.
+        print("the observation list is empty — nothing was scanned", file=sys.stderr)
+        return 1
 
-    with ExitStack() as stack:
-        if manifest_text is not None:
-            tmp = stack.enter_context(
-                tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=True)
-            )
-            tmp.write(manifest_text)
-            tmp.flush()
-            path: Path | None = Path(tmp.name)
-        else:
-            path = Path(args.manifest) if args.manifest else None
-        try:
-            report = scan(observations, path)
-        except ManifestError as exc:
-            print(
-                f"secrets-manifest.yaml is unusable as a whitelist: {exc}", file=sys.stderr
-            )
-            return 1
+    try:
+        report = scan(observations, manifest_text)
+    except ManifestError as exc:
+        print(f"secrets-manifest.yaml is unusable as a whitelist: {exc}", file=sys.stderr)
+        return 1
 
     print(report.render())
     return 1 if report.over_scope else 0

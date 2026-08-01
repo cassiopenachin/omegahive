@@ -19,14 +19,23 @@
 -- cluster-global object needs a cluster-wide revoke, which a per-database migration
 -- cannot express.
 
+-- Catching duplicate_object rather than testing pg_roles first: the roles are CLUSTER
+-- objects while this migration runs per DATABASE, and concurrent runs are the documented
+-- normal mode (every test run and every deploy-checks run creates its own scratch database
+-- and migrates it — tests/scratch_db.py). A check-then-act pair loses that race, and the
+-- loser fails with a duplicate_object error that reads like a broken migration and
+-- disappears on a re-run: a flake nobody can reproduce. Each CREATE gets its own block so
+-- one role losing the race cannot skip the other.
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'hive_reader') THEN
-    CREATE ROLE hive_reader LOGIN;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'hive_gateway') THEN
-    CREATE ROLE hive_gateway LOGIN;
-  END IF;
+  CREATE ROLE hive_reader LOGIN;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$
+BEGIN
+  CREATE ROLE hive_gateway LOGIN;
+EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
 -- The gateway is the reader plus the write grants below. Membership rather than a

@@ -20,12 +20,21 @@ BEGIN
 END $$;
 
 -- Forget the forward migration so `db-migrate` re-applies it — a rollback that left the
--- ledger claiming 0003 was applied would make re-applying it require hand surgery, which
--- is exactly what a rehearsed rollback exists to avoid. Guarded on the table because most
+-- ledger claiming 0003 was applied would make re-applying it require hand surgery, which is
+-- exactly what a rehearsed rollback exists to avoid. Guarded on the table because most
 -- databases in the cluster are not omegahive spines at all.
+--
+-- The guard and the DELETE resolve the table the SAME way. Naming `public.schema_migrations`
+-- in the guard while letting the DELETE resolve through `search_path` means that on a
+-- cluster whose owner does not have `public` first, the guard returns NULL, the DELETE is
+-- skipped, and the ledger keeps its claim — the failure this statement exists to prevent.
+-- `db.py` creates the table unqualified, i.e. in the first schema on the path, so
+-- `to_regclass('schema_migrations')` is the honest test, and the regclass it returns is
+-- what the DELETE then targets.
 DO $$
+DECLARE ledger regclass := to_regclass('schema_migrations');
 BEGIN
-  IF to_regclass('public.schema_migrations') IS NOT NULL THEN
-    DELETE FROM schema_migrations WHERE filename = '0003_two_roles.sql';
+  IF ledger IS NOT NULL THEN
+    EXECUTE format('DELETE FROM %s WHERE filename = %L', ledger, '0003_two_roles.sql');
   END IF;
 END $$;

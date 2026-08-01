@@ -19,26 +19,36 @@
 #   scripts/credential_scope_scan.sh -p <project>    # a transient stack (branch rehearsal)
 #   OMEGAHIVE_COMPOSE="docker compose" scripts/credential_scope_scan.sh
 #
-# Exit: 0 clean · 1 over-scope, an unmapped service, or the scan could not run.
+# Exit: 0 clean · 1 findings (over-scope, or a service with no row) · 2 the scan COULD NOT
+# RUN (no jq, no engine, no containers, an unreadable container). Two codes, because a
+# caller that cannot tell them apart reports a scan that never executed as a scan that
+# found nothing — which is the one claim this check exists to stop anyone making.
 set -euo pipefail
+
+# Resolved before the cd, so --help still works when invoked by a relative path from
+# somewhere other than the repo root.
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$0")/.."
 
 # One compose resolver for the operator tooling and this scan — the alternative is a third
 # copy that can disagree with the other two about which runtime drives the stack, which is
 # how deploy-checks once came back green over a dead loop (hive-common.sh, resolve_compose).
 # shellcheck source=scripts/hive-common.sh
-. "$(dirname "$0")/hive-common.sh"
+. "$(dirname "$SELF")/hive-common.sh"
+
+# hive-common.sh's die() exits 1; here a setup failure is exit 2 (see the exit table above).
+cannot_run() { echo "hive: $*" >&2; exit 2; }
 
 PROJECT=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -p|--project) [ "$#" -ge 2 ] || die "-p needs a project name"; PROJECT="$2"; shift 2 ;;
-    -h|--help) awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"; exit 0 ;;
+    -h|--help) awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$SELF"; exit 0 ;;
     *) die "unknown argument: $1 (see --help)" ;;
   esac
 done
 
-command -v jq >/dev/null 2>&1 || die "jq is required (it is what keeps values out of this script)"
+command -v jq >/dev/null 2>&1 || cannot_run "jq is required (it is what keeps values out of this script)"
 resolve_compose
 
 # The engine CLI, for `inspect` — compose has no equivalent, and the label + env of a
@@ -48,11 +58,11 @@ if [ -z "${OMEGAHIVE_ENGINE:-}" ]; then
   case "$HIVE_COMPOSE" in
     podman*) OMEGAHIVE_ENGINE=podman ;;
     docker*) OMEGAHIVE_ENGINE=docker ;;
-    *) die "cannot tell which engine drives '$HIVE_COMPOSE' — set OMEGAHIVE_ENGINE to podman or docker" ;;
+    *) cannot_run "cannot tell which engine drives '$HIVE_COMPOSE' — set OMEGAHIVE_ENGINE to podman or docker" ;;
   esac
 fi
 command -v "$OMEGAHIVE_ENGINE" >/dev/null 2>&1 \
-  || die "engine '$OMEGAHIVE_ENGINE' is not on PATH (resolved from compose command '$HIVE_COMPOSE')"
+  || cannot_run "engine '$OMEGAHIVE_ENGINE' is not on PATH (resolved from compose command '$HIVE_COMPOSE')"
 
 # shellcheck disable=SC2206  # HIVE_COMPOSE is legitimately several words ("podman compose")
 DC=($HIVE_COMPOSE)
@@ -62,7 +72,7 @@ DC=($HIVE_COMPOSE)
 # host (Beastie runs several) is never in scope and a one-shot `run` container is not
 # either. Empty output is NOT success: it means nothing was scanned.
 IDS="$("${DC[@]}" ps -q)"
-[ -n "$IDS" ] || die "no running containers in project '${PROJECT:-omegahive}' — nothing was scanned, which is not the same as nothing being wrong"
+[ -n "$IDS" ] || cannot_run "no running containers in project '${PROJECT:-omegahive}' — nothing was scanned, which is not the same as nothing being wrong"
 
 OBS="$(mktemp -t omegahive-credscan-XXXXXX.json)"
 trap 'rm -f "$OBS"' EXIT
@@ -88,7 +98,7 @@ while IFS= read -r id; do
         env_keys:  [.env[] | split("=")[0]]
       }' 2>/dev/null
   then
-    die "could not read container $id's environment as JSON from '$OMEGAHIVE_ENGINE inspect' — nothing was scanned for it, so nothing passed"
+    cannot_run "could not read container $id's environment as JSON from '$OMEGAHIVE_ENGINE inspect' — nothing was scanned for it, so nothing passed"
   fi
 done <<<"$IDS" > "$OBS"
 

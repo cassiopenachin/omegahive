@@ -26,14 +26,23 @@ def _refused(conn, role: str, statement: str) -> bool:
     Each attempt gets its own savepoint, so a refusal aborts the probe and not the test's
     outer transaction. Any other error propagates: a statement that fails for an unrelated
     reason must not read as a passing privilege check.
+
+    TWO nested savepoints, and both are load-bearing. The outer one scopes `SET LOCAL ROLE`
+    and lets that statement's OWN refusal propagate: `SET ROLE` raises InsufficientPrivilege
+    when the session user is neither superuser nor a member of `role`, and swallowing it
+    would make every "cannot" test here pass vacuously — proving nothing about the grants,
+    on exactly the non-superuser session this whole change pushes towards. The inner one is
+    what the probed statement's refusal unwinds; without it the failed statement leaves the
+    transaction aborted and every later command in the test raises InFailedSqlTransaction.
     """
-    try:
-        with conn.transaction():
-            conn.execute(f"SET LOCAL ROLE {role}")
-            conn.execute(statement)
-    except psycopg.errors.InsufficientPrivilege:
-        return True
-    return False
+    with conn.transaction():
+        conn.execute(f"SET LOCAL ROLE {role}")
+        try:
+            with conn.transaction():
+                conn.execute(statement)
+        except psycopg.errors.InsufficientPrivilege:
+            return True
+        return False
 
 
 def test_reader_cannot_append(conn):

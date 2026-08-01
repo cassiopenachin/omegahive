@@ -6,9 +6,8 @@
 # finite and the operator is remote).
 set -eu
 
-# The OWNER DSN, with the read DSN as the pre-cutover fallback: a dump must read every
-# table and a restore must CREATE DATABASE, and hive_reader can do neither. On a host that
-# has not cut over the two are the same value, so the fallback changes nothing there.
+# The OWNER DSN (read DSN as the pre-cutover fallback): a dump reads every table and a
+# restore creates databases, and hive_reader can do neither.
 DSN="${OMEGAHIVE_OWNER_DATABASE_URL:-${OMEGAHIVE_DATABASE_URL}}"
 
 keep="${OMEGAHIVE_BACKUP_KEEP:-14}"

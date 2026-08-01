@@ -202,20 +202,26 @@ def sweep(
 def role_urls(name: str) -> dict[str, str]:
     """The configured read and write DSNs, pointed at the scratch database `name`.
 
-    Empty string for a role this deployment has not configured — a pre-cutover host has no
+    A literal "-" for a role this deployment has not configured — a pre-cutover host has no
     gateway DSN, and the caller must then leave the variable unset so the fallback in
-    db.connect_gateway() applies. Never invent one: a fabricated DSN would authenticate as
-    a role that may not exist and fail far from the cause.
+    db.connect_gateway() applies. Never invent one: a fabricated DSN would authenticate as a
+    role that may not exist and fail far from the cause.
+
+    "-" rather than an empty string because the caller is a shell script that cannot
+    otherwise distinguish "not configured" from "this command never ran" — and those two
+    have opposite consequences. An old image without this subcommand exits non-zero and
+    prints nothing, which read as "not configured" would leave the harness's write
+    credential pointing at the DURABLE database.
     """
     from omegahive.config import get_settings  # in-container import; not needed on the host
 
     settings = get_settings()
     return {
-        "reader": with_database(settings.database_url, name) if settings.database_url else "",
+        "reader": with_database(settings.database_url, name) if settings.database_url else "-",
         "gateway": (
             with_database(settings.gateway_database_url, name)
             if settings.gateway_database_url
-            else ""
+            else "-"
         ),
     }
 
