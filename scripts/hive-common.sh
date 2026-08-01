@@ -173,7 +173,17 @@ emit() {  # emit <role> <actor> <type> [--task <t>] [--payload <json>]
   if ! out=$( cd "$OMEGA_DIR" && $HIVE_COMPOSE run --rm -T cli \
       emit --run-id "$RUN" --role "$role" --actor "$actor" --type "$type" "$@" 2>&1 ); then
     echo "$out" >&2
-    die "emit failed: $type (role=$role actor=$actor) — see output above (rejected, or the stack is down?)"
+    # Do NOT guess at the cause. This line used to assert "rejected, or the stack is
+    # down?" — two hypotheses, both wrong for the two most common failures on a new host
+    # (a missing .env, an OMEGA_DIR pointing nowhere), and both expensive to chase. It
+    # sent a reader at the gateway and the database while the truth sat in the output
+    # directly above. Name where to look and what distinguishes the cases instead.
+    die "emit failed: $type (role=$role actor=$actor) — the cause is in the output above.
+  A GOVERNANCE refusal prints a line starting 'rejected: <CODE>'.
+  Anything else is this host or its config, most often one of:
+    * no .env in $OMEGA_DIR  (it is gitignored; run: cp .env.example .env)
+    * the stack is not up    (run: $HIVE_COMPOSE up -d postgres)
+    * the runtime or compose command is wrong (resolved: '$HIVE_COMPOSE'; override with OMEGAHIVE_COMPOSE)"
   fi
   echo "$out"
 }
