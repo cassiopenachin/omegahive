@@ -22,6 +22,7 @@ the daily timer is enabled and active.
 | Container runtime | rootless **Podman 5.7.1** |
 | Compose | genuine compose v2 binary `docker-compose v5.3.1` at `~/.local/bin/docker-compose`, driving Podman's Docker-compatible API socket via `DOCKER_HOST=unix:///run/user/1000/podman/podman.sock`. **Not** podman-compose (its `depends_on: service_healthy` is unreliable; migrations ordering needs it). |
 | Rootless socket | user unit `podman.socket` enabled; `loginctl` **linger enabled** (containers/timers survive SSH logout) |
+| Host tooling versions | `jq-1.8.1`, GNU coreutils (Fedora). Both matter: the operator scripts' jq programs and their `stat`/`wc` usage are portability surfaces — a macOS host with `jq-1.7.1-apple` and BSD coreutils exposed three separate breakages the Fedora side could not (anyhost-deploy, 2026-08-01). |
 | Network position | Postgres bound **loopback-only** (`127.0.0.1:5432`); no inbound ports |
 | Fork-container → host | the qualification battery's fork container (Test provider/channel) dials the host mock controllers via `host.containers.internal:host-gateway`; verified reachable under rootless pasta **with firewalld active and no `firewall-cmd` change** (battery boot smoke, Jul 8 2026) |
 | Recovery path | team SSH (keys only) = the human-only, agent-free out-of-band path (§Recovery) |
