@@ -119,6 +119,23 @@ wait_until() {  # wait_until <seconds> <condition...>
   done
   return 1
 }
+
+# parent_count <repo> <rev> — how many parents a commit has, WITHOUT wc.
+#
+# `git log -1 --format=%P | wc -w` is the obvious spelling and is not portable: GNU wc
+# prints `1`, while BSD/macOS wc pads to a width and prints `       1`, so
+# `[ "$(… | wc -w)" = 1 ]` is FALSE on macOS for a perfectly ordinary single-parent
+# commit. Same class as the GNU `stat -c` assumption (coupling #6): a harness written
+# against one coreutils reporting its own portability gap as the system's defect.
+parent_count() {  # parent_count <repo> <rev> -> integer
+  local parents
+  parents="$(git -C "$1" log -1 --format=%P "$2" 2>/dev/null)"
+  # `set --` inside a function rebinds THIS function's positional parameters only, never
+  # the caller's, so $# counts words with no external command and no output formatting.
+  # shellcheck disable=SC2086  # deliberate word splitting: each parent sha is one word
+  set -- $parents
+  printf '%s' "$#"
+}
 # expect_fail <desc> <cmd...>: passes iff the command exits non-zero.
 expect_fail(){ local d="$1"; shift; if "$@" >/dev/null 2>&1; then bad "$d (expected refusal, got success)"; else ok "$d"; fi; }
 # expect_fail_msg <desc> <needle> <cmd...>: passes iff the command fails AND its
@@ -943,7 +960,7 @@ check "the score entry survived locally"    "grep -q '^### $SFTASK — closed' '
 check "two new LOCAL commits landed despite both push failures" \
   "[ \"\$(git -C '$WS' rev-list --count HEAD)\" = '$((COMMITS_BEFORE_SF + 2))' ]"
 check "neither new commit is a rebase/merge (single parent each)" \
-  "[ \"\$(git -C '$WS' log -1 --format=%P HEAD | wc -w)\" = 1 ] && [ \"\$(git -C '$WS' log -1 --format=%P HEAD~1 | wc -w)\" = 1 ]"
+  "[ \"\$(parent_count '$WS' HEAD)\" = 1 ] && [ \"\$(parent_count '$WS' HEAD~1)\" = 1 ]"
 HUB_COMMITS_BEFORE_SF=$(git -C "$HUB" rev-list --count main)
 git -C "$WS" push --quiet origin HEAD:main
 check "and both push cleanly once the remote is back" \
