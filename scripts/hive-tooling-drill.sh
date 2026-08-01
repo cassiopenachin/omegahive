@@ -18,11 +18,12 @@
 # It never touches the durable `omegahive` run: all three projects carry scratch run
 # ids (tooling-drill-<proj>-<stamp>) in their confs, and OPS_WS points at the
 # sandbox workspace so the tooling only ever sees the scratch projects. The one
-# shared resource is the stack itself (podman compose + pg): scratch events land
+# shared resource is the stack itself (the container runtime + pg): scratch events land
 # in the same events table under distinct run_ids, which auto-register — harmless
 # debris in separate runs. Do NOT put `omegahive` in any conf here.
 #
-# Usage: scripts/hive-tooling-drill.sh   (run from anywhere; needs podman + the stack up)
+# Usage: scripts/hive-tooling-drill.sh   (run from anywhere; needs an OCI runtime with
+# compose — see hive-common.sh's resolver — and the stack up)
 
 set -euo pipefail
 
@@ -46,7 +47,41 @@ OMEGA_DIR_REAL="${OMEGA_DIR:-$HOME/src/SNET/omegahive}"   # the real stack dir (
 # trap and this block (a git clone, a push, an operator's Ctrl-C) would fire that
 # trap. Order is the guard; cleanup's own check below is the backstop.
 unset TMUX TMUX_PANE 2>/dev/null || true
-export TMUX_TMPDIR="$SANDBOX/tmux"
+
+# WHERE the socket goes is a portability question, not a detail. tmux binds
+# $TMUX_TMPDIR/tmux-<uid>/default through sockaddr_un, whose sun_path holds 104 bytes on
+# macOS and 108 on Linux — a hard kernel limit, not a tunable. The sandbox lives under
+# $TMPDIR: on Linux that is /tmp and the socket path comes to ~61 bytes with 47 to spare,
+# but macOS gives each user a path like /var/folders/<2>/<28>/T/ and the same socket came
+# to 112 bytes. tmux then failed with "File name too long" AFTER hive-launch had seeded
+# the board — a half-launch, the most expensive way to discover a path limit.
+#
+# So the directory is chosen to FIT, measured on the RESOLVED path (macOS /tmp is a
+# symlink to /private/tmp, which adds 8 bytes tmux will see and we would not).
+tmux_socket_len() {  # tmux_socket_len <dir> -> byte length of the socket path tmux would bind
+  local d="$1" real sock
+  mkdir -p "$d" 2>/dev/null || true
+  real="$( cd "$d" 2>/dev/null && pwd -P )" || real="$d"
+  sock="$real/tmux-$(id -u)/default"
+  printf '%s' "${#sock}"
+}
+
+# DRILL_TMUX_DIR is what cleanup checks before it kills anything, so it is the ONE
+# authority on "this drill's server" — keep the two in step.
+DRILL_TMUX_DIR="$SANDBOX/tmux"
+DRILL_TMUX_SHORT=""    # non-empty only when the socket had to live outside the sandbox
+if [ "$(tmux_socket_len "$DRILL_TMUX_DIR")" -gt 100 ]; then
+  # Only the SOCKET moves; the sandbox stays under $TMPDIR where it belongs.
+  DRILL_TMUX_SHORT="$(mktemp -d /tmp/hvd.XXXXXX)" \
+    || { echo "drill: sandbox path is too long for a tmux socket and /tmp is not usable" >&2; exit 1; }
+  DRILL_TMUX_DIR="$DRILL_TMUX_SHORT"
+  if [ "$(tmux_socket_len "$DRILL_TMUX_DIR")" -gt 100 ]; then
+    echo "drill: cannot place a tmux socket within sockaddr_un's limit (tried the sandbox and $DRILL_TMUX_DIR)" >&2
+    exit 1
+  fi
+  echo "drill: tmux socket at $DRILL_TMUX_DIR (the sandbox path is too long for sockaddr_un on this host)"
+fi
+export TMUX_TMPDIR="$DRILL_TMUX_DIR"
 mkdir -p "$TMUX_TMPDIR"
 
 # The two scratch projects and their runs (run id = project name convention, but
@@ -63,6 +98,44 @@ PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); echo "  PASS  $*"; }
 bad()  { FAIL=$((FAIL+1)); echo "  FAIL  $*"; }
 check(){ if eval "$2"; then ok "$1"; else bad "$1  [cond: $2]"; fi; }
+
+# wait_until <seconds> <shell-condition> — poll a condition to a deadline, quietly.
+#
+# hive-launch returns the moment `tmux new-window` succeeds; the pane's command then runs
+# ASYNCHRONOUSLY, and it is what writes $SANDBOX/kickoff.txt. Checking that file straight
+# afterwards is a race — one the drill happened to win on Linux and lost on macOS, where
+# the tmux server had just been created cold. It then reported "kickoff references the
+# wrapper" as a FAILURE even though the kickoff had been delivered correctly: the very
+# same file's later check passed in the very same run. A harness that reports a timing
+# artefact as a product defect is the coupling-#6 mistake wearing a different hat, so the
+# wait is explicit rather than lucky. Conditions are polled, never slept-then-assumed.
+wait_until() {  # wait_until <seconds> <condition...>
+  local secs="$1"; shift
+  local ticks=$(( secs * 10 )) i=0
+  while [ "$i" -lt "$ticks" ]; do
+    if eval "$*" >/dev/null 2>&1; then return 0; fi
+    sleep 0.1
+    i=$(( i + 1 ))
+  done
+  return 1
+}
+
+# parent_count <repo> <rev> — how many parents a commit has, WITHOUT wc.
+#
+# `git log -1 --format=%P | wc -w` is the obvious spelling and is not portable: GNU wc
+# prints `1`, while BSD/macOS wc pads to a width and prints `       1`, so
+# `[ "$(… | wc -w)" = 1 ]` is FALSE on macOS for a perfectly ordinary single-parent
+# commit. Same class as the GNU `stat -c` assumption (coupling #6): a harness written
+# against one coreutils reporting its own portability gap as the system's defect.
+parent_count() {  # parent_count <repo> <rev> -> integer
+  local parents
+  parents="$(git -C "$1" log -1 --format=%P "$2" 2>/dev/null)"
+  # `set --` inside a function rebinds THIS function's positional parameters only, never
+  # the caller's, so $# counts words with no external command and no output formatting.
+  # shellcheck disable=SC2086  # deliberate word splitting: each parent sha is one word
+  set -- $parents
+  printf '%s' "$#"
+}
 # expect_fail <desc> <cmd...>: passes iff the command exits non-zero.
 expect_fail(){ local d="$1"; shift; if "$@" >/dev/null 2>&1; then bad "$d (expected refusal, got success)"; else ok "$d"; fi; }
 # expect_fail_msg <desc> <needle> <cmd...>: passes iff the command fails AND its
@@ -94,12 +167,30 @@ cleanup() {
   # Kill ONLY the drill's own server. The check is not paranoia: an unguarded
   # `tmux kill-server` reaching the default socket would take down the operator's
   # live `hive` session and every worker pane in it. Refuse rather than guess.
-  if [ "${TMUX_TMPDIR:-}" = "$SANDBOX/tmux" ]; then
+  # Compared against DRILL_TMUX_DIR, the value this drill actually chose — which is not
+  # always "$SANDBOX/tmux" now that an over-long sandbox path relocates the socket. A
+  # stale literal here would silently take the WARNING branch and leak a server, or worse,
+  # match nothing and let a future edit reach the default socket.
+  #
+  # TMUX is checked FIRST and is the load-bearing half. tmux honours $TMUX — the socket of
+  # the server you are currently inside — ABOVE TMUX_TMPDIR, so a set $TMUX makes
+  # TMUX_TMPDIR decorative and sends every call, `kill-server` included, to the operator's
+  # own server. Demonstrated the hard way on 2026-08-01: a hand-run verification that set
+  # TMUX_TMPDIR but did not unset TMUX created its probe session on the live server and
+  # then killed it, destroying the operator's `hive` and `work` sessions and every process
+  # in them. The `unset TMUX TMUX_PANE` at the top of this script is what normally prevents
+  # that; this is the backstop for the case where it was bypassed or a future edit moves it.
+  if [ -n "${TMUX:-}" ]; then
+    echo "drill: WARNING not killing any tmux server — TMUX is set ($TMUX), so tmux would" >&2
+    echo "       target THAT server regardless of TMUX_TMPDIR. Refusing; a stale drill server" >&2
+    echo "       may be left behind, which is strictly better than killing the operator's." >&2
+  elif [ -n "${DRILL_TMUX_DIR:-}" ] && [ "${TMUX_TMPDIR:-}" = "$DRILL_TMUX_DIR" ]; then
     tmux kill-server 2>/dev/null || true
   else
-    echo "drill: WARNING not killing any tmux server — TMUX_TMPDIR is not the sandbox's" >&2
+    echo "drill: WARNING not killing any tmux server — TMUX_TMPDIR is not this drill's" >&2
   fi
   rm -rf "$SANDBOX"
+  if [ -n "${DRILL_TMUX_SHORT:-}" ]; then rm -rf "$DRILL_TMUX_SHORT"; fi
   echo
   echo "drill: runs=$ARUN,$BRUN,$GRUN  PASS=$PASS  FAIL=$FAIL  (scratch events remain under those runs)"
   [ "$FAIL" -eq 0 ] || echo "drill: FAILURES PRESENT"
@@ -109,22 +200,34 @@ trap cleanup EXIT
 echo "drill: sandbox=$SANDBOX  projects=$APROJ,$BPROJ,$GPROJ  tmux=$TMUX_SESSION"
 
 # --- stack read/write helpers, parameterized by run ----------------------------
+# Every stack read/write in this drill goes through dcli, whose compose command is
+# resolved ONCE by hive-common.sh's resolver — the drill used to spell `podman
+# compose` six times, which made it a podman-only drill on a repo that claims a
+# generic profile. Sourced in a subshell so the drill's own environment (OMEGA_DIR
+# and friends, which it deliberately re-points at a sandbox) is untouched.
+DRILL_COMPOSE="$( bash -euo pipefail -c \
+  "source '$SCRIPT_DIR/hive-common.sh'; resolve_compose; printf '%s' \"\$HIVE_COMPOSE\"" )"
+echo "drill: compose=$DRILL_COMPOSE"
+dcli() {  # dcli <cli args...> -> runs the stack CLI in the real stack dir
+  # shellcheck disable=SC2086  # DRILL_COMPOSE is legitimately two words ("podman compose")
+  ( cd "$OMEGA_DIR_REAL" && $DRILL_COMPOSE run --rm -T cli "$@" )
+}
+
 bstatus() {  # bstatus <run> <task> -> prints status (wrap-proof JSON read path)
-  ( cd "$OMEGA_DIR_REAL" && podman compose run --rm -T cli board-view "$1" --json ) 2>/dev/null \
+  dcli board-view "$1" --json 2>/dev/null \
     | jq -r --arg t "$2" '.[] | select(.task == $t) | .status'
 }
 btitle() {  # btitle <run> <task> -> the title the launcher seeded on task.created
-  ( cd "$OMEGA_DIR_REAL" && podman compose run --rm -T cli report "$1" --json ) 2>/dev/null \
+  dcli report "$1" --json 2>/dev/null \
     | jq -r --arg t "$2" '[ .[] | select(.event_type == "task.created" and .task_id == $t) ]
                           | last | .payload.title // empty'
 }
 bcount_review() {  # bcount_review <run> -> count of in_review tasks on that run
-  ( cd "$OMEGA_DIR_REAL" && podman compose run --rm -T cli board-view "$1" --json ) 2>/dev/null \
+  dcli board-view "$1" --json 2>/dev/null \
     | jq -r '[.[] | select(.status == "in_review")] | length'
 }
 raw_emit() {  # raw_emit <run> <role> <actor> <type> [extra emit args...] — seed a board directly
-  ( cd "$OMEGA_DIR_REAL" && podman compose run --rm -T cli \
-      emit --run-id "$1" --role "$2" --actor "$3" --type "$4" "${@:5}" ) >/dev/null 2>&1
+  dcli emit --run-id "$1" --role "$2" --actor "$3" --type "$4" "${@:5}" >/dev/null 2>&1
 }
 # Drive a task to in_review via raw emits (no launch/clones) — a cheap throttle
 # fixture that still mirrors reality: it also authors the task's order (so a
@@ -211,7 +314,7 @@ export OPS_WS="$WS"
 export CANON_ROOT="$CANON"
 export WORK_ROOT="$WORK"
 export WRAPPER_DIR="$WRAPPERS"
-# OMEGA_DIR is left at its real default so `podman compose ... cli` finds the stack.
+# OMEGA_DIR is left at its real default so the stack CLI (dcli) finds the stack.
 # Ensure NOTHING from the operator's shell forces a run/repo/checkout: identity must
 # come from the confs (and CANON_CODE must derive per-project from CANON_ROOT).
 unset HIVE_RUN_ID CANON_CODE CODE_REPO RUN_ID PROJECT 2>/dev/null || true
@@ -234,6 +337,7 @@ check "wrapper bakes the project run id"        "grep -Eq -- '--run-id \"?$ARUN'
 check "wrapper bakes worker actor"              "grep -Eq -- '--actor \"?$AWORKER' '$AWRAP'"
 check "wrapper bakes worker role"               "grep -q -- '--role worker' '$AWRAP'"
 check "tmux window named after task"            "tmux list-windows -t '$TMUX_SESSION' -F '#{window_name}' | grep -qxF 'alpha-demo'"
+wait_until 20 "grep -qF '$AWRAP' '$SANDBOX/kickoff.txt'" || true
 check "kickoff references the wrapper"          "grep -qF '$AWRAP' '$SANDBOX/kickoff.txt'"
 check "kickoff names the project run"           "grep -qF 'run: $ARUN' '$SANDBOX/kickoff.txt'"
 check "board shows task assigned on the run"    "[ \"\$(bstatus '$ARUN' alpha-demo)\" = assigned ]"
@@ -306,6 +410,7 @@ BWRAP="$WRAPPERS/$BWORKER.sh"
 check "beta: code clone named after beta"        "[ -d '$WORK/$BWORKER/$BPROJ/.git' ]"
 check "beta: origin re-pointed to beta CODE_REPO" "git -C '$WORK/$BWORKER/$BPROJ' remote get-url origin | grep -q 'github.invalid/cassiopenachin/$BPROJ'"
 check "beta: wrapper bakes BETA's run (not alpha's)" "grep -Eq -- '--run-id \"?$BRUN' '$BWRAP'"
+wait_until 20 "grep -qF 'run: $BRUN' '$SANDBOX/kickoff.txt'" || true
 check "beta: kickoff names beta's run"           "grep -qF 'run: $BRUN' '$SANDBOX/kickoff.txt'"
 check "beta: task assigned on beta's run"        "[ \"\$(bstatus '$BRUN' beta-demo)\" = assigned ]"
 check "beta: task absent from alpha's run"       "[ -z \"\$(bstatus '$ARUN' beta-demo)\" ]"
@@ -448,10 +553,10 @@ echo "== portfolio: both projects on one board, active by default, per-run reads
 # `tooling-drill-*` — so this section asserts BOTH halves: the runs are there when the
 # exclusion is cleared, and gone when it is not.
 pf() {  # pf <args...> -> portfolio JSON
-  ( cd "$OMEGA_DIR_REAL" && podman compose run --rm -T cli portfolio --json "$@" ) 2>/dev/null
+  dcli portfolio --json "$@" 2>/dev/null
 }
 bview() {  # bview <run> <args...> -> whatever board-view prints for that run
-  ( cd "$OMEGA_DIR_REAL" && podman compose run --rm -T cli board-view "$@" ) 2>/dev/null
+  dcli board-view "$@" 2>/dev/null
 }
 RV_BEFORE="$(bcount_review "$ARUN")"
 # shellcheck disable=SC2034  # read inside check's eval, which shellcheck cannot see
@@ -855,7 +960,7 @@ check "the score entry survived locally"    "grep -q '^### $SFTASK — closed' '
 check "two new LOCAL commits landed despite both push failures" \
   "[ \"\$(git -C '$WS' rev-list --count HEAD)\" = '$((COMMITS_BEFORE_SF + 2))' ]"
 check "neither new commit is a rebase/merge (single parent each)" \
-  "[ \"\$(git -C '$WS' log -1 --format=%P HEAD | wc -w)\" = 1 ] && [ \"\$(git -C '$WS' log -1 --format=%P HEAD~1 | wc -w)\" = 1 ]"
+  "[ \"\$(parent_count '$WS' HEAD)\" = 1 ] && [ \"\$(parent_count '$WS' HEAD~1)\" = 1 ]"
 HUB_COMMITS_BEFORE_SF=$(git -C "$HUB" rev-list --count main)
 git -C "$WS" push --quiet origin HEAD:main
 check "and both push cleanly once the remote is back" \

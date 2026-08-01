@@ -180,9 +180,19 @@ def terminal($created; $cancel_ts):
     closed: ($close != null),
     closed_day: (if $close == null then null else ($close.ts | strftime("%Y-%m-%d")) end),
     final_status: ($close.status // null),
-    worker: ( [ $slice[] | select(.event_type == "task.reassigned") | .payload.to ] | last )
-            // ( [ $slice[] | select(.event_type == "task.accepted") | .actor.id ] | last )
-            // "",
+    # The WHOLE value is parenthesised, not just each operand — a portability requirement,
+    # not style. A bare `//` chain at object-value position was MEASURED as:
+    #   jq 1.8.1 (Fedora)       accepts it
+    #   jq 1.7.1-apple (macOS)  REJECTS it, failing the ENTIRE program with
+    #                           `syntax error, unexpected //, expecting '}'`
+    # Both endpoints were observed directly; the exact release that changed is not pinned
+    # down, and does not need to be for the parens to be right. One unwrapped chain took
+    # out every scoring check on the mac while hive-metrics ran fine beside it, because its
+    # equivalent value was already wrapped. Every object value in this file and in
+    # hive-metrics is fully wrapped for that reason — keep it that way.
+    worker: ( ( [ $slice[] | select(.event_type == "task.reassigned") | .payload.to ] | last )
+              // ( [ $slice[] | select(.event_type == "task.accepted") | .actor.id ] | last )
+              // "" ),
     # Elapsed worker span net of answer wait — the closest the spine gets to effort.
     net_s: (if $accepted == null or $result == null then null
             else ($result - $accepted - $blk) end),

@@ -69,8 +69,92 @@ require_safe_tmux_session() {  # require_safe_tmux_session   (reads HIVE_TMUX_SE
     || die "unsafe HIVE_TMUX_SESSION '$HIVE_TMUX_SESSION' (allowed: A-Za-z0-9._-) — a session name outside this charset cannot be targeted exactly, and tmux would silently act on the wrong session"
 }
 
+# --- container runtime layer (which compose command drives the stack) ---------
+#
+# The deployment spec's generic profile says a host needs only "an OCI runtime +
+# compose", but this file used to shell out to `podman compose` literally, so the
+# whole operator loop broke on a Docker host despite the README's claim. The
+# command is resolved ONCE per shell here and every caller goes through it.
+#
+# Resolution order, and why podman comes first: deployment #0 runs rootless
+# podman, and `podman compose` is what it has always run — a docker-first order
+# would silently move the live deployment onto a different compose route, which
+# the anyhost order's stop-line forbids. A Docker-only host has no `podman` on
+# PATH and therefore lands on the docker route by itself. The one case the
+# ordering gets wrong is a host carrying BOTH runtimes where the operator wants
+# docker; that is what OMEGAHIVE_COMPOSE is for.
+#
+# `podman compose` is deliberate and is NOT `podman-compose`: the latter is the
+# Python reimplementation whose `depends_on: service_healthy` support is
+# unreliable, and our migrations ordering depends on it (deployment spec §7).
+# `podman compose` delegates to a genuine compose v2 provider. Never set
+# OMEGAHIVE_COMPOSE to `podman-compose`.
+#
+# DOCKER_HOST is honored, never clobbered: `podman compose` finds the rootless
+# socket by itself, and the docker route reads whatever the operator exported.
+# The one-line setup where the socket is missing is in the README ("Container
+# runtime").
+: "${OMEGAHIVE_COMPOSE:=}"   # override: the exact compose command, e.g. "docker compose"
+HIVE_COMPOSE=""              # resolved by resolve_compose; empty until first use
+
+# Resolve the compose command into HIVE_COMPOSE, once. Lazy rather than
+# resolved at source time so a script that never touches the stack (or a host
+# still being provisioned) does not die merely for sourcing this file.
+# Each candidate is probed by RUNNING it, never by `command -v` alone. `podman compose`
+# in particular is a thin shim that execs an EXTERNAL compose provider, so podman can be
+# on PATH and `podman compose` still fail with "looking up compose provider failed" —
+# which is a whole class of host (podman from apt, no provider installed, Docker's compose
+# plugin present and working). Probing by presence picked podman there and killed the
+# operator loop while deploy_checks.sh independently resolved to a working `docker
+# compose`, so the two harnesses disagreed and deploy-checks came back green over a dead
+# loop. One subprocess per candidate, once per shell, buys that away.
+resolve_compose() {  # resolve_compose  (sets HIVE_COMPOSE; idempotent)
+  [ -n "$HIVE_COMPOSE" ] && return 0
+  if [ -n "$OMEGAHIVE_COMPOSE" ]; then
+    # An explicit override is taken at its word, not probed: the operator may be pointing
+    # at something not yet running, and second-guessing them here would be the surprise.
+    HIVE_COMPOSE="$OMEGAHIVE_COMPOSE"
+  elif command -v podman >/dev/null 2>&1 && podman compose version >/dev/null 2>&1; then
+    HIVE_COMPOSE="podman compose"
+  elif command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    HIVE_COMPOSE="docker compose"
+  elif command -v docker-compose >/dev/null 2>&1 && docker-compose version >/dev/null 2>&1; then
+    HIVE_COMPOSE="docker-compose"
+  else
+    die "no WORKING compose command found (probed: podman compose, docker compose, docker-compose) — install one, or set OMEGAHIVE_COMPOSE to the exact command. Note that podman alone is not enough: 'podman compose' needs an external compose provider."
+  fi
+}
+
+# Refuse a bad OMEGA_DIR with a message that names the actual problem.
+#
+# OMEGA_DIR defaults to deployment #0's layout ($HOME/src/SNET/omegahive), which is
+# acceptable ONLY because it is env-overridable — and that argument holds only if a wrong
+# value fails legibly. It did not. `hive()` and `emit()` both run `cd "$OMEGA_DIR" && …`
+# inside a command substitution, so on any host without that exact path bash printed a
+# bare `cd: …: No such file or directory` and emit() then died with "rejected, or the
+# stack is down?" — a MISDIAGNOSIS pointing at the gateway or the database when the real
+# fault is a config pointer. It is the first thing a fresh deployer hits on a non-Beastie
+# host (observed on macOS, 2026-08-01), and it sent the reader looking in the wrong place.
+#
+# Cheap enough to run on every call: two shell builtins, no subprocess.
+require_omega_dir() {  # require_omega_dir  (reads OMEGA_DIR)
+  [ -d "$OMEGA_DIR" ] || die "OMEGA_DIR does not exist: $OMEGA_DIR
+  This is the canonical STACK directory — where docker-compose.yml lives and every compose
+  call runs. The default is deployment #0's operator layout and is almost certainly wrong
+  on any other host. Point it at this host's checkout:
+      export OMEGA_DIR=/path/to/omegahive"
+  [ -f "$OMEGA_DIR/docker-compose.yml" ] || die "OMEGA_DIR has no docker-compose.yml: $OMEGA_DIR
+  The directory exists but is not an omegahive checkout, so no compose command can run
+  there. Point OMEGA_DIR at the checkout that holds docker-compose.yml."
+}
+
 # The stack CLI, run in the canonical dir (compose file + running pg live there).
-hive() { ( cd "$OMEGA_DIR" && podman compose run --rm -T cli "$@" ); }
+hive() {
+  require_omega_dir
+  resolve_compose
+  # shellcheck disable=SC2086  # HIVE_COMPOSE is legitimately two words ("podman compose")
+  ( cd "$OMEGA_DIR" && $HIVE_COMPOSE run --rm -T cli "$@" )
+}
 
 # Emit one governed event on RUN. Role and actor are explicit here (operator-tier
 # emits); the worker's baked-in wrapper is a separate file (see hive-launch). A
@@ -79,14 +163,27 @@ hive() { ( cd "$OMEGA_DIR" && podman compose run --rm -T cli "$@" ); }
 emit() {  # emit <role> <actor> <type> [--task <t>] [--payload <json>]
   local role="$1" actor="$2" type="$3"; shift 3
   local out
-  # Capture stderr too: a stack/DB outage is a podman failure whose error only
+  require_omega_dir
+  resolve_compose
+  # Capture stderr too: a stack/DB outage is a runtime failure whose error only
   # goes to stderr — swallowing it would misreport an outage as a governance
-  # refusal. On failure we surface the full output (podman error or the CLI's
-  # `rejected: <CODE>` line) so the operator sees the real cause.
-  if ! out=$( cd "$OMEGA_DIR" && podman compose run --rm -T cli \
+  # refusal. On failure we surface the full output (the runtime's error or the
+  # CLI's `rejected: <CODE>` line) so the operator sees the real cause.
+  # shellcheck disable=SC2086  # HIVE_COMPOSE is legitimately two words ("podman compose")
+  if ! out=$( cd "$OMEGA_DIR" && $HIVE_COMPOSE run --rm -T cli \
       emit --run-id "$RUN" --role "$role" --actor "$actor" --type "$type" "$@" 2>&1 ); then
     echo "$out" >&2
-    die "emit failed: $type (role=$role actor=$actor) — see output above (rejected, or the stack is down?)"
+    # Do NOT guess at the cause. This line used to assert "rejected, or the stack is
+    # down?" — two hypotheses, both wrong for the two most common failures on a new host
+    # (a missing .env, an OMEGA_DIR pointing nowhere), and both expensive to chase. It
+    # sent a reader at the gateway and the database while the truth sat in the output
+    # directly above. Name where to look and what distinguishes the cases instead.
+    die "emit failed: $type (role=$role actor=$actor) — the cause is in the output above.
+  A GOVERNANCE refusal prints a line starting 'rejected: <CODE>'.
+  Anything else is this host or its config, most often one of:
+    * no .env in $OMEGA_DIR  (it is gitignored; run: cp .env.example .env)
+    * the stack is not up    (run: $HIVE_COMPOSE up -d postgres)
+    * the runtime or compose command is wrong (resolved: '$HIVE_COMPOSE'; override with OMEGAHIVE_COMPOSE)"
   fi
   echo "$out"
 }

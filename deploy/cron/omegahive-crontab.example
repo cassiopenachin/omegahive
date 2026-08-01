@@ -1,0 +1,77 @@
+# omegahive-crontab.example — scheduled backups on a host WITHOUT systemd user timers.
+#
+# The systemd path (deploy/systemd/*.timer + *.service) stays the supported route on
+# Fedora-family hosts and is what deployment #0 runs. This file is the second path, for
+# a host with no systemd --user (macOS, a minimal container host, a distro where the
+# operator has no linger): it invokes exactly the SAME two commands the units invoke, so
+# the two schedulers cannot drift in what they actually do.
+#
+# Install:
+#     crontab -e          # paste the block below, with the placeholders filled in
+#     crontab -l          # verify
+#
+# Cron gives a job almost no environment — no PATH beyond a bare default, no
+# XDG_RUNTIME_DIR, no DOCKER_HOST, and not your shell profile. Everything the commands
+# need is therefore set explicitly here. That is the whole difficulty of this path; a
+# cron entry copied without these lines fails with "command not found" or a compose
+# error about a missing Docker endpoint.
+#
+# Replace <deployuser> with the account that owns the deployment, and <checkout> with the
+# omegahive checkout's path RELATIVE TO that account's home (e.g. src/SNET/omegahive), so
+# the `cd` line below reads /home/<deployuser>/<checkout>. Cron does not expand ~ or $HOME
+# in the command position, so the paths here are spelled out in full rather than shortened.
+
+SHELL=/bin/sh
+PATH=/usr/local/bin:/usr/bin:/bin:/home/<deployuser>/.local/bin
+
+# --- backup config: the same variables the systemd units set ---------------------------
+# Absolute paths, outside the repo tree. One directory holds the pg dumps AND the
+# workspace bundles, so a single directory restores both stores.
+OMEGAHIVE_BACKUP_DIR=/home/<deployuser>/omegahive-backups
+OMEGAHIVE_BACKUP_KEEP=14
+OMEGAHIVE_HUB_REPO=/home/<deployuser>/repos/hive-workspace.git
+
+# --- rootless Podman ONLY: uncomment and set the uid ----------------------------------
+# The compose v2 binary talks the Docker API and must be pointed at the rootless podman
+# socket, which cron does not set up for you. Read the uid with `id -u`.
+#
+# NOTE the honest caveat: a rootless podman socket lives under /run/user/<uid>, which
+# exists only while the account has a session — or permanently if linger is enabled
+# (`loginctl enable-linger <deployuser>`). So on a rootless-podman host, cron does not
+# actually free you from systemd: it frees you from *timer units*, not from linger. If
+# you are choosing cron because the host has no systemd at all, you are almost certainly
+# on Docker (a system-wide socket, no runtime dir needed) or macOS — see the launchd note
+# at the bottom.
+#XDG_RUNTIME_DIR=/run/user/1000
+#DOCKER_HOST=unix:///run/user/1000/podman/podman.sock
+
+# --- the two jobs ---------------------------------------------------------------------
+# 03:00 — containerized pg_dump of the log store (compose profile "ops").
+#         Replace `docker compose` with the compose command this host actually has
+#         (`docker-compose`, or `podman compose`); it is the same choice the scripts make
+#         via OMEGAHIVE_COMPOSE. Output is appended to a log because cron mails its output
+#         by default, and a host with no MTA silently discards it — which is how a backup
+#         that has been failing for a month goes unnoticed.
+0 3 * * * cd /home/<deployuser>/<checkout> && docker compose --profile ops run --rm backup >> /home/<deployuser>/omegahive-backups/backup.log 2>&1
+
+# 03:15 — git bundle of the workspace bare hub (deploy/git_bundle.sh, installed to
+#         ~/.local/bin/omegahive-git-bundle). 15 minutes after the dump so the two do not
+#         contend, and both land in the same directory in the same window.
+15 3 * * * /home/<deployuser>/.local/bin/omegahive-git-bundle >> /home/<deployuser>/omegahive-backups/bundle.log 2>&1
+
+# --- verify, because an unverified backup schedule is a belief, not a backup -----------
+# After installing, run both commands BY HAND once (same env) and confirm two files
+# appear in OMEGAHIVE_BACKUP_DIR: a .dump/.sql.gz and a hive-workspace-*.bundle. Then
+# check the logs the morning after the first scheduled run. `git bundle verify` runs
+# inside the bundle job already, so a corrupt bundle fails loudly rather than at restore
+# time.
+#
+# --- macOS / launchd: a NOTE, not a tested path ---------------------------------------
+# On macOS, cron still works but launchd is the native scheduler, and Docker Desktop's
+# socket only exists while the Desktop app is running — a scheduled job that fires with
+# the app closed fails. The shape would be a ~/Library/LaunchAgents/<label>.plist per job
+# with StartCalendarInterval, EnvironmentVariables carrying the variables above, and
+# ProgramArguments running the same two commands, loaded with `launchctl load -w`.
+# This has NOT been exercised against a real mac deployment — it is written down as a
+# starting point, and whoever runs it first should record what was actually needed in
+# that deployment's own record under docs/deployments/.

@@ -52,33 +52,65 @@ services:
   # exhaustive, and a missing entry is easier to spot as a missing line than as a missing
   # alias. If a service is added to the base file, add it here too -- otherwise a
   # `compose build` under this overlay rebuilds the canonical omegahive:dev tag.
+  #
+  # ISOLATION 5 -- ONE BUILD TARGET. The base file's `x-omega` anchor carries `build: .`
+  # alongside `image:`, and 13 services merge it. Retagging all 13 to a single image
+  # therefore produces 13 BUILD TARGETS WRITING ONE TAG. Docker Compose v5 builds via
+  # buildx bake, which runs them in PARALLEL: the first writer wins and the other twelve
+  # die with `failed to solve: image "omegahive:scratch": already exists`, aborting the
+  # build. Proven on a macOS/Docker 29.2.1 host (bring-up drill run 2, 2026-07-29);
+  # Beastie never saw it because `podman compose` does not parallelize build targets
+  # this way -- which makes it a host coupling in the compose FILE, not in the compose
+  # command the resolver picks.
+  #
+  # `build: !reset null` (Compose spec, same vintage as the `!override` tags above)
+  # removes the inherited key, so exactly ONE service below is buildable and
+  # `compose build` under this overlay has one target. `cli` is the one that keeps it,
+  # because it is the generic entry point and `compose build cli` reads as what it is.
+  # Every other service consumes the image `cli` produces.
+  #
+  # If you add a service here, give it `build: !reset null` too. Verify with:
+  #   compose -f docker-compose.yml -f deploy/hive-user/compose.scratch.yml config \
+  #     | grep -c 'build:'      # expect exactly 1
   cli:
-    image: omegahive:scratch
+    image: omegahive:scratch    # the ONE build target under this overlay
   migrate:
     image: omegahive:scratch
+    build: !reset null
   seed:
     image: omegahive:scratch
+    build: !reset null
   coordinator:
     image: omegahive:scratch
+    build: !reset null
   worker:
     image: omegahive:scratch
+    build: !reset null
   review:
     image: omegahive:scratch
+    build: !reset null
   board-view:
     image: omegahive:scratch
+    build: !reset null
   test:
     image: omegahive:scratch
+    build: !reset null
   lint:
     image: omegahive:scratch
+    build: !reset null
   deploy-checks:
     image: omegahive:scratch
+    build: !reset null
   ladder:
     image: omegahive:scratch
+    build: !reset null
   notifier:
     image: omegahive:scratch
+    build: !reset null
 
   ui:
     image: omegahive:scratch
+    build: !reset null
     ports: !override
       # Loopback only, and NOT 8811 — the house Caddy reverse-proxies :8443/omegahive to
       # the live stack's 8811 and must never be pointed at a scratch stack. Nothing in

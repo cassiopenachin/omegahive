@@ -18,6 +18,7 @@
 - omegahive_v0b_order.md — hive-image board-binding qualification gate; not yet executed (no `qual/records/*-v0b-*`), cited by `hive_native_ops.md`'s Tier-3 definition
 
 ## docs/deployments/ (deployment records)
+- TEMPLATE.md — the host-facts + lockfile template a new deployment record starts from; **every host fact belongs in a record here, not in the general docs** — that is what this directory is for
 - deployment-0-beastie.md — Beastie (deployment #0) acceptance record; checks 1–5 green, Jul 7 2026
 - omegaclaw-fork.md — OmegaClaw fork base-image record; boot-smoked on Beastie, Jul 7 2026
 - omegahive_remote_access_spec.md — Beastie remote access (Tailscale) for a 5-week unattended absence; v1, deployment-#0 practice record

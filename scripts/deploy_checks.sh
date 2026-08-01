@@ -15,10 +15,29 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-: "${DOCKER_HOST:=unix://${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock}"
-export DOCKER_HOST
+# Point compose at the rootless podman socket ONLY when that socket actually
+# exists. Unconditional is correct on deployment #0 and wrong everywhere else: a
+# Docker host has no podman socket, and forcing DOCKER_HOST at a path that does
+# not exist makes every compose call below fail instead of letting docker use its
+# own default endpoint.
+_podman_sock="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
+if [ -z "${DOCKER_HOST:-}" ] && [ -S "$_podman_sock" ]; then
+  DOCKER_HOST="unix://$_podman_sock"
+  export DOCKER_HOST
+fi
 
-if docker compose version >/dev/null 2>&1; then DC=(docker compose); else DC=(docker-compose); fi
+# The compose route. OMEGAHIVE_COMPOSE overrides (the same variable
+# hive-common.sh honors). The docker routes come first here because they talk the
+# Docker API at whatever DOCKER_HOST resolved to above — including podman's
+# socket, which is the deployment-#0 path and keeps this harness's route
+# unchanged there; `podman compose` is the fallback for a host that has podman
+# and no compose v2 binary at all.
+if   [ -n "${OMEGAHIVE_COMPOSE:-}" ];           then read -r -a DC <<<"$OMEGAHIVE_COMPOSE"
+elif docker compose version >/dev/null 2>&1;    then DC=(docker compose)
+elif command -v docker-compose >/dev/null 2>&1; then DC=(docker-compose)
+elif command -v podman >/dev/null 2>&1;         then DC=(podman compose)
+else echo "no compose command found (looked for: docker compose, docker-compose, podman) — set OMEGAHIVE_COMPOSE" >&2; exit 1
+fi
 FILES=()
 dc() { "${DC[@]}" ${FILES[@]+"${FILES[@]}"} "$@"; }
 
@@ -90,6 +109,7 @@ echo "== deployment checks (run=$RUN, spine=$SPINE_DB) =="
 # as four unrelated-looking check failures.
 if ! MIGRATE0="$(dc run --rm migrate 2>&1)"; then
   echo "could not apply migrations to the scratch spine:" >&2
+  # shellcheck disable=SC2001  # indenting every line of a captured blob; sed is the clear form here
   sed 's/^/  /' <<<"$MIGRATE0" >&2
   exit 1
 fi

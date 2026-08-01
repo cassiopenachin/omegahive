@@ -5,6 +5,28 @@ name: omegahive
 # acceptance actors, board-view, tests, lint, and the containerized pg_dump backup.
 # A host needs only an OCI runtime (rootless Podman) + compose v2; no host runtimes.
 
+# KNOWN HOST COUPLING, not yet fixed here — read before running `compose build`.
+#
+# This anchor carries `image:` AND `build: .`, and 13 services merge it. Because they all
+# name ONE tag, a plain `compose build` (no service argument) asks for 13 build targets
+# writing the same tag. Docker Compose v5 builds via buildx bake, which runs them in
+# PARALLEL: the first writer wins and the other twelve fail with
+# `failed to solve: image "omegahive:dev": already exists`, aborting the build. Proven on
+# a macOS/Docker 29.2.1 host, 2026-07-29. Podman never shows it — `podman compose` does
+# not parallelize build targets this way — so this is a coupling in the compose FILE,
+# surviving even after the operator scripts learned to resolve the compose COMMAND.
+#
+# Until it is fixed, build ONE service and let the other twelve consume the tag:
+#     docker compose build cli
+# The documented quickstart below is unaffected: `compose run --rm <svc>` builds only that
+# service's image, never all 13. `deploy/hive-user/compose.scratch.yml` already resets
+# `build` on all but `cli` (its isolation 5), and the bring-up drill asserts that exactly
+# one build target survives before it builds anything.
+#
+# The structural fix — one service owning `build:` here, the rest referencing the image —
+# is deliberately NOT applied yet: it changes the auto-build behaviour of the live stack's
+# own compose file, and it cannot be verified on deployment #0, which has no docker CLI
+# and a compose route that does not exhibit the bug. It wants a Docker host to prove on.
 x-omega: &omega
   image: omegahive:dev
   build: .
@@ -80,14 +102,26 @@ services:
 
   # The read-only operator web UI (ui spec §5). A long-running uvicorn server on the
   # omegahive image, reading the spine over the compose network (portfolio/board/events/
-  # metrics screens; no write path). NOT a front door: the *host* publish is loopback-only,
-  # so the house Caddy on :8443 is the sole ingress, reverse-proxying
-  # https://<host>:8443/omegahive/ here. Never publish this on 0.0.0.0. `--host 0.0.0.0`
-  # (ui-serve default) binds only the container's own netns — the loopback host-publish below
-  # is the real boundary (same shape postgres uses). OMEGAHIVE_UI_BASE_PATH is the serving
-  # prefix (config, not a secret) and MUST match the Caddy handle block; empty would serve at
-  # the root. Container listens on 8000; the app trusts proxy headers so url_for reflects the
-  # external https origin. The entry point is the portfolio — every live run on one page — so
+  # metrics screens; no write path). NOT a front door: the *host* publish is loopback-only.
+  #
+  # DEFAULT ACCESS, on any host, is that loopback publish: http://127.0.0.1:8811/omegahive
+  # on the host itself, or through an SSH tunnel from anywhere else
+  # (`ssh -L 8811:127.0.0.1:8811 <host>`). Nothing else is required, and no ingress ships
+  # in this repo.
+  #
+  # An off-host ingress is a per-deployment ADDITION, not the story: deployment #0 puts a
+  # house Caddy on :8443 in front, reverse-proxying https://<host>:8443/omegahive/ here,
+  # reachable only over its tailnet (docs/deployments/deployment-0-beastie.md and
+  # docs/deployments/omegahive_remote_access_spec.md). A second deployment needs none of
+  # that to use the UI.
+  #
+  # Never publish this on 0.0.0.0. `--host 0.0.0.0` (ui-serve default) binds only the
+  # container's own netns — the loopback host-publish below is the real boundary (same shape
+  # postgres uses). OMEGAHIVE_UI_BASE_PATH is the serving prefix (config, not a secret);
+  # empty serves at the root, and where a reverse proxy IS in front it must match that
+  # proxy's handle block. Container listens on 8000; the app trusts proxy headers so
+  # url_for reflects an external https origin when one exists.
+  # The entry point is the portfolio — every live run on one page — so
   # the UI needs no default run; the two knobs below tune which runs and which tasks the
   # active view keeps, and the CLI reads the same two so both surfaces stay one board.
   ui:
@@ -98,8 +132,10 @@ services:
       - OMEGAHIVE_ACTIVE_WINDOW_DAYS=${OMEGAHIVE_ACTIVE_WINDOW_DAYS:-7}
       - OMEGAHIVE_PORTFOLIO_EXCLUDE=${OMEGAHIVE_PORTFOLIO_EXCLUDE:-tooling-drill-*}
     ports:
-      # host loopback only -> container 8000. Change the host port via OMEGAHIVE_UI_HOST_PORT
-      # (must match the Caddy reverse_proxy target). Never 0.0.0.0 (deployment posture).
+      # host loopback only -> container 8000. This publish IS the default access path
+      # (http://127.0.0.1:8811/omegahive, or over an SSH tunnel). Change the host port via
+      # OMEGAHIVE_UI_HOST_PORT; where a reverse proxy is in front, its target must match.
+      # Never 0.0.0.0 (deployment posture).
       - "127.0.0.1:${OMEGAHIVE_UI_HOST_PORT:-8811}:8000"
     restart: unless-stopped
 
@@ -164,7 +200,20 @@ services:
       - .env
       # required:false so an unconfigured host doesn't break `compose config`/other services;
       # the notifier fails fast at startup if the token/chat are absent.
-      - path: ${OMEGAHIVE_SECRETS_DIR}/notifier.env   # TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
+      #
+      # OMEGAHIVE_SECRETS_DIR carries a DEFAULT here (deployment spec §4's canonical
+      # location) because it previously had none: unset, this path interpolated to a bare
+      # `/notifier.env`, which `required: false` then skipped in silence — a notifier with
+      # no token and no complaint until startup. The default makes the documented location
+      # the actual location, so `hive-init-secrets` and this file cannot disagree. An
+      # exported OMEGAHIVE_SECRETS_DIR still wins (deployment #0 exports exactly this path).
+      #
+      # One residual case the default does NOT cover: if HOME itself is unset, compose warns
+      # and substitutes a blank string, giving `/.config/omegahive/secrets/notifier.env` —
+      # skipped in silence again. systemd USER units and cron both provide HOME, so the
+      # shipped scheduling paths are fine; a systemd SYSTEM unit or a bare container is not.
+      # Set OMEGAHIVE_SECRETS_DIR explicitly in any HOME-less context.
+      - path: ${OMEGAHIVE_SECRETS_DIR:-${HOME}/.config/omegahive/secrets}/notifier.env   # TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
         required: false
     volumes:
       # :z — shared SELinux label so the cursors survive container replacement. Without it,
