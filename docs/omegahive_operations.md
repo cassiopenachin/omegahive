@@ -22,7 +22,16 @@ The workspace is a plain git repo, separate from this one, with a bare *hub* tha
 scripts/hive-init-workspace <project> --code-repo git@github.com:<owner>/<repo>.git
 ```
 
-That creates the bare hub (`WS_HUB`, default `~/repos/hive-workspace.git`), the operator's clone (`OPS_WS`, default `~/workspaces/hive`), and `projects/<project>/` with a `project.conf` and the `orders/`, `reports/`, `questions/`, `metrics/` directories — then commits and pushes, because `hive-launch` refuses an order that isn't on the hub. It is idempotent and never clobbers: re-running adds only what's missing, an existing `project.conf` is kept verbatim, and it refuses rather than overwrite a path that holds something else. Run it again per project to add more. It prints the two `export` lines to put in your shell profile.
+That creates the bare hub (`WS_HUB`, default `~/repos/hive-workspace.git`), the operator's clone (`OPS_WS`, default `~/workspaces/hive`), and `projects/<project>/` with a `project.conf` and the `orders/`, `reports/`, `questions/`, `metrics/` directories — then commits and pushes, because `hive-launch` refuses an order that isn't on the hub. It is idempotent and never clobbers: re-running adds only what's missing, an existing `project.conf` is kept verbatim, and it refuses rather than overwrite a path that holds something else. Run it again per project to add more.
+
+**Then point the tooling at your host.** `hive-init-workspace` prints the first two exports; the other two it cannot know. All four default to *deployment #0's* directory layout, so on any other host at least some of them are wrong, and `hive-launch` will refuse rather than guess:
+
+```bash
+export WS_HUB=~/repos/hive-workspace.git   # the bare hub (printed by hive-init-workspace)
+export OPS_WS=~/workspaces/hive            # your workspace clone (likewise)
+export OMEGA_DIR=~/src/SNET/omegahive      # THIS repo's checkout — compose and every emit run here
+export CANON_ROOT=~/src/SNET               # where project code checkouts live; CANON_CODE = CANON_ROOT/<repo>
+```
 
 **What it does not create is the workspace's protocol docs** — `WORKER.md` above all, the one file a launched worker reads and follows — because this repo ships the bootstrap, not the operating doctrine; the seeded `README.md` lists them and a worker has no protocol until you author them.
 
@@ -30,7 +39,7 @@ That creates the bare hub (`WS_HUB`, default `~/repos/hive-workspace.git`), the 
 
 A small long-running service (`omegahive notify`, the compose `notifier` service) follows the spine's **read path** and sends Telegram messages so the operator doesn't have to poll the board. It is **outbound only** — one POST to `sendMessage`, no `getUpdates`, no webhook, no ack path, no bot commands — so it adds no inbound trust surface. It carries **refs, never file content**; messages are a lossy phone-glance *render* of an event (the audit home is the spine), rendered as HTML with full escaping.
 
-**One notifier watches every run.** Like the board, it is a portfolio surface: runs are discovered from the spine's own registry through the same active-run cut `hive portfolio` applies, so a project waking up or going quiet needs no redeploy. There is deliberately **no run id to configure** — a stale one in a deploy env is how the pager spent a week truthfully reporting an empty acceptance run while the real spine moved, and the fix was to delete the setting rather than guard it.
+**One notifier watches every run.** Like the board, it is a portfolio surface: runs are discovered from the spine's own registry through the same active-run cut `omegahive portfolio` applies, so a project waking up or going quiet needs no redeploy. There is deliberately **no run id to configure** — a stale one in a deploy env is how the pager spent a week truthfully reporting an empty acceptance run while the real spine moved, and the fix was to delete the setting rather than guard it.
 
 It pages on four attention events — `task.reported(kind=question)`, `task.blocked`, `task.escalated`, and `task.result_posted` (the result that prompts your close action) — folding a burst in one poll interval into a single summary. Everything else is silence, by design. Every message names its run, and the task id links to **that run's** board:
 
@@ -145,15 +154,8 @@ Both accept `HIVE_SPINE_JSON=<dump>` in place of the live read, which is how `sc
 
 ## 6. Verifying the whole path on a new host
 
-`scripts/hive-bringup-drill.sh` walks the README's documented bring-up path from a clean clone and fails at the first step that does not work as written — phases A–J, in a `mktemp` sandbox on a scratch compose overlay that isolates project name, container names, host ports and the image tag, so it can never touch a live stack. Phase K (the operator loop) is printed rather than run, because `scripts/hive-tooling-drill.sh` is not project-isolated.
-
-```bash
-scripts/hive-bringup-drill.sh              # full drill, tears down after
-scripts/hive-bringup-drill.sh --no-stack   # phases A-E only, no container runtime needed
-scripts/hive-bringup-drill.sh --keep       # leave the sandbox + stack up to inspect
-scripts/hive-bringup-drill.sh --dry-run    # print the plan, touch nothing
-```
+`scripts/hive-bringup-drill.sh` walks the documented bring-up path from a clean clone; its invocations are in [the README's Tests section](../README.md#tests). Two things about it are operator-facing rather than outsider-facing. Its phases run A–J, of which **E is the workspace bootstrap above** — so the drill covers §1 of this document as well as the README's quickstart. And **phase K, the operator loop, is printed rather than run**, because `scripts/hive-tooling-drill.sh` is not project-isolated: run that one deliberately, never pointed at a durable run.
 
 ## Revision record
 
-- 2026-08-01 — v1. Created by the README restructure: the notifier, the launch / answer / close loop, `project.conf`, and the metrics/scoring instruments moved here verbatim from `README.md`, which now carries a pointer. Host-specific examples made placeholder-shaped (`ssh <host>`), deployment-#0 arrangements labeled as such, and references to workspace-side protocol roles restated as "your workspace's protocol" — this repo ships the bootstrap, not the doctrine. Content is descriptive of what the repo ships at this commit; nothing was authored beyond what already existed.
+- 2026-08-01 — v1. Created by the README restructure. The notifier (§2), the launch / answer / close loop (§3), `project.conf` (§4), and the metrics/scoring instruments (§5) moved here from `README.md`, which now carries a pointer; that prose is unchanged apart from three deliberate edits — host-specific examples made placeholder-shaped (`ssh <host>`), deployment-#0 arrangements labeled as such, and references to workspace-side protocol files restated as "your workspace's protocol", because this repo ships the bootstrap, not the doctrine. Six passages are **new**, each describing behaviour that already shipped but was documented nowhere: §1's which-surface-needs-the-workspace table and the four `export` lines; the host tooling the loop needs (`git`, `jq`, `tmux`); the compose command baked into an issued emit wrapper; the `compose config` token-leak caution; the `OMEGA_DIR` refusal; and §6.

@@ -26,10 +26,14 @@ The deployment stance is *no host runtimes*: the substrate itself runs entirely 
 
 | You need | Required for | Notes |
 |---|---|---|
-| An **OCI runtime with compose v2** — Docker or rootless Podman | everything | The scripts resolve the command themselves (`podman compose`, `docker compose`, or `docker-compose`, whichever the host has, probed by running it). Set `OMEGAHIVE_COMPOSE` to override — which is what a host carrying both runtimes needs. |
+| An **OCI runtime with compose v2** — Docker or rootless Podman | everything | Either works. The examples in this file all say `docker compose`; on Podman, substitute `podman compose` throughout. |
 | **git** | the quickstart (cloning), and the workspace side of the operator loop | |
 | **Python 3.12 + [uv](https://docs.astral.sh/uv/)** | *only* the host path — running the CLI or the test suite outside containers, i.e. hacking on the code | The containerized paths need neither. |
-| **jq, tmux**, and a CLI coding agent | *only* the operator loop (`hive-launch` / `hive-answer` / `hive-close`) — see [docs/omegahive_operations.md](docs/omegahive_operations.md) | Measured on `jq` 1.8.1 (Fedora) and 1.7.1-apple (macOS); both work. |
+| **jq** | the `scripts/` tooling: the operator loop, the metrics/scoring instruments, and both drills | Measured on `jq` 1.8.1 (Fedora) and 1.7.1-apple (macOS); both work. |
+| **curl** | *only* `scripts/hive-bringup-drill.sh` (its UI check) | |
+| **tmux** and a CLI coding agent | *only* the operator loop (`hive-launch` / `hive-answer` / `hive-close`) — see [docs/omegahive_operations.md](docs/omegahive_operations.md) | |
+
+Everything under `scripts/` resolves the compose command for itself — `podman compose`, `docker compose`, or `docker-compose`, whichever the host has, probed by running it. `OMEGAHIVE_COMPOSE` overrides that resolution, which is what a host carrying both runtimes needs; it has no effect on the `docker compose` lines you type yourself.
 
 For **rootless Podman**, compose talks the Docker API over Podman's socket, which is one line to enable:
 
@@ -56,7 +60,7 @@ docker compose run --rm test            # 6. full suite against live Postgres �
 
 > **Name the service on every `up`.** A bare `docker compose up -d` starts all fourteen non-`ops` services, including the three scripted acceptance actors and the demo seeder — which write demo events into your durable spine under run id `accept` (`OMEGAHIVE_RUN_ID` in `.env`, whose default is `accept` and which `seed`, `coordinator`, `worker`, `review` and `board-view` all share). Nothing is corrupted, but you get a run you did not ask for. Start what you mean: `up -d postgres`, `up -d ui`, `up -d notifier`.
 
-Step 3 is only strictly required before starting the `notifier`, but running it up front means the secrets directory exists at the location the compose file already points at, so the two cannot disagree later. It never overwrites a file that already exists.
+Step 3 is only strictly required before starting the `notifier`, but running it up front means the secrets directory exists at the location the compose file already points at, so the two cannot disagree later. It never overwrites a file that already exists. Today it seeds exactly one file, `notifier.env`, because that is the only service with a committed example; the others named in `secrets-manifest.yaml` must be written by hand until they have one.
 
 Give the stack a heartbeat with the built-in demo — `docker compose run --rm seed` plans a small project on the `accept` run, then `docker compose up -d coordinator worker review` runs it to completion while `docker compose run --rm board-view` shows the board. Run `docker compose run --rm deploy-checks` after any environment change; it verifies credential scope and structural security facts.
 
@@ -84,11 +88,15 @@ For hacking on the code itself there's a host path too: `uv sync`, then `uv run 
 | `omegahive report --board / --metrics / --human` | fold projections as text |
 | `omegahive portfolio [--json] [--all] [--days N] [--exclude <globs>]` | **one board across every live run** — the whole-portfolio glance in one command |
 | `omegahive board-view <run> [--json] [--all] [--days N]` | one run's board (`--json` emits the machine projection for tooling) |
+| `omegahive runs` | every run in the log with its event count and first/last event time — how you discover a run id without a psql detour |
+| `omegahive bump-generation --run-id <run>` | invalidate every cursor on a run. This is the command behind "restores bump a generation token" above: run it *after* restoring a dump and *before* restarting clients |
 | `omegahive seed-demo` / `omegahive act` | demo planner and scripted reactors |
-| `omegahive simulate` | deterministic multi-seed simulation of scripted scenarios |
+| `omegahive run <scenario.yaml>` / `omegahive simulate` | execute one scripted scenario, or a deterministic multi-seed sweep of them |
 | `omegahive deploy-checks` | structural security checks (credential scope, tier routing) |
 
-**The active view (both surfaces, one definition).** The board grows monotonically, so a full-history table fills a screen with settled work. `portfolio` and `board-view <run>` therefore show the **active view** by default: every open task, plus anything closed within the active window (default 7 days, `OMEGAHIVE_ACTIVE_WINDOW_DAYS` or `--days`). `--all` restores full history. "Closed" is `done`/`failed`/`cancelled` or a pruned branch, and recency is measured against **that board's own latest status change**, not wall-clock now — so the same log always renders the same screen, replay included. `portfolio` discovers its runs from the spine rather than from any config: a run is a portfolio project when it carries real wall-clock activity inside the same window and its id does not match a scratch-run glob (`OMEGAHIVE_PORTFOLIO_EXCLUDE` or `--exclude`, default `tooling-drill-*`). Nothing is dropped silently — the footer counts what the cut removed.
+`omegahive notify` (the notifier) and `omegahive ui-serve` (the web UI) are the two long-running commands; both have their own sections below.
+
+**The active view (both surfaces, one definition).** The board grows monotonically, so a full-history table fills a screen with settled work. `portfolio` and `board-view <run>` therefore show the **active view** by default: every open task, plus anything closed within the active window (default 7 days, `OMEGAHIVE_ACTIVE_WINDOW_DAYS` or `--days`). `--all` restores full history. "Closed" is `done`/`failed`/`cancelled` or a pruned branch, and recency is measured against **that board's own latest status change**, not wall-clock now — so the same log always renders the same screen, replay included. `portfolio` discovers its runs from the spine rather than from any config: a run is a portfolio project when it carries real wall-clock activity inside the same window and its id does not match a scratch-run glob (`OMEGAHIVE_PORTFOLIO_EXCLUDE` or `--exclude`, default `tooling-drill-*` — the drills seed real, freshly-active runs on this same spine, and nothing in the log tells them apart from a project's). Nothing is dropped silently: the footer counts what the cut removed, and `--all` shows it. The web UI serves the same view at `/portfolio` from the same functions, so the two surfaces cannot drift.
 
 **`board-view <run> --json` is exempt, deliberately.** It is always the run's full history, whatever the window says, because tooling looks tasks up in it by id — a task that had aged out of a display window would read as "not on the board" and quietly change what a guard decides. `portfolio --json` is additive: an array of `{"run": …, "tasks": […]}`, where each `tasks` array is exactly what `board-view <run> --json` emits for that run.
 
@@ -154,7 +162,7 @@ omegahive emit --run-id demo --role worker --actor sess-demo-1 --type task.accep
 
 Board: `t1 in_progress @ sess-demo-1`. If you'd fat-fingered the worker id, the assign would not have silently succeeded — unregistered workers get `rejected: UNKNOWN_WORKER · …`, recorded in the log as a `gateway.rejected` event.
 
-**3. The worker hits a question.** It writes `projects/demo/questions/2026-07-10-tone.md` in the workspace, commits (say the commit is `9d01c4e`), then:
+**3. The worker hits a question.** It writes `projects/demo/questions/2026-07-10-tone.md` in the workspace, commits (say the commit is `9d01c4e`), then reports it. Refs are opaque strings the gateway never resolves, so you can paste these verbatim with no workspace at all and every command still behaves exactly as shown:
 
 ```bash
 omegahive emit --run-id demo --role worker --actor sess-demo-1 --type task.reported --task t1 \
@@ -163,7 +171,7 @@ omegahive emit --run-id demo --role worker --actor sess-demo-1 --type task.block
   --payload '{"reason": "tone: formal vs conversational", "needs": "decision", "ref_report": "projects/demo/questions/2026-07-10-tone.md@9d01c4e"}'
 ```
 
-Board: `t1 blocked (needs decision)`. Your phone buzzes (the notifier fires on `question`/`blocked`/`escalated`). **The answer is not an event** — you edit the order file in the workspace, commit, and nudge the session ("answer landed; re-read your order"). The worker re-reads, then emits `task.unblocked` itself: unblock means *answer consumed*.
+Board: `t1 blocked (needs decision)`. If you have the notifier running, your phone buzzes — it fires on `question`/`blocked`/`escalated`. (`kind` is one of `progress`, `result`, `question`, `finding`, `reflection`; of those, only `question` raises a page.) **The answer is not an event** — you edit the order file in the workspace, commit, and nudge the session ("answer landed; re-read your order"). The worker re-reads, then emits `task.unblocked` itself: unblock means *answer consumed*.
 
 **4. Result and review.** The worker commits its report (say `b52e77d`) and posts it; the reviewer hat passes it; the coordinator hat closes:
 
@@ -226,7 +234,14 @@ run twice at once: it drives fixed-name compose services (`coordinator`, `worker
 inside one shared compose project, so concurrent runs collide over containers rather than
 over data. Run it one at a time.
 
-To check the whole documented bring-up path on a new host rather than just the suite, `scripts/hive-bringup-drill.sh` walks it from a clean clone in a sandbox and fails at the first step that does not work as written.
+**Checking the whole bring-up path, not just the suite.** `scripts/hive-bringup-drill.sh` walks the quickstart from a clean clone and fails at the first step that does not work as written. It runs in a `mktemp` sandbox on a scratch compose overlay that isolates project name, container names, host ports and the image tag, so it can never touch a stack you care about.
+
+```bash
+scripts/hive-bringup-drill.sh              # full drill, tears down after
+scripts/hive-bringup-drill.sh --no-stack   # the host-side steps only; no container runtime needed
+scripts/hive-bringup-drill.sh --keep       # leave the sandbox + stack up to inspect
+scripts/hive-bringup-drill.sh --dry-run    # print the plan, touch nothing
+```
 
 ## What we learned before building this way
 
@@ -235,13 +250,15 @@ We ran controlled experiments on LLM coordination before pivoting to real work, 
 ## Repo map
 
 ```
-src/omegahive/   the substrate: events, gateway, legality, board fold, port, CLI, UI
+src/omegahive/   the substrate: events, gateway, legality, board fold, port, CLI,
+                 plus the notifier, the UI, metrics, reports and the simulator
 migrations/      spine schema
 docs/            the documentation set — specs are authoritative; code follows them
                  (docs/INDEX.md maps every file: current specs, docs/reference/,
-                 docs/deployments/, docs/archive/, docs/evidence/)
+                 docs/deployments/, docs/archive/, docs/evidence/, docs/whitepaper/)
 qual/            model-qualification battery: catalogs, scenarios, personas, records
 ladder/          archived stage-2 experiment harness + its frozen run records
+experiments/     earlier coordination experiments and their reproduction records
 scenarios/       scripted simulation scenarios (deterministic, CI-run)
 scripts/         bootstraps (hive-init-secrets/workspace), operator tooling
                  (hive-launch/answer/close, hive-metrics/score), drills, deploy checks
