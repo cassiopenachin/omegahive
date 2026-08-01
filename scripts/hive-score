@@ -180,9 +180,14 @@ def terminal($created; $cancel_ts):
     closed: ($close != null),
     closed_day: (if $close == null then null else ($close.ts | strftime("%Y-%m-%d")) end),
     final_status: ($close.status // null),
-    worker: ( [ $slice[] | select(.event_type == "task.reassigned") | .payload.to ] | last )
-            // ( [ $slice[] | select(.event_type == "task.accepted") | .actor.id ] | last )
-            // "",
+    # The WHOLE value is parenthesised, not just each operand. jq >= 1.7 accepts a bare
+    # `//` chain at object-value position; jq 1.6 does not, and fails the entire program
+    # with `syntax error, unexpected //, expecting '}'`. That took out every scoring check
+    # on a macOS host whose jq predates 1.7 while hive-metrics — which already wrapped its
+    # equivalent value — ran fine beside it. Keep the outer parens.
+    worker: ( ( [ $slice[] | select(.event_type == "task.reassigned") | .payload.to ] | last )
+              // ( [ $slice[] | select(.event_type == "task.accepted") | .actor.id ] | last )
+              // "" ),
     # Elapsed worker span net of answer wait — the closest the spine gets to effort.
     net_s: (if $accepted == null or $result == null then null
             else ($result - $accepted - $blk) end),

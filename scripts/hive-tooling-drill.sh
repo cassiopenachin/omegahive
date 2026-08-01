@@ -98,6 +98,27 @@ PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); echo "  PASS  $*"; }
 bad()  { FAIL=$((FAIL+1)); echo "  FAIL  $*"; }
 check(){ if eval "$2"; then ok "$1"; else bad "$1  [cond: $2]"; fi; }
+
+# wait_until <seconds> <shell-condition> — poll a condition to a deadline, quietly.
+#
+# hive-launch returns the moment `tmux new-window` succeeds; the pane's command then runs
+# ASYNCHRONOUSLY, and it is what writes $SANDBOX/kickoff.txt. Checking that file straight
+# afterwards is a race — one the drill happened to win on Linux and lost on macOS, where
+# the tmux server had just been created cold. It then reported "kickoff references the
+# wrapper" as a FAILURE even though the kickoff had been delivered correctly: the very
+# same file's later check passed in the very same run. A harness that reports a timing
+# artefact as a product defect is the coupling-#6 mistake wearing a different hat, so the
+# wait is explicit rather than lucky. Conditions are polled, never slept-then-assumed.
+wait_until() {  # wait_until <seconds> <condition...>
+  local secs="$1"; shift
+  local ticks=$(( secs * 10 )) i=0
+  while [ "$i" -lt "$ticks" ]; do
+    if eval "$*" >/dev/null 2>&1; then return 0; fi
+    sleep 0.1
+    i=$(( i + 1 ))
+  done
+  return 1
+}
 # expect_fail <desc> <cmd...>: passes iff the command exits non-zero.
 expect_fail(){ local d="$1"; shift; if "$@" >/dev/null 2>&1; then bad "$d (expected refusal, got success)"; else ok "$d"; fi; }
 # expect_fail_msg <desc> <needle> <cmd...>: passes iff the command fails AND its
@@ -299,6 +320,7 @@ check "wrapper bakes the project run id"        "grep -Eq -- '--run-id \"?$ARUN'
 check "wrapper bakes worker actor"              "grep -Eq -- '--actor \"?$AWORKER' '$AWRAP'"
 check "wrapper bakes worker role"               "grep -q -- '--role worker' '$AWRAP'"
 check "tmux window named after task"            "tmux list-windows -t '$TMUX_SESSION' -F '#{window_name}' | grep -qxF 'alpha-demo'"
+wait_until 20 "grep -qF '$AWRAP' '$SANDBOX/kickoff.txt'" || true
 check "kickoff references the wrapper"          "grep -qF '$AWRAP' '$SANDBOX/kickoff.txt'"
 check "kickoff names the project run"           "grep -qF 'run: $ARUN' '$SANDBOX/kickoff.txt'"
 check "board shows task assigned on the run"    "[ \"\$(bstatus '$ARUN' alpha-demo)\" = assigned ]"
@@ -371,6 +393,7 @@ BWRAP="$WRAPPERS/$BWORKER.sh"
 check "beta: code clone named after beta"        "[ -d '$WORK/$BWORKER/$BPROJ/.git' ]"
 check "beta: origin re-pointed to beta CODE_REPO" "git -C '$WORK/$BWORKER/$BPROJ' remote get-url origin | grep -q 'github.invalid/cassiopenachin/$BPROJ'"
 check "beta: wrapper bakes BETA's run (not alpha's)" "grep -Eq -- '--run-id \"?$BRUN' '$BWRAP'"
+wait_until 20 "grep -qF 'run: $BRUN' '$SANDBOX/kickoff.txt'" || true
 check "beta: kickoff names beta's run"           "grep -qF 'run: $BRUN' '$SANDBOX/kickoff.txt'"
 check "beta: task assigned on beta's run"        "[ \"\$(bstatus '$BRUN' beta-demo)\" = assigned ]"
 check "beta: task absent from alpha's run"       "[ -z \"\$(bstatus '$ARUN' beta-demo)\" ]"
