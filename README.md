@@ -22,7 +22,7 @@ It is the reference implementation of the OmegaHive spec ([docs/reference/omegah
 
 ## Prerequisites
 
-The deployment stance is *no host runtimes*: the substrate runs entirely in containers, and everything below the first row is needed only for something specific.
+The deployment stance is *no host runtimes*: the substrate itself runs entirely in containers. Only the first two rows are needed to run a hive at all; the rest buy specific extras.
 
 | You need | Required for | Notes |
 |---|---|---|
@@ -43,7 +43,7 @@ Everything host-specific about the deployment this repo is developed on lives in
 
 ## Quickstart
 
-Six steps from a clean machine to a spine you can write to. This is the path `scripts/hive-bringup-drill.sh` walks and asserts, step for step, so it is checkable rather than merely written down.
+Six steps from a clean machine to a spine you can write to. Steps 1–5 are the path `scripts/hive-bringup-drill.sh` walks and asserts from a clean clone, so they are checkable rather than merely written down; step 6 is the test suite.
 
 ```bash
 git clone <this repo> && cd omegahive   # 1. a clean clone
@@ -58,7 +58,7 @@ docker compose run --rm test            # 6. full suite against live Postgres �
 
 Step 3 is only strictly required before starting the `notifier`, but running it up front means the secrets directory exists at the location the compose file already points at, so the two cannot disagree later. It never overwrites a file that already exists.
 
-Give the stack a heartbeat with the built-in demo — `docker compose run --rm seed` plans a small project on the `accept` run, then `docker compose up -d coordinator worker review` runs it to completion while `docker compose run --rm board-view` shows the board. Run `omegahive deploy-checks` after any environment change; it verifies credential scope and structural security facts.
+Give the stack a heartbeat with the built-in demo — `docker compose run --rm seed` plans a small project on the `accept` run, then `docker compose up -d coordinator worker review` runs it to completion while `docker compose run --rm board-view` shows the board. Run `docker compose run --rm deploy-checks` after any environment change; it verifies credential scope and structural security facts.
 
 For a real deployment — the secrets layout (per-service env files, never in images or logs), the key-isolation proxy for LLM provider keys, and recovery/restore discipline — read [docs/omegahive_deployment_spec.md](docs/omegahive_deployment_spec.md) before trusting it with anything you'd miss.
 
