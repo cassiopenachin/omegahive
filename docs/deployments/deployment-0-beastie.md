@@ -101,6 +101,6 @@ procedure: ops RUNBOOK (`hive-workspace: projects/omegahive/RUNBOOK.md`).
 ## Forward notes (arrive with later stages, not #0)
 
 - **Stage 2** adds the pinned OmegaClaw fork image; re-run the deployment checks. Verify the runtime's seccomp default permits the `landlock_*` syscalls (the agent sandboxes itself in-process) — a one-time container check, recorded here when done.
-- **Stage 4** adds the two-role DB split (reader vs gateway INSERT — T1 check 6) and the network-route layer of the tier-routing check (real outbound capability). Deployment #0 has no outbound at all, so only the gateway layer of check 4 is asserted here.
+- **Stage 4** adds the two-role DB split (reader vs gateway INSERT — T1 check 6) and the network-route layer of the tier-routing check (real outbound capability). Deployment #0 has no outbound at all, so only the gateway layer of check 4 is asserted here. The two-role machinery shipped 2026-08-01; check 6 reports `PENDING` until this deployment performs the cutover (RUNBOOK "Two-role cutover"), and the per-container credential scan (check 7) is live now.
 - The omegahive image is a local build; before any second host, push it and pin the RepoDigest in this lockfile.
 - **Out-of-band recovery drill** (test plan E2.5) is deferred to **stage 2**: it verifies that no self-managing component can lock humans out, and #0 has no resident agent, adapters, or outbound — plain SSH is currently the *only* control path, not a fallback, so there is nothing to drill against. It becomes meaningful once the agent container lands.

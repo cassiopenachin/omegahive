@@ -291,10 +291,13 @@ if [ -n "${DRY}" ]; then
 else
     if ! compose run --rm -T cli bump-generation --run-id "${RUN_ID}"; then
         echo "  bump refused (run not registered in the restored copy) — registering, then retrying"
+        # connect_gateway, not connect: this registers a run, which is a write. Under the
+        # two-role scheme the read credential cannot do it, and the one moment this branch
+        # runs is the middle of an actual restore.
         compose run --rm -T --entrypoint python cli -c \
-"from omegahive.db import connect
+"from omegahive.db import connect_gateway
 from omegahive.port import open_run
-c = connect(); open_run(c, '${RUN_ID}'); c.commit()"
+c = connect_gateway(); open_run(c, '${RUN_ID}'); c.commit()"
         compose run --rm -T cli bump-generation --run-id "${RUN_ID}"
     fi
 fi

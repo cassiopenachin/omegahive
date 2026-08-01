@@ -19,7 +19,7 @@ import time
 
 from ..board.reducer import Board
 from ..clock import LogicalClock
-from ..db import connect
+from ..db import connect_gateway
 from ..events.envelope import Actor
 from ..events.log import EventLog
 from ..gateway import Gateway
@@ -112,7 +112,7 @@ def seed_demo(run_id: str, plan_path: str, *, url: str | None = None) -> str:
     The plan-layer emits have no idempotency key, so this guard is what makes it safe.
     """
     scenario = load_scenario(plan_path)
-    conn = connect(url)
+    conn = connect_gateway(url)
     try:
         open_run(conn, run_id)  # idempotent registration (shared port helper)
         store = EventLog(conn, LogicalClock(0), run_id, server_time=True)
@@ -147,10 +147,10 @@ def run_actor(
     reactor = _make_reactor(role, agent_id, workers or ["w1"])
     actor_role = reactor.role  # authority role is the reactor's own — no parallel map to drift
 
-    conn = connect(url)
+    conn = connect_gateway(url)
     port = HiveCoordinatorPort(
         Actor(role=actor_role, id=agent_id), run_id, conn,
-        workdir=workdir, connect=lambda: connect(url), server_time=True,
+        workdir=workdir, connect=lambda: connect_gateway(url), server_time=True,
     )
     port.open_run()
 

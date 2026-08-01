@@ -10,7 +10,7 @@ It is the reference implementation of the OmegaHive spec ([docs/reference/omegah
 
 **One log.** Everything is an event in an append-only Postgres table (the *spine*). There is no other source of truth: the task board, metrics, and the human-readable view are *folds* (pure projections) over the log. Replaying the log reproduces every view, byte for byte.
 
-**One gateway.** All writes pass through a gateway that consults a single declarative legality table — default-deny, `(event_type, payload) → guard → effect`. The same table drives both the gate and the fold, so nothing can be accepted-but-inert. Refusals are first-class recorded values (`gateway.rejected` events with a code and reason), not exceptions: an agent that tries something illegal gets told, on the record, and the next board view shows it.
+**One gateway.** All writes pass through a gateway that consults a single declarative legality table — default-deny, `(event_type, payload) → guard → effect`. The same table drives both the gate and the fold, so nothing can be accepted-but-inert. Refusals are first-class recorded values (`gateway.rejected` events with a code and reason), not exceptions: an agent that tries something illegal gets told, on the record, and the next board view shows it. "All writes" is a **credential**, not a convention: the gateway holds the one database role that may append, and every read-only consumer holds one that cannot ([Credentials](#credentials-who-may-write-and-what-each-container-may-see)).
 
 **The port.** Actors interact through `HiveCoordinatorPort`: cursor-anchored reads (a consistent board + events snapshot) and idempotent, gated emits. Idempotency keys are derived from content + read basis, so retries are safe and replays are detectable. Restores bump a generation token that invalidates stale cursors — clients cannot silently act on a pre-restore view.
 
@@ -60,9 +60,9 @@ docker compose run --rm test            # 6. full suite against live Postgres �
 
 > **Name the service on every `up`.** A bare `docker compose up -d` starts all fourteen non-`ops` services, including the three scripted acceptance actors and the demo seeder — which write demo events into your durable spine under run id `accept` (`OMEGAHIVE_RUN_ID` in `.env`, whose default is `accept` and which `seed`, `coordinator`, `worker`, `review` and `board-view` all share). Nothing is corrupted, but you get a run you did not ask for. Start what you mean: `up -d postgres`, `up -d ui`, `up -d notifier`.
 
-Step 3 is only strictly required before starting the `notifier`, but running it up front means the secrets directory exists at the location the compose file already points at, so the two cannot disagree later. It never overwrites a file that already exists. Today it seeds exactly one file, `notifier.env`, because that is the only service with a committed example; the others named in `secrets-manifest.yaml` must be written by hand until they have one.
+Step 3 is only strictly required before starting the `notifier`, but running it up front means the secrets directory exists at the location the compose file already points at, so the two cannot disagree later. It never overwrites a file that already exists. It seeds the three services with committed examples — `notifier.env`, `gateway.env` and `owner.env` (`postgres.env` and `harness.env` must still be written by hand) — and the two credential files it seeds are **inert**, with every variable commented out, so running this at any point on any host cannot arm a half-configured deployment. See [Credentials](#credentials-who-may-write-and-what-each-container-may-see).
 
-Give the stack a heartbeat with the built-in demo — `docker compose run --rm seed` plans a small project on the `accept` run, then `docker compose up -d coordinator worker review` runs it to completion while `docker compose run --rm board-view` shows the board. Run `docker compose run --rm deploy-checks` after any environment change; it verifies credential scope and structural security facts.
+Give the stack a heartbeat with the built-in demo — `docker compose run --rm seed` plans a small project on the `accept` run, then `docker compose up -d coordinator worker review` runs it to completion while `docker compose run --rm board-view` shows the board. Run `scripts/deploy_checks.sh` after any environment change: seven checks, from the acceptance run and a snapshot/restore replay through the structural security facts to a per-container credential scan.
 
 For a real deployment — the secrets layout (per-service env files, never in images or logs), the key-isolation proxy for LLM provider keys, and recovery/restore discipline — read [docs/omegahive_deployment_spec.md](docs/omegahive_deployment_spec.md) before trusting it with anything you'd miss.
 
@@ -92,7 +92,7 @@ For hacking on the code itself there's a host path too: `uv sync`, then `uv run 
 | `omegahive bump-generation --run-id <run>` | invalidate every cursor on a run. This is the command behind "restores bump a generation token" above: run it *after* restoring a dump and *before* restarting clients |
 | `omegahive seed-demo` / `omegahive act` | demo planner and scripted reactors |
 | `omegahive run <scenario.yaml>` / `omegahive simulate` | execute one scripted scenario, or a deterministic multi-seed sweep of them |
-| `omegahive deploy-checks` | structural security checks (credential scope, tier routing) |
+| `omegahive deploy-checks` | structural security checks (tier routing, credential scope, and the two-role open-test — an append attempted on each credential). `scripts/deploy_checks.sh` runs these plus the end-to-end and scan checks |
 
 `omegahive notify` (the notifier) and `omegahive ui-serve` (the web UI) are the two long-running commands; both have their own sections below.
 
@@ -127,6 +127,24 @@ The `backup` service does a containerized `pg_dump`; `deploy/git_bundle.sh` bund
 | no systemd `--user` | `deploy/cron/omegahive-crontab.example` — fill in the placeholders and `crontab -e`. It sets the environment cron does not give a job (PATH, and `DOCKER_HOST` for rootless Podman). |
 
 The unit files' paths and compose binary are deployment-#0 values, flagged as such in the files themselves — adjust them per host. macOS/launchd is sketched in the crontab example as a **note, not a tested path**. Whichever you use, run both commands by hand once and confirm two files appear in the backup directory: an unverified backup schedule is a belief, not a backup.
+
+### Credentials: who may write, and what each container may see
+
+The spine takes writes from **one credential and no other**. `migrations/0003_two_roles.sql` creates two database roles — `hive_gateway`, which may append to the log, and `hive_reader`, which may only read it — and each service is handed just the one it needs. The UI, the notifier and every read-side CLI path connect as `hive_reader` and are therefore *structurally* incapable of appending; a direct `INSERT` from any of them fails on privilege, not on a convention someone might forget. Schema changes are a third credential again (the database owner), reaching only `migrate`, `test` and `backup`. The gateway's own grant is narrower than it looks: `INSERT`, plus `UPDATE` on exactly the two columns the running system rewrites, and no `DELETE` — so the log is append-only by grant rather than by habit.
+
+| file | variable | role | reaches |
+|---|---|---|---|
+| `.env` | `OMEGAHIVE_DATABASE_URL` | `hive_reader` | every service |
+| `gateway.env` | `OMEGAHIVE_GATEWAY_DATABASE_URL` | `hive_gateway` | the services that emit |
+| `owner.env` | `OMEGAHIVE_OWNER_DATABASE_URL` | the owner | `migrate`, `test`, `backup` |
+
+`.env` reaches every container, so nothing stronger than the read credential may ever live in it — that is the rule the split exists to make enforceable rather than remembered.
+
+**The cutover is a separate, reversible operator act**, not something a `git pull` performs. The migration creates the roles without passwords, so they cannot yet authenticate; until you write `gateway.env` and `owner.env` the variables stay unset, the connection helpers fall back to the read DSN, and the stack behaves exactly as it did under one role. Cutting over is: set the two passwords, uncomment and fill the two seeded files, point `.env` at `hive_reader`, restart. Going back is deleting the two files and restarting — `scripts/roles_rollback.sh` (run in the `backup` service, which holds the owner credential) undoes the migration itself. Either direction is verified by `omegahive deploy-checks`, whose check 6 attempts a real append on each credential and reports `PENDING`, not `PASS`, on a deployment that has not cut over.
+
+**What each container may see.** `secrets-manifest.yaml` declares the environment-variable **names** each service is allowed to carry, and `scripts/credential_scope_scan.sh` enforces it: for every running container it diffs the actual key names against that service's row. A name present and undeclared exits non-zero naming the service and the key; a declared name the container lacks is reported and does not fail; a running service with no row at all is a hard failure, because an undeclared service is not an exempt one. There is no exception list — a legitimately-present variable is fixed by declaring it in a line a reviewer can see.
+
+The scan reads **key names only**. It never reads, prints, logs or compares a value, so its output is safe to paste into a shared terminal; that constraint is asserted by `tests/test_credential_scan.py` rather than trusted. `scripts/credential_scope_scan.sh -p <project>` points it at any compose project. `scripts/deploy_checks.sh` runs it as check 7 and — pending an operator policy decision — **reports** a finding rather than failing the run; `OMEGAHIVE_SCAN_FATAL=1` makes it fatal. A scan that *could not run at all* (no `jq`, no engine, no running containers — exit 2 rather than 1) is always fatal and that knob does not reach it, because a green harness over a check that never executed is the one result worth nothing.
 
 ## Operating a hive
 

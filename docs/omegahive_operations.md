@@ -73,13 +73,13 @@ The heartbeat makes silence informative: for a long unattended window, a missing
 Create a bot with [@BotFather](https://t.me/BotFather) (`/newbot`), then put the token and your chat id in a per-service secrets env-file — never in the repo, an image, or a log:
 
 ```bash
-scripts/hive-init-secrets       # creates the secrets dir (0700) + seeds notifier.env (0600)
+scripts/hive-init-secrets       # creates the secrets dir (0700) + seeds the env-files (0600)
 $EDITOR "$OMEGAHIVE_SECRETS_DIR/notifier.env"
 # TELEGRAM_BOT_TOKEN=…   TELEGRAM_CHAT_ID=…
 docker compose up -d notifier   # no run id — it follows every active run
 ```
 
-`hive-init-secrets` creates the directory and seeds a `<service>.env` at 0600 from each committed `<service>.env.example`, never overwriting a file that already exists. Today the repo ships exactly one such example, `notifier.env.example`, so that is the one file it seeds — the other services named in `secrets-manifest.yaml` (`postgres.env`, `gateway.env`, `harness.env`) have no committed example yet and must be created by hand until they do. `OMEGAHIVE_SECRETS_DIR` defaults to `$HOME/.config/omegahive/secrets` — the canonical location from [the deployment spec](omegahive_deployment_spec.md) §4, and the same default the compose file interpolates, so the pointer and the directory cannot disagree. Set the variable only to move the directory.
+`hive-init-secrets` creates the directory and seeds a `<service>.env` at 0600 from each committed `<service>.env.example`, never overwriting a file that already exists. The repo ships three: `notifier.env.example`, `gateway.env.example` and `owner.env.example` (`postgres.env` and `harness.env` have no committed example yet and are created by hand). **The two credential files are seeded with every variable commented out**, deliberately: a seeded `gateway.env` that *set* a placeholder would stop the write path falling back to the single-role DSN and break every emit on a host that has not cut over, so this bootstrap is safe to run at any time and the cutover stays an explicit act (README, "Credentials"). `OMEGAHIVE_SECRETS_DIR` defaults to `$HOME/.config/omegahive/secrets` — the canonical location from [the deployment spec](omegahive_deployment_spec.md) §4, and the same default the compose file interpolates, so the pointer and the directory cannot disagree. Set the variable only to move the directory.
 
 `HEARTBEAT_HOUR_UTC` is config, not a secret: it rides the compose environment (`environment: HEARTBEAT_HOUR_UTC=${HEARTBEAT_HOUR_UTC:-6}`), not `notifier.env`. The service carries `restart: unless-stopped`, and its per-run read cursors + heartbeat state persist on the `omegahive-notifier` volume, so a restart resumes without replay or a double heartbeat.
 
