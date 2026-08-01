@@ -52,12 +52,22 @@ GRANT USAGE ON SCHEMA public TO hive_reader;
 -- credential).
 GRANT SELECT ON events, runs, schema_migrations TO hive_reader;
 
--- The write surface, and nothing else. UPDATE on events is the rejection-coalescing
--- counter (events/log.py); UPDATE on runs is the log-generation bump a restore performs.
--- No DELETE and no TRUNCATE to either role: the log is append-only, and nothing in the
--- running system removes an event.
-GRANT INSERT, UPDATE ON events TO hive_gateway;
-GRANT INSERT, UPDATE ON runs   TO hive_gateway;
+-- The write surface, and nothing else.
+--
+-- The UPDATE grants are COLUMN-scoped, because table-wide UPDATE would make "append-only"
+-- false in the direction that leaves no trace: a deleted row leaves a gap in `seq`, but a
+-- rewritten `actor_id` or `event_type` leaves nothing at all, and the whole point of the
+-- log is that it can be replayed and believed. The running system needs exactly two
+-- updates and no others -- the rejection-coalescing counter (events/log.py's jsonb_set on
+-- `payload`) and the log-generation bump a restore performs (`runs.generation`) -- so
+-- those two columns are what the gateway may write. The SELECT these statements' WHERE
+-- clauses need comes from the hive_reader membership above.
+--
+-- No DELETE and no TRUNCATE to either role: nothing in the running system removes an event.
+GRANT INSERT ON events TO hive_gateway;
+GRANT INSERT ON runs   TO hive_gateway;
+GRANT UPDATE (payload)    ON events TO hive_gateway;
+GRANT UPDATE (generation) ON runs   TO hive_gateway;
 GRANT USAGE ON SEQUENCE events_seq_seq TO hive_gateway;
 
 -- Future tables read automatically, write NEVER automatically. A new table is readable

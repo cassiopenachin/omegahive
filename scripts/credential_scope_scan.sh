@@ -72,13 +72,24 @@ while IFS= read -r id; do
   # One inspect per container, formatted as JSON so jq — not the shell — does the parsing:
   # an env value containing a newline would break any line-oriented split, and the failure
   # mode of that is a fabricated key name reported as over-scope.
-  meta="$("$OMEGAHIVE_ENGINE" inspect "$id" --format \
-    '{"name": {{json .Name}}, "service": {{json (index .Config.Labels "com.docker.compose.service")}}, "env": {{json .Config.Env}}}')"
-  jq -c '{
-      container: (.name | ltrimstr("/")),
-      service:   (.service // ""),
-      env_keys:  [.env[] | split("=")[0]]
-    }' <<<"$meta"
+  #
+  # PIPED, never assigned. Binding the inspect output to a shell variable would put every
+  # VALUE in the stack — bot token, provider keys, all three DSN passwords — into a shell
+  # variable, and `bash -x` (the obvious thing to run when this scan reports something)
+  # prints assignments with their expanded values. The claim that this output is safe to
+  # paste has to survive the operator debugging the scan itself. jq's stderr is dropped for
+  # the same reason: its parse errors quote the offending input.
+  if ! "$OMEGAHIVE_ENGINE" inspect "$id" --format \
+      '{"name": {{json .Name}}, "service": {{json (index .Config.Labels "com.docker.compose.service")}}, "env": {{json .Config.Env}}}' \
+      2>/dev/null \
+    | jq -c '{
+        container: (.name | ltrimstr("/")),
+        service:   (.service // ""),
+        env_keys:  [.env[] | split("=")[0]]
+      }' 2>/dev/null
+  then
+    die "could not read container $id's environment as JSON from '$OMEGAHIVE_ENGINE inspect' — nothing was scanned for it, so nothing passed"
+  fi
 done <<<"$IDS" > "$OBS"
 
 # The manifest travels with the observations (see the module docstring): what is scanned

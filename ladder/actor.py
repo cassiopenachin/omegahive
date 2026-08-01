@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable
 
 from omegahive.board.reducer import Board
-from omegahive.db import connect
+from omegahive.db import connect_gateway
 from omegahive.events.envelope import Actor
 from omegahive.gateway.result import Rejected
 from omegahive.port import HiveCoordinatorPort
@@ -49,10 +49,13 @@ def drive(
     op cap trips. Returns (last board observed, stop reason) where the stop reason is one
     of `terminal` / `cap_ops` / `cap_timeout` — the runner maps it to a mechanical loss
     bucket (ladder.metrics) for non-completions."""
-    conn = connect(url)
+    # The write path: this loop emits, so both the connection and the reconnect callable
+    # take the gateway credential. Passing the read credential here would run until the
+    # first emit and then fail on privilege, on a deployment that had cut over.
+    conn = connect_gateway(url)
     port = HiveCoordinatorPort(
         Actor(role=actor_role, id=agent_id), run_id, conn,
-        connect=lambda: connect(url), server_time=True,
+        connect=lambda: connect_gateway(url), server_time=True,
     )
     port.open_run()
     cursor: int | None = None

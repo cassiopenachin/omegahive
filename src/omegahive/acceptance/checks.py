@@ -117,6 +117,20 @@ VALUES (%s, 1, 'instrument', 'reader-probe', 'note.posted', '{}'::jsonb)
 """
 
 
+def _read_credential_can_append(run: str) -> bool:
+    """Can the READ credential append to the spine? Rolled back either way — this is a
+    question about privilege, and it must not leave an event behind to answer it."""
+    conn = connect()
+    try:
+        with conn.transaction(force_rollback=True):
+            conn.execute(_DIRECT_INSERT, (run,))
+    except psycopg.errors.InsufficientPrivilege:
+        return False
+    finally:
+        conn.close()
+    return True
+
+
 def _check_two_role_split() -> tuple[str, str]:
     """The open-test: the gateway credential writes, the read credential cannot.
 
@@ -125,15 +139,29 @@ def _check_two_role_split() -> tuple[str, str]:
     armed would make this harness red on every host until an operator act it cannot
     perform. The moment the variable is set, every clause below is a hard fail.
     """
+    run = "deploy-check-two-role"
     if not get_settings().gateway_database_url:
-        return PENDING, (
-            "single-role deployment: OMEGAHIVE_GATEWAY_DATABASE_URL is unset, so the read "
-            "and write paths share one credential and no privilege boundary exists to "
-            "test. Migration 0003 creates the roles; the cutover arms them (RUNBOOK "
-            "'Two-role cutover')."
+        # Unset is ambiguous on its own, and the ambiguity matters: `required: false` on the
+        # compose env-file means a gateway.env that fails to be delivered (a moved secrets
+        # directory, an unset HOME) looks exactly like a deployment that never cut over. So
+        # ask the read credential whether it can write. If it CAN, this really is a
+        # single-role deployment and there is no boundary to assert yet. If it CANNOT, the
+        # split is armed and the write credential is missing — a stack that can no longer
+        # emit — and that is a failure, not a pending item.
+        if _read_credential_can_append(run):
+            return PENDING, (
+                "single-role deployment: OMEGAHIVE_GATEWAY_DATABASE_URL is unset and the "
+                "read credential can still append, so no privilege boundary exists to test "
+                "yet. Migration 0003 creates the roles; the cutover arms them (RUNBOOK "
+                "'Two-role cutover')."
+            )
+        return FAIL, (
+            "the read credential cannot append and OMEGAHIVE_GATEWAY_DATABASE_URL is unset "
+            "— the split is armed but no write credential reached this container, so "
+            "nothing can emit. Check that gateway.env exists under OMEGAHIVE_SECRETS_DIR "
+            "and that the variable is set in it."
         )
 
-    run = "deploy-check-two-role"
     conn = connect_gateway()
     try:
         port = HiveCoordinatorPort(Actor(role="planner", id="two-role-probe"), run, conn)
@@ -152,7 +180,7 @@ def _check_two_role_split() -> tuple[str, str]:
         with conn.transaction():
             conn.execute("SELECT count(*) FROM events").fetchone()
         try:
-            with conn.transaction():
+            with conn.transaction(force_rollback=True):
                 conn.execute(_DIRECT_INSERT, (run,))
         except psycopg.errors.InsufficientPrivilege:
             pass
@@ -182,7 +210,15 @@ def run_structural_checks() -> int:
     ]
     failed = 0
     for name, fn in checks:
-        status, detail = fn()
+        try:
+            status, detail = fn()
+        except Exception as exc:  # noqa: BLE001 — see below
+            # A check that raises is a FAILED check, not a failed harness. Broad on
+            # purpose: when the gateway credential is missing, check 4's probe emit raises
+            # InsufficientPrivilege, and an uncaught exception there took the whole command
+            # down with a psycopg traceback — hiding check 6, which is the one that names
+            # the actual cause. Every check must get to speak.
+            status, detail = FAIL, f"check raised {type(exc).__name__}: {exc}"
         print(f"[{status}] {name}: {detail}")
         if status == FAIL:
             failed += 1

@@ -30,10 +30,17 @@ DBS="$(psql "$DSN" -X -tA -v ON_ERROR_STOP=1 -c \
     WHERE datallowconn AND datname NOT IN ('template0','template1')
     ORDER BY datname")"
 
-for db in $DBS; do
+# Read line by line rather than `for db in $DBS`: a database name carrying whitespace would
+# split into two iterations, the first `\connect` would fail, ON_ERROR_STOP would exit, and
+# the cluster would be left revoked in some databases and not others -- a half-done rollback,
+# which is the one outcome a rehearsed rollback exists to make impossible.
+while IFS= read -r db; do
+  [ -n "$db" ] || continue
   echo "revoking in ${db}"
   psql "$DSN" -X -q -v ON_ERROR_STOP=1 -v db="$db" -f "$SQL"
-done
+done <<EOF
+$DBS
+EOF
 
 # Only now can the roles go. If this fails, a database appeared (or was created) after the
 # list above was taken — re-run; the guards make that a no-op everywhere else.

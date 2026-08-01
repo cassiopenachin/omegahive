@@ -77,6 +77,32 @@ def test_gateway_cannot_delete_events(conn):
     assert _refused(conn, "hive_gateway", "DELETE FROM events WHERE seq = 1")
 
 
+def test_gateway_cannot_rewrite_a_recorded_event(conn):
+    """The UPDATE grant is COLUMN-scoped, and this is why. A DELETE leaves a gap in `seq`;
+    an overwritten actor_id or event_type leaves nothing at all, so a table-wide UPDATE
+    would make the log rewritable without a trace by the very credential every emit uses."""
+    for column in ("event_type = 'note.posted'", "actor_id = 'someone-else'",
+                   "run_id = 'other-run'", "logical_ts = 0"):
+        assert _refused(conn, "hive_gateway", f"UPDATE events SET {column} WHERE seq = 1")
+
+
+def test_gateway_can_update_only_the_two_columns_the_system_writes(conn):
+    """The coalescing counter and the generation bump — the only two updates the running
+    system performs — must still work, or the grant is too tight to be correct."""
+    with conn.transaction():
+        conn.execute("SET LOCAL ROLE hive_gateway")
+        conn.execute("INSERT INTO runs (run_id) VALUES ('two-role-test') ON CONFLICT DO NOTHING")
+        seq = conn.execute(_APPEND + " RETURNING seq").fetchone()[0]
+        conn.execute(
+            "UPDATE events SET payload = jsonb_set(payload, '{coalesced_count}', to_jsonb(2))"
+            " WHERE seq = %s",
+            (seq,),
+        )
+        conn.execute(
+            "UPDATE runs SET generation = generation + 1 WHERE run_id = 'two-role-test'"
+        )
+
+
 def test_gateway_cannot_change_the_schema(conn):
     """DDL stays with the owner — a gateway that could alter the log's shape would make
     the migration ledger fiction."""
