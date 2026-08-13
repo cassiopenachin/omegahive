@@ -1,0 +1,264 @@
+diff --git a/projects/omegahive/RUNBOOK.md b/projects/omegahive/RUNBOOK.md
+index d482690..b73c07f 100644
+--- a/projects/omegahive/RUNBOOK.md
++++ b/projects/omegahive/RUNBOOK.md
+@@ -29,7 +29,10 @@ project, `WS_HUB`, `OPS_WS`, `WORK_ROOT`, `WRAPPER_DIR`, `HIVE_TMUX_SESSION`, `H
+ `HIVE_RUN_ID` is the run escape hatch (wins over a conf's `RUN_ID`; the drill points it at a
+ scratch run). After changing any of these scripts, run
+ `scripts/hive-tooling-drill.sh` — it drives the full lifecycle and every refusal path against a
+-throwaway sandbox and a scratch run id (never the durable `omegahive` run).
++throwaway sandbox and a scratch run id (never the durable `omegahive` run), on its own private
++tmux server (`TMUX_TMPDIR` inside the sandbox, killed at exit) — so it never touches the `hive`
++session holding the live worker panes, even though it occupies window indices and flips
++server-wide tmux options to test pane allocation.
+ 
+ Recovery from a dead worker still needs the manual `task.reassigned` path below (hive-launch
+ assigns, it does not reassign).
+@@ -136,6 +139,43 @@ replaced, never resurrected:
+ The board keeps the full history (both workers' events remain); no override is needed —
+ the reassignment IS the recovery.
+ 
++### Half-launched task (the board owns it, no pane exists)
++
++`hive-launch` seeds the board before it opens the pane — deliberately, so the worker's
++first act (`task.accepted`) is legal the moment its session starts. The cost of that
++ordering is one failure mode: if the pane step fails, the task is owned on the board with
++no session and the kickoff never delivered. **This is not a dead worker** — no worker ever
++ran — so the reassignment path above is the wrong tool.
++
++You will know it by the launcher's own output: it exits non-zero and prints
++`hive-launch: HALF-LAUNCHED <task>` followed by the complete manual completion path. The
++board shows the task `assigned`, and `tmux list-windows -t hive` shows no window named for
++it. Everything else is already in place: both clones, the emit wrapper, and the filled
++kickoff saved at `~/work/<worker>/kickoff.txt`.
++
++**Do not re-run `hive-launch`** — the task is owned, so it refuses, and relaunch is not
++recovery.
++
++Finish it by hand — the launcher prints these commands filled in; this is the same thing
++from memory if the output has scrolled away (`$HIVE_WORKER_CMD`, default `claude`):
++
++```bash
++W=<worker>; T=<task>
++tmux new-window -a -t 'hive:{end}' -n "$T" -c ~/work/$W/hive \
++  -e HIVE_KICKOFF="$(cat ~/work/$W/kickoff.txt)" 'claude "$HIVE_KICKOFF"'
++# or, from an attached client: prefix-c, then
++#   cd ~/work/$W/hive && claude "$(cat ~/work/$W/kickoff.txt)"
++```
++
++The `-a -t 'hive:{end}'` form is append semantics: the window lands above the session's
++highest index, which is free by construction. Never name an explicit index — an occupied
++one is exactly the failure that produces a half-launch (2026-07-27), and the window *name*
++is the registry.
++
++To abandon the launch instead of finishing it: the task is owned, so retire it the same way
++a dead worker is replaced — register a fresh worker id and `task.reassigned` (above) — and
++clear `~/work/<worker>/` before reusing the id.
++
+ ## Backups and restore
+ 
+ Two stores, one backup directory. Losing the workspace is losing the project the same as
+diff --git a/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md b/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md
+new file mode 100644
+index 0000000..fa62557
+--- /dev/null
++++ b/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md
+@@ -0,0 +1,198 @@
++# Result — launch-pane-fix: tmux window by name, fail-safe half-launch
++
++**Task:** `launch-pane-fix` · **Order:** `projects/omegahive/orders/2026-07-27-launch-pane-fix.md`
++**Code:** branch `launch-pane-fix` in the omegahive code repo — commits `68e5ed8`, `79301f5`,
++branched from merged main at `e9656a4`. That base already carries the project-config refactor
++(`project.conf` / `load_project_conf` / `CANON_ROOT` / the portfolio-wide review throttle), which
++is what the order's sequencing clause waits on; no `projects/omegahive/reports/` entry exists in
++this workspace copy, so project-config's own result report is cited by name, not by pin.
++
++## What shipped
++
++One PR touching two files in `scripts/`, plus the RUNBOOK section the order names.
++
++**1. Window allocation is by name only (`scripts/hive-launch`).** The pane step is now
++
++```bash
++tmux new-window -a -t "$HIVE_TMUX_SESSION:{end}" -n "$TASK" -c "$WS_ROOT" -e HIVE_KICKOFF=... "$launch_cmd"
++```
++
++`-a` against `{end}` — the session's highest-numbered window — is append semantics: tmux allocates
++the next index *above* the last one, which is free by construction, so `create window failed: index
++N in use` cannot occur. The launcher supplies only the session and the window name (the task id).
++Two forms were deliberately rejected: an explicit derived index (the original defect), and a bare
++`-t <session>` with the index omitted — the latter still resolves to a concrete index. `{end}` was
++chosen over a bare `-a` because `-a -t <session>` inserts after the session's *current* window and
++shuffles every window above it up; `{end}` appends past the last, so no existing window moves.
++Nothing in the form depends on `base-index` or `renumber-windows`.
++
++**2. A pane failure after spine seeding is fail-safe, not archaeology.** Every post-seeding step —
++the kickoff-file write, `new-window`, `new-session`, and a new post-hoc assertion that the window
++actually exists — routes failure into a `half_launch` printer that exits non-zero after printing:
++the state (board owns the task on run X, only the pane is missing), the refusal to re-run
++`hive-launch`, the locations of both clones, the wrapper and the saved kickoff, the exact filled
++`tmux new-window`/`new-session` command that completes the launch, the kickoff text verbatim, and
++the abandon path (`task.reassigned` per RUNBOOK). The filled kickoff is now also written to
++`~/work/<worker>/kickoff.txt` on every launch, so the completion command reads it from disk instead
++of requiring a multi-line paste.
++
++**3. The one collision that remains meaningful — the name — refuses with its recovery path.** tmux
++itself creates duplicate window names happily (verified), so the pre-flight guard is the only thing
++keeping one task from having two panes. Its message now distinguishes a live/dead worker (kill the
++pane, then `task.reassigned`) from debris (kill the window, re-run the launch), and gives the
++`kill-window` command.
++
++**4. Drill coverage (`scripts/hive-tooling-drill.sh`)** — a new section, *pane allocation: occupied
++indices, name collision, half-launch recovery*, with 22 assertions: the occupied-index reproduction
++(an explicit index still refuses on this tmux), a launch into that state allocating above the
++highest index while moving no existing window, a launch under `base-index 11` +
++`renumber-windows on`, the name-collision refusal (nothing provisioned, no board state, no second
++window), and the half-launch recovery print forced with a PATH shim that fails `new-window` with
++the historical message — no test seam in production code, since the launcher calls plain `tmux`.
++
++**5. The drill now runs on a private tmux server.** `TMUX_TMPDIR` points at the sandbox and cleanup
++is `kill-server`. This is a prerequisite for (4), not a bonus: the new cases occupy window indices
++and flip server-wide tmux options, and until now the drill created its session on the operator's
++default server — the one holding every live worker pane.
++
++**6. `RUNBOOK.md`** — "Dead worker recovery" gains a *Half-launched task* subsection (what it is,
++how to recognise it, why it is not a dead worker, the manual completion commands from memory, and
++the abandon path), and the drill sentence in the Phase 1 loop records the tmux isolation.
++
++## How verified
++
++**The drill itself was not run.** `hive-tooling-drill.sh` needs the stack (podman + pg) and writes
++scratch spine events; neither is available where this work was done. It must be run on the stack
++host before the merge — that run is the order's definition-of-done item, and this report does not
++claim it.
++
++What *was* run, on tmux 3.5a:
++
++**Reproduction, before the fix.** A harness (appendix) runs the real `hive-launch` against a stubbed
++stack (`podman` replaced by a stub: `board-view` → `[]`, `emit` → accepted) and a private tmux server
++(`TMUX_TMPDIR`), into a session with windows at indices 0,1,3,4 (a gap at 2) and the current window
++at 1. Against the **pre-fix** launcher:
++
++- The defect class reproduces exactly, raw: `tmux new-window -t hive:4 …` → `create window failed:
++  index 4 in use`, exit 1.
++- The pre-fix launcher itself succeeded here, and put the worker window at **index 2** — it filled
++  the gap, landing the worker pane inside the operator's window order. It chose a concrete index;
++  it did not append.
++- With the pane step forced to fail after seeding (PATH shim), the pre-fix launcher printed
++  `seeded: task.created + worker.registered + task.assigned`, then `create window failed: index 4
++  in use`, and exited 1. Stranded state: clones present, wrapper present, **0 windows**, and no word
++  about what to do next — the archaeology case the order describes.
++
++**After the fix, same fixture, same session state:**
++
++- The worker window lands at **index 5**, above the highest existing index; windows 0, 1, 3, 4 keep
++  their indices and names, and the gap at 2 is left alone.
++- With the pane step forced to fail, the launcher prints the full `HALF-LAUNCHED 'pane-half'` block —
++  clone/wrapper/kickoff-file paths, the filled `tmux new-window -a -t 'hive:{end}' …` command, the
++  verbatim kickoff, and the `task.reassigned` abandon path — and exits 1.
++
++**The new drill assertions were exercised.** The section's fixture logic was run verbatim through the
++same stubbed-stack harness against the real `hive-launch`: **22 PASS, 0 FAIL**. Two of those 22 are
++board reads (`bstatus … = assigned`), which the harness stubs; they are real only under the drill on
++the stack. Nothing in the section's tmux logic is unexercised.
++
++**Static checks:** `bash -n` and `shellcheck -x` clean on `hive-launch`, `hive-tooling-drill.sh` and
++`hive-common.sh`.
++
++**Independent review: not run.** The diff is one script plus its drill section, and the review that
++matters for this change is the drill on the stack. `/code-review` should run against the code clone
++before the merge if the operator wants it.
++
++**Named risk, answered honestly.** The order's context reports that on 2026-07-27 a session-only
++target (`new-window -t hive -n <task>`, no index) failed identically to the explicit-index form.
++**That did not reproduce here.** On tmux 3.5a with a default config, the session-only form succeeds
++and fills the lowest free index. The explicit-index failure reproduces exactly. This does not change
++the fix — the session-only form still *chooses* an index, which is the thing the order rules out, and
++append semantics are immune either way — but the shipped code is verified against observed behaviour,
++and the discrepancy is recorded rather than smoothed over. Whatever made the session-only form fail
++on 2026-07-27 (a config or version difference on the live server) remains unexplained.
++
++## To operate
++
++- **Nothing to deploy.** Shell scripts on `PATH` only — no container surface, no compose, no env, no
++  service restart. Merge, and the next `hive-launch` uses the new path.
++- **Run the drill on the stack host after merging:** `scripts/hive-tooling-drill.sh` from a clone
++  with the stack up. It now creates its own tmux server, so running it no longer touches the `hive`
++  session or its live worker panes — the previous behaviour was to create the drill session on the
++  operator's default server.
++- **Ordering: kept as it was — seed the board, then open the pane.** The order permitted reversing
++  it; this PR did not. Rationale: the worker's first act is `task.accepted`, which is legal only
++  after `task.assigned` has landed. A pane opened before the board writes starts a real session whose
++  first emit is rejected, and WORKER.md sends a worker that hits a rejection to report and end its
++  turn — trading a recoverable half-launch for a burned session. So the strand stays possible by
++  design, and the fix is that the launcher now hands over everything needed to finish by hand. Every
++  pre-existing refusal path is untouched: WIP throttle, board-state guards (adopt / owned / in_review
++  / done), clone clobber guards, dirty-order pin, and the pane-name guard all still fire before any
++  board write.
++- **New file per launch:** `~/work/<worker>/kickoff.txt` (the filled kickoff). It is removed with the
++  worker directory at the usual `rm -rf ~/work/<worker>` after close.
++- **If a launch half-fails,** the launcher prints the complete manual completion path; the same
++  procedure from memory is in RUNBOOK → "Dead worker recovery" → *Half-launched task*. Do not re-run
++  `hive-launch` on a half-launched task; it is owned and will refuse.
++- **The pane-name refusal message changed** (it now names the recovery path). Any operator habit
++  keyed to the old one-line text should key on "already exists" instead.
++
++## Reflection
++
++- **The index carries no meaning, so never name one — and "don't name one" is not the same as
++  "omit one".** Omitting the index still makes tmux resolve a concrete index; it just picks the
++  lowest free slot, which is silent, order-disturbing, and (per the 0727 evidence) not even reliably
++  collision-free. Only `-a` is allocation *by relation* rather than by number. The refinement worth
++  passing on: `-a -t <session>` alone appends after the *current* window and renumbers the operator's
++  windows out from under them — `{end}` is the form that appends and disturbs nothing.
++- **"The pane name is the registry" rests entirely on one `grep -qxF` in `hive-launch`.** tmux will
++  create a second window with the same name without complaint (verified). Phase 1 refuses a registry
++  file, which is right at this scale, but the refusal's whole enforcement is that guard — worth
++  knowing before anyone touches it, and worth remembering as an argument the day a real registry is
++  reconsidered.
++- **A drill that drives tmux on the operator's live server is a hazard the drill's own design
++  documented away.** It scrupulously isolated the workspace, the hub, the clones, the wrapper dir and
++  the run id — and then created sessions on the server holding every worker pane. The isolation
++  boundary was one item short of complete, and only a task that needed to make tmux *hostile* forced
++  the gap into view. The general lesson for the improver: an isolation list is a place where "all but
++  one" reads exactly like "all".
++- **A failure mode's fix can be a print.** Nothing about the half-launch was made impossible; the
++  launcher just stopped being the only thing that knew how to finish it. That was cheaper than any
++  transactional scheme (rollback of board writes, deferred seeding) and it leaves the state machine
++  alone — the alternatives all wanted to move authority around to save one manual step.
++- **Tension in the order, resolved by evidence:** the order asserts that the session-only form fails
++  identically to the explicit form, and the reproduction contradicts that on tmux 3.5a. The order also
++  anticipated exactly this ("if the drill can't simulate an occupied index portably, the report says
++  what was asserted") — the shape of the guidance held even where the specific claim didn't, which is
++  a good argument for orders naming their risks.
++- **Effort:** within the predicted 1–2 worker-hours; zero questions asked (the recovery-print format
++  was under-determined but reversible and operator-facing only, so it was decided in-bounds rather
++  than blocking).
++
++## Appendix — the reproduction harness
++
++Not committed: it is evidence tooling, not a second drill (the drill is the permanent home for these
++assertions). Two techniques make `hive-launch` runnable without the stack and without touching the
++operator's tmux; both are reusable for any future launcher work:
++
++```bash
++# 1. a private tmux server — every `tmux` call, including the ones inside hive-launch
++export TMUX_TMPDIR="$SANDBOX/tmux"; mkdir -p "$TMUX_TMPDIR"; unset TMUX
++
++# 2. a stubbed stack — hive-common's emit()/board reads go through `podman compose run ... cli`
++mkdir -p "$SANDBOX/bin" "$SANDBOX/omega"
++cat > "$SANDBOX/bin/podman" <<'EOF'
++#!/usr/bin/env bash
++for a in "$@"; do case "$a" in board-view) echo '[]'; exit 0;; emit) echo accepted; exit 0;; esac; done
++exit 0
++EOF
++chmod +x "$SANDBOX/bin/podman"
++export PATH="$SANDBOX/bin:$PATH" OMEGA_DIR="$SANDBOX/omega"
++```
++
++The rest of the fixture is the drill's own sandbox recipe (bare hub, workspace clone with
++`projects/alpha/{project.conf,orders/}`, a canonical code repo under `CANON_ROOT`, a `sleep`-based
++`HIVE_WORKER_CMD`), plus the hazard: build a session with a gap in its indices, select a window that
++is not the last, and launch into it. To force the half-launch, put a shim `tmux` first on `PATH`
++that fails `new-window` with `create window failed: index 4 in use` and `exec`s the real tmux for
++everything else.

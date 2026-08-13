@@ -1,0 +1,186 @@
+diff --git a/projects/pln-benchmarks/reports/2026-08-13-ptc-revalidate-result.md b/projects/pln-benchmarks/reports/2026-08-13-ptc-revalidate-result.md
+new file mode 100644
+index 0000000..3552e67
+--- /dev/null
++++ b/projects/pln-benchmarks/reports/2026-08-13-ptc-revalidate-result.md
+@@ -0,0 +1,180 @@
++# Result — ptc-revalidate (PeTTaChainer chaining verdict at pinned shas)
++
++**Verdict: backward chaining is BROKEN at the pins; forward chaining WORKS, with a
++caveat.** The April 2026 blocker is not fixed. Filed upstream as
++<https://github.com/rTreutlein/PeTTaChainer/issues/1>. Ledger row **S1 is reproduced,
++not cleared** — see "Ledger" below.
++
++Pins: PeTTaChainer `02a85c63be6a735f50f50e1084a717b3256b8406` (2026-07-20) ·
++PeTTa `43705f5d9ff8958ffe7f0aa6777fb8477f2401f2` (2026-07-24, = `pins.env` `PETTA_SHA`) ·
++SWI-Prolog 9.3.33 · Python 3.10.18 (uv-managed) · janus-swi 1.5.2.
++
++## What shipped
++
++In the code repo (`plnbench`), on branch `ptc-revalidate` (unmerged — merging is the
++operator's act):
++
++| path | what |
++|---|---|
++| `docs/ptc-verdict.md` | **the deliverable** — status per chaining mode at named shas, both test suites verbatim, the April probe re-run, what was ruled out, consequences for the roadmap |
++| `tests/ptc-revalidate/run.sh` | one-command re-derivation from a clean clone: clones both subjects at the pins, builds PeTTaChainer's own isolated task environment, runs four legs, re-reads the verdict off the output. Exit 0 = verdict holds, 2 = upstream moved, 1 = could not run |
++| `tests/ptc-revalidate/probes/*` | the minimal repro, the April format-A ProofWriter probe (+ a CTV control), and the same probe through the python API under both rule taggings |
++| `tests/ptc-revalidate/captured/` | the exact logs behind every number in the verdict, including two control runs |
++| `tests/ptc-revalidate/upstream-issue.md` | the upstream filing as sent |
++| `docs/known-issues.md` | new entry #6 (this finding, with disposition); #2's disposition updated — it rode along in the same issue, as the order asked |
++
++Three findings, not one:
++
++1. **Backward `query` returns empty for every goal** — including a goal that is a fact
++   `compileadd` just stored, and including facts `forward-chain` derived. 44 of 50 of
++   PeTTaChainer's own MeTTa tests and 7 of 16 of its python tests fail on exactly this.
++   `test_forward_backward_compose.metta` — the file April named — fails in April's shape:
++   `is (), should (: (r2 (r1 a0)) (Goal) (STV 1.0 0.999700089898053)). ❌`
++2. **Forward chaining works** — on the April ProofWriter theory it derives
++   `(Like cow_1 squirrel_1)` at `(STV 1.0 0.8181611546663258)` with the right proof term,
++   and saturation correctly stops there, leaving the two gold-Unknown questions
++   underivable. So this theory's four findings-table answers are all recoverable today by
++   forward chaining plus a KB read.
++3. **…but only for rules tagged `(CTV …)`.** A rule tagged `(STV s c)` — which is what
++   translation format A emits, and what upstream's `pln_validator` and
++   `test_stv_implication_derived_ctv.metta` both say is supported — compiles (it adds the
++   same rule rows) and then never fires. Nothing derived, no error.
++
++All three fail silently: empty result, exit status 0, no diagnostic. That is the ledger
++S3 class, and it is why the verdict insists a harness must attribute empty output rather
++than map it to Unknown.
++
++## How verified
++
++- **Both upstream suites, in upstream's own declared environment.** PeTTaChainer ships
++  `.myclaw/Dockerfile` + `.myclaw/environment.json`; the harness builds that image and
++  runs that `test` command. Python: `Ran 16 tests … FAILED (failures=5, errors=2)`.
++  MeTTa: `Summary: 6 passed, 44 failed`. Logs committed.
++- **Ground-truth discipline.** Every probe prints; nothing asserts. The verdict quotes
++  captured output, and `run.sh` re-derives each mode's status from that output rather
++  than from a human's memory of it. No expected value in this task was written before the
++  runtime produced it.
++- **Controls, because "your environment is broken" is the obvious rebuttal.**
++  PeTTa@43705f5's own example suite is green in the same image (157 `OK:`, 0 failures,
++  exit 0). Re-running the whole MeTTa suite against PeTTa@d9a437c — `main` as of
++  2026-07-20, contemporary with the chainer sha and *before* PR #212's quoting change —
++  gives identical per-file verdicts on every chainer test (5/45; the one delta is a
++  lib_pln example unrelated to chaining). PeTTa@4a62d08 (the pre-#212 merge parent)
++  reproduces the empty query too. The minimal repro is also empty at eleven older
++  PeTTaChainer commits back to 2026-06-12.
++- **Two full end-to-end runs** of `tests/ptc-revalidate/run.sh` from re-cloned checkouts,
++  the second after the review fixes; identical per-file verdicts both times.
++- **Review: `/code-review` at medium, run against the code clone**, on the two-commit
++  branch. Five findings, all in the harness's failure handling, all fixed in
++  `6087f43`: legs 3 and 4 now fail loudly instead of letting a missing measurement read
++  as "upstream moved"; an unrecognised probe result reads `UNPARSED` and stops rather
++  than defaulting to WORKS; the container writes its venv and `.pyc` outside the bind
++  mount so a rootful engine leaves nothing undeletable; the python-API probe now runs
++  both rule taggings, so the forward-only design the verdict recommends is evidenced on
++  the surface the pipeline arm would use. The review independently re-checked every
++  quantitative claim in the verdict against the logs and the checkouts.
++- **Not verified:** why the backward chainer returns nothing. Diagnosing it means reading
++  the backward chainer's internals, and PeTTaChainer is a subject under test — the
++  charter says findings get filed, not fixed. The issue says plainly that we are not
++  claiming a cause.
++
++## To operate
++
++**Rerun the verdict** (about six minutes on a warm host; needs git, podman or docker, and
++network for the two clones):
++
++```bash
++cd <plnbench>
++bash tests/ptc-revalidate/run.sh
++# exit 0 = the recorded verdict still holds
++# exit 2 = a mode's status CHANGED — upstream moved; read results/ptc-revalidate/*.log,
++#          then update docs/ptc-verdict.md (and this ledger row)
++# exit 1 = a leg could not run (environment)
++```
++
++Offline, or to pin elsewhere:
++
++```bash
++PTC_SRC=/path/PeTTaChainer.bundle PETTA_SRC=/path/PeTTa.bundle bash tests/ptc-revalidate/run.sh
++ENGINE=docker PTC_SHA=<sha> PETTA_SHA=<sha> bash tests/ptc-revalidate/run.sh
++```
++
++Everything lands in `results/ptc-revalidate/` (gitignored): four logs, the image build
++log, and the scratch checkouts under `work/`. `KEEP_WORKDIR=1` reuses them. The named
++volumes `plnbench-ptc-uv-cache` and `plnbench-ptc-uv-python` keep uv's cache and its
++managed CPython 3.10 warm; they are safe to delete, the next run refills them. Image tag:
++`plnbench-ptc:02a85c6` — distinct from anything the stack runs.
++
++**The two controls**, if a maintainer asks (both from `results/ptc-revalidate/work/`,
++after a normal run):
++
++```bash
++# PeTTa's own suite in the same image
++podman run --rm -v $PWD:/work:z -v $PWD/PeTTa:/nexus/Dev/OpenCog/PeTTa:z \
++  -w /nexus/Dev/OpenCog/PeTTa -e LC_ALL=C.UTF-8 plnbench-ptc:02a85c6 sh test.sh
++
++# the MeTTa suite against a different PeTTa (worktree it first)
++git -C PeTTa worktree add --detach ../petta-alt/d9a437c d9a437c
++podman run --rm -v $PWD:/work:z -v $PWD/petta-alt/d9a437c:/nexus/Dev/OpenCog/PeTTa:z \
++  -w /work/src/PeTTaChainer/pettachainer/metta -e LC_ALL=C.UTF-8 plnbench-ptc:02a85c6 ./test.sh
++```
++
++**What the pipeline arm needs to know** (`folio-parser-arm`, and any ProofWriter run that
++was going to use PeTTaChainer):
++
++- Do not design around `query`. It returns empty for everything at these pins, including
++  direct fact lookup. Any arm that queries is blocked until upstream moves — watch the
++  issue, or run `run.sh` and watch for exit 2.
++- A forward-only design is viable **today**: `compileadd` the theory, `forward-chain` to
++  saturation, read `&kb` (or `forward-has-derived?`). On the April ProofWriter theory that
++  yields the correct answers.
++- If you do that, **emit rules with CTV truth values** — `(CTV (STV s c) (STV 0.0 1.0))`,
++  not `(STV s c)`. Format A as the semantic-parser emits it produces rules that compile
++  and never fire; nothing warns you. If a translation layer stays on format A, it needs a
++  rule-TV rewrite step, and that step needs its own test.
++- Treat empty output as a failure to attribute, never as Unknown — with these defects, an
++  unattributed harness would score every question "Unknown" and look like it ran fine.
++- Do not vendor PeTTaChainer into `pins.env` yet. The seeding comment's reasoning still
++  holds, and this verdict is the evidence.
++
++## Ledger
++
++Row **S1** should close as *reproduced, not cleared* — the April stall is still the live
++state of the world, now with a one-command repro and an upstream issue instead of an
++informal report. Ref for the row:
++`projects/pln-benchmarks/reports/2026-08-13-ptc-revalidate-result.md@<sha>`; the code-side
++artifact is `docs/ptc-verdict.md` on branch `ptc-revalidate`. Closing the row is the
++operator's write, per this instrument's scope.
++
++## Reflection
++
++**Against the order's predictions.** Effort landed inside the predicted 2–3 hours, but
++the risk mass was not where the order put it: the environment build was easy (upstream's
++own `.myclaw` image is genuinely turnkey — build, `uv sync --frozen`, run), and the cost
++went into *disconfirming* the finding. A verdict that says "your suite fails 44 of 50
++tests" is only worth filing if you have already killed the environment hypothesis, so
++most of the session went to controls: PeTTa's own suite, a contemporary PeTTa, a
++pre-PR-212 PeTTa, eleven older chainer commits. Questions asked: **0** — the order's named
++seam (SWI-Prolog/janus versions on the host) never opened, because the subject ships its
++own pinned toolchain. Review outcome: as predicted, no correctness defects in the finding;
++the five findings were all about how the *harness* fails, which is exactly what a
++verification task's review should catch.
++
++**The tension worth recording.** The order asks for a verdict per chaining mode, and the
++honest answer needed a third axis the order did not anticipate: rule truth-value tagging.
++"Forward chaining works" is true and would have been misleading on its own — the pipeline
++arm's own translation format is the one tagging that does not work. Splitting the verdict
++into three findings rather than two is the only decision I made beyond the order's letter,
++and it is the finding the pipeline arm will actually trip over.
++
++**For the improver.** This task is a clean instance of the findings loop closing at speed:
++the April control arm reported this blocker informally in April and it sat unrevalidated
++for four months; the hive instance took hours and produced something upstream can run.
++That is the S1 comparison, and it is the model-plus-process confound in miniature — the
++work was not hard, it was just *done*.
++
++**Surprise worth flagging to the next worker.** `PeTTaChainer.query(timeout_sec=0)` means
++"no timeout", not "expire immediately" (`pettachainer.py`), and the default (`10`) forks a
++`spawn` worker that re-adds every atom in a fresh process. Any harness calling this API
++should pass `timeout_sec=0` and impose its own wall clock, or it will pay a full KB replay
++per query — and, if run from a REPL, silently lose the timeout anyway.

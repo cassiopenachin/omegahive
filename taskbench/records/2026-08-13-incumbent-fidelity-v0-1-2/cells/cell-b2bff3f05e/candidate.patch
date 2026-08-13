@@ -1,0 +1,720 @@
+diff --git a/README.md b/README.md
+index 306befd..f4e18ae 100644
+--- a/README.md
++++ b/README.md
+@@ -2,7 +2,7 @@
+ 
+ OmegaHive is a coordination substrate for running **one long-lived hive of agents across many projects**. Humans and AI agents — coding sessions, LLM coordinators, scripted workers — cooperate through a single append-only event log, so every task, decision, report, and refusal is a recorded, replayable fact rather than a memory in somebody's context window.
+ 
+-It is the reference implementation of the OmegaHive spec ([docs/omegahive_spec_1_1.md](docs/omegahive_spec_1_1.md)), built with an opinionated stance documented in [docs/omegahive_design_1_1.md](docs/omegahive_design_1_1.md). **Status: working research prototype**, operated in production by its own development (the hive coordinates the building of the hive), single-operator, moving fast. Interfaces change; the event log's guarantees don't.
++It is the reference implementation of the OmegaHive spec ([docs/reference/omegahive_spec_1_1.md](docs/reference/omegahive_spec_1_1.md)), built with an opinionated stance documented in [docs/omegahive_design_1_1.md](docs/omegahive_design_1_1.md). **Status: working research prototype**, operated in production by its own development (the hive coordinates the building of the hive), single-operator, moving fast. Interfaces change; the event log's guarantees don't.
+ 
+ ## How it works
+ 
+@@ -32,7 +32,7 @@ docker compose run --rm test    # full suite against live Postgres — your firs
+ 
+ Give it a heartbeat with the built-in demo: `docker compose run --rm seed` plans a small project, then the `coordinator` / `worker` / `review` services run it to completion while `board-view` shows the board evolving. The `backup` service plus the `deploy/systemd/` timer units cover scheduled dumps; run `omegahive deploy-checks` after any environment change (it verifies credential scope and structural security facts).
+ 
+-For a real deployment — the secrets layout (per-service env files, never in images or logs), the key-isolation proxy for LLM provider keys, remote access over Tailscale, and recovery/restore discipline — read [docs/omegahive_deployment_spec.md](docs/omegahive_deployment_spec.md) and [docs/omegahive_remote_access_spec.md](docs/omegahive_remote_access_spec.md) before trusting it with anything you'd miss.
++For a real deployment — the secrets layout (per-service env files, never in images or logs), the key-isolation proxy for LLM provider keys, remote access over Tailscale, and recovery/restore discipline — read [docs/omegahive_deployment_spec.md](docs/omegahive_deployment_spec.md) and [docs/deployments/omegahive_remote_access_spec.md](docs/deployments/omegahive_remote_access_spec.md) before trusting it with anything you'd miss.
+ 
+ There is a read-only operator web UI (FastAPI, `src/omegahive/ui/`) — the portfolio (every live run on one page, and the UI's entry point), per-run board lanes, filtered log, and metrics — designed to be served over a tailnet; see [docs/omegahive_ui_spec.md](docs/omegahive_ui_spec.md).
+ 
+@@ -277,7 +277,7 @@ over data. Run it one at a time.
+ 
+ ## What we learned before building this way
+ 
+-We ran controlled experiments on LLM coordination before pivoting to real work, and the results are committed alongside the code: a mechanical greedy coordinator beat every LLM cell on boards where inaction wins — the LLMs lost by **over-intervening**, and giving them more time and budget made the meddling worse, not the outcomes better. Below a capability bar, the measurements reflect the parser, not the model. The verdict, including the board-validity rule any future synthetic coordination test must pass, is [docs/omegahive_stage2_verdict.md](docs/omegahive_stage2_verdict.md); the frozen run records are under `ladder/records/`. The design consequences are baked in: the default coordinator is mechanical; LLM judgment is reserved for trigger points (a plan changed, a gate failed, a question needs answering); and the cognitively valuable coordination — replanning under surprise, decomposition, verification gating — happens at the project level, over durable state.
++We ran controlled experiments on LLM coordination before pivoting to real work, and the results are committed alongside the code: a mechanical greedy coordinator beat every LLM cell on boards where inaction wins — the LLMs lost by **over-intervening**, and giving them more time and budget made the meddling worse, not the outcomes better. Below a capability bar, the measurements reflect the parser, not the model. The verdict, including the board-validity rule any future synthetic coordination test must pass, is [docs/reference/omegahive_stage2_verdict.md](docs/reference/omegahive_stage2_verdict.md); the frozen run records are under `ladder/records/`. The design consequences are baked in: the default coordinator is mechanical; LLM judgment is reserved for trigger points (a plan changed, a gate failed, a question needs answering); and the cognitively valuable coordination — replanning under surprise, decomposition, verification gating — happens at the project level, over durable state.
+ 
+ ## Repo map
+ 
+@@ -285,6 +285,12 @@ We ran controlled experiments on LLM coordination before pivoting to real work,
+ src/omegahive/   the substrate: events, gateway, legality, board fold, port, CLI, UI
+ migrations/      spine schema
+ docs/            the documentation set — specs are authoritative; code follows them
++  INDEX.md       one line per doc: what it is, its authority, its status — the map, read it first
++  reference/     normative-or-historical sources (the 1.1 spec, the port spec, the stage-2 verdict)
++  deployments/   per-deployment records: host facts, lockfiles, remote access
++  evidence/      frozen experiment records and analyses — cited, never reorganized
++  archive/       superseded and closed docs, retained for history
++  whitepaper/    LaTeX source + built PDF of the outward-facing whitepaper
+ qual/            model-qualification battery: catalogs, scenarios, personas, records
+ ladder/          archived stage-2 experiment harness + its frozen run records
+ scenarios/       scripted simulation scenarios (deterministic, CI-run)
+@@ -293,4 +299,4 @@ deploy/          systemd/quadlet units
+ tests/           full suite; DB-dependent tests need a live Postgres
+ ```
+ 
+-Start with the design doc for the architecture, the hive-native-ops doc for how work flows, and the deployment spec before running anything unattended. The docs follow a discipline worth knowing: every spec is standalone, supersessions are explicit, and revision records say what changed and why. If a doc and this README disagree, the doc wins.
++Start with [docs/INDEX.md](docs/INDEX.md), which places every document in one line; then the design doc for the architecture, the hive-native-ops doc for how work flows, and the deployment spec before running anything unattended. The docs follow a discipline worth knowing: every spec is standalone, each carries a **Status** header that is authoritative for it, supersessions are explicit, and revision records say what changed and why. `python3 scripts/check_docs.py` verifies that every link resolves and that the index covers every doc exactly once. If a doc and this README disagree, the doc wins.
+diff --git a/docs/INDEX.md b/docs/INDEX.md
+new file mode 100644
+index 0000000..a69c991
+--- /dev/null
++++ b/docs/INDEX.md
+@@ -0,0 +1,56 @@
++# Index — one line per doc: what it is, what it has authority over, where it stands
++
++A map of `docs/`, not a status board — project state lives on the board and in the workspace.
++Every file under `docs/` appears here exactly once; `archive/`, `evidence/` and `whitepaper/`
++are indexed as wholes. Three conventions carry the map: each doc's own **Status** header is
++authoritative for that doc, `archive/` holds superseded and closed documents, and `reference/`
++holds normative-or-historical sources you consult rather than start from. Triaged 2026-07-28.
++
++## Start here
++
++- `INDEX.md` — this map; the first thing to read in `docs/`, and the redirect of record when a doc moves
++- `omegahive_design_1_1.md` — **the architecture, and the front door.** Our implementation design against the 1.1 spec: assumptions, the write-path invariants R1–R5, the component map, declared divergences, the stage plan (§7) and its gates (§8). Authority: architecture-wide; every other current doc defers to it on structure. Status: current, rev 6 (Jul 6 2026)
++- `omegahive_hive_native_ops.md` — how work actually flows: the hive as its own first workload, the tier ladder, the granularity and steering principles. Authority: tier-1 operations. Status: current, v0.2
++- `omegahive_deployment_spec.md` — repository hygiene, the OmegaClaw fork program, deployment topology and provenance, operating procedures, Beastie bring-up (§7, a completed milestone). Authority: anything you deploy or operate. Status: current, v2 (Jul 7 2026)
++
++## Current — the rest of the operating set
++
++- `omegahive_test_plan.md` — the metrics catalog, suite definitions and decision rules; what "S1 substrate / S2 agents / S3 hive" each mean. Authority: normative for every gate and experiment (the design doc's §8 only summarizes it). Status: current, rev 6 (Jul 6 2026)
++- `omegahive_session_agents.md` — why and how Claude Code / Codex CLI sessions participate as hive workers: wake patterns, the instrumentation ladder, the participation contract. Authority: rationale only — the workspace `WORKER.md` is the operating protocol. Status: current, v1 (Jul 10 2026)
++- `omegahive_ui_spec.md` — the operator-facing web UI: screens, the read-through-the-port architecture, the designed-but-unbuilt write path (§4). Authority: the UI's shape and its hard "must never do" list (§7). Status: current — v0.1 is shipped and serving; the write path is not
++- `omegahive_recovery_runbook.md` — stop/start, backup, restore, drain-before-migrate, environment change. Authority: the operator procedure for a live deployment. Status: current
++- `omegahive_hive_user_migration.md` — moving the stack onto a dedicated `hive` unix account: prep (Parts A–C), cutover (Part D), follow-ups. Authority: the procedure for that migration, and for the deny-pin revisit it triggers. Status: current, **partially executed** — A–C ran live on Beastie, Part D is deliberately unexecuted and OS separation is still an open Phase 2 gate item
++- `omegahive_c2_battery_spec.md` — the C2 coordinator-qualification battery: what it measures, how a record is produced, the metric definitions. Authority: normative for `qual/` and for any re-qualification run. Status: current, v1.1 — but read `reference/omegahive_stage2_verdict.md` first: the stage-2 pick this fed is closed, and what survives is qualification, not ranking
++
++## Deployment records — `deployments/`
++
++- `deployments/deployment-0-beastie.md` — deployment #0: host facts, lockfile, acceptance and check results. Authority: the record of what Beastie *is*. Status: current, acceptance + checks 1–5 green (Jul 7 2026)
++- `deployments/omegaclaw-fork.md` — the OmegaClaw fork's base and hive images: provenance, lockfiles, the patch set. Authority: the code-provenance record for both images. Status: current, both images built and boot-smoked (Jul 7–8 2026)
++- `deployments/omegahive_remote_access_spec.md` — Tailscale, tailnet-only SSH and web, key-expiry and ACL posture for Beastie. Authority: deployment-#0 practice (a second deployment gets its own record), and the transport the UI spec assumes. Status: current, v1
++
++## Reference — `reference/` (consult; don't start here)
++
++- `reference/README.md` — the two-line convention note for this directory
++- `reference/omegahive_spec_1_1.md` — Ben Goertzel's OmegaHive 1.1 specification, text-faithful conversion of the PDF. Authority: normative for what "1.1 §N" means anywhere in our docs; it is the upstream source, not our plan. Status: reference source (extracted Jul 6 2026; the PDF remains authoritative for formatting)
++- `reference/omegahive_port_spec.md` — the port milestone: the `HiveCoordinatorPort` API, the idempotency key rule, the cursor/read consistency contract, the proof suite. Authority: **still normative for substrate semantics** — the code is held to it; its build framing (slice order, "not yet built") is historical. Status: reference, shipped (rev 3)
++- `reference/omegahive_stage2_verdict.md` — what the coordinator ladder and the first battery record established, and what stages 3+ do about it. Authority: **binding** — §3's board-validity rule pre-registers any future synthetic coordination test, and §5 is why the default coordinator is mechanical; it describes the past to do it. Status: reference, decided Jul 10 2026
++
++## Work orders and post-audit fix lists (kept in place)
++
++Each is self-contained and pinned to a commit or PR; together they are the build record of how
++the current code got here. **Not covered by the 2026-07-28 survey** — their disposition is open,
++so they stay on the front path rather than being archived on a guess.
++
++- `omegahive_o2_fork_patches.md` — work order: the OmegaClaw fork patch set (board channel adapter, board-op skill, SAFE_VARS DSN, usage logging). Status: executed — the hive image is built and recorded in `deployments/omegaclaw-fork.md`
++- `omegahive_port_fixes_D1-D5.md` — post-audit fixes for the port milestone (D1, the stranded-transaction bug, is the substantive one). Status: executed against `ce869d9`
++- `omegahive_stage2_fixes_A1-A4.md` — post-audit fixes for the k-joins/prune substrate and the ladder harness (A1: the prune guard's k-of-n invariant). Status: executed against `3d6e165`
++- `omegahive_v3_fixes_B1-B6.md` — post-review fixes gating the grid freeze (B3: the real `UNKNOWN_WORKER` roster, replacing a silent client-side drop). Status: executed — the roster is in `src/omegahive/board/`, the runner reads the v2 catalog
++- `omegahive_v3_kb_persona_brief.md` — authoring brief for the coordinator-v2 persona, the op-reference sheet, and the coordination KB, written blind to board parameters. Status: executed — the artifacts are in `qual/`
++- `omegahive_c2_v0a_v2_order.md` — work order for the v0a v2 battery experiment (the r1 validity review's F1–F6 dispositions turned into a run). Status: **open** — no `qual/records/*-v0a-r2` exists
++- `omegahive_v0b_order.md` — work order for the v0b hive-image board-binding qualification gate; explicitly not a model comparison. Status: **open**, and gated on the v0a-v2 order above
++
++## Directories indexed as wholes
++
++- `archive/` — superseded and closed documents, retained for history and never updated in substance: the pre-1.1 architecture, plan and overview stub, the M0–M5 and v0 build specs, the RP3 shelved draft, the repo-hygiene spec, the Jun-2026 docs audit, the decided OmegaClaw-binding deliberation, and the closed stage-2 spec. Authority: none over current work — each says in its own **Status** header what superseded it. One live residue is flagged there: the stage-2 spec's §7 frozen run config is still the single cited source for the two open qualification orders. See `archive/README.md`
++- `evidence/` — frozen experiment records and analyses: the baseline experiment, the C2 v0a-r1 validity review, the ResearchClawBench triage (spec, report, CSV) and its deep-dive, the competitive and cascade evaluations, the interop/durability notes, the deferred-capability coordination note. Authority: each is the authoritative reading of the run it reports, and none is a plan. Status: frozen — cite them, don't reorganize or edit them
++- `whitepaper/` — LaTeX source and the built PDF for *OmegaHive: A Running Hive*, plus its own build README. Authority: an outward-facing narrative, never a spec; every number in it is meant to be re-derivable from the spine at build date. Status: current artifact, rebuilt on release
+diff --git a/docs/archive/README.md b/docs/archive/README.md
+new file mode 100644
+index 0000000..7361e78
+--- /dev/null
++++ b/docs/archive/README.md
+@@ -0,0 +1,5 @@
++# docs/archive — superseded and closed docs land here
++
++Retained for history, never deleted and never updated in substance; each file's own **Status**
++header says what superseded or closed it. The map of the whole documentation set is
++[../INDEX.md](../INDEX.md).
+diff --git a/docs/archive/omegahive_architecture.md b/docs/archive/omegahive_architecture.md
+index abb1e8a..678ef4b 100644
+--- a/docs/archive/omegahive_architecture.md
++++ b/docs/archive/omegahive_architecture.md
+@@ -1,6 +1,6 @@
+ # OmegaHive — Target Architecture & Path
+ 
+-> **OBSOLETE (Jul 6 2026).** Superseded by [omegahive_design_1_1.md](omegahive_design_1_1.md) (the self-contained implementation design against Ben's 1.1 spec) and [omegahive_test_plan.md](omegahive_test_plan.md). Residual content was folded there Jul 6 (secrets-never-in-log invariant → design §3.1; ThreadKeeper positioning → design §7 extensions; artifact-store-as-second-capability de-risk → design §7 stage 5; the live-precursor failure modes → test plan D2). Retained for history only — do not update.
++> **OBSOLETE (Jul 6 2026).** Superseded by [omegahive_design_1_1.md](../omegahive_design_1_1.md) (the self-contained implementation design against Ben's 1.1 spec) and [omegahive_test_plan.md](../omegahive_test_plan.md). Residual content was folded there Jul 6 (secrets-never-in-log invariant → design §3.1; ThreadKeeper positioning → design §7 extensions; artifact-store-as-second-capability de-risk → design §7 stage 5; the live-precursor failure modes → test plan D2). Retained for history only — do not update.
+ 
+ **Status:** The architecture we are building toward, and the path from where we are to there (updated Jul 2 2026). It describes one program — the **unified path** — converging two efforts onto one system: a coordination substrate built bottom-up (the `omegahive` repo), and a live deployment of real agents built top-down (ZeroBot and ProtomegaTron working over Telegram, §2).
+ **Companion docs:** [omegahive_plan.md](omegahive_plan.md) (the operational plan), [omegahive_omegaclaw_binding.md](omegahive_omegaclaw_binding.md) (the coordinator binding design), the v0/M-specs (the built baseline).
+diff --git a/docs/archive/omegahive_m5_spec.md b/docs/archive/omegahive_m5_spec.md
+index 1648a5e..9bbbecc 100644
+--- a/docs/archive/omegahive_m5_spec.md
++++ b/docs/archive/omegahive_m5_spec.md
+@@ -2,7 +2,7 @@
+ 
+ **Status:** Build spec, ready to scaffold on top of M4. **Implements:** the *one* thing the RP2 result actually asked for — concentrate difficulty on the substantive steps so the reproduction DAG's three-way experiment fork is reached and stressed. Nothing more.
+ 
+-**History (why this is small):** an earlier draft of M5 bundled three substrate changes — per-(worker,task_type) competence, worker capacity, and a capability-aware coordinator. An independent red-team panel cut it: only per-task-*type* difficulty is what the data demanded; capacity and the capable coordinator were premature *and* carried two real bugs and a rigged comparison. They're deferred to [omegahive_deferred_capability_coordination.md](omegahive_deferred_capability_coordination.md), to land with Track B / RP3 against a DAG that actually has routing decisions. This spec is the minimal slice, in keeping with *simplest-that-still-gives-signal*.
++**History (why this is small):** an earlier draft of M5 bundled three substrate changes — per-(worker,task_type) competence, worker capacity, and a capability-aware coordinator. An independent red-team panel cut it: only per-task-*type* difficulty is what the data demanded; capacity and the capable coordinator were premature *and* carried two real bugs and a rigged comparison. They're deferred to [omegahive_deferred_capability_coordination.md](../evidence/omegahive_deferred_capability_coordination.md), to land with Track B / RP3 against a DAG that actually has routing decisions. This spec is the minimal slice, in keeping with *simplest-that-still-gives-signal*.
+ 
+ **Builds on:** M4. **Additive — no events-table migration, no engine change, byte-identical to M0–M4.** `task_type` already rides in the `task.created` payload (verified: `events/types.py` `TaskCreated.task_type`, emitted by `loader.py`); the reducer just surfaces it.
+ 
+@@ -74,4 +74,4 @@ Scenarios with no `success_by_type` remain byte-identical to today.
+ 
+ ## 5. Deferred
+ 
+-Per-worker competence, worker capacity, and the capability-aware coordinator — with the two substrate bugs and the experiment-validity requirements the red-team found — are written up in [omegahive_deferred_capability_coordination.md](omegahive_deferred_capability_coordination.md). They land when there's a DAG with real routing decisions to justify them (RP3 / Track B), not before.
++Per-worker competence, worker capacity, and the capability-aware coordinator — with the two substrate bugs and the experiment-validity requirements the red-team found — are written up in [omegahive_deferred_capability_coordination.md](../evidence/omegahive_deferred_capability_coordination.md). They land when there's a DAG with real routing decisions to justify them (RP3 / Track B), not before.
+diff --git a/docs/omegahive_omegaclaw_binding.md b/docs/archive/omegahive_omegaclaw_binding.md
+similarity index 91%
+rename from docs/omegahive_omegaclaw_binding.md
+rename to docs/archive/omegahive_omegaclaw_binding.md
+index 398033b..1e10434 100644
+--- a/docs/omegahive_omegaclaw_binding.md
++++ b/docs/archive/omegahive_omegaclaw_binding.md
+@@ -1,6 +1,8 @@
+ # OmegaHive ↔ OmegaClaw Binding — Q1 Design Options
+ 
+-**Status:** Design comparison for the coordinator↔board binding. The decision that matters; concrete options with pseudo-code, a recommendation, and the deciding argument.
++**Status:** **ARCHIVED — decided deliberation (Q1, closed).** The recommendation below was adopted: **D2 (context + action-skills)**, with D3 kept as the liveness refinement. The decision now lives, in force, in [../omegahive_design_1_1.md](../omegahive_design_1_1.md) §3.4 (binding rules) and [../reference/omegahive_port_spec.md](../reference/omegahive_port_spec.md) (the surface every coordinator plugs into) — read those to know what binds today. Retained for the reasoning: why the READ and OP axes are separate, and what D1/D3 would have cost.
++
++Design comparison for the coordinator↔board binding. The decision that matters; concrete options with pseudo-code, a recommendation, and the deciding argument.
+ 
+ ## Fixed going in
+ 
+diff --git a/docs/archive/omegahive_plan.md b/docs/archive/omegahive_plan.md
+index 3dc21a4..77d3a98 100644
+--- a/docs/archive/omegahive_plan.md
++++ b/docs/archive/omegahive_plan.md
+@@ -1,6 +1,6 @@
+ # OmegaHive — Plan & Path
+ 
+-> **OBSOLETE (Jul 6 2026).** Superseded by [omegahive_design_1_1.md](omegahive_design_1_1.md) §7 (the stage plan: 0 baseline → 1 port → 2 coordinator spike → 3 first executor → 4 contracts/operator pack → 5 compute plane → 6 residency) and [omegahive_test_plan.md](omegahive_test_plan.md) (gates and experiments; the old milestone names map port=1, spike=2, first-executor=3+4, compute plane=5). Triage Stage A's result and its consequences live in design A7 and the test plan §4; the coordinator-binding decisions live on in [omegahive_omegaclaw_binding.md](omegahive_omegaclaw_binding.md) as amended by design §3.4. Retained for history only — do not update.
++> **OBSOLETE (Jul 6 2026).** Superseded by [omegahive_design_1_1.md](../omegahive_design_1_1.md) §7 (the stage plan: 0 baseline → 1 port → 2 coordinator spike → 3 first executor → 4 contracts/operator pack → 5 compute plane → 6 residency) and [omegahive_test_plan.md](../omegahive_test_plan.md) (gates and experiments; the old milestone names map port=1, spike=2, first-executor=3+4, compute plane=5). Triage Stage A's result and its consequences live in design A7 and the test plan §4; the coordinator-binding decisions live on in [omegahive_omegaclaw_binding.md](omegahive_omegaclaw_binding.md) as amended by design §3.4. Retained for history only — do not update.
+ 
+ **Status:** The operational plan (updated Jul 2 2026) for the **unified path**: one program joining a coordination substrate built bottom-up (the event spine, gateway, and board in the `omegahive` repo) with a live agent deployment built top-down (real OmegaClaw and OpenClaw agents working over Telegram). The conceptual destination is [omegahive_architecture.md](omegahive_architecture.md); the coordinator binding design is [omegahive_omegaclaw_binding.md](omegahive_omegaclaw_binding.md).
+ 
+@@ -52,7 +52,7 @@ Everything code review identified that a real binding needs. All of it is omegah
+ 
+ Plus the **OmegaClaw fork**: hive work happens on a fork of OmegaClaw-Core, with an explicit step to **review the live deployment's local patches and clean them up — or discard and redo them properly** (Telegram allowlists and attachment ingestion, loop idle-gating and the `continue-thinking` skill, send-normalization, the OpenClaw provider with its subprocess bridge). Nothing lands upstream before the mid-July release; value gets proven on the fork first.
+ 
+-The milestone is executed as **two parallel tracks with a one-way interface**: the port build proper, contained in the omegahive repo ([omegahive_port_spec.md](omegahive_port_spec.md)), and the cross-repo git-hygiene + fork program ([omegahive_repo_hygiene_spec.md](omegahive_repo_hygiene_spec.md)), which delivers the pinned fork image and container policy that the port's environment slice consumes.
++The milestone is executed as **two parallel tracks with a one-way interface**: the port build proper, contained in the omegahive repo ([omegahive_port_spec.md](../reference/omegahive_port_spec.md)), and the cross-repo git-hygiene + fork program ([omegahive_repo_hygiene_spec.md](omegahive_repo_hygiene_spec.md)), which delivers the pinned fork image and container policy that the port's environment slice consumes.
+ 
+ ### spike — the coordinator ladder (the H2 experiment)
+ 
+diff --git a/docs/archive/omegahive_repo_hygiene_spec.md b/docs/archive/omegahive_repo_hygiene_spec.md
+index b691433..4d868a5 100644
+--- a/docs/archive/omegahive_repo_hygiene_spec.md
++++ b/docs/archive/omegahive_repo_hygiene_spec.md
+@@ -1,8 +1,8 @@
+ # Repo Hygiene & OmegaClaw Fork Program — Execution Spec
+ 
+-> **OBSOLETE (Jul 6 2026).** Absorbed into [omegahive_deployment_spec.md](omegahive_deployment_spec.md) (§§2–3), which extends it with deployment topology, upgrade/backup/restore/recovery procedures, and the Beastie bring-up plan. One content change in the move: the two-arg board-op round-trip test became conditional on the stage-2 §3.4 payload decision (single-string default). Retained for history only — do not update.
++> **OBSOLETE (Jul 6 2026).** Absorbed into [omegahive_deployment_spec.md](../omegahive_deployment_spec.md) (§§2–3), which extends it with deployment topology, upgrade/backup/restore/recovery procedures, and the Beastie bring-up plan. One content change in the move: the two-arg board-op round-trip test became conditional on the stage-2 §3.4 payload decision (single-string default). Retained for history only — do not update.
+ 
+-**Status:** Companion to [omegahive_port_spec.md](omegahive_port_spec.md), split out so it can be executed independently — by Claude Code running at `~/code/SNET` (recommended: it needs real git and `gh`, which the cowork sandbox handles poorly on mounted repos). Covers cross-repo git hygiene and the OmegaClaw hive fork. **Interface to the port milestone:** this track delivers a buildable, pinned fork image + container policy file; the port's environment slice consumes them.
++**Status:** Companion to [omegahive_port_spec.md](../reference/omegahive_port_spec.md), split out so it can be executed independently — by Claude Code running at `~/code/SNET` (recommended: it needs real git and `gh`, which the cowork sandbox handles poorly on mounted repos). Covers cross-repo git hygiene and the OmegaClaw hive fork. **Interface to the port milestone:** this track delivers a buildable, pinned fork image + container policy file; the port's environment slice consumes them.
+ 
+ ## 1. Principle and the failure it prevents
+ 
+diff --git a/docs/omegahive_stage2_spec.md b/docs/archive/omegahive_stage2_spec.md
+similarity index 95%
+rename from docs/omegahive_stage2_spec.md
+rename to docs/archive/omegahive_stage2_spec.md
+index 0ced6a0..93991c2 100644
+--- a/docs/omegahive_stage2_spec.md
++++ b/docs/archive/omegahive_stage2_spec.md
+@@ -1,6 +1,8 @@
+ # OmegaHive — Stage 2: Coordinator Spike (Build & Experiment Spec)
+ 
+-**Status:** v2.7 (Jul 10 2026), post-panel (three seats: methodology, simplification, integration; §10 records dispositions), post-build-audit of PRs #1–2 (audit fixes A1–A4 folded), post-V2-system-testing (ghost-worker stall fixed), with the §5.5 persona added. Stage 2 of the build plan ([omegahive_design_1_1.md](omegahive_design_1_1.md) §7): the first LLM in the loop — bind coordinators through the port, prove the binding end-to-end, and run the **coordinator ladder** that decides which coordinator configuration later stages use. Standalone; companions cited for depth — the design doc, [omegahive_port_spec.md](omegahive_port_spec.md), [omegahive_deployment_spec.md](omegahive_deployment_spec.md), [omegahive_c2_battery_spec.md](omegahive_c2_battery_spec.md), and [omegahive_test_plan.md](omegahive_test_plan.md), whose §D1 pre-registration this spec **explicitly amends** (§7 notes each amendment; amending before any run is legitimate and recorded — silent divergence is not).
++**Status:** **ARCHIVED — closed ladder.** The stage-2 coordinator ladder ran and was closed by [../reference/omegahive_stage2_verdict.md](../reference/omegahive_stage2_verdict.md) (Jul 10 2026); the comparative L4–L6 cells are cancelled. This is the companion to the frozen run records under `ladder/records/` — the spec those records were produced under, retained unchanged so they stay readable. **One live residue:** §7's frozen run config (sampling params, the dated price table) is still the single cited source for the qualification orders (`docs/omegahive_c2_v0a_v2_order.md`, `docs/omegahive_v0b_order.md`); cite it from here, do not copy it. Below, unchanged:
++
++v2.7 (Jul 10 2026), post-panel (three seats: methodology, simplification, integration; §10 records dispositions), post-build-audit of PRs #1–2 (audit fixes A1–A4 folded), post-V2-system-testing (ghost-worker stall fixed), with the §5.5 persona added. Stage 2 of the build plan ([omegahive_design_1_1.md](../omegahive_design_1_1.md) §7): the first LLM in the loop — bind coordinators through the port, prove the binding end-to-end, and run the **coordinator ladder** that decides which coordinator configuration later stages use. Standalone; companions cited for depth — the design doc, [omegahive_port_spec.md](../reference/omegahive_port_spec.md), [omegahive_deployment_spec.md](../omegahive_deployment_spec.md), [omegahive_c2_battery_spec.md](../omegahive_c2_battery_spec.md), and [omegahive_test_plan.md](../omegahive_test_plan.md), whose §D1 pre-registration this spec **explicitly amends** (§7 notes each amendment; amending before any run is legitimate and recorded — silent divergence is not).
+ 
+ ## 0. Orientation
+ 
+diff --git a/docs/omegahive_remote_access_spec.md b/docs/deployments/omegahive_remote_access_spec.md
+similarity index 94%
+rename from docs/omegahive_remote_access_spec.md
+rename to docs/deployments/omegahive_remote_access_spec.md
+index c3863eb..691278b 100644
+--- a/docs/omegahive_remote_access_spec.md
++++ b/docs/deployments/omegahive_remote_access_spec.md
+@@ -1,6 +1,6 @@
+ # OmegaHive — Beastie Remote Access Spec
+ 
+-**Status:** v1. Covers remote access for Beastie (deployment #0) during and after a 5-week unattended absence. Governed by [omegahive_deployment_spec.md](omegahive_deployment_spec.md) §4 (secrets), §5 (recovery, environment-change rule), §7 (host-facts).
++**Status:** v1 — **deployment-#0 practice**, and it lives here with the deployment records because that is what it is: the host facts and access posture of one deployment, not a repo-wide spec. Anything it decides applies to Beastie; a second deployment gets its own record. Covers remote access for Beastie (deployment #0) during and after a 5-week unattended absence. Governed by [omegahive_deployment_spec.md](../omegahive_deployment_spec.md) §4 (secrets), §5 (recovery, environment-change rule), §7 (host-facts).
+ 
+ ## 1. Decision
+ 
+diff --git a/docs/omegahive_c2_battery_spec.md b/docs/omegahive_c2_battery_spec.md
+index 000773b..5d2c58a 100644
+--- a/docs/omegahive_c2_battery_spec.md
++++ b/docs/omegahive_c2_battery_spec.md
+@@ -1,6 +1,6 @@
+ # OmegaHive — C2 Loop Battery Spec (v1, build-ready)
+ 
+-**Status:** v1.1 (Jul 8 2026; revision record §11). Build spec for the **C2 coordinator-qualification battery** ([omegahive_test_plan.md](omegahive_test_plan.md) §C2): per-model measurement of whether an LLM can drive the OmegaClaw loop against the board — the emission-discipline test. Build with Claude Code, alongside (not inside) the port build. **Dual-mode by construction:** the same runner executes standalone (Mode A — no hive: scripted scenarios thrown at LLMs) and as hive work orders (Mode B — the first real use case for Cassio's own deployment). Companions: [omegahive_port_spec.md](omegahive_port_spec.md) rev 3 (the port the battery drives), [omegahive_deployment_spec.md](omegahive_deployment_spec.md) §3 (the fork image it boots), [omegahive_design_1_1.md](omegahive_design_1_1.md) §3.4/§10.4 (the binding facts the metrics are built on).
++**Status:** v1.1 (Jul 8 2026; revision record §11). Build spec for the **C2 coordinator-qualification battery** ([omegahive_test_plan.md](omegahive_test_plan.md) §C2): per-model measurement of whether an LLM can drive the OmegaClaw loop against the board — the emission-discipline test. Build with Claude Code, alongside (not inside) the port build. **Dual-mode by construction:** the same runner executes standalone (Mode A — no hive: scripted scenarios thrown at LLMs) and as hive work orders (Mode B — the first real use case for Cassio's own deployment). Companions: [omegahive_port_spec.md](reference/omegahive_port_spec.md) rev 3 (the port the battery drives), [omegahive_deployment_spec.md](omegahive_deployment_spec.md) §3 (the fork image it boots), [omegahive_design_1_1.md](omegahive_design_1_1.md) §3.4/§10.4 (the binding facts the metrics are built on).
+ 
+ ## 0. Orientation for the implementing agent
+ 
+diff --git a/docs/omegahive_c2_v0a_v2_order.md b/docs/omegahive_c2_v0a_v2_order.md
+index d11e885..4a35f80 100644
+--- a/docs/omegahive_c2_v0a_v2_order.md
++++ b/docs/omegahive_c2_v0a_v2_order.md
+@@ -1,5 +1,7 @@
+ # C2 battery — v0a v2 experiment (self-contained work order)
+ 
++**Status:** OPEN work order — no `qual/records/*-v0a-r2` exists, so this has not been run. Read [reference/omegahive_stage2_verdict.md](reference/omegahive_stage2_verdict.md) first: the stage-2 cheap pick this was framed to inform is closed, and what survives is the emission-discipline record itself. Not surveyed by the 2026-07-28 docs triage. Map: [INDEX.md](INDEX.md).
++
+ **Context (all you need):** the first v0a run (`qual/records/2026-07-09-v0a-r1/`, PR #13) proved the pipeline — real providers through the hive image, capture, grading — and the validity review (`docs/evidence/omegahive_c2_v0a_r1.md`, the authoritative reading) found the numbers unusable: wrong prompt ran, four host-side artifact metrics, a saturated probe, an unattributed failure. This order turns the F1–F6 dispositions into the v2 experiment. **Goal: a valid emission-discipline record that can inform the stage-2 cheap pick — and it runs before v0b** (sequencing decision, Jul 9). Presumes PR #13 merged. **Stop-lines:** no fork/image code changes (the battery consumes images, never patches them); no upstream contact; scoring-bar changes belong to the battery spec, not here.
+ 
+ ## Decisions settled here (flag disagreement rather than diverging)
+diff --git a/docs/omegahive_deployment_spec.md b/docs/omegahive_deployment_spec.md
+index 7dc0d01..edf767c 100644
+--- a/docs/omegahive_deployment_spec.md
++++ b/docs/omegahive_deployment_spec.md
+@@ -1,6 +1,6 @@
+ # OmegaHive — Deployment & Operations Spec
+ 
+-**Status:** v2 (Jul 7 2026). Covers repository hygiene, the OmegaClaw fork program, deployment topology and provenance, operating procedures, and the bring-up of **Beastie (deployment #0)**. Standalone: everything needed to execute is in this document; companions are cited for depth, not required — [omegahive_port_spec.md](omegahive_port_spec.md) (the substrate being deployed), [omegahive_design_1_1.md](omegahive_design_1_1.md) (the architecture), [omegahive_c2_battery_spec.md](omegahive_c2_battery_spec.md) (the qualification battery that runs on these deployments). Revision record: §9.
++**Status:** v2 (Jul 7 2026). Covers repository hygiene, the OmegaClaw fork program, deployment topology and provenance, operating procedures, and the bring-up of **Beastie (deployment #0)**. Standalone: everything needed to execute is in this document; companions are cited for depth, not required — [omegahive_port_spec.md](reference/omegahive_port_spec.md) (the substrate being deployed), [omegahive_design_1_1.md](omegahive_design_1_1.md) (the architecture), [omegahive_c2_battery_spec.md](omegahive_c2_battery_spec.md) (the qualification battery that runs on these deployments). Revision record: §9.
+ 
+ ## 0. Execution model — what depends on what
+ 
+@@ -86,6 +86,12 @@ Distilled from the deployment's recovery snapshot and operating records; each le
+ 
+ ## 7. Beastie bring-up (deployment #0)
+ 
++> **Completed milestone (Jul 7 2026).** Beastie is up: acceptance and deployment checks 1–5
++> green, backup drilled, the daily timer enabled and active. The steps below are retained as
++> the *procedure* — what a second deployment's bring-up follows — not as outstanding work.
++> What Beastie actually is, and its lockfile, live in
++> [deployments/deployment-0-beastie.md](deployments/deployment-0-beastie.md).
++
+ Goal: the port's acceptance run and the core deployment checks on hive-owned hardware — proving the profile on a machine nobody hand-built, before any agent lands on it.
+ 
+ **Preparation (start anytime; no dependencies):**
+diff --git a/docs/omegahive_design_1_1.md b/docs/omegahive_design_1_1.md
+index 73c1497..9a11ea6 100644
+--- a/docs/omegahive_design_1_1.md
++++ b/docs/omegahive_design_1_1.md
+@@ -245,5 +245,5 @@ Two extensions attach after stage 3 as the workload demands them; both extend th
+ 2. **Contract schema versioning** — contracts are long-lived under residency (A2); pin schema version per run or per contract? Owner: stage-4 spec author.
+ 3. **Project boundary on the board** — one run per project, or one hive-run with project as a task attribute? Affects event scoping and metrics grouping. Owner: this team; decide before the residency pilot spec.
+ 4. **Source-verification pass — SETTLED (Jul 6, against mounted source).** (a) History: `getHistory` is O(maxHistory) tail-seek, *but* the `episodes` skill scans and RAM-buffers the whole file per call and history never rotates ⇒ **rotation is a resident requirement** (driven by `episodes` + disk growth). (b) Raw LLM replies are *not* in history; upstream logs them to stdout as `[LLM_RAW]` — the fork must carry that patch for C2's pre-repair parse rate. (c) Feedback truncation keeps the **tail** ⇒ an oversized rendered view loses its beginning — keep views under budget or put the load-bearing summary at the end (stage-2 view-budget rule). (d) Within-turn dispatch order is preserved **by the current implementation** (SWI `member/2` + `findall`), not by the language — the batch op remains the explicit contract. (e) No turn id is reachable from skill bodies — content-basis keys further vindicated. (f) Every dispatch passes through the LLM's parsed reply — confirmed. (g) Parser rules for board ops: register the name in `LLM_COMMANDS` (else the line is swallowed into a preceding `send`), single-line payloads, no raw inner double-quotes (else the whole turn's commands drop); unknown heads evaluate to themselves with **no error** — an agent-layer accepted-but-inert class the C2 battery must count. (h) No network/DNS constraint exists anywhere in code; upstream's image carries the full container security stack (env-scrub entrypoint, nginx key-isolation proxy, Landlock policy), which the hive fork inherits by **basing on current upstream HEAD** (deployment spec §3 — corrected Jul 6: the "private fork" surveyed earlier is Jon's exploratory fork, a cherry-pick source unrelated to hive work).
+-5. **Port client-shape pressure test — RUN (Jul 6); amendment pass owed.** Verdict: the frozen write path (build slices 1–2) survives untouched — precisely because rev 2 already banned every session-scoped construct — but the **port surface (slice 3, not yet built) must change before it freezes**: strike the turn-counter key rule (one signature checkpoint on slice 2); define the cursor-mode read consistency contract (board and events anchored to one log point; client-side incremental folding forbidden until a cache exists); specify connection lifecycle for long-lived/pooled clients (no session state ever; same-key internal retry on connection loss); add an O(1) no-change read short-circuit (makes a fast-polling resident nearly free on quiet boards); add a log-generation token so a restore-from-dump can't silently strand live cursors; ~8 new property tests (ack-loss recovery, crash-resume, dual-client-same-actor, replay-vs-repeat matrix). The adopted key rule: `key = hash(run, actor, op-type, canonical-payload, basis_seq, occ)` where `basis_seq` is the client's last-observed log position — same decision from same observed board ⇒ same key (replay dedupes); an intentional repeat necessarily interposes new observed state ⇒ new key. Two long-run collisions (per-run library pinning vs weeks-long runs; restore-vs-cursors procedure) are named and routed to the deployment & recovery spec (§10.6) and the §10.3 run-mapping decision. **Amendment pass DONE (Jul 6): [omegahive_port_spec.md](omegahive_port_spec.md) is at rev 3, build-ready** — §3a key rule, §2 cursor-read contract + no-change short-circuit + generation token + batch envelope, §2a connection lifecycle, §8 property tests 4–10, §12 armed triggers.
++5. **Port client-shape pressure test — RUN (Jul 6); amendment pass owed.** Verdict: the frozen write path (build slices 1–2) survives untouched — precisely because rev 2 already banned every session-scoped construct — but the **port surface (slice 3, not yet built) must change before it freezes**: strike the turn-counter key rule (one signature checkpoint on slice 2); define the cursor-mode read consistency contract (board and events anchored to one log point; client-side incremental folding forbidden until a cache exists); specify connection lifecycle for long-lived/pooled clients (no session state ever; same-key internal retry on connection loss); add an O(1) no-change read short-circuit (makes a fast-polling resident nearly free on quiet boards); add a log-generation token so a restore-from-dump can't silently strand live cursors; ~8 new property tests (ack-loss recovery, crash-resume, dual-client-same-actor, replay-vs-repeat matrix). The adopted key rule: `key = hash(run, actor, op-type, canonical-payload, basis_seq, occ)` where `basis_seq` is the client's last-observed log position — same decision from same observed board ⇒ same key (replay dedupes); an intentional repeat necessarily interposes new observed state ⇒ new key. Two long-run collisions (per-run library pinning vs weeks-long runs; restore-vs-cursors procedure) are named and routed to the deployment & recovery spec (§10.6) and the §10.3 run-mapping decision. **Amendment pass DONE (Jul 6): [omegahive_port_spec.md](reference/omegahive_port_spec.md) is at rev 3, build-ready** — §3a key rule, §2 cursor-read contract + no-change short-circuit + generation token + batch envelope, §2a connection lifecycle, §8 property tests 4–10, §12 armed triggers.
+ 6. **Deployment & recovery spec — v1 EXISTS (Jul 6): [omegahive_deployment_spec.md](omegahive_deployment_spec.md)**, absorbing the former repo-hygiene spec and adding topology/lockfiles, upgrade/backup/restore/recovery procedures, environment-change checklists, the live-deployment learnings (with the base-SHA capture still blocked on the `~/code/SNET` materials), and the **Beastie bring-up plan** (deployment #0). Extend before the first resident deployment.
+diff --git a/docs/omegahive_hive_native_ops.md b/docs/omegahive_hive_native_ops.md
+index 5fa5e99..2c1786b 100644
+--- a/docs/omegahive_hive_native_ops.md
++++ b/docs/omegahive_hive_native_ops.md
+@@ -1,6 +1,6 @@
+ # Hive-native operations — MVP spec (v0.2, post-panel)
+ 
+-**Status:** follows `omegahive_stage2_verdict.md` (the grid is closed; the pivot is to real work). This document specifies how the OmegaHive project itself becomes the hive's first workload, what must exist before that starts, and the operating principles governing granularity and steering. Amendments it implies to other docs are in §8. Readers need the design doc (`omegahive_design_1_1.md`) for substrate concepts; nothing here depends on chat context.
++**Status:** follows `docs/reference/omegahive_stage2_verdict.md` (the grid is closed; the pivot is to real work). This document specifies how the OmegaHive project itself becomes the hive's first workload, what must exist before that starts, and the operating principles governing granularity and steering. Amendments it implies to other docs are in §8. Readers need the design doc (`omegahive_design_1_1.md`) for substrate concepts; nothing here depends on chat context.
+ 
+ ## 1. The decision: hive-native from now on
+ 
+@@ -12,7 +12,7 @@ All project work from this point runs **on** the hive, in tiers. **Tier 1 (this
+ 
+ **Already satisfied (verify, don't build):**
+ 1. **Watch:** CLI views exist (`report --board/--metrics/--human`, `board-view`); the read UI is an upgrade in flight, not a gate — a UI PR is already open and iteration continues through the remote window (decided Jul 10: departure does not hold for it).
+-2. **Tailnet:** spec confirmed (`omegahive_remote_access_spec.md`); the off-LAN test checklist must pass before departure — on the critical path, not yet run.
++2. **Tailnet:** spec confirmed (`docs/deployments/omegahive_remote_access_spec.md`); the off-LAN test checklist must pass before departure — on the critical path, not yet run.
+ 
+ **To build (small, all load-bearing):**
+ 3. **Intervene — a generic CLI emit.** The UI ack path is stage-4 by its own spec, and no generic emit command exists today (only canned demo reactors). ~Tens of lines against `Gateway.emit`; forces the actor-identity decision in §4, which is needed anyway. This is the week-1 human write path.
+diff --git a/docs/omegahive_hive_user_migration.md b/docs/omegahive_hive_user_migration.md
+index 2beac4b..61b6436 100644
+--- a/docs/omegahive_hive_user_migration.md
++++ b/docs/omegahive_hive_user_migration.md
+@@ -1,5 +1,11 @@
+ # OmegaHive — migrating the stack to a dedicated `hive` unix user
+ 
++**Status:** current — **partially executed.** Parts A–C (the additive prep) were drilled and then
++run live on Beastie, and this document was corrected from what that run found (revision record).
++**Part D, the cutover, is written and deliberately unexecuted**, and OS separation is still open
++as item 2 of the Phase 2 identity gate. This is a live procedure with work remaining, not an
++executed one: the recovery runbook §6 and `deploy/hive-user/` route the operator here.
++
+ Moving the omegahive deployment off the operator's personal account and onto a dedicated,
+ unprivileged `hive` account: its own home, its own rootless-podman namespace, its own
+ containers, volumes, images, and systemd user timers.
+diff --git a/docs/omegahive_o2_fork_patches.md b/docs/omegahive_o2_fork_patches.md
+index 373c9c9..8ad877a 100644
+--- a/docs/omegahive_o2_fork_patches.md
++++ b/docs/omegahive_o2_fork_patches.md
+@@ -1,6 +1,8 @@
+ # O2 — OmegaClaw fork patches (self-contained work order)
+ 
+-**Context (all you need):** you are working in the **OmegaClaw fork repo** (base already cut from upstream HEAD; the pre-patch **base image** is built and recorded — do not modify it; your output is the **hive image**, a new tag). These patches bind the agent to the OmegaHive board for the stage-2 spike ([omegahive_stage2_spec.md](omegahive_stage2_spec.md) §4 is the behavioral contract; this file adds the operational decisions). Patches to a live agent runtime move at review pace: small commits, each with tests, no drive-bys. **Stop-lines:** no upstream contact (pulls only, nothing outbound before the mid-July release); no changes beyond the patch list; the coordinator-side cognition (personas, KB content) is not yours.
++**Status:** executed work order — the patch set landed and the hive image is built and pinned in [deployments/omegaclaw-fork.md](deployments/omegaclaw-fork.md) (Jul 8 2026). Retained as the build record for the fork; not surveyed by the 2026-07-28 docs triage, so it stays in place. Map: [INDEX.md](INDEX.md).
++
++**Context (all you need):** you are working in the **OmegaClaw fork repo** (base already cut from upstream HEAD; the pre-patch **base image** is built and recorded — do not modify it; your output is the **hive image**, a new tag). These patches bind the agent to the OmegaHive board for the stage-2 spike ([omegahive_stage2_spec.md](archive/omegahive_stage2_spec.md) §4 is the behavioral contract; this file adds the operational decisions). Patches to a live agent runtime move at review pace: small commits, each with tests, no drive-bys. **Stop-lines:** no upstream contact (pulls only, nothing outbound before the mid-July release); no changes beyond the patch list; the coordinator-side cognition (personas, KB content) is not yours.
+ 
+ ## Runtime facts you need (verified against source; trust these)
+ 
+diff --git a/docs/omegahive_port_fixes_D1-D5.md b/docs/omegahive_port_fixes_D1-D5.md
+index f0c23b3..c83757d 100644
+--- a/docs/omegahive_port_fixes_D1-D5.md
++++ b/docs/omegahive_port_fixes_D1-D5.md
+@@ -1,5 +1,7 @@
+ # Port build — post-audit fixes D1–D5 (self-contained work order)
+ 
++**Status:** executed work order — the fixes landed on the port milestone (D1's fresh-transaction recovery is in `src/omegahive/gateway/gateway.py`). Retained as the build record; not surveyed by the 2026-07-28 docs triage, so it stays in place. Map: [INDEX.md](INDEX.md).
++
+ **Context (all you need):** the port milestone (slices 1–3, merged at `ce869d9`) was audited against its build spec after human review. Five gaps + one cosmetic item. This file is self-contained — no other document required. File:line references are as of `ce869d9`; anchor by function name if lines drifted. **Order: D1 first (critical), then D2–D5 in any order.** All tests need live Postgres: `docker-compose up -d` then `OMEGAHIVE_TEST_DATABASE_URL=... pytest`.
+ 
+ ---
+diff --git a/docs/omegahive_recovery_runbook.md b/docs/omegahive_recovery_runbook.md
+index d95335b..9edfb82 100644
+--- a/docs/omegahive_recovery_runbook.md
++++ b/docs/omegahive_recovery_runbook.md
+@@ -1,5 +1,7 @@
+ # OmegaHive — Recovery Runbook
+ 
++**Status:** current — the operating procedure for any live deployment; follow it as written.
++
+ Operational procedures for an OmegaHive deployment: the human-only recovery path,
+ backup, restore, and drain-before-migrate. Companion to the deployment spec (§5) and
+ a deployment's record (e.g. `docs/deployments/deployment-0-beastie.md`). Standalone —
+diff --git a/docs/omegahive_stage2_fixes_A1-A4.md b/docs/omegahive_stage2_fixes_A1-A4.md
+index ea41b4c..2dde154 100644
+--- a/docs/omegahive_stage2_fixes_A1-A4.md
++++ b/docs/omegahive_stage2_fixes_A1-A4.md
+@@ -1,6 +1,8 @@
+ # Stage-2 V1/V2a — post-audit fixes A1–A4 (self-contained work order)
+ 
+-**Context (all you need):** the k-joins/prune substrate (PR #1) and ladder harness deterministic half (PR #2) were audited against `docs/omegahive_stage2_spec.md` (now v2.2 — §3 was corrected as part of this audit; read it first). Four fixes. File:line references as of merge `3d6e165`; anchor by function if drifted. A1 is the substantive one. Fold/guard unit tests run without Postgres; anything touching the DB paths needs `docker-compose up` + `OMEGAHIVE_TEST_DATABASE_URL`.
++**Status:** executed work order — the fixes landed (A1's k-of-n prune guard is in `src/omegahive/board/legality.py`). Retained as the build record; not surveyed by the 2026-07-28 docs triage, so it stays in place. Map: [INDEX.md](INDEX.md).
++
++**Context (all you need):** the k-joins/prune substrate (PR #1) and ladder harness deterministic half (PR #2) were audited against `docs/archive/omegahive_stage2_spec.md` (now v2.2 — §3 was corrected as part of this audit; read it first). Four fixes. File:line references as of merge `3d6e165`; anchor by function if drifted. A1 is the substantive one. Fold/guard unit tests run without Postgres; anything touching the DB paths needs `docker-compose up` + `OMEGAHIVE_TEST_DATABASE_URL`.
+ 
+ ---
+ 
+diff --git a/docs/omegahive_test_plan.md b/docs/omegahive_test_plan.md
+index d9851d1..b565252 100644
+--- a/docs/omegahive_test_plan.md
++++ b/docs/omegahive_test_plan.md
+@@ -147,7 +147,7 @@ Hard-fail: 4, 5, 6, 8.
+ 
+ # Appendix D — T3: coordination experiments
+ 
+-**D1 — the coordinator ladder (stage 2; bounded).** *Normative instantiation: [omegahive_stage2_spec.md](omegahive_stage2_spec.md) (v2), which amends this pre-registration before any run — grid extended to architecture × model × knowledge cells (incl. a vanilla+KB cell), CI/Holm machinery replaced by pre-registered descriptive criteria (n=20 paired binary outcomes make CIs decorative), time-to-prune redesigned against gaming (A-recovers seeds, prune-correctness scoring, event-count clock) and removed from the gate chain. The prerequisites and spirit below stand.*
++**D1 — the coordinator ladder (stage 2; bounded).** *Normative instantiation: [omegahive_stage2_spec.md](archive/omegahive_stage2_spec.md) (v2), which amends this pre-registration before any run — grid extended to architecture × model × knowledge cells (incl. a vanilla+KB cell), CI/Holm machinery replaced by pre-registered descriptive criteria (n=20 paired binary outcomes make CIs decorative), time-to-prune redesigned against gaming (A-recovers seeds, prune-correctness scoring, event-count clock) and removed from the gate chain. The prerequisites and spirit below stand.*
+ - *Prerequisite (substrate):* the **join-semantics decision** — under strict all-dependencies readiness a doomed parallel branch blocks its join forever and no coordinator has a legal prune move (stage-0 finding), so Phase 2 below is unrunnable without it. Options: k-of-n readiness, or a scoped prune/re-plan op. Designed through the legality spec; decided in the stage-2 spec (owner: stage-2 spec author).
+ - *Boards:* Phase 1 (mechanics): 1–2 task board; recover from one rejection end-to-end. Phase 2 (measurement): a branch-and-join DAG — parallel candidate paths, a join, a prunable doomed branch — with fixed plan (coordination isolated from planning; decisions real: allocate, prune, when-to-proceed).
+ - *Ladder:* scripted-greedy (control) → plain-LLM chief-of-staff → OmegaClaw-as-shipped (symbolic shapes context, LLM emits) → optionally OmegaClaw-with-symbolic-emitter (inference decides ops via evidence accumulation, code emits through a hive skill, LLM supervises) — identical port, identical boards, same seeds.
+diff --git a/docs/omegahive_ui_spec.md b/docs/omegahive_ui_spec.md
+index dd5d21d..9a15055 100644
+--- a/docs/omegahive_ui_spec.md
++++ b/docs/omegahive_ui_spec.md
+@@ -1,6 +1,6 @@
+ # OmegaHive — Human UI Spec
+ 
+-**Status:** v0.1 DRAFT — for discussion. Scope: the operator-facing web UI for a single OmegaHive deployment (rootless podman compose on one Fedora host, tailnet-only access per [omegahive_remote_access_spec.md](omegahive_remote_access_spec.md); 1–2 operators, one traveling with a phone for ~5 weeks). Synthesized from a three-lens ideation (operator ergonomics / architecture purity / pragmatic build); this document is the single source. Companions: [omegahive_port_spec.md](omegahive_port_spec.md) (the read/write surface this consumes), [omegahive_design_1_1.md](omegahive_design_1_1.md) (§3.2 projections, §3.4 port binding, §3.5 check-ins/steering, §10.3 run mapping — an input of §9 below), [omegahive_remote_access_spec.md](omegahive_remote_access_spec.md) (tailnet transport, port 8443).
++**Status:** v0.1 — **current, and shipped.** The read-only v0.1 surface specified here is built and serving (`src/omegahive/ui/`, tailnet-only behind the house Caddy); §3.3's portfolio entry point landed Jul 28 2026. What remains unbuilt is designed-not-shipped and marked as such in place: the **write path** (§4, build-plan session 3) and the §9 open items. Scope: the operator-facing web UI for a single OmegaHive deployment (rootless podman compose on one Fedora host, tailnet-only access per [omegahive_remote_access_spec.md](deployments/omegahive_remote_access_spec.md); 1–2 operators, one traveling with a phone for ~5 weeks). Synthesized from a three-lens ideation (operator ergonomics / architecture purity / pragmatic build); this document is the single source. Companions: [omegahive_port_spec.md](reference/omegahive_port_spec.md) (the read/write surface this consumes), [omegahive_design_1_1.md](omegahive_design_1_1.md) (§3.2 projections, §3.4 port binding, §3.5 check-ins/steering, §10.3 run mapping — an input of §9 below), [omegahive_remote_access_spec.md](deployments/omegahive_remote_access_spec.md) (tailnet transport, port 8443).
+ 
+ ---
+ 
+diff --git a/docs/omegahive_v0b_order.md b/docs/omegahive_v0b_order.md
+index 491477c..b3bc2ac 100644
+--- a/docs/omegahive_v0b_order.md
++++ b/docs/omegahive_v0b_order.md
+@@ -1,6 +1,8 @@
+ # v0b — hive-image board-binding qualification (self-contained work order)
+ 
+-**Context (all you need):** v0b was originally the C2 battery's second half (board-op discipline, `omegahive_c2_battery_spec.md` §9), feeding the stage-2 cheap-coordinator pick. **That framing is dead** — the stage-2 grid is closed and the comparative L4–L6 cells are cancelled (`omegahive_stage2_verdict.md`, the controlling document). What survives is v0b as a **qualification gate**: prove the hive image's board binding works end-to-end with real models, because stage 3 needs that image for executors and residents regardless. You are qualifying plumbing, not ranking coordinators. Nothing here informs a model comparison; do not produce one.
++**Status:** OPEN work order, and gated — its entry conditions include a finished v0a-v2 ([omegahive_c2_v0a_v2_order.md](omegahive_c2_v0a_v2_order.md)), which has not run. Not surveyed by the 2026-07-28 docs triage. Map: [INDEX.md](INDEX.md).
++
++**Context (all you need):** v0b was originally the C2 battery's second half (board-op discipline, `omegahive_c2_battery_spec.md` §9), feeding the stage-2 cheap-coordinator pick. **That framing is dead** — the stage-2 grid is closed and the comparative L4–L6 cells are cancelled (`docs/reference/omegahive_stage2_verdict.md`, the controlling document). What survives is v0b as a **qualification gate**: prove the hive image's board binding works end-to-end with real models, because stage 3 needs that image for executors and residents regardless. You are qualifying plumbing, not ranking coordinators. Nothing here informs a model comparison; do not produce one.
+ 
+ **Entry conditions (verify, then start):** the hive image is final (fork patches 1–4 per `omegahive_o2_fork_patches.md`: SAFE_VARS DSN, board channel adapter, board skill, usage logging); the R2 binding smoke (stage-2 spec §2/§8 O3 — fixture board, read views, emit ops, recover one injected refusal, reach terminal) passes on it; v0a-v2 is done (`omegahive_c2_v0a_v2_order.md`), so the persona-injection + loaded-hash assertion mechanism and the container-real parser trace exist. B1–B6 are merged (roster/`UNKNOWN_WORKER` is in the substrate). If any of these is false, stop and report — do not build around it.
+ 
+diff --git a/docs/omegahive_v3_fixes_B1-B6.md b/docs/omegahive_v3_fixes_B1-B6.md
+index 220c20c..1d92054 100644
+--- a/docs/omegahive_v3_fixes_B1-B6.md
++++ b/docs/omegahive_v3_fixes_B1-B6.md
+@@ -1,5 +1,7 @@
+ # V3 review — fixes B1–B6 (self-contained work order)
+ 
++**Status:** executed work order — the fixes landed (the `UNKNOWN_WORKER` roster is in the substrate; the runner reads `qual/catalogs/board-ops-v2.yaml`). Retained as the build record; not surveyed by the 2026-07-28 docs triage, so it stays in place. Map: [INDEX.md](INDEX.md).
++
+ **Context (all you need):** PR #8's three artifacts (persona v2, op-reference sheet, KB v1) passed fresh-eyes review clean — strategy-inert, leak-free, symmetric. The blockers are in the surrounding code: the grid's execution path still consumes the superseded catalog, and the op sheet documents a rejection code the substrate does not implement. These land as a follow-up PR on the V track; **B1–B4 gate the grid freeze** (any L-cell run before they land is contaminated or mis-documented). File:line refs as of `29b499d`.
+ 
+ ## B1 — BLOCKER: the grid runs against the contaminated v1 catalog
+diff --git a/docs/omegahive_v3_kb_persona_brief.md b/docs/omegahive_v3_kb_persona_brief.md
+index 3e86d16..6c386f2 100644
+--- a/docs/omegahive_v3_kb_persona_brief.md
++++ b/docs/omegahive_v3_kb_persona_brief.md
+@@ -1,8 +1,10 @@
+ # V3 — KB, op sheet, persona (self-contained work order)
+ 
++**Status:** executed work order — the artifacts exist (`qual/personas/coordinator-v2/`, `qual/catalogs/board-ops-v2.yaml`, `qual/kb/coordination-kb-v1/`) and the flat v1 persona draft is gone. Retained as the authoring contract those artifacts were written to; not surveyed by the 2026-07-28 docs triage, so it stays in place. Map: [INDEX.md](INDEX.md).
++
+ **Supersession (v2 artifacts replace all prior drafts):** the pre-existing flat `qual/personas/coordinator-v1.txt` (a 5-op draft predating `prune`) and `qual/catalogs/board-ops-v1.yaml` are superseded — your deliverables are **`coordinator-v2/`** and **`qual/catalogs/board-ops-v2.yaml`** (same 6-op set as v1's catalog, descriptions aligned to the §2 table). `git rm` the stale flat persona draft in the same PR (git history preserves it); leave `board-ops-v1.yaml` in place until its referencing scenarios migrate.
+ 
+-**Context (all you need):** you are authoring the three text artifacts for the stage-2 coordinator ladder ([omegahive_stage2_spec.md](omegahive_stage2_spec.md) — read §5.1, §5.4, §5.5 first; they are the contract). Deliverables: `persona-coordinator-v1` (one `prompt.txt` + the R1 system-prompt variant), the **op-reference sheet**, and `coordination-kb-v1` (one markdown file, 3–5 pages). All three are hash-pinned experiment inputs.
++**Context (all you need):** you are authoring the three text artifacts for the stage-2 coordinator ladder ([omegahive_stage2_spec.md](archive/omegahive_stage2_spec.md) — read §5.1, §5.4, §5.5 first; they are the contract). Deliverables: `persona-coordinator-v1` (one `prompt.txt` + the R1 system-prompt variant), the **op-reference sheet**, and `coordination-kb-v1` (one markdown file, 3–5 pages). All three are hash-pinned experiment inputs.
+ 
+ **Authoring discipline (hard rule):** work from this brief and the spec sections named above **only**. Do **not** read `ladder/` code, `seeds.py`, board fixtures, or any run configuration — the KB must be authored blind to board parameters (the leakage check compares afterward). If you need a fact about the runtime or ops, it is in this brief or the spec; if it isn't, stop and ask rather than reading the ladder.
+ 
+diff --git a/docs/reference/README.md b/docs/reference/README.md
+new file mode 100644
+index 0000000..352d054
+--- /dev/null
++++ b/docs/reference/README.md
+@@ -0,0 +1,5 @@
++# docs/reference — normative-or-historical sources; consult, don't start here
++
++These still govern (a spec we implement, a decision that binds) but describe an upstream
++source or a finished milestone, so they are not the front path; each file's own **Status**
++header says which. The map of the whole documentation set is [../INDEX.md](../INDEX.md).
+diff --git a/docs/omegahive_port_spec.md b/docs/reference/omegahive_port_spec.md
+similarity index 93%
+rename from docs/omegahive_port_spec.md
+rename to docs/reference/omegahive_port_spec.md
+index 37c258e..0be3013 100644
+--- a/docs/omegahive_port_spec.md
++++ b/docs/reference/omegahive_port_spec.md
+@@ -1,6 +1,8 @@
+ # OmegaHive — Port Milestone Spec (rev 3, build-ready)
+ 
+-**Status:** Build spec for the **port** milestone (stage 1 of [omegahive_design_1_1.md](omegahive_design_1_1.md) §7): make the substrate correct under independent, out-of-process writers, and give it one binding surface — the `HiveCoordinatorPort` — that every coordinator (scripted-greedy control, plain-LLM, OmegaClaw) and later every executor plugs into. **Rev 3** folds in the client-shape pressure test (Jul 6): the write path (§§3–6) is unchanged from panel-hardened rev 2; the port surface (§2), key rule (§3a), and proof suite (§8) are amended; §14 records the deltas. **Scope: contained within the omegahive repo.** The fork/deployment side is [omegahive_deployment_spec.md](omegahive_deployment_spec.md), which delivers this milestone's two external inputs: a pinned, buildable OmegaClaw fork image and its container policy file. Companions: design doc §3.3 (the R1–R5 invariants this implements) and §3.4 (the binding rules), [omegahive_omegaclaw_binding.md](omegahive_omegaclaw_binding.md) (the consumer), [omegahive_test_plan.md](omegahive_test_plan.md) §A (where the proof obligations live permanently).
++**Status:** **reference — shipped build spec.** The port milestone is built and merged; the semantics below (the port API, the key rule, the read contract, the R1–R5 invariants) remain **normative for the substrate** and are what the code is held to, while the build framing — slice order, "not yet built", the work-to-do voice — is **historical**. Read it to settle what the port guarantees; do not read it as a plan.
++
++Build spec for the **port** milestone (stage 1 of [../omegahive_design_1_1.md](../omegahive_design_1_1.md) §7): make the substrate correct under independent, out-of-process writers, and give it one binding surface — the `HiveCoordinatorPort` — that every coordinator (scripted-greedy control, plain-LLM, OmegaClaw) and later every executor plugs into. **Rev 3** folds in the client-shape pressure test (Jul 6): the write path (§§3–6) is unchanged from panel-hardened rev 2; the port surface (§2), key rule (§3a), and proof suite (§8) are amended; §14 records the deltas. **Scope: contained within the omegahive repo.** The fork/deployment side is [omegahive_deployment_spec.md](../omegahive_deployment_spec.md), which delivers this milestone's two external inputs: a pinned, buildable OmegaClaw fork image and its container policy file. Companions: design doc §3.3 (the R1–R5 invariants this implements) and §3.4 (the binding rules), [omegahive_omegaclaw_binding.md](../archive/omegahive_omegaclaw_binding.md) (the consumer), [omegahive_test_plan.md](../omegahive_test_plan.md) §A (where the proof obligations live permanently).
+ 
+ ## 0. Orientation for the implementing agent
+ 
+@@ -159,7 +161,7 @@ Slices 1–2 are pure hardening of existing code and start immediately; 3 depend
+ 
+ ## 14. Pressure-test dispositions (rev 2 → rev 3, Jul 6)
+ 
+-Client-shape pressure test (mixed population + content-derived keys; full findings in the project record): **write path (§§3–6) unchanged** — rev 2's ban on session-scoped constructs made it client-lifetime-indifferent by construction. Amendments: **§3a** replaces the turn-counter key-generation rule (`turn_id` struck from the emit contract; slice-2 signature checkpoint added) with the content+basis rule, residuals stated; **§2** consistency contract defined for cursor-mode reads (board+events anchored at one point; client incremental folds forbidden), no-change short-circuit added, generation token added (restore-safety), batch envelope added, mixed client population made explicit, "nothing assumes in-process state" restated as no *server-side* session state with stateful binding clients first-class; **§2a** connection lifecycle specified (pool-safety as requirement, same-key internal retry, bounded backoff); **§5** flood-control wording (bounds log volume, not gate cost) + client backoff-on-identical-`Rejected`; **§7** long-lived filtered-reader caveat, static rule named the expected outcome; **§8** gains property tests 4–10 + key canonicalization + fold-budget profile; **§9** restore/generation procedure + pooler note, long-run pin collision routed to deployment spec §5 and design §10.3; **§12** deferrals converted to armed triggers with named decision points. References to the repo-hygiene spec now point to [omegahive_deployment_spec.md](omegahive_deployment_spec.md), which absorbed it. **Build-time addendum (same day):** `event_id` generation pinned to DB-side `gen_random_uuid()` (§3) — raised by the implementing agent during planning; seq-derived uuid5 rejected (nondeterministic under rollback/interleaving; trigger name-order footgun; cross-generation id collision after restore).
++Client-shape pressure test (mixed population + content-derived keys; full findings in the project record): **write path (§§3–6) unchanged** — rev 2's ban on session-scoped constructs made it client-lifetime-indifferent by construction. Amendments: **§3a** replaces the turn-counter key-generation rule (`turn_id` struck from the emit contract; slice-2 signature checkpoint added) with the content+basis rule, residuals stated; **§2** consistency contract defined for cursor-mode reads (board+events anchored at one point; client incremental folds forbidden), no-change short-circuit added, generation token added (restore-safety), batch envelope added, mixed client population made explicit, "nothing assumes in-process state" restated as no *server-side* session state with stateful binding clients first-class; **§2a** connection lifecycle specified (pool-safety as requirement, same-key internal retry, bounded backoff); **§5** flood-control wording (bounds log volume, not gate cost) + client backoff-on-identical-`Rejected`; **§7** long-lived filtered-reader caveat, static rule named the expected outcome; **§8** gains property tests 4–10 + key canonicalization + fold-budget profile; **§9** restore/generation procedure + pooler note, long-run pin collision routed to deployment spec §5 and design §10.3; **§12** deferrals converted to armed triggers with named decision points. References to the repo-hygiene spec now point to [omegahive_deployment_spec.md](../omegahive_deployment_spec.md), which absorbed it. **Build-time addendum (same day):** `event_id` generation pinned to DB-side `gen_random_uuid()` (§3) — raised by the implementing agent during planning; seq-derived uuid5 rejected (nondeterministic under rollback/interleaving; trigger name-order footgun; cross-generation id collision after restore).
+ 
+ ## 15a. Rev 3.2 — containerized tooling (Jul 7)
+ 
+diff --git a/docs/omegahive_spec_1_1.md b/docs/reference/omegahive_spec_1_1.md
+similarity index 99%
+rename from docs/omegahive_spec_1_1.md
+rename to docs/reference/omegahive_spec_1_1.md
+index 7e5e2d6..3a39ee7 100644
+--- a/docs/omegahive_spec_1_1.md
++++ b/docs/reference/omegahive_spec_1_1.md
+@@ -1,6 +1,8 @@
+ # OmegaHive 1.1 — An Experimental Cooperative Hive of OmegaClaw and OpenClaw Agents
+ 
+-> **Provenance:** text-faithful conversion of Ben Goertzel's `omegahive_1_1.pdf` (Jul 5 2026), extracted Jul 6 2026 for reference alongside [omegahive_design_1_1.md](omegahive_design_1_1.md) (our implementation design, which maps every component of this spec). Layout is flattened from the PDF; tables appear as aligned text. The PDF remains the authoritative formatting.
++**Status:** **reference source** — the upstream specification this repo implements, not a plan of record for any milestone. It is normative for what "1.1 §N" means anywhere in our documents; what we actually build is [../omegahive_design_1_1.md](../omegahive_design_1_1.md), which maps every component of this spec and records where we diverge. Start there, consult this.
++
++> **Provenance:** text-faithful conversion of Ben Goertzel's `omegahive_1_1.pdf` (Jul 5 2026), extracted Jul 6 2026 for reference alongside [../omegahive_design_1_1.md](../omegahive_design_1_1.md) (our implementation design, which maps every component of this spec). Layout is flattened from the PDF; tables appear as aligned text. The PDF remains the authoritative formatting.
+ 
+                               OmegaHive 1.1
+                       An Experimental Cooperative Hive
+diff --git a/docs/omegahive_stage2_verdict.md b/docs/reference/omegahive_stage2_verdict.md
+similarity index 90%
+rename from docs/omegahive_stage2_verdict.md
+rename to docs/reference/omegahive_stage2_verdict.md
+index 7fd620b..04695c4 100644
+--- a/docs/omegahive_stage2_verdict.md
++++ b/docs/reference/omegahive_stage2_verdict.md
+@@ -1,6 +1,6 @@
+ # Stage 2 verdict and stage 3 direction
+ 
+-**Status:** closes the stage-2 coordinator ladder (spec: `omegahive_stage2_spec.md`, run record: `ladder/records/2026-07-09/vanilla-half-record.md`, battery evidence: `docs/evidence/omegahive_c2_v0a_r1.md`). Decided Jul 10 2026. This document states what the experiments established, what we now assume, and what stages 3+ do about it.
++**Status:** **reference — decision record; it governs, and it describes the past.** Still binding: §3's board-validity rule pre-registers any future synthetic coordination test, and §5's direction is why the default coordinator is mechanical. Closed by it: the stage-2 coordinator ladder (spec: `docs/archive/omegahive_stage2_spec.md`, run record: `ladder/records/2026-07-09/vanilla-half-record.md`, battery evidence: `docs/evidence/omegahive_c2_v0a_r1.md`). Decided Jul 10 2026. This document states what the experiments established, what we now assume, and what stages 3+ do about it.
+ 
+ ## 1. What ran and what it licenses
+ 
+diff --git a/ladder/README.md b/ladder/README.md
+index 0e83e26..e09c764 100644
+--- a/ladder/README.md
++++ b/ladder/README.md
+@@ -2,7 +2,7 @@
+ 
+ **Status: closed.** This harness ran the stage-2 coordinator ladder and produced the frozen
+ records under `ladder/records/2026-07-09/`. The experiment is closed per
+-`docs/omegahive_stage2_verdict.md`; its §7 decision layer (cross-cell contrasts, the
++`docs/reference/omegahive_stage2_verdict.md`; its §7 decision layer (cross-cell contrasts, the
+ knowledge-value verdict, the interim gate recommendation, and boundary-replication flagging) has
+ been removed from `main`. Git history preserves it.
+ 
+diff --git a/ladder/report.py b/ladder/report.py
+index cbc2cbc..47bd6dd 100644
+--- a/ladder/report.py
++++ b/ladder/report.py
+@@ -4,7 +4,7 @@ the raw rows and easy to test.
+ 
+ The §7 decision layer (cross-cell contrasts, the knowledge-value verdict, the interim gate
+ recommendation, and boundary-replication flagging) was retired with the ladder's closure — see
+-`ladder/README.md` and `docs/omegahive_stage2_verdict.md`. This module now renders only the
++`ladder/README.md` and `docs/reference/omegahive_stage2_verdict.md`. This module now renders only the
+ records' descriptive tables; the verdicts they once computed live in git history.
+ """
+ 
+diff --git a/scripts/check_docs.py b/scripts/check_docs.py
+new file mode 100755
+index 0000000..4be04e4
+--- /dev/null
++++ b/scripts/check_docs.py
+@@ -0,0 +1,164 @@
++#!/usr/bin/env python3
++"""Documentation hygiene checks — link integrity and INDEX completeness.
++
++Two hard checks, no dependencies, no network, no database:
++
++1. **References resolve.** Two classes, everywhere in the tracked tree:
++   every **markdown link** in a `.md` file, and every **`docs/…` path** written
++   in prose or backticks in any text file (README, scripts, module docstrings).
++   Both must point at a file that exists. Fenced code blocks are skipped — they
++   carry code, not references. This is the guard against the silent breakage a
++   docs move causes: `git mv` moves the file, not the sentences pointing at it.
++   Deliberately *not* checked: shorthand module names (`board/legality.py`),
++   container paths, test fixtures, and paths into other repos — none of those
++   are documentation references, and enforcing them buys noise, not integrity.
++
++2. **`docs/INDEX.md` is complete and non-duplicating.** Every file under `docs/`
++   is named exactly once by an index entry — a bullet opening with its path in
++   backticks, relative to `docs/` — or by a directory entry covering it
++   (`archive/`, `evidence/`, `whitepaper/` are indexed as wholes). A doc nobody
++   indexed is a doc nobody can find; a doc indexed twice is two claims about its
++   status. Prose elsewhere in the index may name any path it likes; only entry
++   lines count.
++
++A third, advisory pass reports bare doc *names* mentioned without a path
++(`omegahive_port_spec.md` in prose). Those cannot dangle, but they no longer say
++where the file lives — the index is the redirect. Advisory never fails the run.
++
++    python3 scripts/check_docs.py [--advisory]
++
++Exit status is 0 only if both hard checks pass.
++"""
++
++from __future__ import annotations
++
++import os
++import re
++import subprocess
++import sys
++
++ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++INDEX = "docs/INDEX.md"
++# Directories under docs/ that the index covers with one line, as wholes.
++WHOLE_DIRS = ("docs/archive/", "docs/evidence/", "docs/whitepaper/")
++
++TEXT_SUFFIXES = (".md", ".py", ".sh", ".yaml", ".yml", ".toml", ".sql", ".txt", ".tex")
++MD_LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
++# A repo-rooted path into the documentation set, in prose or backticks anywhere.
++# `(?!@)` drops pinned `path@sha` refs: those name a path at a commit, not at HEAD.
++DOCS_PATH = re.compile(r"(?<![\w/])docs/[\w./-]+\.(?:md|csv|tex|pdf|txt)(?!@)")
++DOC_NAME = re.compile(r"\b(omegahive_[\w.-]+\.md)\b")
++FENCE = re.compile(r"^\s*(```|~~~)")
++# An index entry: a bullet that opens with the doc's path, relative to docs/.
++INDEX_ENTRY = re.compile(r"^\s*[-*]\s+`([^`]+)`")
++
++
++def tracked_files() -> list[str]:
++    # -z: NUL-separated, so a path with a space or a quote survives intact.
++    out = subprocess.run(
++        ["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, text=True, check=True
++    )
++    return [p for p in out.stdout.split("\0") if p]
++
++
++def prose_lines(path: str):
++    """Yield (lineno, text) for lines outside fenced code blocks."""
++    with open(os.path.join(ROOT, path), encoding="utf-8", errors="replace") as fh:
++        in_fence = False
++        for n, line in enumerate(fh, 1):
++            if FENCE.match(line):
++                in_fence = not in_fence
++                continue
++            if not in_fence:
++                yield n, line.rstrip("\n")
++
++
++def check_links(files: list[str]) -> list[str]:
++    failures = []
++    checked = 0
++    for f in files:
++        if not f.endswith(TEXT_SUFFIXES):
++            continue
++        here = os.path.dirname(f)
++        for n, line in prose_lines(f):
++            targets = []
++            if f.endswith(".md"):
++                targets += [(m.group(1), "link") for m in MD_LINK.finditer(line)]
++            targets += [(m.group(0), "docs-path") for m in DOCS_PATH.finditer(line)]
++            for raw, kind in targets:
++                if raw.startswith(("http://", "https://", "mailto:", "#")):
++                    continue
++                target = raw.split("#")[0]
++                if not target or "://" in target:
++                    continue
++                # A link resolves beside its own file; a docs/ path from the root.
++                base = ROOT if kind == "docs-path" else os.path.join(ROOT, here)
++                checked += 1
++                if not os.path.exists(os.path.normpath(os.path.join(base, target))):
++                    failures.append(f"{f}:{n}: dangling {kind} -> {raw}")
++    print(f"references: {checked} checked, {len(failures)} dangling")
++    return failures
++
++
++def check_index(files: list[str]) -> list[str]:
++    failures = []
++    if not os.path.exists(os.path.join(ROOT, INDEX)):
++        return [f"{INDEX}: missing"]
++    entries: list[str] = []
++    for _, line in prose_lines(INDEX):
++        m = INDEX_ENTRY.match(line)
++        if m:
++            entries.append(m.group(1))
++    for entry in entries:
++        if entries.count(entry) > 1:
++            failures.append(f"{INDEX}: `{entry}` is entered {entries.count(entry)}x")
++    seen = set(entries)
++    docs = [f for f in files if f.startswith("docs/")]
++    for doc in sorted(docs):
++        rel = doc[len("docs/") :]
++        whole = next((d for d in WHOLE_DIRS if doc.startswith(d)), None)
++        key = whole[len("docs/") :] if whole else rel
++        if key not in seen:
++            what = "no entry covering it" if whole else f"no `{rel}` entry"
++            failures.append(f"{doc}: {what} in {INDEX}")
++        if not whole and rel in seen and any(
++            e.startswith(rel.split("/")[0] + "/") and e.endswith("/") for e in seen
++        ):
++            failures.append(f"{doc}: indexed both as a file and inside a directory entry")
++    stray = [e for e in seen if not os.path.exists(os.path.join(ROOT, "docs", e))]
++    for e in sorted(stray):
++        failures.append(f"{INDEX}: entry `{e}` names nothing under docs/")
++    print(
++        f"index: {len(docs)} files under docs/, {len(set(entries))} entries, "
++        f"{len(failures)} problems"
++    )
++    return sorted(set(failures))
++
++
++def advisory(files: list[str]) -> None:
++    print("\nadvisory — doc names mentioned without a path (the index is the redirect):")
++    for f in files:
++        if not f.endswith(TEXT_SUFFIXES):
++            continue
++        for n, line in prose_lines(f):
++            stripped = DOCS_PATH.sub("", MD_LINK.sub("", line))
++            for m in DOC_NAME.finditer(stripped):
++                print(f"  {f}:{n}: {m.group(1)}")
++
++
++def main() -> int:
++    files = tracked_files()
++    failures = check_links(files) + check_index(files)
++    if "--advisory" in sys.argv:
++        advisory(files)
++    if failures:
++        print("\nFAIL")
++        for line in failures:
++            print(f"  {line}")
++        return 1
++    print("\nOK")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
