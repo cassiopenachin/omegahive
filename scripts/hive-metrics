@@ -41,6 +41,15 @@
 # so a burst inflates by up to (burst size) seconds; and `wall_ts` is not on the
 # `report --json` read path, so nothing here depends on it.
 
+# Deliberate redundancy with hive-common.sh:26, which sets exactly the same three
+# options during the `source` below. Five production scripts inherited -e, -u and
+# pipefail from that ONE line and stated none of them; a refactor that guards it, moves
+# it, or wraps the source in a conditional would have quietly stripped error-exit,
+# nounset and pipefail from all five at once, and nothing would have failed loudly
+# enough to notice. Setting them here is a no-op at runtime and makes each script's own
+# contract readable without opening another file.
+set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/hive-common.sh
 source "$SCRIPT_DIR/hive-common.sh"

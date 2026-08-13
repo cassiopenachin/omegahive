@@ -67,7 +67,12 @@ cleanup() {
 }
 trap cleanup EXIT   # installed before the database exists, so nothing can leak past it
 
-ERRLOG="$(mktemp -t omegahive-checks-err-XXXXXX)"
+# An explicit path template, never `mktemp -t <template>`: `-t` means "this is a template"
+# to GNU mktemp and "this is a PREFIX" to BSD/macOS mktemp, so the same command produces
+# two different names on the two platforms. It does not matter for this errlog, but it
+# matters a great deal for $OVERRIDE below, and one spelling for both is what stops the
+# next temp file from picking the broken one. Same form as scripts/hive-score's CAL_TMP.
+ERRLOG="$(mktemp "${TMPDIR:-/tmp}/omegahive-checks-err.XXXXXX")"
 # `|| true`: under `set -e` a failing command substitution aborts at the assignment, which
 # would make the guard below unreachable and the failure completely silent.
 SPINE_OUT="$(dc run --rm -T --entrypoint python migrate /app/tests/scratch_db.py new \
@@ -128,7 +133,19 @@ SPINE_READER="$ROLE_READER"; SPINE_GATEWAY="$ROLE_GATEWAY"
 role_urls "$RESTORE_DB" "$RESTORE_URL"
 RESTORE_READER="$ROLE_READER"
 
-OVERRIDE="$(mktemp -t omegahive-checks-XXXXXX.yml)"
+# The `.yml` suffix is LOAD-BEARING: this file is handed to `compose -f` at L192, and
+# compose refuses a `-f` argument it cannot recognise as YAML. `mktemp -t
+# omegahive-checks-XXXXXX.yml` delivered that on GNU and NOT on BSD/macOS, where `-t`
+# treats its argument as a prefix and appends its own random tail — producing
+# `/tmp/omegahive-checks-XXXXXX.yml.a1b2c3`, no suffix, and a harness that dies at its
+# first compose call on that platform only. The explicit path template is one spelling
+# that means the same thing on both. Refuse rather than guess if it ever stops holding:
+# a silently-suffixless override is a confusing compose error twelve lines later.
+OVERRIDE="$(mktemp "${TMPDIR:-/tmp}/omegahive-checks.XXXXXX.yml")"
+case "$OVERRIDE" in
+  *.yml) ;;
+  *) echo "mktemp did not honour the .yml suffix on this host (got '$OVERRIDE'); compose -f needs it" >&2; exit 1 ;;
+esac
 # `environment:` wins over `env_file:`, so this redirects every service the harness drives
 # onto the scratch spine while `.env` keeps pointing the real stack at the durable one.
 #
