@@ -240,23 +240,29 @@ closed(14020, "eta", "retired per decision")
 
 # iota — the result-revision scenario proper (decisions.md 2026-08-01): ONE
 # accept, TWO result_posted on the SAME cycle (no reopen in between, unlike
-# zeta) — a worker posts a result, gets a review question during the wait, then
-# re-fires result_posted with a corrected ref. accept->first result = 3600s
-# (1.0h) and never moves; accept->last result = 10800s (3.0h) once the revision
-# and its 3600s of review-wait land. Predicted effort is 1 worker-hour: under the
-# OLD single-span (last-based, net-of-all-blocked) scheme this would have scored
-# (10800-3600)/3600 = 2.0h -> "over" the moment the revision fired — exactly the
-# silent-inflation bug decisions.md 2026-08-01 names. Under the new scheme the
-# production span is untouched by the revision and scores "hit".
+# zeta, and — unlike an earlier draft of this fixture — no task.blocked between
+# them either: task.result_posted's own effect sets the board to in_review
+# (board/legality.py _e_result_posted), and task.blocked's guard is
+# _from_state("in_progress") only, so a block posted after a result could never
+# reach a real gateway without an intervening reopen, which this scenario
+# deliberately has none of. A worker posts a result, then re-fires
+# result_posted with a corrected ref some real time later — nothing else needs
+# to happen on the spine for that, and this fixture now emits only what the
+# live gateway would actually accept; hive-revision-drill.sh proves the same
+# shape end to end against a real spine). accept->first result = 3600s (1.0h)
+# and never moves; accept->last result = 10800s (3.0h) once the revision lands.
+# Predicted effort is 1 worker-hour: under the OLD single-span (last-based)
+# scheme this would have scored 10800/3600 = 3.0h -> "over" the moment the
+# revision fired — exactly the silent-inflation bug decisions.md 2026-08-01
+# names — with no blocked time involved at all. Under the new scheme the
+# production span is untouched by the revision and scores "hit". (The
+# blocked_upto exclusion of a post-first-result block is already covered by
+# epsilon's fixture above, which needs no revision to exercise it.)
 created(30000, "iota")
 ev(30005, "human", "operator", "worker.registered", None, {"worker_id": "w-iota"})
 ev(30100, "coordinator", "operator", "task.assigned", "iota", {"worker": "w-iota"})
 ev(30200, "worker", "w-iota", "task.accepted", "iota", {})
 result(33800, "iota", "w-iota")                         # first result: accept->first = 3600s
-ev(34000, "worker", "w-iota", "task.blocked", "iota",
-   {"reason": "review question on the first result", "needs": "decision",
-    "ref_report": "projects/drill/questions/iota.md@abc1234"})
-ev(37600, "worker", "w-iota", "task.unblocked", "iota", {})   # 3600s blocked, AFTER the first result
 result(41000, "iota", "w-iota")                         # revision: accept->last = 10800s
 ev(41100, "instrument", "operator", "review.passed", "iota",
    {"ref_result": "projects/drill/reports/iota.md@abc1234"})
@@ -492,19 +498,21 @@ check "zeta accept->last result 3599s (post-reopen result)" \
 check "zeta 3599s renders as 1h0m"      "grep -qF '| 1h0m |' '$MD'"
 check "no impossible clock strings"     "! grep -qE '[0-9]+h60m|\\| 60m \\|' '$MD'"
 
-# iota: the same-cycle revision case (decisions.md 2026-08-01). accept->first is
-# fixed at the first firing and never sees the post-first-result block; accept->
-# last grows to include the revision and the blocked time along the way.
+# iota: the same-cycle revision case (decisions.md 2026-08-01), no blocking
+# anywhere — the point is that first/last diverge from the revision ALONE.
+# accept->first is fixed at the first firing; accept->last grows to include the
+# revision. (blocked_upto's post-first-result exclusion is epsilon's job, above —
+# a real block there would require a reopen this scenario deliberately has none of.)
 check "iota accept->first result 3600s (unmoved by the revision)" \
   "[ \"\$(col iota accepted_to_first_result_s)\" = 3600 ]"
-check "iota accept->last result 10800s (full cycle, incl. revision + wait)" \
+check "iota accept->last result 10800s (full cycle, incl. revision)" \
   "[ \"\$(col iota accepted_to_last_result_s)\" = 10800 ]"
-check "iota blocked before first result = 0 (the block opens after)" \
+check "iota blocked before first result = 0 (no blocking at all)" \
   "[ \"\$(col iota blocked_before_first_result_s)\" = 0 ]"
-check "iota first-result net == first-result gross (3600s, block excluded)" \
+check "iota first-result net == first-result gross (3600s, nothing to net out)" \
   "[ \"\$(col iota accepted_to_first_result_net_s)\" = 3600 ]"
-check "iota full-task blocked_s = 3600 (the review-wait block, counted here)" \
-  "[ \"\$(col iota blocked_s)\" = 3600 ]"
+check "iota full-task blocked_s = 0 (no blocking at all)" \
+  "[ \"\$(col iota blocked_s)\" = 0 ]"
 # The worker-clock table's iota row must show the FIRST-result net (1h0m), and
 # the mixed-clock table's iota row the LAST-result gross (3h0m) — extracted by
 # slicing the artifact between its own section headings, since a whole-file grep
