@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import typer
@@ -48,6 +49,10 @@ app = typer.Typer(help="OmegaHive M1 — event-log spine + run engine.", no_args
 console = Console()
 
 PLANNER = Actor(role="planner", id="planner")
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
 
 
 def _payload_error(exc: ValidationError) -> str:
@@ -424,7 +429,9 @@ def portfolio_cmd(
     )
     with connect() as conn:
         summaries = read_run_summaries(conn)
-        rows = portfolio_runs(summaries, window_days=days, exclude=globs, include_all=show_all)
+        rows = portfolio_runs(
+            summaries, window_days=days, exclude=globs, include_all=show_all, now=_utcnow()
+        )
         entries = []
         for row in rows:
             view = HiveCoordinatorPort(

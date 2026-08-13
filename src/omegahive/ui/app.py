@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import AsyncIterator, Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple, Protocol
 
@@ -40,6 +41,10 @@ _TEMPLATES = Jinja2Templates(directory=str(_ROOT / "templates"))
 _TEMPLATES.env.globals["event_payload"] = event_payload
 _TEMPLATES.env.globals["event_sentence"] = event_sentence
 _UI_ACTOR = Actor(role="coordinator", id="ui-read")
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
 
 
 def _normalize_base_path(value: str | None) -> str:
@@ -200,6 +205,7 @@ def create_app(
     *,
     port_factory: PortFactory | None = None,
     runs_factory: RunsFactory | None = None,
+    now_factory: Callable[[], datetime] | None = None,
     poll_seconds: float = 1.5,
     base_path: str | None = None,
 ) -> FastAPI:
@@ -211,6 +217,7 @@ def create_app(
         )
     )
     runs = runs_factory or (demo_run_summaries if demo_mode else _database_runs)
+    now = now_factory or _utcnow
     # Serve behind the house Caddy at a path prefix (e.g. /omegahive). `root_path` makes
     # Starlette strip the prefix before routing and makes `url_for` re-add it, so the app
     # stays base-aware without any absolute-path assumption. Empty = today's direct serving.
@@ -249,7 +256,7 @@ def create_app(
         """
         days = configured_window_days()
         summaries = runs()
-        rows = portfolio_runs(summaries, window_days=days, include_all=show_all)
+        rows = portfolio_runs(summaries, window_days=days, include_all=show_all, now=now())
         entries = []
         for row in rows:
             view = _read(factory, row["run_id"], None, None)
@@ -302,7 +309,8 @@ def create_app(
                 await asyncio.sleep(poll_seconds)
                 rows = await asyncio.to_thread(
                     lambda: portfolio_runs(
-                        runs(), window_days=configured_window_days(), include_all=show_all
+                        runs(), window_days=configured_window_days(), include_all=show_all,
+                        now=now(),
                     )
                 )
                 tick = await asyncio.to_thread(poll_portfolio, factory, rows, cursors)
