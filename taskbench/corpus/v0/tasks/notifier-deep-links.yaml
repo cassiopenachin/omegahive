@@ -1,0 +1,90 @@
+# taskbench corpus v0 — manifest for notifier-deep-links. Frozen; edits increment the corpus version.
+id: notifier-deep-links
+project: omegahive
+run: omegahive
+title: notifier deep links — buzz to read without SSH
+task_class: bounded
+work_shape: python-service
+bounded_because: One additive render change behind one environment variable, with the order supplying
+  the config pattern to copy, the escaping rule, and an explicit byte-identical-when-unset requirement.
+  The order even pre-decides the fallback if the UI has no per-task page. Its Tests section is a finished
+  checklist.
+workspace_repo: hive-workspace
+workspace_inputs:
+- path: projects/omegahive/orders/2026-07-21-notifier-deep-links.md
+  sha: 689dc24f7bba6de9849d5e01a8d827e1c640b513
+  role: order
+- path: projects/omegahive/WORKER.md
+  sha: 689dc24f7bba6de9849d5e01a8d827e1c640b513
+  role: context
+- path: projects/omegahive/decisions.md
+  sha: 689dc24f7bba6de9849d5e01a8d827e1c640b513
+  role: context
+code:
+  repo: cassiopenachin/omegahive
+  pre_task_base_sha: 01b46f84ba8ca1ea900b6da88729d3244e111bb4
+  local_path: ~/src/SNET/omegahive
+expected_output_kinds:
+- code_patch
+- tests
+- doc_update
+required_artefacts:
+- src/omegahive/notifier/format.py
+- tests/test_notifier.py
+environment_needs:
+- uv on PATH; a reachable Postgres for the parts of the suite that need one.
+verifiers:
+- id: pytest
+  argv:
+  - uv
+  - run
+  - --frozen
+  - pytest
+  - -q
+  timeout_s: 2400
+  description: the whole suite green
+- id: ruff
+  argv:
+  - uv
+  - run
+  - --frozen
+  - ruff
+  - check
+  - .
+  timeout_s: 600
+  description: lint clean
+- id: no-token-in-output
+  argv:
+  - uv
+  - run
+  - --frozen
+  - pytest
+  - -q
+  - tests/test_notifier.py
+  timeout_s: 900
+  description: the notifier suite, including the token-absence checks
+checklist:
+- id: byte-identical-unset
+  text: With the base URL unset, every message renders byte-identically to before — the link is additive,
+    never structural.
+- id: config-not-secret
+  text: 'The new variable follows the config-not-secret pattern: compose environment with an empty default
+    and an entry on the allowed list, never in the env file.'
+- id: phone-round-trip
+  text: One real notification on the phone opens the UI page over the tailnet.
+  applicable: operator
+non_replayable_legs:
+- leg: One real notification on the phone opens the UI page over the tailnet.
+  reason: Needs a live bot credential, the tailnet, the deployed UI and a physical device. An offline
+    instrument has none of them, and the order itself calls the durable deploy the operator's close-time
+    act.
+  executed_by: operator
+stop_lines:
+- id: outbound-only
+  text: Outbound only — no inbound surface, no bot commands, no ack path, no new trigger types.
+- id: no-ui-changes
+  text: No UI changes.
+  forbidden_paths:
+  - src/omegahive/ui/*
+rubric: rubrics/notifier-deep-links.md
+grading: grading/notifier-deep-links.yaml

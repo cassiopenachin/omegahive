@@ -1,0 +1,94 @@
+# taskbench corpus v0 — manifest for launch-pane-fix. Frozen; edits increment the corpus version.
+id: launch-pane-fix
+project: omegahive
+run: omegahive
+title: launch pane fix — tmux window by name, fail-safe half-launch
+task_class: bounded
+work_shape: shell-tooling
+bounded_because: 'The order names one defect with a reproduction, one allocation requirement, one ordering
+  requirement, and a drill that must stay green plus two named new cases. The definition of done is
+  a drill run and a doc section, not a design choice: the one seam the order leaves open (whether to
+  reorder seeding before pane creation) it delegates explicitly and asks the worker to state, which
+  is a bounded election between two written options rather than an open design.'
+workspace_repo: hive-workspace
+workspace_inputs:
+- path: projects/omegahive/orders/2026-07-27-launch-pane-fix.md
+  sha: a3d2740d90347558360d821f7f0be112b4867a24
+  role: order
+- path: projects/omegahive/WORKER.md
+  sha: c1ff3c3fc6ebccfe130e93f1ffa579986d9115d1
+  role: context
+- path: projects/omegahive/RUNBOOK.md
+  sha: c1ff3c3fc6ebccfe130e93f1ffa579986d9115d1
+  role: context
+- path: projects/omegahive/decisions.md
+  sha: 03b07a5dfe17377b3c90550f19b30a776f32f671
+  role: context
+- path: projects/omegahive/OPERATIONS.md
+  sha: c1ff3c3fc6ebccfe130e93f1ffa579986d9115d1
+  role: context
+code:
+  repo: cassiopenachin/omegahive
+  pre_task_base_sha: 31f86ec3a4904e27d004eb662a352d6827e7b9f8
+  local_path: ~/src/SNET/omegahive
+expected_output_kinds:
+- code_patch
+- doc_update
+required_artefacts:
+- scripts/hive-launch
+- scripts/hive-tooling-drill.sh
+environment_needs:
+- 'podman with compose and the omegahive stack up, plus jq: `scripts/hive-tooling-drill.sh` uses the
+  stack only as a Postgres host, under its own scratch run ids, and by its own design never touches
+  the durable `omegahive` run.'
+- tmux on PATH. The drill runs its own tmux server via TMUX_TMPDIR and must not reach the operator's.
+- shellcheck on PATH.
+verifiers:
+- id: bash-syntax
+  argv:
+  - bash
+  - -n
+  - scripts/hive-launch
+  description: the launcher parses
+- id: shellcheck
+  argv:
+  - shellcheck
+  - -x
+  - scripts/hive-launch
+  - scripts/hive-answer
+  - scripts/hive-close
+  - scripts/hive-score
+  - scripts/hive-metrics
+  - scripts/hive-common.sh
+  - scripts/hive-tooling-drill.sh
+  - scripts/hive-metrics-drill.sh
+  description: shellcheck -x clean on the loop scripts, per the DoD
+- id: tooling-drill
+  argv:
+  - scripts/hive-tooling-drill.sh
+  timeout_s: 2400
+  description: the operator-loop drill, green including the occupied-index, pane-name-collision and
+    half-launch cases the DoD names
+checklist:
+- id: repro-evidence
+  text: The result names the collision it reproduced and the state that collision stranded, and shows
+    the allocation working afterwards.
+- id: runbook-half-launch
+  text: 'Dead-worker recovery documentation gains a half-launched-task case: how to recognise it, why
+    re-running the launcher is wrong, and how to finish by hand.'
+- id: name-collision-refusal
+  text: A window already named for this task is refused with a message naming the recovery path — never
+    a second window.
+stop_lines:
+- id: no-event-model
+  text: No event-model, board-guard, or adopt-logic changes.
+  forbidden_paths:
+  - src/omegahive/events/*
+  - src/omegahive/gateway/*
+- id: no-registry-file
+  text: No registry file — the pane name stays the registry.
+- id: no-tmux-conf-assumptions
+  text: No .tmux.conf assumptions (base-index, renumber-windows); name-only allocation must hold under
+    any config.
+rubric: rubrics/launch-pane-fix.md
+grading: grading/launch-pane-fix.yaml

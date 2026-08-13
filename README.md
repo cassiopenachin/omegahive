@@ -92,7 +92,7 @@ The `omegahive` command is the operator's loopback tool. **Trust model, stated p
 
 Day-to-day operation is mostly: seed tasks from work orders (`emit --type task.created`), watch the board, and answer questions. Workers report through the same path — `task.reported` with `kind ∈ {progress, result, question, finding, reflection}` and a pinned workspace ref. A blocking question surfaces as a report plus `task.blocked`; the answer lands as a *commit to the order file* (artifacts carry truth; channels carry pointers); the worker unblocks itself after re-reading — unblock means "answer consumed," not "answer exists."
 
-Two sibling CLIs ship in the repo: `qual` (the model-qualification battery — can a given LLM drive an agent loop and board ops with discipline; [docs/reference/omegahive_c2_battery_spec.md](docs/reference/omegahive_c2_battery_spec.md)) and `ladder` (the archived stage-2 experiment harness, kept for record reproducibility — see below).
+Three sibling CLIs ship in the repo. `qual` is the model-qualification battery — can a given LLM drive an agent loop and board ops with discipline ([docs/reference/omegahive_c2_battery_spec.md](docs/reference/omegahive_c2_battery_spec.md)). `taskbench` is the task-replay benchmark — can a given model *close a written order*, replayed from a closed one against a fresh world that does not contain the answer, graded on a deterministic leg and a blinded review leg ([docs/reference/omegahive_taskbench_guide.md](docs/reference/omegahive_taskbench_guide.md)). The two measure different things and neither is a relabelling of the other. `ladder` is the archived stage-2 experiment harness, kept for record reproducibility — see below.
 
 ## The notifier: attention pager + daily heartbeat
 
@@ -325,6 +325,7 @@ docs/            the documentation set — specs are authoritative; code follows
                  (docs/INDEX.md maps every file: current specs, docs/reference/,
                  docs/deployments/, docs/archive/, docs/evidence/)
 qual/            model-qualification battery: catalogs, scenarios, personas, records
+taskbench/       task-replay benchmark: frozen corpus, materializer, runner, blinded grader, records
 ladder/          archived stage-2 experiment harness + its frozen run records
 scenarios/       scripted simulation scenarios (deterministic, CI-run)
 scripts/         operator tooling (hive-launch/answer/close, hive-metrics/score + drills), deploy + backup checks

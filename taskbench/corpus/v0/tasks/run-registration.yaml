@@ -1,0 +1,103 @@
+# taskbench corpus v0 — manifest for run-registration. Frozen; edits increment the corpus version.
+id: run-registration
+project: omegahive
+run: omegahive
+title: register the durable run — make the generation token real
+task_class: bounded
+work_shape: python-service
+bounded_because: 'One behavioural change on one write path, stated as a property (every run touched
+  by an emit carries a generation token from its first event), with the four test cases the order itself
+  enumerates and two named documentation edits. The stop-lines fix the blast radius precisely: no generation
+  semantics, no cursor logic, no schema change beyond what the existing helper does.'
+workspace_repo: hive-workspace
+workspace_inputs:
+- path: projects/omegahive/orders/2026-07-21-run-registration.md
+  sha: 689dc24f7bba6de9849d5e01a8d827e1c640b513
+  role: order
+- path: projects/omegahive/WORKER.md
+  sha: 689dc24f7bba6de9849d5e01a8d827e1c640b513
+  role: context
+- path: projects/omegahive/RUNBOOK.md
+  sha: 1c0a1baa79aa3d5e81c73eaa33f93e24b0819165
+  role: context
+- path: projects/omegahive/reports/2026-07-13-backups-restore-result.md
+  sha: 1c0a1baa79aa3d5e81c73eaa33f93e24b0819165
+  role: context
+code:
+  repo: cassiopenachin/omegahive
+  pre_task_base_sha: 67ddac88f52560e4171f8e0cc432d1a70f75873d
+  local_path: ~/src/SNET/omegahive
+expected_output_kinds:
+- code_patch
+- tests
+- doc_update
+required_artefacts:
+- src/omegahive/gateway/gateway.py
+- docs/omegahive_recovery_runbook.md
+environment_needs:
+- A reachable Postgres for the test suite. The suite creates its own per-run scratch database from OMEGAHIVE_TEST_DATABASE_URL
+  and drops it afterwards; it never uses the durable one.
+- uv on PATH, with a warm cache or network for `uv sync`.
+verifiers:
+- id: pytest
+  argv:
+  - uv
+  - run
+  - --frozen
+  - pytest
+  - -q
+  timeout_s: 2400
+  description: the whole suite green — the order's no-regressions bar
+- id: ruff
+  argv:
+  - uv
+  - run
+  - --frozen
+  - ruff
+  - check
+  - .
+  timeout_s: 600
+  description: lint clean
+- id: mypy
+  argv:
+  - uv
+  - run
+  - --frozen
+  - mypy
+  - src
+  - tests
+  timeout_s: 900
+  description: types clean
+- id: registration-property
+  argv:
+  - uv
+  - run
+  - --frozen
+  - python
+  - '{corpus}/verifiers/run_registration_property.py'
+  timeout_s: 900
+  description: 'the order''s property, tested against the candidate''s own code rather than against
+    any particular implementation of it: a first emit on a fresh run registers it, a second is a no-op,
+    a REPLAYED emit on a run with events but no registry row still registers it, and a generation bump
+    then succeeds'
+checklist:
+- id: runbook-caveats
+  text: Both recovery-runbook restore steps — the one in the code repo and the one in the workspace
+    — no longer carry the inert-bump caveat.
+  applicable: offline
+- id: live-registration
+  text: The durable run's registry row exists, with read-only query evidence.
+  applicable: operator
+non_replayable_legs:
+- leg: The `omegahive` row demonstrably exists in `runs`, with query evidence.
+  reason: Requires a live-spine mutation or a merged-and-deployed image. Both are operator acts that
+    post-date any worker's result, as the closed task's own report records; an offline replay cannot
+    produce them.
+  executed_by: operator
+stop_lines:
+- id: no-generation-semantics
+  text: No changes to generation semantics, mismatch handling, or cursor logic.
+- id: never-bump-live
+  text: Never bump the live run's generation; bump evidence comes from a scratch run.
+rubric: rubrics/run-registration.md
+grading: grading/run-registration.yaml

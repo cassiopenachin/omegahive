@@ -16,6 +16,7 @@
 - omegahive_c2_battery_spec.md — build spec for the `qual` CLI (model-qualification battery); shipped, still normative, cited by `qual/__init__.py`
 - omegahive_o2_fork_patches.md — OmegaClaw fork patch operational decisions (channels, skills, config, Landlock); shipped, normative binding-story facts
 - omegahive_v0b_order.md — hive-image board-binding qualification gate; not yet executed (no `qual/records/*-v0b-*`), cited by `hive_native_ops.md`'s Tier-3 definition
+- omegahive_taskbench_guide.md — operating guide for the `taskbench` CLI (task-replay benchmark, HIP-1 M1b): corpus v0 and its held-out reservation, how to materialize a cell, run an approved batch, validate and read a record; current, cited by `taskbench/__init__.py`
 
 ## docs/deployments/ (deployment records)
 - TEMPLATE.md — the host-facts + lockfile template a new deployment record starts from; **every host fact belongs in a record here, not in the general docs** — that is what this directory is for
