@@ -64,10 +64,22 @@ Prints the baseline, the count of workspace inputs and dependency snapshots, and
 and the cell must not run. Look at `<root>/TASK.md` to see exactly what a candidate is
 told, and `<root>/code` to confirm it holds one commit and no remote.
 
+## Dry-run the preconditions without spending anything
+
+```bash
+uv run --frozen taskbench preflight --config <a generated config> \
+  --work-root /tmp/taskbench-dry --out /tmp/taskbench-dry-records
+```
+
+Use this, **not** the launcher, when you only want to know whether the environment agrees.
+The launcher is the batch: it runs preflight and then immediately starts calling models. (I
+learned that the expensive way — running the launcher "to check preflight" burned a partial
+candidate session before it was killed.)
+
 ## Run the approved batch
 
 One command, no arguments, from the worker's clone. Running it **is** the approval — it never
-asks again:
+asks again, and it starts spending as soon as preflight agrees:
 
 ```bash
 taskbench/launch/incumbent-fidelity.sh
