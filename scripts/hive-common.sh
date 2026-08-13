@@ -44,6 +44,22 @@ set -euo pipefail
 : "${HIVE_WORKER_CMD:=claude --permission-mode auto}"
 : "${HIVE_WIP_REVIEW_MAX:=3}"                       # hive-launch refuses at this many in_review tasks (review debt, summed across all projects); --anyway overrides
 
+# --- worker execution routing (HIP-1 M2) --------------------------------------------
+# The route catalog is a DEPLOYMENT fact and lives outside every project: it names what
+# this host can run, which credential pools exist, and what list prices applied when it
+# was captured. It is never committed to a project, and nothing here reads its contents
+# — hive-launch pipes its exact bytes to the CLI, which digests and validates them.
+# `schemas/route-catalog.example.json` is the redacted shape; the live file is the
+# operator's, at this path.
+: "${HIVE_ROUTE_CATALOG:=$HOME/.config/omegahive/routes.json}"
+# Where a project's committed launch bindings live, relative to the project directory.
+: "${HIVE_BINDINGS_DIR:=bindings}"
+# Enforcement is OFF until the operator finishes migrating the workspace: a launch with
+# no binding still runs, loudly, on the legacy HIVE_WORKER_CMD path. Set to 1 to make a
+# missing binding a refusal. `hive-launch --check-migration` enumerates what would
+# refuse today, which is the input to deciding when to flip this.
+: "${HIVE_ENFORCE_BINDINGS:=0}"
+
 # RUN / RUN_ID / CODE_REPO / PROJECT / CANON_CODE are resolved per operation by
 # load_project_conf (from the order's project) — never hardcoded here, because a
 # hardcoded run id is exactly the misconfiguration this whole layer removes. RUN
@@ -54,6 +70,29 @@ RUN=""
 OPERATOR_ACTOR="operator"
 
 die() { echo "hive: $*" >&2; exit 1; }
+
+# --- portable digest / encoding helpers ----------------------------------------------
+# `sha256sum` is GNU coreutils; macOS and the BSDs ship `shasum -a 256` and nothing
+# else. The repo already carries one drill that aborts before its first check on a BSD
+# host for exactly this reason (hive-metrics-drill.sh), so new callers go through here.
+# Both forms print `<hex>  <name>`; the cut takes the hex.
+sha256_hex() {  # sha256_hex  (reads stdin, prints the hex digest)
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | cut -d' ' -f1
+  else
+    die "no sha256 tool found (looked for sha256sum, shasum)"
+  fi
+}
+
+# base64 of a file, on ONE line. GNU base64 wraps at 76 columns by default and BSD does
+# not; `-w0` is GNU-only and `tr -d '\n'` is portable, so the newlines are stripped
+# after the fact rather than suppressed with a flag only one platform has.
+b64() {  # b64 <file>
+  [ -f "$1" ] || die "cannot encode a file that does not exist: $1"
+  base64 < "$1" | tr -d '\n'
+}
 
 # Refuse a tmux session name that cannot be targeted safely. Task, worker and run
 # ids are all charset-guarded because they flow into tmux targets and generated
@@ -486,6 +525,36 @@ board_json() {  # board_json  -> prints the board as a JSON array (or `[]`)
   hive board-view "$RUN" --json 2>/dev/null
 }
 
+# The SAME read, but one that cannot be mistaken for an empty board.
+#
+# `board_json` swallows stderr, and `die()` inside the `hive()` command substitution
+# exits only that subshell — so a stack outage, a missing `jq`, a wrong OMEGA_DIR, or a
+# `board-view` regression all collapse to the empty string, which every caller reads as
+# "no such task". For hive-launch that is not cosmetic: the absent branch re-emits
+# `task.created`, which the reducer applies wholesale and which silently regresses an
+# owned or in_review task to fresh (the script says so itself, in the comment above its
+# own decision table). The review throttle fails open the same way, at exactly the
+# moment the spine is unhealthy.
+#
+# So a launch-grade read validates its result the way hive-metrics and hive-score
+# already validate theirs, and refuses rather than guessing. `[]` is a legitimate
+# answer; anything that is not a JSON array is an outage.
+board_json_strict() {  # board_json_strict <run>  -> prints the board array, or dies
+  local run="$1" out
+  if ! out=$( hive board-view "$run" --json 2>&1 ); then
+    printf '%s\n' "$out" >&2
+    die "cannot read the board for run '$run' — the cause is in the output above.
+  Refusing to act on an unknown board state: an unreadable board is NOT an empty one,
+  and treating it as empty is how a live task gets re-created from scratch."
+  fi
+  if ! printf '%s' "$out" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    printf '%s\n' "$out" >&2
+    die "the board read for run '$run' is not a JSON array (output above) — refusing to
+  guess. Most often this host has no jq, or the cli image predates board-view --json."
+  fi
+  printf '%s' "$out"
+}
+
 # Read a task's status off the folded board. Empty if the task is absent.
 board_status() {  # board_status <task>  -> prints status
   board_json | jq -r --arg t "$1" '.[] | select(.task == $t) | .status' 2>/dev/null
@@ -518,7 +587,10 @@ global_in_review() {  # global_in_review  -> prints "<run>: <task>" lines across
     r=$( RUN_ID=""; # shellcheck disable=SC1090
          source "$conf"; printf '%s' "${RUN_ID:-}" )
     [ -n "$r" ] || continue
-    hive board-view "$r" --json 2>/dev/null \
-      | jq -r --arg r "$r" '.[] | select(.status == "in_review") | "\($r): \(.task)"' 2>/dev/null
+    # Strict: a project whose board cannot be read makes the WHOLE throttle unsafe, and
+    # a throttle that fails open is worse than no throttle — it reports "0 in review"
+    # with the same confidence as a genuinely empty queue.
+    board_json_strict "$r" \
+      | jq -r --arg r "$r" '.[] | select(.status == "in_review") | "\($r): \(.task)"'
   done
 }

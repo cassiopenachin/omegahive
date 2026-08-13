@@ -564,5 +564,192 @@ def ui_serve_cmd(
     )
 
 
+# --- worker execution harness (HIP-1 M2) --------------------------------------------
+#
+# Three commands, all driven by the shell launcher and the supervisor over STDIN rather
+# than by file paths. That is not a style choice: the operator tooling runs this CLI
+# inside a container (`compose run --rm -T cli`), while the catalog, the binding, and
+# the harness transcript are all HOST files. Piping their bytes in keeps one execution
+# model, needs no bind mount, and never puts a host path inside the container. It also
+# means the catalog digest is computed over exactly the bytes the launcher read, not
+# over a re-serialization of them.
+
+
+@app.command("harness-resolve")
+def harness_resolve_cmd(
+    check_only: bool = typer.Option(
+        False, "--check", help="print the redacted preflight instead of the machine JSON"
+    ),
+) -> None:
+    """Resolve a launch binding against the route catalog. NO side effects, ever.
+
+    Reads one JSON request object on stdin with keys `binding_b64`, `catalog_b64`,
+    `binding_ref`, `expected_task`, `expected_order_ref`, `kickoff`, `cwd`,
+    `session_id`, `env`.
+
+    The two records travel base64-encoded so their exact bytes survive the trip — the
+    catalog digest is taken over those bytes, and a JSON-string round trip that
+    normalized a line ending would silently change it.
+
+    On refusal this prints `{"ok": false, "code": ..., "message": ...}` and exits 1. The
+    codes are a stable contract (`BINDING_MALFORMED`, `BINDING_TASK_MISMATCH`,
+    `ROUTE_UNKNOWN`, `ROUTE_AMBIGUOUS`, `ADAPTER_UNKNOWN`, ...) because the launcher and
+    the drills both branch on them.
+    """
+    import base64
+    import sys
+
+    from .harness.plan import preflight_text, resolve
+    from .harness.plan import to_json as plan_to_json
+    from .harness.records import RefusalError
+
+    def refuse(code: str, message: str) -> None:
+        print(json.dumps({"ok": False, "code": code, "message": message}, sort_keys=True))
+        raise typer.Exit(code=1)
+
+    raw = sys.stdin.read()
+    try:
+        req = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        refuse("REQUEST_MALFORMED", f"stdin is not valid JSON: {exc}")
+        return
+    if not isinstance(req, dict):
+        refuse("REQUEST_MALFORMED", "stdin must be a JSON object")
+        return
+
+    try:
+        binding_raw = base64.b64decode(req.get("binding_b64", ""), validate=True)
+        catalog_raw = base64.b64decode(req.get("catalog_b64", ""), validate=True)
+    except (ValueError, TypeError) as exc:
+        refuse("REQUEST_MALFORMED", f"binding_b64/catalog_b64 is not valid base64: {exc}")
+        return
+
+    kickoff = req.get("kickoff", "")
+    try:
+        plan = resolve(
+            binding_raw=binding_raw,
+            catalog_raw=catalog_raw,
+            binding_ref=req.get("binding_ref", ""),
+            expected_task=req.get("expected_task"),
+            expected_order_ref=req.get("expected_order_ref"),
+            kickoff=kickoff,
+            cwd=req.get("cwd", ""),
+            session_id=req.get("session_id", ""),
+            parent_env=req.get("env") or {},
+        )
+    except RefusalError as exc:
+        refuse(exc.code, exc.message)
+        return
+
+    doc = plan_to_json(plan, kickoff=kickoff)
+    if check_only:
+        print(preflight_text(doc))
+    else:
+        print(json.dumps(doc, sort_keys=True))
+
+
+@app.command("harness-usage")
+def harness_usage_cmd(
+    extractor: str = typer.Option(..., "--extractor", help="usage extractor name, or 'none'"),
+    pinned_model: str | None = typer.Option(
+        None, "--pinned-model", help="the catalog's exact model, to check the resolved one against"
+    ),
+) -> None:
+    """Normalize a harness's own consumption surface, read from stdin.
+
+    Always exits 0 with a usable document: an unreadable or absent surface is an
+    `unavailable` status with a named reason, which is a legitimate answer. Failing here
+    would cost the spine its terminal fact in exchange for nothing.
+    """
+    import sys
+
+    from .harness.usage import extract
+
+    ev = extract(extractor, sys.stdin)
+    resolved: str | None = None
+    evidence = "none"
+    mismatch = False
+    if ev.main_chain_models:
+        # More than one distinct main-chain model means the session did not stay on the
+        # model it was pinned to — a fallback, a mid-session switch. That is a mismatch
+        # whatever the individual values are, so it is reported as such rather than
+        # collapsed to "the first one".
+        resolved = ev.main_chain_models[0]
+        evidence = "harness-reported"
+        mismatch = len(ev.main_chain_models) > 1 or (
+            pinned_model is not None and resolved != pinned_model
+        )
+    print(
+        json.dumps(
+            {
+                "usage": ev.usage.model_dump(mode="json"),
+                "rows": ev.rows,
+                "main_chain_models": ev.main_chain_models,
+                "notes": ev.notes,
+                "model_resolved": resolved,
+                "model_evidence": evidence,
+                "model_mismatch": mismatch,
+            },
+            sort_keys=True,
+        )
+    )
+
+
+# A repeatable option whose annotation is a list must be built once at module level:
+# ruff's B008 treats a list-annotated call in a default as the mutable-default hazard,
+# and the singleton is the fix its own message names.
+_WHERE_OPTION = typer.Option(
+    None, "--where", help="dimension=value, repeatable (e.g. --where harness=claude-code)"
+)
+
+
+@app.command("executions")
+def executions_cmd(
+    run_id: str = typer.Argument(..., help="run_id to project execution facts from"),
+    as_json: bool = typer.Option(True, "--json/--no-json", help="machine projection (default)"),
+    filters: list[str] | None = _WHERE_OPTION,
+) -> None:
+    """Project the execution lifecycle facts — the query `capacity-view` will consume.
+
+    One row per `execution_id`, filterable by run (the argument) and by task, execution,
+    vendor, provider, model, harness, billing market, and credential pool. Tokens and
+    the approval-time price basis travel on the row; the cost derivation is the
+    reader's, deliberately.
+
+    An empty projection prints `[]` and exits 0 — a run with no executions is a valid
+    answer, not an error, and the shell tooling must be able to tell those apart.
+    """
+    from .report.executions import execution_rows, executions_to_json, filter_rows
+
+    parsed: dict[str, str] = {}
+    for f in filters or []:
+        key, sep, value = f.partition("=")
+        if not sep:
+            console.print(f"--where expects dimension=value, got: {f}")
+            raise typer.Exit(code=2)
+        parsed[key.strip()] = value.strip()
+
+    with connect() as conn:
+        events = EventLog(conn, LogicalClock(0), run_id).read_run(run_id)
+
+    try:
+        rows = filter_rows(execution_rows(events), parsed)
+    except ValueError as exc:
+        console.print(str(exc))
+        raise typer.Exit(code=2) from exc
+
+    if as_json:
+        print(executions_to_json(rows))
+        return
+    if not rows:
+        console.print(f"no executions for run_id: {run_id}")
+        raise typer.Exit(code=1)
+    for r in rows:
+        console.print(
+            f"{r['execution_id']}  {r['task']}  {r['model']}@{r['harness']} "
+            f"({r['billing_market']})  {r['outcome'] or 'in-flight'}"
+        )
+
+
 if __name__ == "__main__":
     app()
