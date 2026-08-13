@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # --- Planner payloads ---
 
@@ -207,6 +207,271 @@ class PromotionSuppressed(BaseModel):  # defined for registry completeness; not 
     reason: str | None = None
 
 
+# --- Execution lifecycle payloads (HIP-1 M2, `worker-harness-core`) ---
+#
+# Three facts, deliberately separate because they have three different authors and
+# three different truth conditions:
+#
+#   execution.route_approved  a HUMAN decision        — attributable to the signing actor
+#   execution.started         an INSTRUMENT observation — the child actually started
+#   execution.finished        an INSTRUMENT observation — the child actually stopped
+#
+# All three are non-board (NON_BOARD_WHITELIST): they record what ran, they do not move
+# a task. route_approved therefore precedes `task.assigned` without needing the task to
+# exist yet, and existing runs replay bit-identically because the reducer folds nothing
+# from them.
+#
+# The normalized identity block is carried on ALL THREE rather than joined from the
+# approval. The order requires these facts to be queryable by vendor / provider / model /
+# harness / billing market / credential pool; denormalizing makes every row answer that
+# on its own, so a `finished` whose `route_approved` is missing (a hand-recovered
+# execution, a truncated replay) is still a complete capacity fact rather than an orphan.
+
+_DIGEST_SHAPE = re.compile(r"sha256:[0-9a-f]{64}")
+_EXECUTION_ID_SHAPE = re.compile(r"[A-Za-z0-9._-]{1,128}")
+# ISO-8601 in UTC with a `Z` suffix, seconds or finer. Pinned as a shape rather than
+# parsed to a datetime because the payload is stored as JSON and compared byte-wise by
+# the replay digest — a datetime round-tripped through two serializers is a reformatting
+# hazard the digest would report as a spine difference.
+_UTC_TS_SHAPE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z")
+
+
+class PriceBasis(BaseModel):
+    """The route's list-price basis, copied from the catalog AT APPROVAL TIME.
+
+    Carried on the facts, not looked up later, because the catalog is a mutable
+    deployment file: a reader deriving the cost of a 2026-08 execution from the 2027-02
+    catalog would silently compute a number that was never true. Cost is derived from
+    these numbers, never authored — no payload here holds a currency amount.
+
+    All four rates are optional: a subscription route has no per-token list price, and
+    an absent rate must stay absent rather than become a zero that reads as free.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    currency: str = "USD"
+    per_mtok_input: float | None = None
+    per_mtok_cache_read: float | None = None
+    per_mtok_cache_write: float | None = None
+    per_mtok_output: float | None = None
+    # Where the numbers came from and when the catalog captured them — the audit trail
+    # for a derived cost, so a wrong number is traceable to a stale catalog entry.
+    source: str
+    captured_at: str
+
+
+class ExecutionIdentity(BaseModel):
+    """What actually consumed the work, normalized. Every field is an allowlisted
+    catalog value: the launcher resolves a route NAME to this block and may not
+    synthesize, alias, or fall back to any part of it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    route: str
+    model_vendor: str        # who makes the model, normalized (e.g. "anthropic")
+    provider: str            # who serves it (may differ from the maker)
+    model: str               # the EXACT model id, never a friendly alias
+    harness: str             # the agent software the worker runs inside
+    billing_market: Literal["subscription", "api"]
+    credential_pool: str     # opaque label — never a key, an account id, or a host path
+    adapter: str             # which adapter builds this route's argv
+
+
+class ExecutionUsage(BaseModel):
+    """Consumption as the provider/harness reported it, or an honest refusal to guess.
+
+    The invariant enforced below is the whole point of the model: `unavailable` must
+    carry a named reason and NO token counts, and `reported` must carry counts and no
+    reason. Zero is a measurement, not a placeholder — an unavailable surface recorded
+    as zeros is indistinguishable from a free execution, and every later cost and
+    capacity number silently inherits the lie.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["reported", "unavailable"]
+    # Which surface produced the numbers (e.g. "claude-code-transcript"), or why there
+    # were none (e.g. "harness exposes no usage surface").
+    source: str | None = None
+    reason: str | None = None
+
+    input_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    output_tokens: int | None = None
+
+    # Pointer to the retained raw evidence and how many records it holds, so a
+    # normalized total can be audited without the evidence itself living in the spine.
+    evidence_ref: str | None = None
+    evidence_records: int | None = None
+
+    @model_validator(mode="after")
+    def _status_invariant(self) -> ExecutionUsage:
+        counts = {
+            "input_tokens": self.input_tokens,
+            "cache_read_tokens": self.cache_read_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
+            "output_tokens": self.output_tokens,
+        }
+        if self.status == "reported":
+            missing = sorted(k for k, v in counts.items() if v is None)
+            if missing:
+                raise ValueError(
+                    f"usage status 'reported' requires token counts; missing: {missing}"
+                )
+            if any(v < 0 for v in counts.values() if v is not None):
+                raise ValueError("token counts must be non-negative")
+            if not self.source:
+                raise ValueError("usage status 'reported' requires a source")
+            if self.reason is not None:
+                raise ValueError("usage status 'reported' must not carry a reason")
+        else:
+            present = sorted(k for k, v in counts.items() if v is not None)
+            if present:
+                raise ValueError(
+                    "usage status 'unavailable' must not carry token counts "
+                    f"(a zero is not an absence); present: {present}"
+                )
+            if not self.reason:
+                raise ValueError("usage status 'unavailable' requires a named reason")
+        return self
+
+
+class ExecutionRouteApproved(BaseModel):
+    """The operator's signed decision to run ONE task on ONE named route.
+
+    This is the authority fact: the launcher executes a signed intent and never signs
+    one, so this event is attributable to the human actor that invoked the pinned
+    binding. It precedes `task.assigned`.
+    """
+
+    execution_id: str
+    purpose: Literal["work", "review"]
+    attempt: int = Field(ge=1)
+    binding_ref: str          # the committed binding, pinned: path@<git-sha>
+    catalog_digest: str       # sha256 of the exact catalog bytes that resolved the route
+    identity: ExecutionIdentity
+    predicted_total_tokens: int = Field(ge=0)
+    price_basis: PriceBasis | None = None
+
+    @field_validator("execution_id")
+    @classmethod
+    def _execution_id_shape(cls, v: str) -> str:
+        if not _EXECUTION_ID_SHAPE.fullmatch(v):
+            raise ValueError(f"execution_id must match [A-Za-z0-9._-]{{1,128}}, got {v!r}")
+        return v
+
+    @field_validator("binding_ref")
+    @classmethod
+    def _binding_ref_shape(cls, v: str) -> str:
+        if not _REF_SHAPE.fullmatch(v):
+            raise ValueError(f"binding_ref must match 'path@<git-sha>', got {v!r}")
+        return v
+
+    @field_validator("catalog_digest")
+    @classmethod
+    def _digest_shape(cls, v: str) -> str:
+        if not _DIGEST_SHAPE.fullmatch(v):
+            raise ValueError(f"catalog_digest must match 'sha256:<64 hex>', got {v!r}")
+        return v
+
+
+class ExecutionStarted(BaseModel):
+    """An instrument observation: the child process actually started.
+
+    Emitted by the supervisor AFTER the harness process exists, never before — a
+    `started` that precedes the fork is a prediction, and the whole point of the split
+    from `route_approved` is that this one is measured.
+    """
+
+    execution_id: str
+    purpose: Literal["work", "review"]
+    attempt: int = Field(ge=1)
+    identity: ExecutionIdentity
+    harness_version: str      # probed from the installed harness, not assumed
+    model_requested: str      # what the adapter actually put on the command line
+    started_at: str
+
+    @field_validator("execution_id")
+    @classmethod
+    def _execution_id_shape(cls, v: str) -> str:
+        if not _EXECUTION_ID_SHAPE.fullmatch(v):
+            raise ValueError(f"execution_id must match [A-Za-z0-9._-]{{1,128}}, got {v!r}")
+        return v
+
+    @field_validator("started_at")
+    @classmethod
+    def _ts_shape(cls, v: str) -> str:
+        if not _UTC_TS_SHAPE.fullmatch(v):
+            raise ValueError(f"started_at must be ISO-8601 UTC ('...Z'), got {v!r}")
+        return v
+
+
+class ExecutionFinished(BaseModel):
+    """An instrument observation: the child process stopped, and what it consumed.
+
+    `outcome_certainty` exists because the supervisor cannot always know. A process it
+    reaped itself is `certain`; one found already gone at reconcile time is `uncertain`,
+    and saying so is the honest record the order asks for.
+    """
+
+    execution_id: str
+    purpose: Literal["work", "review"]
+    attempt: int = Field(ge=1)
+    identity: ExecutionIdentity
+    outcome: Literal["success", "failure", "interrupted"]
+    outcome_certainty: Literal["certain", "uncertain"]
+    exit_code: int | None = None
+    finished_at: str
+    # What the harness said it actually ran, where it can say. `model_evidence` names
+    # how we know — an absent surface is recorded as such, never inferred from argv.
+    model_resolved: str | None = None
+    model_evidence: Literal["harness-reported", "none"] = "none"
+    usage: ExecutionUsage
+    price_basis: PriceBasis | None = None
+
+    @field_validator("execution_id")
+    @classmethod
+    def _execution_id_shape(cls, v: str) -> str:
+        if not _EXECUTION_ID_SHAPE.fullmatch(v):
+            raise ValueError(f"execution_id must match [A-Za-z0-9._-]{{1,128}}, got {v!r}")
+        return v
+
+    @field_validator("finished_at")
+    @classmethod
+    def _ts_shape(cls, v: str) -> str:
+        if not _UTC_TS_SHAPE.fullmatch(v):
+            raise ValueError(f"finished_at must be ISO-8601 UTC ('...Z'), got {v!r}")
+        return v
+
+    @model_validator(mode="after")
+    def _resolved_model_never_contradicts_success(self) -> ExecutionFinished:
+        """A harness-reported model that differs from the pinned one cannot be a success.
+
+        The stop-line is "a mismatch refuses or records terminal failure; it never falls
+        back". The supervisor enforces it, and this makes the spine structurally unable
+        to hold the contradiction even if a future caller forgets — the fact and its own
+        evidence cannot disagree.
+        """
+        if self.model_evidence == "harness-reported":
+            if not self.model_resolved:
+                raise ValueError(
+                    "model_evidence 'harness-reported' requires a model_resolved value"
+                )
+            if self.model_resolved != self.identity.model and self.outcome == "success":
+                raise ValueError(
+                    f"resolved model {self.model_resolved!r} does not match the pinned "
+                    f"model {self.identity.model!r}; a mismatch cannot be a success"
+                )
+        elif self.model_resolved is not None:
+            raise ValueError(
+                "model_resolved requires model_evidence 'harness-reported' — an "
+                "unattributed model id is a guess, and guesses do not go on the spine"
+            )
+        return self
+
+
 # --- Gateway feedback payloads (§5) ---
 
 class GatewayRejected(BaseModel):
@@ -249,6 +514,10 @@ PAYLOADS: dict[str, type[BaseModel]] = {
     "question.asked": QuestionAsked,
     # reporting (worker + human)
     "task.reported": TaskReported,
+    # execution lifecycle (human signs the route; the supervisor observes the rest)
+    "execution.route_approved": ExecutionRouteApproved,
+    "execution.started": ExecutionStarted,
+    "execution.finished": ExecutionFinished,
     # instrument
     "review.passed": ReviewPassed,
     "review.failed": ReviewFailed,
