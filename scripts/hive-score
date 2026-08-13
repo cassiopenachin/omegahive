@@ -244,8 +244,18 @@ fi
 # computed below, not after.
 OUT_DIR="$OPS_WS/projects/$PROJECT/metrics"
 CAL="$OUT_DIR/calibration.md"
+# One literal, awk-based occurrence count feeds every downstream decision
+# (exists? refuse without --again? how many rows to collapse later?) — a task id
+# carrying a BRE metacharacter (the id charset allows ".") must be seen the same
+# way by every check, so there is exactly one occurrence-counting expression here,
+# not a `grep` now and a separate `awk` at write time that could silently
+# disagree on what "already scored" means for that same task id.
+PRIOR_COUNT=0
+if [ -f "$CAL" ]; then
+  PRIOR_COUNT=$(awk -v t="### $TASK — " 'index($0, t) == 1 { c++ } END { print c + 0 }' "$CAL")
+fi
 PRIOR_ENTRIES=0
-[ -f "$CAL" ] && grep -q "^### $TASK — " "$CAL" && PRIOR_ENTRIES=1
+[ "$PRIOR_COUNT" -gt 0 ] && PRIOR_ENTRIES=1
 
 if [ "$PRIOR_ENTRIES" -eq 1 ] && [ "$AGAIN" -eq 0 ]; then
   die "task '$TASK' is already scored in $CAL; pass --again to replace it in place"
@@ -379,10 +389,11 @@ if [ ! -f "$CAL" ]; then
   cat > "$CAL" <<EOF
 # Prediction calibration — $PROJECT
 
-Append-only. One entry per scoring act (\`hive-score <task>\`), newest at the bottom.
-Predictions are quoted verbatim from the task's order file; outcomes are read from
-the spine, so an entry says the same thing whether it was written on the day of the
-close or months later.
+One row per task (see below), positioned where that task's row already sits, so this
+is not a strictly append-only or chronological file — a rescored task's row does not
+move to the bottom. Predictions are quoted verbatim from the task's order file;
+outcomes are read from the spine, so an entry says the same thing whether it was
+written on the day of the close or months later.
 
 Predictions are honest guesses, never commitments — the product here is the
 calibration trend, not any single verdict. Reading that trend is the improver
@@ -429,11 +440,13 @@ if [ "$PRIOR_ENTRIES" -eq 1 ]; then
   # In-place replace: the new entry takes the position of the task's LAST existing
   # occurrence (stable relative to every other task's row); any earlier occurrences
   # of the same task are dropped rather than left as stale duplicates. One awk pass:
-  # count occurrences first, then on the Nth (last) header line, emit the new entry
-  # instead of the old one and suppress the old header+body the same way every
-  # earlier occurrence's header+body is suppressed.
-  TOTAL=$(awk -v t="### $TASK — " 'index($0, t) == 1 { c++ } END { print c + 0 }' "$CAL")
-  awk -v t="### $TASK — " -v total="$TOTAL" -v newfile="$ENTRY_TMP" '
+  # on the Nth (last, per PRIOR_COUNT above) header line, emit the new entry instead
+  # of the old one and suppress the old header+body the same way every earlier
+  # occurrence's header+body is suppressed. A unique CAL_TMP (not a fixed name) so
+  # two hive-score invocations racing on the same project's calibration.md cannot
+  # corrupt each other's temp file before either `mv` lands.
+  CAL_TMP=$(mktemp "${CAL}.XXXXXX")
+  awk -v t="### $TASK — " -v total="$PRIOR_COUNT" -v newfile="$ENTRY_TMP" '
     BEGIN { while ((getline l < newfile) > 0) nl[n++] = l }
     /^### / {
       if (index($0, t) == 1) {
@@ -444,7 +457,7 @@ if [ "$PRIOR_ENTRIES" -eq 1 ]; then
       } else { intgt = 0 }
     }
     { if (!intgt) print }
-  ' "$CAL" > "$CAL.tmp" && mv "$CAL.tmp" "$CAL"
+  ' "$CAL" > "$CAL_TMP" && mv "$CAL_TMP" "$CAL"
   WRITE_VERB="replaced in place (older duplicates dropped)"
 else
   cat "$ENTRY_TMP" >> "$CAL"
