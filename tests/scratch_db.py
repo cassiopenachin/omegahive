@@ -22,6 +22,13 @@ Callers — one mechanism, three paths:
   * host `uv run pytest`       tests/conftest.py, pytest_sessionstart / -finish
   * compose `test` service     the same conftest, in-container
   * scripts/deploy_checks.sh   the CLI below, `python /app/tests/scratch_db.py …`
+
+`roleurls` is the deploy-checks path's one extra need: once a deployment has cut over to
+the two-role scheme, redirecting the harness at a scratch spine means redirecting all
+three credentials, not just one — leaving the gateway or owner DSN pointing at the durable
+database would send the harness's writes there. Deriving those DSNs is the same
+database-component swap this module already owns, so it lives here rather than in a second
+copy of the URL surgery.
 """
 
 from __future__ import annotations
@@ -192,12 +199,43 @@ def sweep(
     return dropped
 
 
+def role_urls(name: str) -> dict[str, str]:
+    """The configured read and write DSNs, pointed at the scratch database `name`.
+
+    A literal "-" for a role this deployment has not configured — a pre-cutover host has no
+    gateway DSN, and the caller must then leave the variable unset so the fallback in
+    db.connect_gateway() applies. Never invent one: a fabricated DSN would authenticate as a
+    role that may not exist and fail far from the cause.
+
+    "-" rather than an empty string because the caller is a shell script that cannot
+    otherwise distinguish "not configured" from "this command never ran" — and those two
+    have opposite consequences. An old image without this subcommand exits non-zero and
+    prints nothing, which read as "not configured" would leave the harness's write
+    credential pointing at the DURABLE database.
+    """
+    from omegahive.config import get_settings  # in-container import; not needed on the host
+
+    settings = get_settings()
+    return {
+        "reader": with_database(settings.database_url, name) if settings.database_url else "-",
+        "gateway": (
+            with_database(settings.gateway_database_url, name)
+            if settings.gateway_database_url
+            else "-"
+        ),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="per-run scratch test databases")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("new", help="create a unique ephemeral scratch database; print 'name DSN'")
     urler = sub.add_parser("url", help="print the DSN for a database name on this server")
     urler.add_argument("name")
+    roler = sub.add_parser(
+        "roleurls", help="print '<role> <DSN>' per line for the read and write credentials"
+    )
+    roler.add_argument("name")
     dropper = sub.add_parser("drop", help="drop one scratch database by name")
     dropper.add_argument("name")
     sweeper = sub.add_parser("sweep", help="drop scratch databases older than the threshold")
@@ -213,6 +251,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{create(url)} {url}")
     elif args.cmd == "url":
         print(with_database(base_url(), args.name))
+    elif args.cmd == "roleurls":
+        for role, url in role_urls(args.name).items():
+            print(f"{role} {url}")
     elif args.cmd == "drop":
         drop(args.name)
     else:
