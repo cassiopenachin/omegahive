@@ -73,6 +73,7 @@ class Materialized:
     baseline_sha: str
     exported_inputs: list[str] = field(default_factory=list)
     exported_deps: list[str] = field(default_factory=list)
+    mock_tools: list[dict[str, str]] = field(default_factory=list)
     leakage_violations: list[str] = field(default_factory=list)
 
 
@@ -137,12 +138,40 @@ def _resolve_source(pin_local_path: str | None, repo: str, overrides: dict[str, 
     return path
 
 
+def install_mock_tools(
+    manifest: TaskManifest, bindir: Path, corpus_root: Path | None
+) -> list[dict[str, str]]:
+    """Install the recording stubs and check the command name really resolves to each one.
+
+    The check matters more than the install: an outward leg graded through a stub the
+    candidate never actually reached would be a leg nobody graded, reported as if someone had.
+    """
+    installed: list[dict[str, str]] = []
+    for tool in manifest.mock_tools:
+        if corpus_root is None:
+            raise MaterializationError(
+                f"{manifest.id} declares mock tool {tool.name} but no corpus root was given"
+            )
+        target = bindir / tool.name
+        shutil.copyfile(corpus_root / tool.script, target)
+        target.chmod(0o755)
+        resolved = shutil.which(tool.name, path=f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}")
+        if resolved != str(target):
+            raise MaterializationError(
+                f"{manifest.id}: `{tool.name}` resolves to {resolved!r}, not the stub at "
+                f"{target}. The outward leg would reach the real tool."
+            )
+        installed.append({"name": tool.name, "resolves_to": resolved, "purpose": tool.purpose})
+    return installed
+
+
 def materialize(
     manifest: TaskManifest,
     cell_root: str | Path,
     *,
     source_repos: dict[str, str] | None = None,
     workspace_repo_path: str | None = None,
+    corpus_root: Path | None = None,
 ) -> Materialized:
     """Build one candidate root from a manifest. Refuses to reuse a non-empty root."""
     overrides = dict(source_repos or {})
@@ -195,6 +224,7 @@ def materialize(
         baseline_sha=manifest.code.pre_task_base_sha,
         exported_inputs=exported_inputs,
         exported_deps=[d for d in exported_deps if d],
+        mock_tools=install_mock_tools(manifest, bindir, corpus_root),
     )
     m.leakage_violations = leakage_scan(m, manifest)
     return m

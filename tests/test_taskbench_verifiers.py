@@ -72,12 +72,10 @@ def test_docs_index_fails_without_an_index_and_passes_with_one(tmp_path):
     (tree / "docs" / "INDEX.md").write_text(GOOD_INDEX)
     code, out = run("docs_index_complete.py", tree)
     assert code == 0, out
-    assert "no duplicate entries" in out
+    assert "each accounted for exactly once" in out
 
 
-def test_docs_index_gates_duplicates_but_only_reports_gaps(tmp_path):
-    """Gaps are evidence for the reviewer; a duplicate entry is a defect in the map itself.
-    The split exists because a strict completeness gate fails a real accepted outcome."""
+def test_docs_index_gates_both_gaps_and_duplicates(tmp_path):
     tree = baseline_repo(tmp_path, DOCS)
     (tree / "docs" / "INDEX.md").write_text(GOOD_INDEX + "- alpha.md — again, by mistake\n")
     code, out = run("docs_index_complete.py", tree)
@@ -85,8 +83,23 @@ def test_docs_index_gates_duplicates_but_only_reports_gaps(tmp_path):
 
     (tree / "docs" / "INDEX.md").write_text("# docs/ Index\n\n- alpha.md — only this one\n")
     code, out = run("docs_index_complete.py", tree)
-    assert code == 0, "a gap must not gate"
-    assert "NOTE not accounted for in the index: docs/beta.md" in out
+    assert code == 1 and "not accounted for in the index: docs/beta.md" in out
+
+
+def test_one_line_covers_a_whole_subtree(tmp_path):
+    """Completeness is reachable because the order permits a directory-whole entry: an
+    unaccounted subtree costs one line, not one line per file."""
+    files = {**DOCS, **{f"docs/paper/{n}": "x" for n in ("main.tex", "core.tex", "out.pdf")}}
+    tree = baseline_repo(tmp_path, files)
+    (tree / "docs" / "INDEX.md").write_text(GOOD_INDEX)
+    code, out = run("docs_index_complete.py", tree)
+    assert code == 1 and "docs/paper/main.tex" in out
+
+    (tree / "docs" / "INDEX.md").write_text(
+        GOOD_INDEX + "\n## docs/paper/ (the paper: LaTeX sources and the built PDF)\n"
+    )
+    code, out = run("docs_index_complete.py", tree)
+    assert code == 0, out
 
 
 def test_docs_index_accepts_a_citation_without_reading_it_as_an_entry(tmp_path):

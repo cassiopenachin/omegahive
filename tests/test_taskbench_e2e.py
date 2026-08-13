@@ -134,6 +134,60 @@ def test_first_write_reports_the_earliest_write_not_the_latest(tmp_path):
     assert _earliest_write(before, dict(before)) is None
 
 
+@pytest.mark.skipif(not fx.bwrap_available(), reason="bwrap is not available on this host")
+def test_an_outward_action_is_performed_staged_and_graded(tmp_path):
+    """An excluded outward leg is a leg nobody grades. Mocking it means the candidate really
+    performs the act, nothing leaves the machine, and what it would have sent is what the
+    blinded reviewer reads."""
+    src, base, solution = fx.make_source_repo(tmp_path)
+    ws, ws_sha = fx.make_workspace_repo(tmp_path)
+    root = fx.make_corpus(
+        tmp_path, source_repo=src, base_sha=base, solution_sha=solution,
+        ws_repo=ws, ws_sha=ws_sha, mock_gh=True,
+    )
+    corpus = load_corpus(root)
+    agent, reviewer = fx.specs(tmp_path, agent_body=fx.FILING_AGENT)
+    rec, verdicts = pipeline.run_batch(
+        corpus, ["greeting"], work_root=tmp_path / "work", out_dir=tmp_path / "records",
+        record_id="outward", date="2026-08-12", agent=agent, reviewer=reviewer,
+    )
+    assert verdicts[0].passed, verdicts[0].because
+
+    cell = next((rec / "cells").iterdir())
+    staged = json.loads((cell / "outward-actions.json").read_text())
+    assert staged["gh"], "the candidate's filing was not recorded"
+    call = staged["gh"][0]
+    assert call["title"] == "greeting is broken"
+    assert "minimal repro" in call["body"]
+    assert call["repo"] == "up/stream"
+
+    # The reviewer was shown it, and shown nothing about who wrote it.
+    declared = json.loads((cell / "review" / "packet-manifest.json").read_text())["inputs"]
+    assert "artefacts/outward/gh.md" in declared
+    rendered = (tmp_path / "work" / cell.name / "packet" / "artefacts" / "outward" / "gh.md")
+    assert "minimal repro" in rendered.read_text()
+    assert "scripted-1" not in rendered.read_text()
+
+
+def test_a_mock_tool_must_actually_shadow_the_real_one(tmp_path):
+    """A leg graded through a stub the candidate never reached is a leg nobody graded."""
+    from taskbench.manifest import MockTool
+    from taskbench.materialize import MaterializationError, install_mock_tools
+
+    src, base, solution = fx.make_source_repo(tmp_path)
+    ws, ws_sha = fx.make_workspace_repo(tmp_path)
+    corpus = load_corpus(fx.make_corpus(
+        tmp_path, source_repo=src, base_sha=base, solution_sha=solution,
+        ws_repo=ws, ws_sha=ws_sha, mock_gh=True,
+    ))
+    manifest = corpus.manifests["greeting"].model_copy(deep=True)
+    manifest.mock_tools = [MockTool(name="gh", script="mocks/nonexistent", purpose="x")]
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    with pytest.raises((MaterializationError, OSError)):
+        install_mock_tools(manifest, bindir, corpus.root)
+
+
 def test_a_held_out_task_cannot_be_run(world):
     corpus, tmp = world
     agent, reviewer = fx.specs(tmp)

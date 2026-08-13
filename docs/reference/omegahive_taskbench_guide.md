@@ -153,11 +153,17 @@ an `unknown` as a note about the harness, never as a zero.
 - **The corpus is hive-infrastructure-heavy**: seven of eight tasks are hive tooling, one is
   tenant work. The tenant task is a cross-project sentinel, not evidence that the corpus
   represents applied PLN research.
-- **Two orders carry a leg no offline instrument can execute** — an outward-facing upstream
-  filing, and a physical phone round-trip. Each manifest declares the leg, the reason, and
-  who owns it; the leg is excluded from the cell verdict and named in the rubric so the
-  grader does not penalise its absence. The declarations are inside the content hash, so
-  they cannot be edited after a cell has run without incrementing the corpus version.
+- **Outward-facing legs are staged, not excluded.** `ptc-revalidate` asks for an upstream
+  issue filing, and what makes a filing good is what it says — so the candidate really runs
+  `gh`, a recording stub ahead of the real tool captures argv and body verbatim, and the
+  blinded reviewer grades the content from `artefacts/outward/`. Nothing leaves the machine.
+  The runner refuses the cell if the command name does not resolve to the stub. This is an
+  evaluation stub, not a network jail: it shadows a command name and claims nothing more.
+- **One leg genuinely stays excluded.** `notifier-deep-links`' phone round-trip is a *deploy*
+  check — everything the candidate wrote is already covered deterministically by the order's
+  own Tests section, and a stub would stand in for the deployment, not for any of its code.
+  It is declared with that reasoning, and the declaration is inside the content hash, so it
+  cannot be edited after a cell has run without incrementing the corpus version.
 - **`launch-pane-fix` carries the weakest deterministic leg** of the five: shell syntax,
   lint, and the requirement that the order's named deliverables were actually changed. Its
   real check — the loop drill — is an operator leg for the reasons above, so the blinded

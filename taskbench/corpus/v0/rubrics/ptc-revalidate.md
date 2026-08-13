@@ -8,6 +8,7 @@ closes the order is a pass.
 
 - **suites-verbatim** — Both upstream suites' results are recorded verbatim, per test where the suite reports per test.
 - **rerunnable** — The repro script rebuilds the verdict from a clean clone and the document says what each log should contain, so a later run can tell 'still broken' from 'environment differs'.
+- **upstream-filing** — The upstream disposition is executed: either a filing whose body carries a minimal reproduction, what the run ruled out, and the pinned shas — or an explicit 'working, no filing needed' backed by the passing evidence. Judge what was written; the send itself is staged for the operator.
 - **verdict-shape** (checked mechanically) — the verdict document exists at the path the order names, states a status for BOTH chaining modes, and names both pinned shas — checked for shape and pins, never against the historical text
 - **repro-script-present** (checked mechanically) — a committed, executable repro script exists that the verdict document points at, so the rerunnability claim has a subject
 - **subjects-unpatched** (checked mechanically) — the stop-line: no upstream source was patched
@@ -30,9 +31,14 @@ These legs of the order cannot be executed by the process that produced this att
 their absence is **not** a defect. Do not mark the attempt down for them, and do not credit
 an attempt that claims to have done them.
 
-- Execute the upstream disposition — file a minimal-repro issue on the subject's repository, or record 'working, no filing needed'. (Filing an issue against a third-party repository is an outward-facing, irreversible act. An offline evaluation instrument must not perform it, and it cannot be performed twice: the historical filing already exists.)
 - Close the stall-ledger row against the report ref. (A write to the live hive workspace. The instrument never touches it.)
-- The upstream disposition is executed and linked.
+
+## Outward-facing actions
+
+The order asks for something that leaves the machine. The attempt performed it against a
+recording stub, so it is staged rather than sent, and what it would have sent is in
+`artefacts/outward/`. Grade that content as you would grade the real thing: an attempt that
+sent nothing has not done the leg, and one that sent something thin has done it badly.
 
 ## Deterministic checks
 

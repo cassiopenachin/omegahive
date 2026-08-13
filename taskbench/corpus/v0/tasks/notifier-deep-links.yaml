@@ -71,13 +71,17 @@ checklist:
   text: 'The new variable follows the config-not-secret pattern: compose environment with an empty default
     and an entry on the allowed list, never in the env file.'
 - id: phone-round-trip
-  text: One real notification on the phone opens the UI page over the tailnet.
+  text: One real notification on the phone opens the UI page over the tailnet — the deploy check, not
+    a code check.
   applicable: operator
 non_replayable_legs:
 - leg: One real notification on the phone opens the UI page over the tailnet.
-  reason: Needs a live bot credential, the tailnet, the deployed UI and a physical device. An offline
-    instrument has none of them, and the order itself calls the durable deploy the operator's close-time
-    act.
+  reason: 'Deliberately not mocked. A stub would stand in for the deploy, not for anything the candidate
+    wrote: everything under its control — the link is present and correct when the base URL is set,
+    the render is byte-identical when it is unset, trailing slashes normalize, escaping holds, the token
+    appears nowhere — is already the order''s own Tests section and is checked deterministically. What
+    remains is that the deployed service is reachable from a physical device over the tailnet, which
+    is a deploy check the order itself calls the operator''s close-time act.'
   executed_by: operator
 stop_lines:
 - id: outbound-only

@@ -120,6 +120,8 @@ class CellRun:
     #: full-history clone the manifests pin within its reach. Recorded, not forbidden: some
     #: harnesses need it, and a reader has to be able to weigh the cell.
     home_is_cell_root: bool = True
+    #: Every outward action the candidate took against a recording stub, verbatim.
+    outward_actions: dict[str, list[dict]] = field(default_factory=dict)
 
     def to_json(self) -> dict:
         d = asdict(self)
@@ -196,6 +198,24 @@ def _kill_tree(proc: subprocess.Popen) -> None:
         proc.wait(timeout=15)
 
 
+def _read_mock_log(mock_dir: Path) -> dict[str, list[dict]]:
+    """Whatever the candidate sent through the stubs, parsed but never edited."""
+    out: dict[str, list[dict]] = {}
+    if not mock_dir.is_dir():
+        return out
+    for path in sorted(mock_dir.glob("*.jsonl")):
+        rows = []
+        for line in path.read_text(errors="replace").splitlines():
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                rows.append({"unparsed": line[:2000]})
+        out[path.stem] = rows
+    return out
+
+
 def build_kickoff(manifest: TaskManifest, mat: Materialized) -> str:
     """The prompt a candidate is launched against.
 
@@ -235,6 +255,16 @@ def build_kickoff(manifest: TaskManifest, mat: Materialized) -> str:
             "## Environment",
             "",
             *(f"- {n}" for n in manifest.environment_needs),
+            "",
+        ]
+    if mat.mock_tools:
+        lines += [
+            "## Outward-facing actions",
+            "",
+            "Do the order's outward steps for real — the tools are on your PATH. They are",
+            "staged for the operator's review rather than delivered, which is how this hive",
+            "handles anything that leaves the machine, so what you write is what gets read.",
+            *(f"- `{t['name']}` — {t['purpose']}" for t in mat.mock_tools),
             "",
         ]
     if manifest.non_replayable_legs:
@@ -340,6 +370,7 @@ def run_cell(
     # resolves is recorded, so a reader can weigh a cell that had the real home.
     env.setdefault("HOME", str(root))
     env["BENCH_VERIFY_LOG"] = str(verify_log)
+    env["BENCH_MOCK_LOG"] = str(logs / "mocks")
     env["BENCH_CELL_ROOT"] = str(root)
     env.update(spec.env)
     home_is_cell_root = env["HOME"] == str(root)
@@ -422,6 +453,7 @@ def run_cell(
 
     diff, changed = _capture_diff(mat)
     return CellRun(
+        outward_actions=_read_mock_log(logs / "mocks"),
         task_id=manifest.id,
         cell_id=cell_id,
         labels=dict(spec.labels),

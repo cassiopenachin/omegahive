@@ -103,6 +103,7 @@ def run_one_cell(
         cell_root,
         source_repos=source_repos,
         workspace_repo_path=workspace_repo_path,
+        corpus_root=corpus.root,
     )
     if mat.leakage_violations:
         raise CellAborted(
@@ -128,7 +129,7 @@ def run_one_cell(
         rubric_text=corpus.rubric_text(task_id),
         candidate_patch=run.diff,
         verifier_outputs=det.outputs(),
-        artefacts=_collect_artefacts(manifest, mat),
+        artefacts={**_collect_artefacts(manifest, mat), **_outward_artefacts(run)},
     )
     probe = review.run_probe(
         reviewer,
@@ -163,6 +164,27 @@ def run_one_cell(
         review_verdict=outcome.verdict,
         verifier_logs=det.outputs(),
     )
+
+
+def _outward_artefacts(run: runner.CellRun) -> dict[str, str]:
+    """What the candidate sent outward, rendered for the reviewer to grade.
+
+    A staged action nobody reads is the same as an excluded one, so the recording goes into
+    the packet where the rubric can ask about its content.
+    """
+    out: dict[str, str] = {}
+    for name, calls in (run.outward_actions or {}).items():
+        lines = [f"# Outward actions via `{name}` — staged, not delivered", ""]
+        for i, call in enumerate(calls, 1):
+            lines += [f"## Call {i}", "", "```", " ".join(call.get("argv") or []), "```", ""]
+            if call.get("title"):
+                lines += [f"**Title:** {call['title']}", ""]
+            if call.get("body"):
+                lines += ["**Body:**", "", "```", str(call["body"]), "```", ""]
+        if len(lines) == 2:
+            lines.append("_The candidate made no outward call through this tool._")
+        out[f"outward/{name}.md"] = "\n".join(lines) + "\n"
+    return out
 
 
 def _collect_artefacts(manifest: TaskManifest, mat: materialize.Materialized) -> dict[str, str]:

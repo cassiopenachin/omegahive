@@ -52,6 +52,15 @@ an attempt that claims to have done them.
 {legs}
 """
 
+OUTWARD = """
+## Outward-facing actions
+
+The order asks for something that leaves the machine. The attempt performed it against a
+recording stub, so it is staged rather than sent, and what it would have sent is in
+`artefacts/outward/`. Grade that content as you would grade the real thing: an attempt that
+sent nothing has not done the leg, and one that sent something thin has done it badly.
+"""
+
 TAIL = """
 ## Deterministic checks
 
@@ -111,6 +120,8 @@ def render(manifest: dict) -> str:
     )
     if legs:
         text += OUT_OF_SCOPE.format(legs="\n".join(legs))
+    if manifest.get("mock_tools"):
+        text += OUTWARD
     return text + TAIL
 
 

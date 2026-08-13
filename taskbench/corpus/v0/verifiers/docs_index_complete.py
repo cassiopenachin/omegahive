@@ -14,11 +14,10 @@ broken grader, and would misreport a packaging defect as a model result:
 * It does not check that every filename mentioned in the index exists. Index prose cites
   documents by shortened names, and a naive existence check turns that into a false defect.
   Dangling *links* are the real risk and `link_integrity.py` owns them.
-* It **reports** completeness gaps rather than gating on them. The accepted outcome leaves
-  one subtree of the documentation directory unindexed, so a strict "every file appears"
-  gate would fail it. Gaps are printed as NOTE lines — real evidence for the blinded
-  reviewer, who weighs them against the order — and only a *duplicate* entry, or a missing
-  index, fails the check. Whether v1 can gate completeness is an open corpus question.
+* It does **not** demand a line per file. The order permits a single entry for a directory
+  as a whole, so a subtree accounted for by one line is accounted for. That is what makes
+  completeness a reachable bar rather than a clerical one: the one subtree the historical
+  outcome missed needs one line, not nine.
 
 A directory may be covered file-by-file or by one entry for the directory as a whole, which
 is what the order permits for the archive and evidence trees.
@@ -106,16 +105,17 @@ def main(root: Path) -> int:
         gaps.append(f"docs/{rel}")
 
     for gap in gaps:
-        print(f"NOTE not accounted for in the index: {gap}")
+        print(f"FAIL not accounted for in the index: {gap}")
     for problem in problems:
         print(f"FAIL {problem}")
-    if problems:
-        print(f"\n{len(problems)} duplicate-entry problem(s); {len(files)} file(s) under docs/")
+    if gaps or problems:
+        print(
+            f"\n{len(gaps)} unaccounted file(s) and {len(problems)} duplicate entr(ies); "
+            f"{len(files)} file(s) under docs/. A directory covered by one index line counts "
+            "as covered — an unaccounted subtree needs one line, not one per file."
+        )
         return 1
-    print(
-        f"ok — index present, no duplicate entries; {len(files)} file(s) under docs/, "
-        f"{len(gaps)} not accounted for (reported above, not gated)"
-    )
+    print(f"ok — {len(files)} file(s) under docs/, each accounted for exactly once")
     return 0
 
 

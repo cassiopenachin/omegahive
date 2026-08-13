@@ -30,8 +30,8 @@ These legs of the order cannot be executed by the process that produced this att
 their absence is **not** a defect. Do not mark the attempt down for them, and do not credit
 an attempt that claims to have done them.
 
-- One real notification on the phone opens the UI page over the tailnet. (Needs a live bot credential, the tailnet, the deployed UI and a physical device. An offline instrument has none of them, and the order itself calls the durable deploy the operator's close-time act.)
-- One real notification on the phone opens the UI page over the tailnet.
+- One real notification on the phone opens the UI page over the tailnet. (Deliberately not mocked. A stub would stand in for the deploy, not for anything the candidate wrote: everything under its control — the link is present and correct when the base URL is set, the render is byte-identical when it is unset, trailing slashes normalize, escaping holds, the token appears nowhere — is already the order's own Tests section and is checked deterministically. What remains is that the deployed service is reachable from a physical device over the tailnet, which is a deploy check the order itself calls the operator's close-time act.)
+- One real notification on the phone opens the UI page over the tailnet — the deploy check, not a code check.
 
 ## Deterministic checks
 

@@ -175,6 +175,28 @@ class NonReplayableLeg(BaseModel):
     executed_by: Literal["operator", "not-executed"]
 
 
+class MockTool(BaseModel):
+    """An outward-facing tool the candidate really invokes, against a recording stub.
+
+    Excluding an outward leg leaves it ungraded; mocking it turns the act into an artefact
+    the blinded reviewer can judge. The stub is installed ahead of the real tool on the
+    candidate's PATH and writes every invocation, argv and body, to the cell's mock log.
+
+    This is an evaluation stub, not a network jail: a candidate determined to reach the
+    network by another route could. The runner proves the stub is what the tool name
+    resolves to and records that proof; it claims nothing more.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    #: The command name to shadow, e.g. `gh`.
+    name: str
+    #: Corpus-relative path of the stub script.
+    script: str
+    #: What the order asks for and why it is staged rather than sent.
+    purpose: str
+
+
 class StopLine(BaseModel):
     """A stop-line the candidate must not cross, checked mechanically where possible."""
 
@@ -219,6 +241,8 @@ class TaskManifest(BaseModel):
     #: entry must be a path the ORDER names, never one read off the historical patch.
     required_changes: list[str] = Field(default_factory=list)
 
+    #: Outward-facing tools the candidate invokes for real, against recording stubs.
+    mock_tools: list[MockTool] = Field(default_factory=list)
     verifiers: list[Verifier] = Field(default_factory=list)
     checklist: list[ChecklistItem] = Field(default_factory=list)
     stop_lines: list[StopLine] = Field(default_factory=list)
@@ -402,6 +426,9 @@ def load_corpus(root: str | Path) -> LoadedCorpus:
         for ref in (m.rubric, m.grading):
             if not (root / ref).is_file():
                 raise ValueError(f"{task_id}: missing {ref}")
+        for tool in m.mock_tools:
+            if not (root / tool.script).is_file():
+                raise ValueError(f"{task_id}: missing mock script {tool.script}")
         facts = AcceptanceFacts.model_validate(yaml.safe_load((root / m.grading).read_text()))
         if facts.task_id != task_id:
             raise ValueError(f"{m.grading}: task_id {facts.task_id!r} does not match {task_id!r}")

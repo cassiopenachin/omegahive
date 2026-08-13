@@ -181,6 +181,11 @@ def write_cell(
         cell / "verdict.json", json.dumps(verdict.to_json(), indent=2, sort_keys=True) + "\n"
     )
     _atomic_write_text(cell / "candidate.patch", run.diff or "")
+    if run.outward_actions:
+        _atomic_write_text(
+            cell / "outward-actions.json",
+            json.dumps(run.outward_actions, indent=2, sort_keys=True) + "\n",
+        )
     for name, text in verifier_logs.items():
         _atomic_write_text(cell / "verifier" / f"{name}.log", text)
     _atomic_write_text(

@@ -35,6 +35,20 @@ IDLE_AGENT = """\
 print("agent: nothing to do", flush=True)
 """
 
+FILING_AGENT = """\
+#!/usr/bin/env python3
+'''A candidate that does the work AND performs the order's outward step.'''
+import pathlib, subprocess, os
+root = pathlib.Path(os.environ["BENCH_CELL_ROOT"])
+(root / "code" / "GREETING.txt").write_text("hello from the candidate\\n")
+subprocess.run(["git", "add", "-A"], cwd=root / "code", check=True)
+subprocess.run(["git", "-c", "user.name=a", "-c", "user.email=a@b", "commit", "-qm", "work"],
+               cwd=root / "code", check=True)
+subprocess.run(["gh", "issue", "create", "--repo", "up/stream", "--title", "greeting is broken",
+                "--body", "minimal repro: the greeting is absent at the pinned sha"], check=False)
+print("agent: filed and done", flush=True)
+"""
+
 DUMMY_REVIEWER = """\
 #!/usr/bin/env python3
 '''A scripted reviewer: passes when the artefact exists in the patch it was given.'''
@@ -122,10 +136,15 @@ def make_corpus(
     held_out: list[str] | None = None,
     extra_verifiers: list[dict] | None = None,
     extra_inputs: list[dict] | None = None,
+    mock_gh: bool = False,
 ) -> Path:
     root = tmp / "corpus"
     for sub in ("tasks", "rubrics", "grading"):
         (root / sub).mkdir(parents=True, exist_ok=True)
+    if mock_gh:
+        (root / "mocks").mkdir(parents=True, exist_ok=True)
+        real = Path(__file__).resolve().parents[1] / "taskbench/corpus/v0/mocks/gh"
+        (root / "mocks" / "gh").write_text(real.read_text())
 
     (root / "corpus.yaml").write_text(
         yaml.safe_dump(
@@ -173,6 +192,11 @@ def make_corpus(
             ],
             "rubric": f"rubrics/{task_id}.md",
             "grading": f"grading/{task_id}.yaml",
+            "required_changes": ["GREETING.txt"],
+            "mock_tools": (
+                [{"name": "gh", "script": "mocks/gh", "purpose": "file the upstream issue"}]
+                if mock_gh else []
+            ),
         }
 
     for task_id in ["greeting", *(held_out or ["reserved"])]:
