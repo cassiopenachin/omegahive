@@ -59,6 +59,11 @@ class AgentSpec(BaseModel):
     transcript_jsonl: str | None = None
     #: How the kickoff reaches the agent: appended to argv, or written to TASK.md only.
     prompt_mode: str = "argv"
+    #: Set to `claude-code-json` when the command runs with `--output-format json`. The
+    #: harness then reports its own resolved model id and token counts, and the record pins
+    #: those rather than the friendly tier name the launch asked for — an alias is a request,
+    #: not an identity, and the two can differ without anyone noticing.
+    result_envelope: str | None = None
 
     def required_labels_present(self) -> list[str]:
         return [k for k in ("vendor", "model", "harness") if not self.labels.get(k)]
@@ -122,6 +127,9 @@ class CellRun:
     home_is_cell_root: bool = True
     #: Every outward action the candidate took against a recording stub, verbatim.
     outward_actions: dict[str, list[dict]] = field(default_factory=dict)
+    #: What the harness said it actually ran — resolved model id, provider, token counts.
+    #: This, not the launch's alias, is the execution identity the record pins.
+    resolved_identity: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict:
         d = asdict(self)
@@ -196,6 +204,66 @@ def _kill_tree(proc: subprocess.Popen) -> None:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     with contextlib.suppress(subprocess.TimeoutExpired):
         proc.wait(timeout=15)
+
+
+def parse_result_envelope(kind: str | None, stdout_text: str) -> dict[str, Any]:
+    """Read the harness's own end-of-run report, when it writes one.
+
+    Returns `{"available": False, "missing_surface": ...}` rather than guessing. Nothing here
+    infers: the resolved model id, the token counts and the error status are whatever the
+    harness said they were.
+    """
+    if kind is None:
+        return {"available": False, "missing_surface": "launch config declared no result_envelope"}
+    if kind != "claude-code-json":
+        return {"available": False, "missing_surface": f"unknown result_envelope kind {kind!r}"}
+
+    envelope = None
+    for line in reversed(stdout_text.splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                candidate = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict) and candidate.get("type") == "result":
+                envelope = candidate
+                break
+    if envelope is None:
+        return {
+            "available": False,
+            "missing_surface": "no result envelope on stdout (did the command run with "
+            "--output-format json?)",
+        }
+
+    model_usage = envelope.get("modelUsage") or {}
+    primary = None
+    if isinstance(model_usage, dict) and model_usage:
+        # A session can touch more than one model (a small one for side work). The primary is
+        # the one that did the work, by output tokens; the whole map is kept either way.
+        primary = max(
+            model_usage,
+            key=lambda k: (model_usage[k] or {}).get("outputTokens", 0)
+            if isinstance(model_usage[k], dict) else 0,
+        )
+    primary_entry = model_usage.get(primary) if primary else None
+    return {
+        "available": True,
+        "resolved_model": primary,
+        "canonical_model": (primary_entry or {}).get("canonicalModel"),
+        "provider": (primary_entry or {}).get("provider"),
+        "model_usage": model_usage,
+        "usage": envelope.get("usage"),
+        "total_cost_usd": envelope.get("total_cost_usd"),
+        "num_turns": envelope.get("num_turns"),
+        "duration_ms": envelope.get("duration_ms"),
+        "is_error": envelope.get("is_error"),
+        "subtype": envelope.get("subtype"),
+        "api_error_status": envelope.get("api_error_status"),
+        "terminal_reason": envelope.get("terminal_reason"),
+        "permission_denials": envelope.get("permission_denials"),
+        "how_primary_chosen": "largest outputTokens in the harness's own modelUsage map",
+    }
 
 
 def _read_mock_log(mock_dir: Path) -> dict[str, list[dict]]:
@@ -285,6 +353,18 @@ def build_kickoff(manifest: TaskManifest, mat: Materialized) -> str:
             "",
         ]
     return "\n".join(lines)
+
+
+def _merge_usage(from_file: dict[str, Any], envelope: dict[str, Any]) -> dict[str, Any]:
+    """Prefer what the harness reported in its own envelope; fall back to a declared file."""
+    if envelope.get("available") and envelope.get("usage") is not None:
+        return {
+            "available": True,
+            "source": "harness result envelope",
+            "reported": envelope["usage"],
+            "total_cost_usd": envelope.get("total_cost_usd"),
+        }
+    return from_file
 
 
 def _collect_usage(spec: AgentSpec, root: Path) -> dict[str, Any]:
@@ -443,13 +523,21 @@ def run_cell(
     progress.exit = _utc(end)
     progress.sources["exit"] = "runner wall clock at process reap"
 
-    combined = (
-        stdout_path.read_text(errors="replace")[-40000:]
-        + stderr_path.read_text(errors="replace")[-40000:]
-    )
-    progress.terminal_error = (
-        "timeout: agent exceeded timeout_s" if timed_out else _detect_terminal_error(combined)
-    )
+    stdout_text = stdout_path.read_text(errors="replace")
+    envelope = parse_result_envelope(spec.result_envelope, stdout_text)
+    combined = stdout_text[-40000:] + stderr_path.read_text(errors="replace")[-40000:]
+    if timed_out:
+        progress.terminal_error = "timeout: agent exceeded timeout_s"
+    elif envelope.get("available") and (
+        envelope.get("api_error_status") or envelope.get("is_error")
+    ):
+        # The harness's own report beats a regex over its output. `subtype` can read
+        # "success" on a run that errored, so `is_error` and `terminal_reason` are the
+        # fields to trust.
+        detail = envelope.get("api_error_status") or envelope.get("terminal_reason") or "unknown"
+        progress.terminal_error = f"harness reported failure: {detail}"
+    else:
+        progress.terminal_error = _detect_terminal_error(combined)
 
     diff, changed = _capture_diff(mat)
     return CellRun(
@@ -464,7 +552,8 @@ def run_cell(
         started_utc=_utc(start),
         finished_utc=_utc(end),
         progress=progress,
-        usage=_collect_usage(spec, root),
+        usage=_merge_usage(_collect_usage(spec, root), envelope),
+        resolved_identity=envelope,
         diff=diff,
         changed_files=changed,
         stdout_path=str(stdout_path.relative_to(root)),

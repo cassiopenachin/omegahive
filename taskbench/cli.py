@@ -22,7 +22,7 @@ import typer
 import yaml
 from rich.console import Console
 
-from . import CORPUS_ROOT, TASKBENCH_ROOT, pipeline, record
+from . import CORPUS_ROOT, TASKBENCH_ROOT, pipeline, preflight, record
 from .manifest import HeldOutRefused, load_corpus
 from .review import DEFAULT_SANDBOX_ARGV, ReviewerSpec
 from .runner import AgentSpec
@@ -193,6 +193,12 @@ def run_cmd(
     supersedes: str | None = typer.Option(
         None, "--supersedes", help="record id this rerun replaces"
     ),
+    expect_corpus_hash: str | None = typer.Option(
+        None, "--expect-corpus-hash", help="refuse unless the corpus hashes to exactly this"
+    ),
+    skip_preflight: bool = typer.Option(
+        False, "--skip-preflight", help="diagnostics only; never for a batch that costs money"
+    ),
 ) -> None:
     """Run an operator-approved held-in batch; write one immutable record."""
     c = _corpus(corpus)
@@ -207,6 +213,31 @@ def run_cmd(
     except HeldOutRefused as exc:
         console.print(f"[bold]refused[/bold]: {exc}")
         raise typer.Exit(code=2) from exc
+
+    if not skip_preflight:
+        problems = preflight.run_preflight(
+            corpus=c,
+            repo_root=TASKBENCH_ROOT.parent,
+            agent=agent,
+            reviewer=reviewer,
+            task_ids=ids,
+            expect_hash=expect_corpus_hash or c.content_hash,
+            work_root=Path(work_root),
+            out_dir=Path(out),
+            record_id=record_id,
+            date=_date.today().isoformat(),
+            source_repos=cfg.get("source_repos") or {},
+            workspace_repo_path=cfg.get("workspace_repo_path"),
+        )
+        if problems:
+            console.print(
+                f"[bold]preflight refused[/bold] — {len(problems)} precondition(s) disagree. "
+                "No model was called and nothing was written."
+            )
+            for problem in problems:
+                console.print(f"  [bold]✗[/bold] {problem}")
+            raise typer.Exit(code=3)
+        console.print(f"preflight: every precondition agrees ({len(ids)} cell(s) to run)")
 
     root, verdicts = pipeline.run_batch(
         c, ids,
@@ -224,6 +255,49 @@ def run_cmd(
         for p in problems:
             console.print(f"[bold]✗[/bold] {p}")
         raise typer.Exit(code=1)
+
+
+@app.command("preflight")
+def preflight_cmd(
+    config_path: str = typer.Option(..., "--config", help="runner config YAML/JSON"),
+    record_id: str = typer.Option("dry-run", "--record-id"),
+    corpus: str | None = typer.Option(None, "--corpus"),
+    work_root: str = typer.Option("/tmp/taskbench-work", "--work-root"),
+    out: str = typer.Option("taskbench/records", "--out"),
+    expect_corpus_hash: str | None = typer.Option(None, "--expect-corpus-hash"),
+) -> None:
+    """Run every locally checkable precondition without calling a model."""
+    c = _corpus(corpus)
+    cfg = yaml.safe_load(Path(config_path).read_text())
+    problems = preflight.run_preflight(
+        corpus=c,
+        repo_root=TASKBENCH_ROOT.parent,
+        agent=AgentSpec.model_validate(cfg["agent"]),
+        reviewer=ReviewerSpec.model_validate(cfg["reviewer"]),
+        task_ids=list(c.catalog.held_in),
+        expect_hash=expect_corpus_hash or c.content_hash,
+        work_root=Path(work_root),
+        out_dir=Path(out),
+        record_id=record_id,
+        date=_date.today().isoformat(),
+        source_repos=cfg.get("source_repos") or {},
+        workspace_repo_path=cfg.get("workspace_repo_path"),
+    )
+    for problem in problems:
+        console.print(f"[bold]✗[/bold] {problem}")
+    if problems:
+        raise typer.Exit(code=3)
+    console.print("preflight: every precondition agrees")
+
+
+@app.command("next-record-id")
+def next_record_id_cmd(
+    base: str = typer.Option(..., "--base"),
+    out: str = typer.Option("taskbench/records", "--out"),
+) -> None:
+    """Print `<record-id> <supersedes-or-->`. The launcher uses this so no human picks an id."""
+    rid, sup = record.next_record_id(out, base, _date.today().isoformat())
+    print(f"{rid} {sup or '-'}")
 
 
 @app.command("validate-record")

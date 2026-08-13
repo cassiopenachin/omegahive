@@ -139,6 +139,25 @@ def build_config(
     }
 
 
+def next_record_id(out_dir: str | Path, base: str, date: str) -> tuple[str, str | None]:
+    """Pick an unused record id, and name the most recent one it supersedes.
+
+    The operator does not choose a record id — choosing one is an opportunity to overwrite
+    history. The launcher takes `base`, and if that is taken it takes `base-2`, `base-3`, …
+    and points `supersedes` at the newest existing record so the rerun says what it replaces
+    instead of quietly replacing it.
+    """
+    out = Path(out_dir)
+    if not (out / f"{date}-{base}").exists():
+        return base, None
+    existing = [base]
+    n = 2
+    while (out / f"{date}-{base}-{n}").exists():
+        existing.append(f"{base}-{n}")
+        n += 1
+    return f"{base}-{n}", f"{date}-{existing[-1]}"
+
+
 class RecordExists(RuntimeError):
     """A record directory is written once. Reruns get their own id and name this one."""
 

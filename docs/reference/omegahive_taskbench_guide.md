@@ -66,27 +66,37 @@ told, and `<root>/code` to confirm it holds one commit and no remote.
 
 ## Run the approved batch
 
-Copy `taskbench/configs/incumbent-fidelity.example.yaml`, fill in the two `labels` blocks
-with the model ids you actually resolved and the harness version from `claude --version`,
-then:
-
-<!-- The config's shape is `taskbench/configs/runner-config.schema.json`, regenerated from
-     the models that read it with `taskbench schema --out <path>`. -->
+One command, no arguments, from the worker's clone. Running it **is** the approval — it never
+asks again:
 
 ```bash
-uv run --frozen taskbench run \
-  --config taskbench/configs/incumbent-fidelity.yaml \
-  --record-id incumbent-fidelity \
-  --work-root ~/work/taskbench
+taskbench/launch/incumbent-fidelity.sh
 ```
 
-Defaults to the whole held-in set; `--tasks a,b` narrows it. One fresh session and one
-fresh root per task. The command prints the record path and `N/M task-level verdicts green`,
-then validates the record and exits non-zero if the record is incomplete.
+It reads `claude --version` at launch rather than trusting a remembered value (the binary is
+a symlink that moves), picks a fresh record id so nobody can overwrite history, writes the
+runner config itself, and hands both to `taskbench run`. **Nothing calls a model until
+preflight agrees**: corpus hash against a literal, held-in set, clean non-canonical checkout,
+every tool a cell's verifiers need, every pinned sha resolvable, the swipl image present,
+fresh writable destinations, argv with no shell metacharacters, and a TCP+TLS probe proving
+the reviewer's sandbox can actually reach the API. A refusal lists everything wrong at once
+and writes nothing.
 
-**Fidelity is green only at 5/5.** Anything less stops the milestone at diagnosis: repair
-the package, the verifier or the grader and re-run the affected cell. Never edit a task or
-the pass rule to make a cell go green.
+Three outcomes, and the script says which one you got:
+
+| Exit | Meaning |
+|---|---|
+| 0 | all five cells ran and the record validates — read `aggregate.md` |
+| 3 | preflight refused. No model was called, nothing written, nothing to clean up |
+| other | the batch stopped. Every completed cell and raw log is kept; nothing was overwritten |
+
+Interrupting it (Ctrl-C) prints the same guarantee: the partial record and its cells stay
+exactly as they are, and re-running opens a **new** record that supersedes them.
+
+The model is requested by alias (`--model opus`), never by a guessed identifier. Each run's
+own end-of-run report supplies the **resolved** model id, provider and token counts, and
+that is what the record pins — an alias is a request, and the two can differ without anyone
+noticing.
 
 ## Re-run one cell after a package repair
 

@@ -117,6 +117,13 @@ class ReviewerSpec(BaseModel):
     #: the least you can: binding a directory that contains the cell roots makes the probe
     #: fail, which is the probe working, not a bug to route around.
     sandbox_ro_binds: list[str] = Field(default_factory=list)
+    #: Host paths the reviewer needs to WRITE — its own configuration and session state.
+    #: Credentials live in one of these and are used in place: taskbench never reads, copies
+    #: or logs them, and the probe still has to prove the answer stays unreachable.
+    sandbox_rw_binds: list[str] = Field(default_factory=list)
+    #: HOME inside the sandbox. An agent CLI usually needs its real home to find its own
+    #: configuration; the binds above decide how much of that home actually exists.
+    sandbox_home: str | None = None
     env_passthrough: list[str] = Field(default_factory=list)
     timeout_s: int = 3600
     prompt_mode: str = "argv"
@@ -147,12 +154,20 @@ def sandbox_wrapper(spec: ReviewerSpec, packet: Path) -> list[str]:
     """The wrapper argv actually used, with the packet bound and the operator's extra
     read-only binds inserted ahead of the trailing separator."""
     wrapper = [a.replace("{packet}", str(packet)) for a in spec.sandbox_argv]
-    if not wrapper or not spec.sandbox_ro_binds:
+    if not wrapper:
         return wrapper
+    if spec.sandbox_home:
+        home = str(Path(spec.sandbox_home).expanduser())
+        for i in range(len(wrapper) - 2):
+            if wrapper[i] == "--setenv" and wrapper[i + 1] == "HOME":
+                wrapper[i + 2] = home
     binds: list[str] = []
-    for path in spec.sandbox_ro_binds:
-        resolved = str(Path(path).expanduser().resolve())
-        binds += ["--ro-bind", resolved, resolved]
+    for flag, paths in (("--ro-bind", spec.sandbox_ro_binds), ("--bind", spec.sandbox_rw_binds)):
+        for path in paths:
+            resolved = str(Path(path).expanduser().resolve())
+            binds += [flag, resolved, resolved]
+    if not binds:
+        return wrapper
     if wrapper[-1] == "--":
         return wrapper[:-1] + binds + ["--"]
     return wrapper + binds
