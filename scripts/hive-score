@@ -29,6 +29,17 @@
 # refusal fires whether the `clean` came from `--review` or was carried forward,
 # and writes no row.
 #
+# REVISION (decisions.md 2026-08-01 / retro 3 Verdict 4). Effort is scored against
+# accept -> the FIRST `task.result_posted`, net of blocked time up to that firing
+# only — a revision fired later (a corrected ref after review) never moves it,
+# because it prices producing the result, not the review cycle that follows. The
+# full-cycle span (accept -> the LAST `result_posted`, gross) is reported beside
+# it, for context, whenever the two differ; it is never scored as effort.
+# `--effort-uninterpretable <scope-amendment|host-incident>` (requires --note) is
+# the one narrow, explicit override for the effort verdict — never inferred from
+# elapsed time — for the two decided cause classes that leave no trace on the
+# spine. Questions and review-outcome scoring are unaffected by any of this.
+#
 # Intended call time is at or after close, and it works retroactively: every
 # outcome comes from the spine, so scoring a task closed weeks ago gives the same
 # answer it would have given on the day.
@@ -46,6 +57,7 @@ source "$SCRIPT_DIR/hive-common.sh"
 
 usage() {
   echo "usage: hive-score <task> [--project <name>] [--run <run-id>] [--review <verdict>] [--note <text>] [--again] [--no-commit]" >&2
+  echo "       hive-score <task> --effort-uninterpretable <scope-amendment|host-incident> --note <text> [--project <name>] [--run <run-id>] [--review <verdict>] [--again] [--no-commit]" >&2
   exit 2
 }
 
@@ -56,12 +68,14 @@ REVIEW_VERDICT=""
 NOTE=""
 AGAIN=0
 COMMIT=1
+EFFORT_UNINTERP=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --project) shift; [ $# -gt 0 ] || usage; PROJECT_OVERRIDE="$1" ;;
     --run)     shift; [ $# -gt 0 ] || usage; RUN_OVERRIDE="$1" ;;
     --review)  shift; [ $# -gt 0 ] || usage; REVIEW_VERDICT="$1" ;;
     --note)    shift; [ $# -gt 0 ] || usage; NOTE="$1" ;;
+    --effort-uninterpretable) shift; [ $# -gt 0 ] || usage; EFFORT_UNINTERP="$1" ;;
     --again)   AGAIN=1 ;;
     --no-commit) COMMIT=0 ;;
     -h|--help) usage ;;
@@ -71,6 +85,22 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ -n "$TASK" ] || usage
+
+# --effort-uninterpretable is the one narrow, non-numeric effort override (order
+# stop-line: no general one). It exists because the two decided cause classes —
+# an operator scope amendment mid-flight, or a host incident — do not exist on
+# the spine as events, so nothing here can ever detect them; the flag is the
+# only way they reach calibration.md, and it is never inferred from elapsed time,
+# however extreme. It accepts only the two decided classes and REQUIRES a
+# non-empty --note carrying the one-line cause — a bare "trust me" is refused,
+# same spirit as the false-clean refusal below. Validated before any spine read,
+# same as --review, so a typo'd cause never gets partway through a scoring run.
+case "$EFFORT_UNINTERP" in
+  "") ;;
+  scope-amendment|host-incident)
+    [ -n "$NOTE" ] || die "--effort-uninterpretable $EFFORT_UNINTERP requires --note \"<one-line cause>\" — the cause does not exist on the spine, so the note is the only record of it" ;;
+  *) die "--effort-uninterpretable must be one of: scope-amendment | host-incident, got '$EFFORT_UNINTERP'" ;;
+esac
 
 # --review validates against the scored vocabulary, case-insensitively, and
 # stores lowercase. Wave 2 produced `Rework`, `rework`, `Clean`, `clean`, and
@@ -138,26 +168,31 @@ fi
 printf '%s' "$EVENTS" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1 \
   || die "no events for run '$RUN' (wrong run id, or the stack is down?)"
 
-# These three definitions are the same predicates hive-metrics uses, and must stay
-# that way: an entry in calibration.md whose "actual" disagrees with the row in
+# These definitions are the same predicates hive-metrics uses, and must stay that
+# way: an entry in calibration.md whose "actual" disagrees with the row in
 # tasks.md for the same task is worse than no entry at all.
 read -r -d '' OUTCOME_JQ <<'JQ' || true
 def first_ts($t): [ .[] | select(.event_type == $t) | .logical_ts ] | first;
 def last_ts($t):  [ .[] | select(.event_type == $t) | .logical_ts ] | last;
 
-# An open block is charged to the result only when the result comes after it,
-# else to the terminal event — otherwise a post-result block yields a negative
-# blocked total, and the effort figure it feeds can flip a verdict.
-def blocked($result; $terminal):
-  ( reduce .[] as $e ({open: null, total: 0};
-      if $e.event_type == "task.blocked" then (if .open == null then .open = $e.logical_ts else . end)
-      elif $e.event_type == "task.unblocked" then
-        (if .open != null then {open: null, total: (.total + $e.logical_ts - .open)} else . end)
-      else . end) ) as $r
-  | if $r.open == null then $r.total
-    else ( if $result != null and $result > $r.open then $result else $terminal end ) as $end
-    | $r.total + (if $end != null and $end > $r.open then $end - $r.open else 0 end)
-    end;
+# Blocked time strictly up to a cutoff — used for the FIRST-result production
+# span (retro 3 Verdict 4): a block that OPENS after the cutoff never counts,
+# whether or not it ever closes, because review-cycle blocking after the first
+# result belongs to the review-outcome field's territory, not the effort figure.
+# Identical to hive-metrics' own `blocked_upto` — keep the two byte-identical.
+def blocked_upto($cutoff):
+  if $cutoff == null then null
+  else
+    ( reduce .[] as $e ({open: null, total: 0};
+        if $e.event_type == "task.blocked" and $e.logical_ts <= $cutoff then
+          (if .open == null then .open = $e.logical_ts else . end)
+        elif $e.event_type == "task.unblocked" and .open != null then
+          (if $e.logical_ts <= $cutoff
+             then {open: null, total: (.total + $e.logical_ts - .open)}
+             else {open: null, total: (.total + $cutoff - .open)} end)
+        else . end) ) as $r
+    | $r.total + (if $r.open != null then $cutoff - $r.open else 0 end)
+  end;
 
 # Terminal events per the legality table: status_override(done), task.failed, and
 # a run-scoped plan.revised(cancel). status_override(cancelled|failed) is
@@ -181,11 +216,12 @@ def terminal($created; $cancel_ts):
 | ( [ .[] | select(.event_type == "plan.revised")
       | select(.payload.action == "cancel") | .logical_ts ] | first ) as $cancel_ts
 | ( [ $slice[] | select(.event_type == "task.created") ] | length > 0 ) as $exists
-| ($slice | first_ts("task.created"))      as $created
+| ($slice | first_ts("task.created"))       as $created
 | ($slice | terminal($created; $cancel_ts)) as $close
-| ($slice | first_ts("task.accepted"))     as $accepted
-| ($slice | last_ts("task.result_posted")) as $result
-| ($slice | blocked($result; ($close.ts // null))) as $blk
+| ($slice | first_ts("task.accepted"))      as $accepted
+| ($slice | first_ts("task.result_posted")) as $first_result
+| ($slice | last_ts("task.result_posted"))  as $last_result
+| ($slice | blocked_upto($first_result))    as $blk_first
 | {
     head_seq: $head,
     exists: $exists,
@@ -205,10 +241,15 @@ def terminal($created; $cancel_ts):
     worker: ( ( [ $slice[] | select(.event_type == "task.reassigned") | .payload.to ] | last )
               // ( [ $slice[] | select(.event_type == "task.accepted") | .actor.id ] | last )
               // "" ),
-    # Elapsed worker span net of answer wait — the closest the spine gets to effort.
-    net_s: (if $accepted == null or $result == null then null
-            else ($result - $accepted - $blk) end),
-    blocked_s: (if $accepted == null then null else $blk end),
+    # Effort scores accept -> FIRST result_posted, net of blocked time up to that
+    # first firing only (retro 3 Verdict 4 / decisions.md 2026-08-01): a revision
+    # fired later never moves this. gross_last_s is the full-cycle span (accept ->
+    # LAST result_posted, gross) reported beside it for context, never scored.
+    net_s: (if $accepted == null or $first_result == null then null
+            else ($first_result - $accepted - $blk_first) end),
+    gross_last_s: (if $accepted == null or $last_result == null then null
+                    else ($last_result - $accepted) end),
+    revised: ($first_result != null and $last_result != null and $first_result != $last_result),
     questions: ( [ $slice[] | select(.event_type == "task.reported")
                    | select(.payload.kind == "question") ] | length ),
     review_failed: ( [ $slice[] | select(.event_type == "review.failed") ] | length ),
@@ -229,10 +270,19 @@ FINAL_STATUS=$(g final_status)
 ACT_QUESTIONS=$(g questions)
 ACT_REVIEW_FAILED=$(g review_failed)
 NET_S=$(g net_s)
+GROSS_LAST_S=$(g gross_last_s)
+REVISED=$(g revised)
 
 if [ -n "$NET_S" ]; then
   ACT_EFFORT=$(awk -v s="$NET_S" 'BEGIN { printf "%.1fh", s / 3600 }')
   ACT_EFFORT_H=$(awk -v s="$NET_S" 'BEGIN { printf "%.4f", s / 3600 }')
+  # A revision moves the full-cycle span but never the scored one — report the
+  # full cycle beside it so a reader is not left wondering why the task's own
+  # calendar time looks longer than the number in this row (decisions.md
+  # 2026-08-01: both spans wanted, only the first is worker-performance signal).
+  if [ "$REVISED" = "true" ] && [ -n "$GROSS_LAST_S" ]; then
+    ACT_EFFORT="$ACT_EFFORT (full cycle, incl. revision: $(awk -v s="$GROSS_LAST_S" 'BEGIN { printf "%.1fh", s / 3600 }'))"
+  fi
 else
   ACT_EFFORT="no work cycle (never accepted, or no result posted)"
   ACT_EFFORT_H=""
@@ -344,6 +394,15 @@ else
   PRED_EFFORT="$NOT_PREDICTED"; V_EFFORT="unpredicted"
 fi
 
+# The one narrow override (validated above, before any spine read): the derived
+# hit/under/over/unpredicted/unscorable verdict above is replaced, never blended
+# with. ACT_EFFORT is left exactly as measured — "retain the measured first-result
+# span as context" — only the VERDICT changes, and only for effort; questions and
+# review outcome are untouched by this flag.
+if [ -n "$EFFORT_UNINTERP" ]; then
+  V_EFFORT="uninterpretable ($EFFORT_UNINTERP)"
+fi
+
 if [ -n "$PRED_QUESTIONS_TXT" ]; then
   read -r Q_LO Q_HI <<<"$(parse_range "$PRED_QUESTIONS_TXT")"
   PRED_QUESTIONS="$PRED_QUESTIONS_TXT"
@@ -406,9 +465,30 @@ count falls inside the predicted range, exactly. *review outcome* — never infe
 the spine records \`review.failed\`, not whether a PR needed another round, so the
 verdict stays \`unscored\` until a human supplies one with \`--review\`.
 
-Actual effort is elapsed wall-clock between \`task.accepted\` and \`task.result_posted\`
-minus recorded blocked time. A session that idles looks like a session that works;
-it is a proxy, and predictions should be read against it as one.
+**Revision (decisions.md 2026-08-01).** \`task.result_posted\` marks the CURRENT
+REVISION of a task's result — fired at the first complete result, re-fired with a
+corrected ref whenever a review revision changes what the report says. Actual
+effort is scored against accept -> the FIRST \`result_posted\` only, net of blocked
+time up to that first firing (retro 3 Verdict 4) — a later revision never moves
+it, because it prices producing the result, not the review cycle that follows.
+When a task's result WAS revised, the full-cycle span (accept -> the LAST
+\`result_posted\`, gross, portfolio reality) is reported beside the scored figure
+in parentheses, for context only — it is never itself scored as effort. A
+calibration trend line spanning the date this distinction shipped is comparing
+the same single-result number on both sides for every row that predates it: see
+hive-metrics' own Method section for the fuller calibration-boundary note.
+
+**\`uninterpretable\`.** One narrow, explicit override for the effort verdict only
+(\`--effort-uninterpretable <scope-amendment|host-incident>\`, requiring
+\`--note\`): the measured first-result span is retained as context but the verdict
+reads \`uninterpretable (<cause>)\` instead of hit/under/over, because the two
+decided cause classes leave no trace on the spine for anything here to detect —
+this is never inferred from elapsed time, however extreme, only ever set by an
+explicit human call. Excluded from any over-prediction factor computed from this
+file. Questions and review outcome are untouched by it.
+
+A session that idles looks like a session that works; the scored span is a proxy,
+and predictions should be read against it as one.
 
 **One row per task.** \`--again\` replaces a task's entry in place (dropping any
 older duplicate rows for the same task) rather than appending a second one. With
