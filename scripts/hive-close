@@ -1,31 +1,45 @@
 #!/usr/bin/env bash
-# hive-close <task> [--reason <text>] [--no-score]
+# hive-close <task> --review <clean|minor rework|rework> [--reason <text>]
+# hive-close <task> --no-score [--reason <text>]
 #
 # The close bookend of the Phase 1 loop (OPERATIONS.md): one judgment — the
 # result holds — after the PR is merged in the GitHub app. Verifies the board is
 # in_review, pulls the result ref from the spine's own task.result_posted, then
 # emits review.passed + status_override(done), and finally regenerates the
-# project's metrics (hive-metrics) and scores the task's predictions (hive-score)
-# so the instrument refresh is a by-product of closing rather than a separate
-# errand the operator has to remember. `--no-score` skips both.
+# project's metrics (hive-metrics) and scores the task's predictions (hive-score),
+# carrying the review verdict straight through — so the instrument refresh AND the
+# calibration row are both by-products of closing, not a separate errand the
+# operator has to remember afterwards (retro 3 D2/D4: a close that leaves the
+# review column for a human to fill in later is exactly how it got filled in
+# wrong, or not at all). `--review` is therefore required for a scored close;
+# `--no-score` is the explicit opt-out, and skips both the metrics regeneration
+# and the calibration entry, same as before.
 #
 # review.passed here certifies exactly what OPERATIONS.md pain 6 says it does:
 # the operator read the result report and saw no red flags — not artifact
 # correctness. Merging is a separate human act (the GitHub app); hive-close never
-# merges.
+# merges. The `--review` verdict is a separate judgment layered on top: it scores
+# the task's whole post-result review cycle for calibration (hive-score refuses a
+# `clean` verdict outright if the spine shows any `review.failed`).
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/hive-common.sh
 source "$SCRIPT_DIR/hive-common.sh"
 
-usage() { echo "usage: hive-close <task> [--reason <text>] [--no-score]" >&2; exit 2; }
+usage() {
+  echo "usage: hive-close <task> --review <clean|minor rework|rework> [--reason <text>]" >&2
+  echo "       hive-close <task> --no-score [--reason <text>]" >&2
+  exit 2
+}
 
 TASK=""
 REASON="operator read the result report; no red flags (hive-close)"
 SCORE=1
+REVIEW_VERDICT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --reason) shift; [ $# -gt 0 ] || usage; REASON="$1" ;;
+    --review) shift; [ $# -gt 0 ] || usage; REVIEW_VERDICT="$1" ;;
     --no-score) SCORE=0 ;;
     -h|--help) usage ;;
     -*) usage ;;
@@ -34,6 +48,18 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ -n "$TASK" ] || usage
+
+# Validate before any spine write (below). `--review` is required for a scored
+# close; `--no-score` is the only way around it. When both are given, the
+# verdict is still validated — --no-score with a garbled --review is more likely
+# a mistake than an intentional combination, and refusing early costs nothing.
+if [ "$SCORE" -eq 1 ]; then
+  [ -n "$REVIEW_VERDICT" ] \
+    || die "hive-close requires --review <clean|minor rework|rework> unless --no-score is given"
+fi
+if [ -n "$REVIEW_VERDICT" ]; then
+  REVIEW_VERDICT=$(validate_review_verdict "$REVIEW_VERDICT")
+fi
 
 # 0. Resolve the task to its order across every project (refusing cross-project
 #    ambiguity), then load that project's committed identity so RUN is the task's
@@ -93,10 +119,10 @@ echo "  NOTE review.passed = the operator read the result report (not artifact c
 #    `--project` is passed because this close already resolved it. `</dev/null`
 #    because the spine read is `podman compose run`, which eats stdin.
 #
-#    Not scored here: the review verdict. The spine records `review.failed`, not
-#    whether a PR needed another round of comments, so that column stays
-#    `unscored` until a human supplies it — `hive-score <task> --review "<verdict>"
-#    --again` after the fact.
+#    The review verdict rides straight through to hive-score, which is the one
+#    place it is validated against the spine's own review.failed count (a false
+#    `clean` is refused there, loudly, same as any other scoring failure below —
+#    the close still stands and names the one recovery command).
 if [ "$SCORE" -eq 0 ]; then
   echo "hive-close: --no-score — metrics not regenerated, calibration not recorded;"
   echo "  run 'hive-metrics $PROJECT' and 'hive-score $TASK' when you want them."
@@ -112,16 +138,17 @@ else
       echo "      hive-metrics $PROJECT"
     } >&2
   fi
-  if "$SCRIPT_DIR/hive-score" "$TASK" --project "$PROJECT" </dev/null; then
-    echo "hive-close: scored (add the human review verdict with: hive-score $TASK --review \"<clean|minor rework|rework>\" --again)"
+  if "$SCRIPT_DIR/hive-score" "$TASK" --project "$PROJECT" --review "$REVIEW_VERDICT" </dev/null; then
+    echo "hive-close: scored (review verdict: $REVIEW_VERDICT)"
   else
     {
       echo
       echo "hive-close: WARNING the close SUCCEEDED and is durable on the spine — scoring afterwards did not."
       echo "  Nothing about task '$TASK' is in doubt: review.passed and status_override(done) are emitted."
-      echo "  Only the calibration entry is missing. Recover with one command:"
-      echo "      hive-score $TASK --project $PROJECT"
-      echo "  (already-scored is a normal reason for this to fail — add --again to record a second entry.)"
+      echo "  Only the calibration entry is missing or wrong. Recover with one command:"
+      echo "      hive-score $TASK --project $PROJECT --review \"$REVIEW_VERDICT\""
+      echo "  (already-scored is a normal reason for this to fail as written — add --again to replace it in place;"
+      echo "  a refused 'clean' against a nonzero review.failed count needs a truthful verdict instead.)"
     } >&2
   fi
 fi

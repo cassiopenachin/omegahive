@@ -1,24 +1,52 @@
 #!/usr/bin/env bash
 # hive-answer <task> <text...>
+# hive-answer <task> --sha <full-sha>
 #
 # The answer bookend of the Phase 1 loop (OPERATIONS.md pain 1): the ~5-step
 # clerical answer path collapsed to one SSH-friendly command —
 #   ssh beastie 'hive-answer port-sha "use event time"'
 #
-# Appends the answer to the order's `## Answers` section (append-only; the order
-# body is never touched), commits + pushes, then nudges the worker's pane to
-# pull and re-read at HEAD.
+# The `<text...>` form appends the answer to the order's `## Answers` section
+# (append-only; the order body is never touched), commits + pushes, then nudges
+# the worker's pane to pull and re-read at HEAD. It is a shell argument, so it
+# is the fast default for a short answer — and the wrong surface for a long or
+# structured one (a table, a multi-paragraph rationale, anything with a quote
+# character): twice in wave 3 an answer was compressed to fit it, once losing
+# load-bearing structure.
+#
+# The `--sha <full-sha>` form is for exactly that case: the answering seat
+# authors the long-form answer below the order's `## Answers` heading in its own
+# commit and pushes it by ordinary git means (this tool never does that part).
+# `--sha` then verifies the ALREADY-PUSHED commit — full sha, reachable from the
+# hub's main, touches only the target order, and its diff is a pure addition
+# entirely below the `## Answers` heading — and, only once every check passes,
+# performs the same safe tmux nudge as the text form. It never stages, commits,
+# rebases, or pushes anything itself; the durable operator gate (a human commit
+# lands the content) is unchanged, only the authoring surface is widened.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/hive-common.sh
 source "$SCRIPT_DIR/hive-common.sh"
 
-usage() { echo "usage: hive-answer <task> <text...>" >&2; exit 2; }
+usage() {
+  echo "usage: hive-answer <task> <text...>" >&2
+  echo "       hive-answer <task> --sha <full-sha>" >&2
+  exit 2
+}
 
 [ $# -ge 2 ] || usage
 TASK="$1"; shift
-TEXT="$*"
-[ -n "$TEXT" ] || usage
+
+SHA=""
+TEXT=""
+if [ "$1" = "--sha" ]; then
+  shift
+  [ $# -eq 1 ] || usage
+  SHA="$1"
+else
+  TEXT="$*"
+  [ -n "$TEXT" ] || usage
+fi
 
 # Guarded up front, not at nudge time: this script's tmux target is
 # `=<session>:=<task>`, so a session name carrying `:` splits at the wrong place
@@ -28,26 +56,75 @@ require_safe_tmux_session
 
 REL=$(find_order "$TASK")
 FILE="$OPS_WS/$REL"
-TODAY=$(date +%F)
 
-# Append-only: add the `## Answers` header if it is not already present, then the
-# dated line. We never edit the body above it.
-if ! grep -qxF '## Answers' "$FILE"; then
-  printf '\n## Answers\n' >> "$FILE"
-fi
-printf -- '- %s — %s\n' "$TODAY" "$TEXT" >> "$FILE"
+if [ -n "$SHA" ]; then
+  # --sha: verify only, never write. A full sha is required — an abbreviated one
+  # is ambiguous across a growing repo and this refusal is cheap to make absolute.
+  [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] \
+    || die "--sha requires a full 40-character commit sha, got '$SHA' (abbreviated shas are refused as ambiguous)"
 
-# Commit only the order file (pathspec), so any unrelated staged changes in the
-# operator's workspace clone are never swept into the answer commit. A line was
-# just appended, so an empty commit is impossible — a failure here is a real git
-# error (identity unset, a hook, an index lock), reported as such.
-git -C "$OPS_WS" commit --quiet -m "answer: $TASK" -- "$REL" \
-  || die "git commit failed for $REL (git identity unset, a commit hook, or an index lock?)"
-if ! git -C "$OPS_WS" push --quiet 2>/dev/null; then
-  git -C "$OPS_WS" pull --rebase --quiet || die "push failed and rebase failed; resolve $OPS_WS by hand"
-  git -C "$OPS_WS" push --quiet || die "push failed for $OPS_WS; answer committed locally but not on the hub"
+  git -C "$OPS_WS" fetch --quiet origin || die "cannot fetch hub ($WS_HUB)"
+  git -C "$OPS_WS" cat-file -e "${SHA}^{commit}" 2>/dev/null \
+    || die "commit $SHA not found in $OPS_WS after fetching origin — wrong sha, or not pushed yet"
+  git -C "$OPS_WS" merge-base --is-ancestor "$SHA" origin/main \
+    || die "commit $SHA is not reachable from the hub's main; refusing to nudge on an answer that is not really landed"
+
+  # shellcheck disable=SC2046  # deliberate word splitting: each parent sha is one word
+  set -- $(git -C "$OPS_WS" show -s --format=%P "$SHA")
+  [ "$#" -le 1 ] || die "commit $SHA is a merge commit ($# parents); --sha refuses merge commits"
+  [ "$#" -eq 1 ] || die "commit $SHA has no parent (it is a repo root); --sha needs a commit that only appends to an existing order"
+  PARENT="$1"
+
+  CHANGED=$(git -C "$OPS_WS" show --name-only --format= "$SHA" | grep -v '^$' || true)
+  CHANGED_N=$(printf '%s\n' "$CHANGED" | grep -c .)
+  [ "$CHANGED_N" -eq 1 ] && [ "$CHANGED" = "$REL" ] \
+    || die "commit $SHA changes more than the target order ($REL); --sha refuses a mixed commit. Changed: $(printf '%s' "$CHANGED" | tr '\n' ' ')"
+
+  DELETIONS=$(git -C "$OPS_WS" diff --numstat "$PARENT" "$SHA" -- "$REL" | awk '{print $2}')
+  [ "${DELETIONS:-0}" -eq 0 ] \
+    || die "commit $SHA deletes $DELETIONS line(s) from $REL; --sha only accepts a pure addition"
+
+  OLD=$(git -C "$OPS_WS" show "$PARENT:$REL" 2>/dev/null || true)
+  NEW=$(git -C "$OPS_WS" show "$SHA:$REL")
+  # grep exits 1 on "no match", which is a legitimate outcome here (an OLD file
+  # with no heading yet is exactly the common case) — `|| true` keeps that from
+  # tripping `set -e` before the deliberate checks below get to see it.
+  NEW_HEAD_LINE=$( { printf '%s\n' "$NEW" | grep -n -m1 -x '## Answers' | cut -d: -f1; } || true )
+  [ -n "$NEW_HEAD_LINE" ] \
+    || die "commit $SHA's version of $REL has no '## Answers' heading; --sha needs the answer appended below that heading"
+  OLD_HEAD_LINE=$( { printf '%s\n' "$OLD" | grep -n -m1 -x '## Answers' | cut -d: -f1; } || true )
+  if [ -n "$OLD_HEAD_LINE" ]; then
+    OLD_PREFIX=$(printf '%s\n' "$OLD" | head -n "$((OLD_HEAD_LINE - 1))")
+  else
+    OLD_PREFIX="$OLD"
+  fi
+  NEW_PREFIX=$(printf '%s\n' "$NEW" | head -n "$((NEW_HEAD_LINE - 1))")
+  [ "$OLD_PREFIX" = "$NEW_PREFIX" ] \
+    || die "commit $SHA edits $REL above the '## Answers' heading; --sha only accepts appends below it"
+
+  echo "hive-answer: verified $SHA appends to $REL below '## Answers' — not committing (already on the hub)"
+else
+  TODAY=$(date +%F)
+
+  # Append-only: add the `## Answers` header if it is not already present, then the
+  # dated line. We never edit the body above it.
+  if ! grep -qxF '## Answers' "$FILE"; then
+    printf '\n## Answers\n' >> "$FILE"
+  fi
+  printf -- '- %s — %s\n' "$TODAY" "$TEXT" >> "$FILE"
+
+  # Commit only the order file (pathspec), so any unrelated staged changes in the
+  # operator's workspace clone are never swept into the answer commit. A line was
+  # just appended, so an empty commit is impossible — a failure here is a real git
+  # error (identity unset, a hook, an index lock), reported as such.
+  git -C "$OPS_WS" commit --quiet -m "answer: $TASK" -- "$REL" \
+    || die "git commit failed for $REL (git identity unset, a commit hook, or an index lock?)"
+  if ! git -C "$OPS_WS" push --quiet 2>/dev/null; then
+    git -C "$OPS_WS" pull --rebase --quiet || die "push failed and rebase failed; resolve $OPS_WS by hand"
+    git -C "$OPS_WS" push --quiet || die "push failed for $OPS_WS; answer committed locally but not on the hub"
+  fi
+  echo "hive-answer: appended to $REL and pushed"
 fi
-echo "hive-answer: appended to $REL and pushed"
 
 # Nudge the pane named <task>. The answer is already durable on the hub, so a
 # missing pane is a warning, not a failure — the worker (or a relaunch) will read

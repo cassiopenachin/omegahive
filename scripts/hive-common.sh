@@ -452,6 +452,19 @@ commit_metrics() {  # commit_metrics <project> <commit-message>  -> 0 committed/
   echo "  committed + pushed: $spec ($msg)"
 }
 
+# The one place the human review-verdict vocabulary is validated — hive-close and
+# hive-score both call this so the two enums can never drift apart the way the
+# unenforced column did before (retro 1's instrument note: `Rework`, `rework`,
+# `Clean`, `clean`, and `minor rework` all landed in the same field). Prints the
+# canonical lowercase form, or dies naming the legal values verbatim.
+validate_review_verdict() {  # validate_review_verdict <value> -> prints canonical lowercase form
+  local v; v=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  case "$v" in
+    clean|"minor rework"|rework) printf '%s\n' "$v" ;;
+    *) die "--review must be one of: clean | minor rework | rework (case-insensitive), got '$1'" ;;
+  esac
+}
+
 # The folded board as a JSON array (board-view --json): the machine projection —
 # one object per task with task/status/owner/depends_on/review. This is the read
 # path the tooling parses instead of the rendered table: a task id wider than the
