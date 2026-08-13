@@ -242,11 +242,18 @@ def run_batch(
                     "cell_id": outcome.run.cell_id,
                     "task_id": tid,
                     "labels": outcome.run.labels,
+                    "resolved_model": (outcome.run.resolved_identity or {}).get("resolved_model"),
+                    "usage": outcome.run.usage,
                     "wall_ms": outcome.run.wall_ms,
                     "passed": outcome.verdict.passed,
                 }
             )
     finally:
+        # The resolved identifiers, collected from the runs themselves, so the aggregate can
+        # name what actually ran rather than the alias the launch asked for.
+        config["resolved_models"] = sorted(
+            {r["resolved_model"] for r in rows if r.get("resolved_model")}
+        )
         # Finalize whatever completed even when a later cell aborts. A half-written record
         # that cannot be validated is a worse artefact than a short one that can, and the
         # cells that did run are evidence the operator paid for.

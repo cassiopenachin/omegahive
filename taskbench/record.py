@@ -234,13 +234,23 @@ def render_aggregate(
     verdicts: list[TaskVerdict],
 ) -> str:
     labels = config["agent_labels"]
+    resolved = config.get("resolved_models") or []
     green = sum(1 for v in verdicts if v.passed)
     lines = [
         f"# Task-replay aggregate — {config['record_id']} ({config['date']})",
         "",
         f"Corpus `{config['corpus_version']}` (`{config['corpus_content_hash'][:19]}…`) · "
-        f"candidate **{labels.get('vendor')}/{labels.get('model')}** on "
+        f"candidate **{labels.get('vendor')}/"
+        f"{', '.join(resolved) if resolved else labels.get('model')}** on "
         f"`{labels.get('harness')}` · reviewer **{config['reviewer_labels'].get('model')}**.",
+        "",
+        (
+            f"Requested as `--model {labels.get('model')}`; the identifier above is what each "
+            "run's own report said it resolved to. An alias is a request, not an identity."
+            if resolved else
+            "**No resolved model id was reported** — the identifier above is the alias the "
+            "launch requested, which is not evidence of what ran."
+        ),
         "",
         f"**{green}/{len(verdicts)} task-level verdicts green.**",
         "",
@@ -325,6 +335,30 @@ def validate_record(path: str | Path) -> list[str]:
         for required in ("review/packet-manifest.json", "review/probe.json"):
             if not (cell / required).is_file():
                 problems.append(f"{cell.name}: {required} missing")
+        run_file = cell / "run.json"
+        if run_file.is_file():
+            try:
+                run = json.loads(run_file.read_text())
+            except json.JSONDecodeError:
+                problems.append(f"{cell.name}: run.json is not valid JSON")
+            else:
+                identity = run.get("resolved_identity") or {}
+                if identity.get("available") and not identity.get("resolved_model"):
+                    problems.append(
+                        f"{cell.name}: the harness reported a run but no resolved model id; "
+                        "the cell is unattributable"
+                    )
+                surface = identity.get("missing_surface", "no result envelope")
+                # A harness that exposes no identity surface at all leaves an honest gap; a
+                # launch that ASKED for one and did not get it leaves a record pinning the
+                # alias it requested rather than what ran, which is the thing this instrument
+                # exists to stop.
+                if not identity.get("available") and "declared no result_envelope" not in surface:
+                    problems.append(
+                        f"{cell.name}: the launch asked the harness for its execution identity "
+                        f"and got none — {surface}. The record would pin the alias the launch "
+                        "requested, not what ran."
+                    )
         task_file = cell / "task.txt"
         if task_file.is_file():
             task_id = task_file.read_text().splitlines()[0].strip()

@@ -150,3 +150,53 @@ def test_the_launcher_picks_the_record_id_and_names_what_it_supersedes(tmp_path)
 
     (out / "2026-08-13-batch-2").mkdir()
     assert record.next_record_id(out, "batch", "2026-08-13") == ("batch-3", "2026-08-13-batch-2")
+
+
+# --- the operator's actual entry point -----------------------------------------------------
+
+LAUNCHER = Path(__file__).resolve().parents[1] / "taskbench/launch/incumbent-fidelity.sh"
+
+
+def test_the_launcher_exists_and_is_executable():
+    assert LAUNCHER.is_file() and LAUNCHER.stat().st_mode & 0o111
+
+
+def test_the_launcher_pins_the_corpus_it_was_written_against():
+    """The literal in the script and the frozen corpus must agree, or the batch measures
+    something nobody approved."""
+    from taskbench import CORPUS_ROOT
+
+    frozen = load_corpus(CORPUS_ROOT / "v0").content_hash
+    assert frozen in LAUNCHER.read_text(), (
+        "the launcher's expected corpus hash has drifted from the frozen corpus"
+    )
+
+
+def test_the_launcher_assembles_no_shell_command_and_parses_no_arguments():
+    """`$1` inside a private helper and in `awk` is fine; what must be absent is any way for
+    the operator's invocation to change what runs, and any second prompt."""
+    body = LAUNCHER.read_text()
+    assert "eval " not in body, "model commands are argv arrays, never shell-evaluated"
+    assert '"$@"' not in body, "the entry point forwards no arguments"
+    for parser in ("getopts", 'case "$1"', "case $1"):
+        assert parser not in body, "the entry point takes no arguments"
+    for prompt in ("read -p", "read -r -p", "read -n"):
+        assert prompt not in body, "invoking the script is the approval; it must not ask again"
+
+
+def test_the_launcher_never_writes_to_the_canonical_checkout():
+    body = LAUNCHER.read_text()
+    assert "git checkout" not in body and "git switch" not in body
+    assert "src/SNET/omegahive" not in body, (
+        "the launcher resolves its own repo root; naming the canonical checkout invites it"
+    )
+
+
+@pytest.mark.skipif(not fx.bwrap_available(), reason="shellcheck/bwrap host tooling")
+def test_the_launcher_is_shellcheck_clean():
+    if subprocess.run(["which", "shellcheck"], capture_output=True, check=False).returncode:
+        pytest.skip("shellcheck not on PATH")
+    out = subprocess.run(
+        ["shellcheck", "-x", str(LAUNCHER)], capture_output=True, text=True, check=False
+    )
+    assert out.returncode == 0, out.stdout

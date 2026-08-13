@@ -188,6 +188,38 @@ def test_a_mock_tool_must_actually_shadow_the_real_one(tmp_path):
         install_mock_tools(manifest, bindir, corpus.root)
 
 
+def test_a_record_is_invalid_when_the_launch_asked_for_identity_and_got_none(tmp_path, world):
+    """A harness with no identity surface leaves an honest gap. A launch that asked for one
+    and got nothing leaves a record pinning the alias it requested instead of what ran."""
+    corpus, tmp = world
+    cfg = record.build_config(
+        record_id="ident", date="2026-08-13", corpus=corpus,
+        agent=fx.specs(tmp)[0], reviewer=fx.specs(tmp)[1],
+    )
+    root = record.open_record(tmp_path / "records", cfg)
+    cell = root / "cells" / "cell-abc123"
+    cell.mkdir(parents=True)
+    (cell / "verdict.json").write_text("{}")
+    (cell / "candidate.patch").write_text("")
+    (cell / "task.txt").write_text("greeting\ndemo\npython-service\n")
+    (cell / "review").mkdir()
+    for name in ("packet-manifest.json", "probe.json"):
+        (cell / "review" / name).write_text("{}")
+    (root / "aggregate.md").write_text("x")
+    (root / "cells.json").write_text("[]")
+
+    honest_gap = {
+        "available": False,
+        "missing_surface": "launch config declared no result_envelope",
+    }
+    (cell / "run.json").write_text(json.dumps({"resolved_identity": honest_gap}))
+    assert not any("execution identity" in p for p in record.validate_record(root))
+
+    asked_and_missed = {"available": False, "missing_surface": "no result envelope on stdout"}
+    (cell / "run.json").write_text(json.dumps({"resolved_identity": asked_and_missed}))
+    assert any("execution identity" in p for p in record.validate_record(root))
+
+
 def test_a_held_out_task_cannot_be_run(world):
     corpus, tmp = world
     agent, reviewer = fx.specs(tmp)
