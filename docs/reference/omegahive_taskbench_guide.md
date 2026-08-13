@@ -38,13 +38,18 @@ a fidelity failure and stops the milestone at diagnosis.
 
 | Need | Used by |
 |---|---|
-| the stack up (`podman compose up -d`) and `jq` | `launch-pane-fix`, `instrument-teeth` — the loop drill uses Postgres only as a host, under scratch run ids |
-| `tmux`, `shellcheck` | `launch-pane-fix`, `instrument-teeth` |
+| `shellcheck` | `launch-pane-fix`, `instrument-teeth` |
 | a reachable Postgres for the test suite | `run-registration` — the suite makes its own per-run scratch database |
 | `uv`, with a warm cache or network | `run-registration` |
 | `podman`, with `docker.io/library/swipl:9.3.33` already in local storage | `ptc-revalidate` — the runner never pulls |
 | local clones of `PeTTaChainer` and `PeTTa` | `ptc-revalidate` — snapshotted into the cell as git bundles |
 | `bwrap` | every cell — the cold-reader sandbox |
+
+No cell needs the stack, the durable Postgres, or tmux. `scripts/hive-tooling-drill.sh` is
+deliberately **not** an offline verifier: it emits scratch spine events, which this
+instrument's scope forbids, and at `launch-pane-fix`'s baseline it predates the tmux
+isolation that very task introduces, so running it creates sessions on the server holding
+every live worker pane. It is an operator leg — run it yourself against a green cell.
 
 ## Materialize one cell (dry run, no model)
 
@@ -153,6 +158,12 @@ an `unknown` as a note about the harness, never as a zero.
   who owns it; the leg is excluded from the cell verdict and named in the rubric so the
   grader does not penalise its absence. The declarations are inside the content hash, so
   they cannot be edited after a cell has run without incrementing the corpus version.
-- **`launch-pane-fix` carries the weakest deterministic leg** of the five once the drill is
-  excluded on a host without the stack: shell syntax and lint only. On a host with the stack
-  the drill runs and the leg is strong. Check `verdict.json` rather than assuming.
+- **`launch-pane-fix` carries the weakest deterministic leg** of the five: shell syntax,
+  lint, and the requirement that the order's named deliverables were actually changed. Its
+  real check — the loop drill — is an operator leg for the reasons above, so the blinded
+  review carries most of the weight on that cell. Read its `review/verdict.json`, and run
+  the drill yourself before merging anything this cell blesses.
+- **Existence is not evidence of work.** Several tasks' deliverables are already in their
+  baseline, so each manifest also names `required_changes`: globs the attempt's diff must
+  touch. Every one is a path the order itself names; none is read off the historical patch,
+  which would be the exact-diff scoring the stop-lines forbid.
