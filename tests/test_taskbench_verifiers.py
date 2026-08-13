@@ -112,6 +112,39 @@ def test_link_integrity_catches_a_move_that_breaks_a_link(tmp_path):
     assert code == 1 and "alpha.md -> beta.md" in out
 
 
+def test_link_integrity_resolves_a_root_absolute_link_against_the_repo(tmp_path):
+    """A leading slash means the repository root. Resolving it against the host filesystem
+    would report every such link as dangling — a defect in the check, not in the docs."""
+    tree = baseline_repo(tmp_path, {**DOCS, "docs/INDEX.md": GOOD_INDEX})
+    (tree / "docs" / "alpha.md").write_text("# Alpha\n\nSee [beta](/docs/beta.md).\n")
+    assert run("link_integrity.py", tree)[0] == 0
+
+    (tree / "docs" / "alpha.md").write_text("# Alpha\n\nSee [gone](/docs/gone.md).\n")
+    code, out = run("link_integrity.py", tree)
+    assert code == 1 and "/docs/gone.md" in out
+
+
+def test_docs_index_does_not_call_same_named_files_duplicates(tmp_path):
+    """Three README.md files already live under docs/. Matching an entry by basename alone
+    counts one entry against every namesake and reports each as a duplicate."""
+    files = {
+        "docs/reference/README.md": "# Reference\n",
+        "docs/archive/README.md": "# Archive\n",
+        "docs/alpha.md": "# Alpha\n",
+        "README.md": "# Repo\n",
+    }
+    tree = baseline_repo(tmp_path, files)
+    (tree / "docs" / "INDEX.md").write_text(
+        "# docs/ Index\n\n"
+        "- alpha.md — the alpha document\n"
+        "- reference/README.md — what the reference directory is for\n"
+        "- archive/README.md — what the archive directory is for\n"
+    )
+    code, out = run("docs_index_complete.py", tree)
+    assert code == 0, out
+    assert "index entries" not in out
+
+
 def test_link_integrity_ignores_links_inside_code_fences(tmp_path):
     tree = baseline_repo(tmp_path, {**DOCS, "docs/INDEX.md": GOOD_INDEX})
     (tree / "docs" / "alpha.md").write_text(

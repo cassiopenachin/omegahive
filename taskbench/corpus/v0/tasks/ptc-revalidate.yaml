@@ -106,3 +106,5 @@ stop_lines:
   text: No semantic-parser changes, no dataset-scale runs, no LLM calls.
 rubric: rubrics/ptc-revalidate.md
 grading: grading/ptc-revalidate.yaml
+required_changes:
+- docs/ptc-verdict.md

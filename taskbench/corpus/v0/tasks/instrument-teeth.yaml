@@ -52,9 +52,8 @@ required_artefacts:
 - scripts/hive-score
 environment_needs:
 - shellcheck on PATH.
-- '`scripts/hive-metrics-drill.sh` is hermetic — neither the stack nor the database.'
-- '`scripts/hive-tooling-drill.sh` needs podman with compose, the stack up, and jq; it uses the stack
-  only as a Postgres host under scratch run ids.'
+- '`scripts/hive-metrics-drill.sh` is hermetic — it points its own OMEGA_DIR at an empty directory,
+  issues no events and touches no run — so it is the deterministic leg that carries this cell.'
 verifiers:
 - id: shellcheck
   argv:
@@ -79,6 +78,7 @@ verifiers:
   - scripts/hive-tooling-drill.sh
   timeout_s: 2400
   description: the operator-loop drill, green including the launch-gate cases
+  applicable: operator
 checklist:
 - id: one-parser
   text: 'DoD (c): the launch-side gate and the scorer are demonstrably ONE parser — a single input yields
@@ -121,3 +121,17 @@ stop_lines:
     back.
 rubric: rubrics/instrument-teeth.md
 grading: grading/instrument-teeth.yaml
+non_replayable_legs:
+- leg: '`scripts/hive-tooling-drill.sh` green, including this task''s new cases.'
+  reason: The loop drill emits scratch spine events, which this instrument's own scope forbids, and
+    it drives tmux. At this task's baseline the drill predates the tmux isolation that the task itself
+    introduces, so running it necessarily creates sessions on the operator's live tmux server — the
+    server holding every worker pane. An offline evaluation instrument must not carry that blast radius.
+    The operator runs the drill against a green cell.
+  executed_by: operator
+required_changes:
+- scripts/hive-launch
+- scripts/hive-score
+- scripts/hive-close
+- scripts/hive-common.sh
+- scripts/hive-metrics-drill.sh

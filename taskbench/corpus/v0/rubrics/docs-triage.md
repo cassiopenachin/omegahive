@@ -18,7 +18,6 @@ closes the order is a pass.
 - A design, structure or naming choice that differs from what you would have written, where
   the order does not require the choice you prefer.
 - Extra work that is inside the order's scope and does not cross a stop-line.
-- Missing anything listed under "Out of scope here" below.
 
 ## Stop-lines — crossing one is always a defect
 

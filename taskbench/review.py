@@ -269,15 +269,21 @@ def run_probe(
         "TASKBENCH_PACKET": "/packet" if wrapper else str(packet),
     }
     argv = [*wrapper, "python3", "-c", _PROBE_PY]
-    proc = subprocess.run(  # noqa: S603 — argv list, shell=False
-        argv,
-        capture_output=True,
-        text=True,
-        env=env,
-        cwd=str(packet),
-        check=False,
-        timeout=120,
-    )
+    try:
+        proc = subprocess.run(  # noqa: S603 — argv list, shell=False
+            argv,
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(packet),
+            check=False,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        return ProbeResult(
+            ok=False, canary_denied=False, solution_denied=False, inputs_readable=False,
+            detail={"probe_failed": "the probe timed out; the sandbox wrapper did not return"},
+        )
     if proc.returncode != 0:
         return ProbeResult(
             ok=False,
@@ -341,17 +347,29 @@ def run_review(
 
     out = logs / "reviewer-stdout.txt"
     err = logs / "reviewer-stderr.txt"
+    # A hung reviewer is one red cell, never a dead batch: records are immutable, so letting
+    # the exception escape would cost the operator a whole record id for one stuck process.
     with out.open("wb") as so, err.open("wb") as se:
-        proc = subprocess.run(  # noqa: S603 — argv list, shell=False
-            argv,
-            cwd=str(packet),
-            env=env,
-            stdout=so,
-            stderr=se,
-            stdin=subprocess.DEVNULL,
-            check=False,
-            timeout=spec.timeout_s,
-        )
+        try:
+            proc_rc = subprocess.run(  # noqa: S603 — argv list, shell=False
+                argv,
+                cwd=str(packet),
+                env=env,
+                stdout=so,
+                stderr=se,
+                stdin=subprocess.DEVNULL,
+                check=False,
+                timeout=spec.timeout_s,
+            ).returncode
+        except subprocess.TimeoutExpired:
+            return ReviewOutcome(
+                cell_id=cell_id,
+                probe=probe,
+                verdict=None,
+                exit_code=-1,
+                ran=True,
+                reason=f"reviewer timed out after {spec.timeout_s}s and wrote no verdict",
+            )
 
     verdict_file = packet / "verdict.json"
     verdict: dict[str, Any] | None = None
@@ -368,7 +386,7 @@ def run_review(
         cell_id=cell_id,
         probe=probe,
         verdict=verdict,
-        exit_code=proc.returncode,
+        exit_code=proc_rc,
         ran=True,
         reason=reason,
     )

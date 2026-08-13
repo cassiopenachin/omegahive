@@ -13,10 +13,13 @@ checkout: everything it touches is under the cell root the materializer built.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
+import signal
 import subprocess
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -113,6 +116,10 @@ class CellRun:
     changed_files: list[str]
     stdout_path: str
     stderr_path: str
+    #: False means the candidate ran with the operator's real HOME, which puts the
+    #: full-history clone the manifests pin within its reach. Recorded, not forbidden: some
+    #: harnesses need it, and a reader has to be able to weigh the cell.
+    home_is_cell_root: bool = True
 
     def to_json(self) -> dict:
         d = asdict(self)
@@ -149,6 +156,44 @@ def _earliest_write(before: dict[str, float], after: dict[str, float]) -> float 
         if rel not in before or ts > before[rel]
     ]
     return min(touched) if touched else None
+
+
+def _pump(stream, path: Path, first_bytes: dict[str, float], key: str) -> None:
+    """Copy one output stream to disk, timestamping the first byte that actually arrives.
+
+    A file's mtime cannot answer "when did the agent first respond": both log files are
+    created at launch, and an mtime is the *last* write to that file. Reading the stream
+    ourselves is the only way to get the fact the record claims to carry.
+    """
+    try:
+        with open(path, "wb") as fh:
+            while True:
+                chunk = stream.read(4096)
+                if not chunk:
+                    break
+                first_bytes.setdefault(key, time.time())
+                fh.write(chunk)
+                fh.flush()
+    except (OSError, ValueError):
+        pass
+    finally:
+        with contextlib.suppress(Exception):
+            stream.close()
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Reap the agent and everything it spawned. `start_new_session` made this possible."""
+    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    try:
+        proc.wait(timeout=15)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=15)
 
 
 def build_kickoff(manifest: TaskManifest, mat: Materialized) -> str:
@@ -288,35 +333,57 @@ def run_cell(
     env = {k: os.environ[k] for k in spec.env_passthrough if k in os.environ}
     env.setdefault("PATH", os.environ.get("PATH", "/usr/bin:/bin"))
     env["PATH"] = f"{root / 'bin'}{os.pathsep}{env['PATH']}"
-    env["HOME"] = os.environ.get("HOME", str(root))
+    # HOME defaults to the cell root, and is the operator's real home ONLY if the launch put
+    # it in `env_passthrough`. Forcing the real home would hand an unsandboxed candidate a
+    # path to the full-history clone the manifests pin — defeating the export-not-clone guard
+    # from outside the cell root, where the leakage scan cannot see it. Whichever way it
+    # resolves is recorded, so a reader can weigh a cell that had the real home.
+    env.setdefault("HOME", str(root))
     env["BENCH_VERIFY_LOG"] = str(verify_log)
     env["BENCH_CELL_ROOT"] = str(root)
     env.update(spec.env)
+    home_is_cell_root = env["HOME"] == str(root)
 
     mtimes_before = _tree_mtimes(mat.code)
     progress = ProgressFacts()
     start = time.time()
 
-    with stdout_path.open("wb") as so, stderr_path.open("wb") as se:
-        proc = subprocess.Popen(  # noqa: S603 — argv list, shell=False, by design
-            argv, cwd=root / spec.cwd, env=env, stdout=so, stderr=se, stdin=subprocess.DEVNULL
-        )
-        timed_out = False
-        try:
-            proc.wait(timeout=spec.timeout_s)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            proc.kill()
-            proc.wait()
+    proc = subprocess.Popen(  # noqa: S603 — argv list, shell=False, by design
+        argv,
+        cwd=root / spec.cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        # Its own process group, so a timeout can reap the whole tree. An agent harness
+        # spawns test runners and builds; leaving those alive means they keep writing under
+        # code/ while the diff is captured and the verifiers run, and the patch and the
+        # check results would then describe two different trees.
+        start_new_session=True,
+    )
+    first_bytes: dict[str, float] = {}
+    pumps = [
+        threading.Thread(target=_pump, args=(proc.stdout, stdout_path, first_bytes, "out")),
+        threading.Thread(target=_pump, args=(proc.stderr, stderr_path, first_bytes, "err")),
+    ]
+    for thread in pumps:
+        thread.daemon = True
+        thread.start()
+
+    timed_out = False
+    try:
+        proc.wait(timeout=spec.timeout_s)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _kill_tree(proc)
+    for thread in pumps:
+        thread.join(timeout=30)
     end = time.time()
 
-    first_out = None
-    if stdout_path.stat().st_size or stderr_path.stat().st_size:
-        first_out = _utc(min(stdout_path.stat().st_mtime, stderr_path.stat().st_mtime))
     progress.record(
         "first_response",
-        first_out,
-        "first bytes on the agent process's stdout/stderr",
+        _utc(min(first_bytes.values())) if first_bytes else None,
+        "timestamp of the first byte the agent wrote to stdout or stderr",
         "agent process wrote nothing to stdout or stderr",
     )
 
@@ -370,6 +437,7 @@ def run_cell(
         changed_files=changed,
         stdout_path=str(stdout_path.relative_to(root)),
         stderr_path=str(stderr_path.relative_to(root)),
+        home_is_cell_root=home_is_cell_root,
     )
 
 

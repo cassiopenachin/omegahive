@@ -79,11 +79,23 @@ def main(root: Path) -> int:
 
     covered = _covered_dirs(text, docs)
 
+    # Several directories legitimately hold a file of the same name (three README.md files
+    # already do). Matching an entry by basename alone would then count one entry against
+    # every namesake and report each of them as a duplicate. A basename only identifies a
+    # file when it is unique in the tree; otherwise the entry must carry a path.
+    basename_counts: dict[str, int] = {}
+    for f in files:
+        basename_counts[f.name] = basename_counts.get(f.name, 0) + 1
+
     gaps: list[str] = []
     for p in files:
         rel = str(p.relative_to(docs))
         parent = str(p.parent.relative_to(docs))
-        listed = sum(1 for e in entries if e == rel or e == p.name or e.endswith("/" + p.name))
+        unique_name = basename_counts[p.name] == 1
+        listed = sum(
+            1 for e in entries
+            if e == rel or e.endswith("/" + rel) or (unique_name and e == p.name)
+        )
         if listed > 1:
             problems.append(f"has {listed} index entries: docs/{rel}")
             continue

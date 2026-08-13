@@ -44,6 +44,7 @@ class DeterministicLeg:
     checks: list[CheckResult] = field(default_factory=list)
     stop_line_violations: list[str] = field(default_factory=list)
     missing_artefacts: list[str] = field(default_factory=list)
+    untouched_required_changes: list[str] = field(default_factory=list)
     excluded_legs: list[dict[str, str]] = field(default_factory=list)
 
     def outputs(self) -> dict[str, str]:
@@ -160,18 +161,28 @@ def run_deterministic(
     missing_artefacts = [
         a for a in manifest.required_artefacts if not list(mat.code.glob(a))
     ]
+    untouched = [
+        pattern for pattern in manifest.required_changes
+        if not any(fnmatch.fnmatch(rel, pattern) for rel in changed)
+    ]
 
     excluded = [
         {"leg": leg.leg, "reason": leg.reason, "executed_by": leg.executed_by}
         for leg in manifest.non_replayable_legs
     ]
 
-    passed = all(c.passed for c in checks) and not violations and not missing_artefacts
+    passed = (
+        all(c.passed for c in checks)
+        and not violations
+        and not missing_artefacts
+        and not untouched
+    )
     return DeterministicLeg(
         passed=passed,
         checks=checks,
         stop_line_violations=violations,
         missing_artefacts=missing_artefacts,
+        untouched_required_changes=untouched,
         excluded_legs=excluded,
     )
 
@@ -228,6 +239,11 @@ def task_verdict(
             reasons.append(f"{len(det.stop_line_violations)} stop-line violation(s)")
         if det.missing_artefacts:
             reasons.append(f"missing artefacts: {', '.join(det.missing_artefacts)}")
+        if det.untouched_required_changes:
+            reasons.append(
+                "the order's named deliverables were never touched: "
+                + ", ".join(det.untouched_required_changes)
+            )
     if not rev.passed:
         reasons.append(f"review leg: {rev.reason}")
     return TaskVerdict(

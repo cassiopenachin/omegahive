@@ -38,11 +38,10 @@ required_artefacts:
 - scripts/hive-launch
 - scripts/hive-tooling-drill.sh
 environment_needs:
-- 'podman with compose and the omegahive stack up, plus jq: `scripts/hive-tooling-drill.sh` uses the
-  stack only as a Postgres host, under its own scratch run ids, and by its own design never touches
-  the durable `omegahive` run.'
-- tmux on PATH. The drill runs its own tmux server via TMUX_TMPDIR and must not reach the operator's.
 - shellcheck on PATH.
+- 'Nothing else: with the loop drill excluded (see non_replayable_legs) this cell needs no stack, no
+  database and no tmux. Its deterministic leg is correspondingly thin — shell syntax and lint — and
+  the blinded review carries the weight.'
 verifiers:
 - id: bash-syntax
   argv:
@@ -69,6 +68,7 @@ verifiers:
   timeout_s: 2400
   description: the operator-loop drill, green including the occupied-index, pane-name-collision and
     half-launch cases the DoD names
+  applicable: operator
 checklist:
 - id: repro-evidence
   text: The result names the collision it reproduced and the state that collision stranded, and shows
@@ -92,3 +92,14 @@ stop_lines:
     any config.
 rubric: rubrics/launch-pane-fix.md
 grading: grading/launch-pane-fix.yaml
+non_replayable_legs:
+- leg: '`scripts/hive-tooling-drill.sh` green, including this task''s new cases.'
+  reason: The loop drill emits scratch spine events, which this instrument's own scope forbids, and
+    it drives tmux. At this task's baseline the drill predates the tmux isolation that the task itself
+    introduces, so running it necessarily creates sessions on the operator's live tmux server — the
+    server holding every worker pane. An offline evaluation instrument must not carry that blast radius.
+    The operator runs the drill against a green cell.
+  executed_by: operator
+required_changes:
+- scripts/hive-launch
+- scripts/hive-tooling-drill.sh

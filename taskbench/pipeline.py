@@ -53,15 +53,23 @@ def ensure_canary(work_root: str | Path) -> Path:
     return p
 
 
-def _historical_patch(corpus: LoadedCorpus, manifest: TaskManifest) -> str:
-    """The closed solution, for the canary and for operator diagnosis only."""
+def _historical_patch(
+    corpus: LoadedCorpus, manifest: TaskManifest, overrides: dict[str, str] | None = None
+) -> str:
+    """The closed solution, for the canary and for operator diagnosis only.
+
+    Resolves the source repo through the same overrides the materializer uses. Reading only
+    the manifest's hint would, on a host that overrides it, leave a placeholder here — and
+    the probe would then prove denial of a stub while the operator lost the diagnosis aid.
+    """
     facts = corpus.acceptance_facts(manifest.id)
-    if not facts.historical_solution_sha or not manifest.code.local_path:
+    local = (overrides or {}).get(manifest.code.repo) or manifest.code.local_path
+    if not facts.historical_solution_sha or not local:
         return (
-            "(no historical patch exported: the grading file names no solution sha, or the "
-            "manifest names no local source repo)\n"
+            "(no historical patch exported: the grading file names no solution sha, or no "
+            "local source repo was resolved for it)\n"
         )
-    src = Path(manifest.code.local_path).expanduser()
+    src = Path(local).expanduser()
     out = subprocess.run(
         [
             "git", "-C", str(src), "diff",
@@ -105,7 +113,7 @@ def run_one_cell(
     run = runner.run_cell(manifest, mat, agent, cell_id, out_dir=cell_root / "run")
 
     solution = materialize.write_operator_only_solution(
-        cell_root, manifest, _historical_patch(corpus, manifest)
+        cell_root, manifest, _historical_patch(corpus, manifest, source_repos)
     )
 
     det = grade.run_deterministic(

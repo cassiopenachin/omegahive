@@ -11,7 +11,6 @@ closes the order is a pass.
 - **name-collision-refusal** — A window already named for this task is refused with a message naming the recovery path — never a second window.
 - **bash-syntax** (checked mechanically) — the launcher parses
 - **shellcheck** (checked mechanically) — shellcheck -x clean on the loop scripts, per the DoD
-- **tooling-drill** (checked mechanically) — the operator-loop drill, green including the occupied-index, pane-name-collision and half-launch cases the DoD names
 
 ## Not defects
 
@@ -25,6 +24,14 @@ closes the order is a pass.
 - **no-event-model** — No event-model, board-guard, or adopt-logic changes.
 - **no-registry-file** — No registry file — the pane name stays the registry.
 - **no-tmux-conf-assumptions** — No .tmux.conf assumptions (base-index, renumber-windows); name-only allocation must hold under any config.
+
+## Out of scope here
+
+These legs of the order cannot be executed by the process that produced this attempt, and
+their absence is **not** a defect. Do not mark the attempt down for them, and do not credit
+an attempt that claims to have done them.
+
+- `scripts/hive-tooling-drill.sh` green, including this task's new cases. (The loop drill emits scratch spine events, which this instrument's own scope forbids, and it drives tmux. At this task's baseline the drill predates the tmux isolation that the task itself introduces, so running it necessarily creates sessions on the operator's live tmux server — the server holding every worker pane. An offline evaluation instrument must not carry that blast radius. The operator runs the drill against a green cell.)
 
 ## Deterministic checks
 

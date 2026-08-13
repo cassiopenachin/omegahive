@@ -16,7 +16,6 @@ closes the order is a pass.
 - **drill-hygiene-reported** — DoD (h): the bounded two-class drill-hygiene sweep is reported — files read, instances found, fixes made, or 'none found' stated.
 - **shellcheck** (checked mechanically) — shellcheck -x clean on the loop scripts, DoD (i)
 - **metrics-drill** (checked mechanically) — the hermetic metrics/scoring drill, green including the new cases
-- **tooling-drill** (checked mechanically) — the operator-loop drill, green including the launch-gate cases
 
 ## Not defects
 
@@ -37,6 +36,7 @@ These legs of the order cannot be executed by the process that produced this att
 their absence is **not** a defect. Do not mark the attempt down for them, and do not credit
 an attempt that claims to have done them.
 
+- `scripts/hive-tooling-drill.sh` green, including this task's new cases. (The loop drill emits scratch spine events, which this instrument's own scope forbids, and it drives tmux. At this task's baseline the drill predates the tmux isolation that the task itself introduces, so running it necessarily creates sessions on the operator's live tmux server — the server holding every worker pane. An offline evaluation instrument must not carry that blast radius. The operator runs the drill against a green cell.)
 - The order cites `projects/omegahive/orders/2026-07-28-cli-qol.md`, which the attempt did not have. Judge the work against the order's own text.
 - The order cites `projects/omegahive/reports/2026-07-28-cli-qol-result.md`, which the attempt did not have. Judge the work against the order's own text.
 

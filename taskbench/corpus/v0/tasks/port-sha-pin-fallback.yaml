@@ -73,3 +73,6 @@ stop_lines:
   text: Nothing beyond this pin.
 rubric: rubrics/port-sha-pin-fallback.md
 grading: grading/port-sha-pin-fallback.yaml
+required_changes:
+- qual/record.py
+- tests/test_qual_record.py

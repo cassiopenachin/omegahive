@@ -182,7 +182,8 @@ class StopLine(BaseModel):
 
     id: str
     text: str
-    #: Paths (glob, relative to the cell root) the candidate must not create or modify.
+    #: Globs, relative to the candidate's code repo, matched against the files the
+    #: candidate CHANGED — never against the files that merely exist at the baseline.
     forbidden_paths: list[str] = Field(default_factory=list)
 
 
@@ -210,7 +211,13 @@ class TaskManifest(BaseModel):
     dependency_snapshots: list[DependencySnapshot] = Field(default_factory=list)
 
     expected_output_kinds: list[OutputKind]
+    #: Globs that must EXIST in the candidate's tree when it finishes.
     required_artefacts: list[str] = Field(default_factory=list)
+    #: Globs the candidate's diff must TOUCH. Existence is not evidence of work when the
+    #: file is already in the baseline: without this, a shell-tooling cell whose drill is an
+    #: operator leg passes its whole deterministic leg having done nothing at all. Every
+    #: entry must be a path the ORDER names, never one read off the historical patch.
+    required_changes: list[str] = Field(default_factory=list)
 
     verifiers: list[Verifier] = Field(default_factory=list)
     checklist: list[ChecklistItem] = Field(default_factory=list)
@@ -358,7 +365,10 @@ def load_corpus(root: str | Path) -> LoadedCorpus:
     catalog id has a manifest and vice versa, every manifest's rubric and grading file
     exists and parses, and no rubric leaks the grader-only file's contents.
     """
-    root = Path(root)
+    # Absolute from here on: verifier argv carries `{corpus}` and runs with the CELL as its
+    # working directory, so a relative corpus path would expand to a path relative to the
+    # wrong tree and every such check would fail as "could not execute".
+    root = Path(root).resolve()
     catalog = CorpusCatalog.model_validate(yaml.safe_load((root / "corpus.yaml").read_text()))
 
     manifests: dict[str, TaskManifest] = {}

@@ -88,3 +88,7 @@ stop_lines:
   - src/omegahive/ui/*
 rubric: rubrics/notifier-deep-links.md
 grading: grading/notifier-deep-links.yaml
+required_changes:
+- src/omegahive/notifier/format.py
+- tests/test_notifier.py
+- docker-compose.yml

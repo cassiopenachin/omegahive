@@ -12,7 +12,6 @@ closes the order is a pass.
 - **close-score-commit** — DoD (d): close then score then commit lands in the sandbox workspace repo, and an injected scoring failure leaves the close intact with a loud complaint.
 - **autonomous-default** — DoD (e): the issued worker invocation carries the autonomous flag by default and respects the override.
 - **shellcheck** (checked mechanically) — shellcheck -x clean
-- **tooling-drill** (checked mechanically) — the operator-loop drill, green including the five new cases
 
 ## Not defects
 
@@ -26,6 +25,14 @@ closes the order is a pass.
 - **no-event-model** — No event-model, board-guard, adopt-logic, gateway, notifier or web-UI changes.
 - **generators-write-metrics-only** — The generators write only their own files under the project's metrics directory — never order or report bodies, never spine emits.
 - **score-never-fails-close** — A scoring failure may never make a close look failed.
+
+## Out of scope here
+
+These legs of the order cannot be executed by the process that produced this attempt, and
+their absence is **not** a defect. Do not mark the attempt down for them, and do not credit
+an attempt that claims to have done them.
+
+- `scripts/hive-tooling-drill.sh` green, including this task's new cases. (The loop drill emits scratch spine events, which this instrument's own scope forbids, and it drives tmux. At this task's baseline the drill predates the tmux isolation that the task itself introduces, so running it necessarily creates sessions on the operator's live tmux server — the server holding every worker pane. An offline evaluation instrument must not carry that blast radius. The operator runs the drill against a green cell.)
 
 ## Deterministic checks
 

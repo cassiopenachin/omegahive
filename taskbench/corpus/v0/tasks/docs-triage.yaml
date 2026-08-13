@@ -38,8 +38,8 @@ verifiers:
   - python3
   - '{corpus}/verifiers/docs_index_complete.py'
   - .
-  description: docs/INDEX.md exists and no document has two entries; every file it does not
-    account for is listed as a NOTE in the log, for you to weigh against the order
+  description: docs/INDEX.md exists and no document has two entries; every file it does not account
+    for is listed as a NOTE in the log, for you to weigh against the order
 - id: link-integrity
   argv:
   - python3
@@ -70,3 +70,5 @@ stop_lines:
   text: docs/evidence/ stays where it is; label it in the index, do not reorganize it.
 rubric: rubrics/docs-triage.md
 grading: grading/docs-triage.yaml
+required_changes:
+- docs/INDEX.md

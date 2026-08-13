@@ -49,6 +49,14 @@ def test_every_task_has_a_finish_time_verifier(corpus):
         assert m.offline_verifiers(), f"{tid}: no verifier an offline replay can run"
 
 
+def test_every_task_can_tell_work_from_no_work(corpus):
+    """Existence is not evidence: several of these deliverables are in the baseline already,
+    so a cell whose heavy check is an operator leg would otherwise pass having done nothing.
+    Every task names at least one path the order requires the attempt to touch."""
+    for tid, m in corpus.manifests.items():
+        assert m.required_changes, f"{tid}: nothing distinguishes an attempt from an idle run"
+
+
 def test_every_pin_is_a_full_sha_and_resolves(corpus):
     """The pins are the corpus. A pin that does not resolve is a corpus that cannot replay."""
     ws = Path(__file__).resolve().parents[2] / "hive"
@@ -89,11 +97,51 @@ def test_rubrics_name_the_excluded_legs(corpus):
             assert leg.leg[:40] in rubric, f"{tid}: excluded leg not named in the rubric"
 
 
+def test_no_rubric_points_the_reviewer_at_a_section_it_does_not_have(corpus):
+    """The rubric is the reviewer's only corpus document and it is told to look for nothing
+    else, so a dangling forward reference is a prompt defect, not a typo."""
+    for tid in corpus.manifests:
+        rubric = corpus.rubric_text(tid)
+        if "Out of scope here" in rubric:
+            assert "## Out of scope here" in rubric, tid
+
+
+def test_rubrics_are_what_the_renderer_produces_from_the_manifests(corpus):
+    """Generated, not hand-edited — that is what keeps the two from drifting."""
+    import sys
+
+    sys.path.insert(0, str(V0.parents[1] / "tools"))
+    from render_rubrics import render  # noqa: PLC0415 — a tool script, imported for this check
+
+    for tid in corpus.manifests:
+        expected = render(yaml.safe_load((V0 / "tasks" / f"{tid}.yaml").read_text()))
+        assert corpus.rubric_text(tid) == expected, f"{tid}: rubric drifted from its manifest"
+
+
 def test_the_two_tasks_with_outward_legs_declare_them(corpus):
     """The finding this corpus had to record: two orders carry a leg no offline instrument
     can execute. If that declaration ever disappears, the pass rule changed silently."""
     declared = {t for t, m in corpus.manifests.items() if m.non_replayable_legs}
     assert {"ptc-revalidate", "notifier-deep-links"} <= declared
+
+
+def test_no_offline_verifier_reaches_the_spine_or_the_operators_tmux(corpus):
+    """The order's stop-lines forbid a spine event, and the loop drill emits scratch ones.
+    At `launch-pane-fix`'s baseline that drill also predates the tmux isolation the task
+    itself introduces, so it would create sessions on the server holding every live worker
+    pane. Both grounds make it an operator leg, and this is the check that keeps it one."""
+    for tid, m in corpus.manifests.items():
+        offline = {v.id for v in m.offline_verifiers()}
+        assert "tooling-drill" not in offline, (
+            f"{tid}: the loop drill is back on the offline leg"
+        )
+
+
+def test_every_excluded_leg_says_who_executes_it(corpus):
+    for tid, m in corpus.manifests.items():
+        for leg in m.non_replayable_legs:
+            assert leg.executed_by in {"operator", "not-executed"}, tid
+            assert len(leg.reason) > 60, f"{tid}: an exclusion needs a reason, not a label"
 
 
 def test_held_out_ids_are_refused_on_the_qualification_path(corpus):

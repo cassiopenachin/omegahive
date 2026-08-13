@@ -101,3 +101,6 @@ stop_lines:
   text: Never bump the live run's generation; bump evidence comes from a scratch run.
 rubric: rubrics/run-registration.md
 grading: grading/run-registration.yaml
+required_changes:
+- src/omegahive/gateway/*.py
+- docs/omegahive_recovery_runbook.md

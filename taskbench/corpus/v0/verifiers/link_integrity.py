@@ -47,7 +47,11 @@ def main(root: Path) -> int:
             if not bare:
                 continue
             checked += 1
-            resolved = (path.parent / bare).resolve()
+            # A leading slash means "from the repository root", not "from the filesystem
+            # root". Resolving it against the host would call every such link dangling.
+            resolved = (
+                (root / bare.lstrip("/")) if bare.startswith("/") else (path.parent / bare)
+            ).resolve()
             if not resolved.exists():
                 dangling.append(f"{path.relative_to(root)} -> {target}")
 

@@ -87,6 +87,28 @@ def test_a_stop_line_path_violation_is_recorded(world):
     assert any("no-src" in v for v in det.stop_line_violations)
 
 
+def test_an_idle_candidate_fails_even_when_every_deliverable_already_exists(world):
+    """`launch-pane-fix` asks for changes to files that are all in its baseline. Without a
+    touched-path check its whole deterministic leg passes for a candidate that did nothing."""
+    corpus, tmp = world
+    manifest = corpus.manifests["greeting"].model_copy(deep=True)
+    manifest.required_artefacts = ["keep.txt"]      # present at the baseline
+    manifest.required_changes = ["keep.txt"]        # and the order asks for it to change
+    manifest.verifiers = []
+    m = materialize(manifest, tmp / "cell")
+
+    det = grade.run_deterministic(manifest, m, log_dir=tmp / "logs")
+    assert not det.passed
+    assert det.missing_artefacts == []
+    assert det.untouched_required_changes == ["keep.txt"]
+    v = grade.task_verdict(manifest, "c", det, grade.ReviewLeg(True, True, True, 0, ""))
+    assert "never touched" in v.because
+
+    (m.code / "keep.txt").write_text("real work\n")
+    det = grade.run_deterministic(manifest, m, log_dir=tmp / "logs2")
+    assert det.passed and det.untouched_required_changes == []
+
+
 def test_a_stop_line_does_not_fire_on_a_file_the_candidate_never_touched(world):
     """The forbidden paths exist in every baseline. Matching existence rather than the
     candidate's own diff would fire every stop-line on every cell."""
@@ -172,6 +194,28 @@ def test_a_self_inconsistent_verdict_is_refused():
 def test_a_review_that_never_ran_fails_the_cell():
     leg = grade.score_review(_outcome(None, ran=False, probe_ok=False, reason="probe failed"))
     assert not leg.passed and not leg.ran and not leg.probe_ok
+
+
+def test_a_reviewer_that_hangs_is_a_red_cell_not_a_dead_batch(world, tmp_path):
+    """Records are immutable, so letting a timeout escape would cost the operator a whole
+    record id for one stuck process."""
+    corpus, tmp = world
+    review.build_packet(
+        corpus.manifests["greeting"], packet_dir=tmp / "packet", cell_id="cell-x",
+        order_text="o", rubric_text="r", candidate_patch="p", verifier_outputs={},
+    )
+    spec = fx.specs(tmp)[1].model_copy(update={"argv": ["sleep", "30"], "timeout_s": 1})
+    outcome = review.run_review(
+        spec,
+        packet_dir=tmp / "packet",
+        cell_id="cell-x",
+        probe=ProbeResult(True, True, True, True),
+        log_dir=tmp / "review",
+    )
+    assert outcome.ran and outcome.verdict is None
+    assert "timed out" in outcome.reason
+    leg = grade.score_review(outcome)
+    assert not leg.passed
 
 
 def test_the_task_verdict_names_what_decided_it(world):
