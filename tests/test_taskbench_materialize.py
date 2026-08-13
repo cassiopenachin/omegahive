@@ -120,6 +120,22 @@ def test_an_unresolvable_workspace_pin_fails_loudly(world):
         materialize(manifest, tmp / "cell-bad")
 
 
+def test_the_verify_shim_timestamps_and_passes_the_exit_status_through(world):
+    """The kickoff spells it `bench-verify -- <command>`, so the shim must accept that
+    form; and it must never turn a failing verifier into a passing one."""
+    corpus, tmp, _ = world
+    m = materialize(corpus.manifests["greeting"], tmp / "cell")
+    log = tmp / "vlog"
+    env = {"BENCH_VERIFY_LOG": str(log), "PATH": "/usr/bin:/bin"}
+    for argv, expected in (
+        ([str(m.root / "bin" / "bench-verify"), "--", "true"], 0),
+        ([str(m.root / "bin" / "bench-verify"), "true"], 0),
+        ([str(m.root / "bin" / "bench-verify"), "--", "false"], 1),
+    ):
+        assert subprocess.run(argv, env=env, check=False).returncode == expected
+    assert len(log.read_text().splitlines()) == 3
+
+
 def test_the_operator_only_solution_lives_outside_the_candidate_tree(world):
     corpus, tmp, _ = world
     m = materialize(corpus.manifests["greeting"], tmp / "cell")

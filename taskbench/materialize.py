@@ -51,6 +51,8 @@ VERIFY_SHIM = """\
 #!/bin/sh
 # bench-verify — run this task's verifier. The first invocation is timestamped so the
 # record can report when verification started; the exit status is the verifier's own.
+# A leading `--` is accepted and dropped, because that is how the kickoff spells it.
+[ "$1" = "--" ] && shift
 printf '%s\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$BENCH_VERIFY_LOG"
 exec "$@"
 """
