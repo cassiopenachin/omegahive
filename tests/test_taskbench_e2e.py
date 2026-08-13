@@ -123,6 +123,17 @@ def test_the_reviewer_never_learns_which_cell_is_which(world):
     assert rows[0]["task_id"] == "greeting" and rows[0]["labels"]["model"] == "scripted-1"
 
 
+def test_first_write_reports_the_earliest_write_not_the_latest(tmp_path):
+    """`first_write` is a claim about when work started. Taking the newest mtime in the tree
+    would answer a different question with a plausible-looking number."""
+    from taskbench.runner import _earliest_write
+
+    before = {"a": 100.0, "b": 100.0}
+    after = {"a": 100.0, "b": 250.0, "c": 180.0}
+    assert _earliest_write(before, after) == 180.0
+    assert _earliest_write(before, dict(before)) is None
+
+
 def test_a_held_out_task_cannot_be_run(world):
     corpus, tmp = world
     agent, reviewer = fx.specs(tmp)

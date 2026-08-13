@@ -124,16 +124,31 @@ def _utc(ts: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
 
 
-def _tree_mtime_max(root: Path) -> float:
-    newest = 0.0
+def _tree_mtimes(root: Path) -> dict[str, float]:
+    """Modification time per file, for the write-detection snapshot."""
+    out: dict[str, float] = {}
     for p in root.rglob("*"):
-        if ".git" in p.parts:
+        if ".git" in p.parts or not p.is_file():
             continue
         try:
-            newest = max(newest, p.stat().st_mtime)
+            out[str(p.relative_to(root))] = p.stat().st_mtime
         except OSError:
             continue
-    return newest
+    return out
+
+
+def _earliest_write(before: dict[str, float], after: dict[str, float]) -> float | None:
+    """The EARLIEST timestamp among files the run created or modified.
+
+    Taking the newest mtime in the tree would report the candidate's *last* write, which is
+    not the fact the record claims to carry. Comparing per-file against a pre-run snapshot
+    gives the first one instead.
+    """
+    touched = [
+        ts for rel, ts in after.items()
+        if rel not in before or ts > before[rel]
+    ]
+    return min(touched) if touched else None
 
 
 def build_kickoff(manifest: TaskManifest, mat: Materialized) -> str:
@@ -278,7 +293,7 @@ def run_cell(
     env["BENCH_CELL_ROOT"] = str(root)
     env.update(spec.env)
 
-    baseline_mtime = _tree_mtime_max(mat.code)
+    mtimes_before = _tree_mtimes(mat.code)
     progress = ProgressFacts()
     start = time.time()
 
@@ -313,11 +328,11 @@ def run_cell(
         "harness exposes no tool-call transcript; no read timestamp is observable",
     )
 
-    after = _tree_mtime_max(mat.code)
+    earliest = _earliest_write(mtimes_before, _tree_mtimes(mat.code))
     progress.record(
         "first_write",
-        _utc(after) if after > baseline_mtime else None,
-        "newest mtime under code/ after the run, compared with the pre-run baseline",
+        _utc(earliest) if earliest is not None else None,
+        "earliest mtime among files created or modified under code/ during the run",
         "no file under code/ changed, so there is no write to timestamp",
     )
 

@@ -193,29 +193,33 @@ def run_batch(
 
     verdicts: list[grade.TaskVerdict] = []
     rows: list[dict] = []
-    for tid in task_ids:
-        outcome = run_one_cell(
-            corpus, tid, work_root=work_root, agent=agent, reviewer=reviewer,
-            source_repos=source_repos, workspace_repo_path=workspace_repo_path,
-        )
-        record.write_cell(
-            root, outcome.manifest, outcome.run, outcome.verdict,
-            verifier_logs=outcome.verifier_logs,
-            packet_manifest=outcome.packet_manifest,
-            probe=outcome.probe,
-            review_verdict=outcome.review_verdict,
-        )
-        verdicts.append(outcome.verdict)
-        rows.append(
-            {
-                "cell_id": outcome.run.cell_id,
-                "task_id": tid,
-                "labels": outcome.run.labels,
-                "wall_ms": outcome.run.wall_ms,
-                "passed": outcome.verdict.passed,
-            }
-        )
-
-    record.write_cells_map(root, rows)
-    record.write_aggregate(root, record.render_aggregate(config, corpus, verdicts))
+    try:
+        for tid in task_ids:
+            outcome = run_one_cell(
+                corpus, tid, work_root=work_root, agent=agent, reviewer=reviewer,
+                source_repos=source_repos, workspace_repo_path=workspace_repo_path,
+            )
+            record.write_cell(
+                root, outcome.manifest, outcome.run, outcome.verdict,
+                verifier_logs=outcome.verifier_logs,
+                packet_manifest=outcome.packet_manifest,
+                probe=outcome.probe,
+                review_verdict=outcome.review_verdict,
+            )
+            verdicts.append(outcome.verdict)
+            rows.append(
+                {
+                    "cell_id": outcome.run.cell_id,
+                    "task_id": tid,
+                    "labels": outcome.run.labels,
+                    "wall_ms": outcome.run.wall_ms,
+                    "passed": outcome.verdict.passed,
+                }
+            )
+    finally:
+        # Finalize whatever completed even when a later cell aborts. A half-written record
+        # that cannot be validated is a worse artefact than a short one that can, and the
+        # cells that did run are evidence the operator paid for.
+        record.write_cells_map(root, rows)
+        record.write_aggregate(root, record.render_aggregate(config, corpus, verdicts))
     return root, verdicts

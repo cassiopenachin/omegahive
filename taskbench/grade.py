@@ -81,6 +81,22 @@ class TaskVerdict:
         }
 
 
+def changed_files(mat: Materialized) -> list[str]:
+    """Paths the candidate added, modified or deleted, relative to its single baseline."""
+    base = subprocess.run(
+        ["git", "-C", str(mat.code), "rev-list", "--max-parents=0", "HEAD"],
+        capture_output=True, text=True, check=False,
+    ).stdout.split()
+    if not base:
+        return []
+    subprocess.run(["git", "-C", str(mat.code), "add", "-A"], capture_output=True, check=False)
+    out = subprocess.run(
+        ["git", "-C", str(mat.code), "diff", "--name-only", base[-1], "--", "."],
+        capture_output=True, text=True, check=False,
+    )
+    return [f for f in out.stdout.splitlines() if f]
+
+
 def resolve_argv(argv: list[str], *, corpus_root: Path, cell_root: Path) -> list[str]:
     """Expand the two placeholders a manifest may use. Substitution is positional, so a
     corpus value can never become an extra argument or a shell fragment."""
@@ -130,13 +146,14 @@ def run_deterministic(
         (logs / f"{v.id}.log").write_text(out)
         checks.append(CheckResult(v.id, ok, code, detail, out[-8000:]))
 
+    # Match against the files the candidate CHANGED, never against the files that exist.
+    # `src/omegahive/events/*` is present in every baseline; matching existence would fire
+    # every stop-line on every cell and make the whole leg meaningless.
+    changed = changed_files(mat)
     violations: list[str] = []
     for sl in manifest.stop_lines:
         for pattern in sl.forbidden_paths:
-            for p in mat.code.rglob("*"):
-                if ".git" in p.parts or not p.is_file():
-                    continue
-                rel = str(p.relative_to(mat.code))
+            for rel in changed:
                 if fnmatch.fnmatch(rel, pattern):
                     violations.append(f"{sl.id}: touched forbidden path {rel} ({sl.text})")
 

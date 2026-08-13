@@ -22,7 +22,7 @@ import typer
 import yaml
 from rich.console import Console
 
-from . import CORPUS_ROOT, pipeline, record
+from . import CORPUS_ROOT, TASKBENCH_ROOT, pipeline, record
 from .manifest import HeldOutRefused, load_corpus
 from .review import DEFAULT_SANDBOX_ARGV, ReviewerSpec
 from .runner import AgentSpec
@@ -114,7 +114,7 @@ def validate_corpus(
 def freeze(corpus: str | None = typer.Option(None, "--corpus")) -> None:
     """Write the corpus HASHES file. Refuses once any record pins this corpus version."""
     c = _corpus(corpus)
-    records = Path("taskbench/records")
+    records = TASKBENCH_ROOT / "records"
     if records.is_dir():
         for rec in records.iterdir():
             cfg = rec / "config.json"

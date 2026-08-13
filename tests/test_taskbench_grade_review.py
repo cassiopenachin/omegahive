@@ -87,6 +87,29 @@ def test_a_stop_line_path_violation_is_recorded(world):
     assert any("no-src" in v for v in det.stop_line_violations)
 
 
+def test_a_stop_line_does_not_fire_on_a_file_the_candidate_never_touched(world):
+    """The forbidden paths exist in every baseline. Matching existence rather than the
+    candidate's own diff would fire every stop-line on every cell."""
+    from taskbench.manifest import StopLine
+
+    corpus, tmp = world
+    manifest = corpus.manifests["greeting"].model_copy(deep=True)
+    manifest.stop_lines = [
+        StopLine(id="no-keep", text="do not touch keep.txt", forbidden_paths=["keep.txt"])
+    ]
+    m = materialize(manifest, tmp / "cell")
+    assert (m.code / "keep.txt").is_file(), "the guarded file is present at the baseline"
+    (m.code / "GREETING.txt").write_text("hi\n")
+    det = grade.run_deterministic(manifest, m, log_dir=tmp / "logs")
+    assert det.stop_line_violations == []
+    assert det.passed
+
+    (m.code / "keep.txt").write_text("touched\n")
+    det = grade.run_deterministic(manifest, m, log_dir=tmp / "logs2")
+    assert any("no-keep" in v for v in det.stop_line_violations)
+    assert not det.passed
+
+
 def test_operator_legs_are_excluded_and_named(world):
     corpus, tmp = world
     from taskbench.manifest import NonReplayableLeg, Verifier
