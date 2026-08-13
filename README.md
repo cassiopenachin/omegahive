@@ -4,11 +4,13 @@ OmegaHive is a coordination substrate for running **one long-lived hive of agent
 
 It is the reference implementation of the OmegaHive spec ([docs/reference/omegahive_spec_1_1.md](docs/reference/omegahive_spec_1_1.md)), built with an opinionated stance documented in [docs/omegahive_design_1_1.md](docs/omegahive_design_1_1.md). **Status: working research prototype**, operated in production by its own development (the hive coordinates the building of the hive), single-operator, moving fast. Interfaces change; the event log's guarantees don't.
 
+**Two ways to read this file.** If you want to *run* a hive — stand the stack up, drive the board from a CLI, watch it on a web page — everything you need is here: prerequisites, a quickstart that works on a clean machine, and a worked example that walks one small project from seed to close. If you want to *operate* one the way this project does — coding-agent workers launched into their own clones, a pager on your phone, calibration metrics folded out of the log — that half needs a companion workspace repo and is described in [docs/omegahive_operations.md](docs/omegahive_operations.md).
+
 ## How it works
 
 **One log.** Everything is an event in an append-only Postgres table (the *spine*). There is no other source of truth: the task board, metrics, and the human-readable view are *folds* (pure projections) over the log. Replaying the log reproduces every view, byte for byte.
 
-**One gateway.** All writes pass through a gateway that consults a single declarative legality table — default-deny, `(event_type, payload) → guard → effect`. The same table drives both the gate and the fold, so nothing can be accepted-but-inert. Refusals are first-class recorded values (`gateway.rejected` events with a code and reason), not exceptions: an agent that tries something illegal gets told, on the record, and the next board view shows it.
+**One gateway.** All writes pass through a gateway that consults a single declarative legality table — default-deny, `(event_type, payload) → guard → effect`. The same table drives both the gate and the fold, so nothing can be accepted-but-inert. Refusals are first-class recorded values (`gateway.rejected` events with a code and reason), not exceptions: an agent that tries something illegal gets told, on the record, and the next board view shows it. "All writes" is a **credential**, not a convention: the gateway holds the one database role that may append, and every read-only consumer holds one that cannot ([Credentials](#credentials-who-may-write-and-what-each-container-may-see)).
 
 **The port.** Actors interact through `HiveCoordinatorPort`: cursor-anchored reads (a consistent board + events snapshot) and idempotent, gated emits. Idempotency keys are derived from content + read basis, so retries are safe and replays are detectable. Restores bump a generation token that invalidates stale cursors — clients cannot silently act on a pre-restore view.
 
@@ -18,51 +20,57 @@ It is the reference implementation of the OmegaHive spec ([docs/reference/omegah
 
 **Agents are pluggable.** The primary worker face today is ordinary CLI coding agents (Claude Code / Codex CLI) running as registered workers — event-driven, blocked-is-free, wake-on-answer; [docs/omegahive_session_agents.md](docs/omegahive_session_agents.md) covers the two wake patterns and the economics. A second face binds OmegaClaw agents (a MeTTa-based continuous-loop runtime) through the same port; see [docs/omegahive_deployment_spec.md](docs/omegahive_deployment_spec.md) §3.
 
-## Deploying a hive
+## Prerequisites
 
-Requirements: an OCI runtime with compose — Docker or rootless Podman — and Python 3.12 only if you want the CLI outside containers. The operator scripts resolve the compose command themselves (`podman compose`, `docker compose`, or `docker-compose`, whichever the host has); set `OMEGAHIVE_COMPOSE` to the exact command to override, which is what a host carrying both runtimes needs. For rootless Podman, compose talks the Docker API over Podman's socket, which is one line to enable:
+The deployment stance is *no host runtimes*: the substrate itself runs entirely in containers. Only the first two rows are needed to run a hive at all; the rest buy specific extras.
+
+| You need | Required for | Notes |
+|---|---|---|
+| An **OCI runtime with compose v2** — Docker or rootless Podman | everything | Either works. The examples in this file all say `docker compose`; on Podman, substitute `podman compose` throughout. |
+| **git** | the quickstart (cloning), and the workspace side of the operator loop | |
+| **Python 3.12 + [uv](https://docs.astral.sh/uv/)** | *only* the host path — running the CLI or the test suite outside containers, i.e. hacking on the code | The containerized paths need neither. |
+| **jq** | the `scripts/` tooling: the operator loop, the metrics/scoring instruments, and both drills | Measured on `jq` 1.8.1 (Fedora) and 1.7.1-apple (macOS); both work. |
+| **curl** | *only* `scripts/hive-bringup-drill.sh` (its UI check) | |
+| **tmux** and a CLI coding agent | *only* the operator loop (`hive-launch` / `hive-answer` / `hive-close`) — see [docs/omegahive_operations.md](docs/omegahive_operations.md) | |
+
+Everything under `scripts/` resolves the compose command for itself — `podman compose`, `docker compose`, or `docker-compose`, whichever the host has, probed by running it. `OMEGAHIVE_COMPOSE` overrides that resolution, which is what a host carrying both runtimes needs; it has no effect on the `docker compose` lines you type yourself.
+
+For **rootless Podman**, compose talks the Docker API over Podman's socket, which is one line to enable:
 
 ```bash
 systemctl --user enable --now podman.socket    # rootless Podman only
 ```
 
-Two things are **Fedora-family specifics**, not general requirements: the `:z`/`:Z` SELinux labels on the compose bind mounts (harmless on other hosts — Docker ignores them, and they are required wherever SELinux is enforcing), and user-level systemd units for scheduled backups (see [Scheduled backups](#scheduled-backups) for the cron alternative). Deployment #0 runs Fedora with rootless Podman and is recorded in [docs/deployments/deployment-0-beastie.md](docs/deployments/deployment-0-beastie.md); nothing there is a requirement for a second host.
+Two things are **Fedora-family specifics**, not general requirements: the `:z`/`:Z` SELinux labels on the compose bind mounts (inert on hosts without SELinux — Docker ignores them — and required wherever it is enforcing), and user-level systemd units for scheduled backups (see [Scheduled backups](#scheduled-backups) for the cron alternative).
+
+Everything host-specific about the deployment this repo is developed on lives in [docs/deployments/deployment-0-beastie.md](docs/deployments/deployment-0-beastie.md), and nothing in that record is a requirement for a second host. A new deployment starts its own record from [docs/deployments/TEMPLATE.md](docs/deployments/TEMPLATE.md).
+
+## Quickstart
+
+Six steps from a clean machine to a spine you can write to. Steps 1–5 are the path `scripts/hive-bringup-drill.sh` walks and asserts from a clean clone, so they are checkable rather than merely written down; step 6 is the test suite.
 
 ```bash
-git clone <this repo> && cd omegahive
-cp .env.example .env            # DSN + settings; see the deployment spec §4 for the secrets scheme
-docker compose up -d postgres
-docker compose run --rm migrate # applies migrations/ to the spine
-docker compose run --rm test    # full suite against live Postgres — your first health check
+git clone <this repo> && cd omegahive   # 1. a clean clone
+cp .env.example .env                    # 2. settings + the DSN; no secret value ever goes here
+scripts/hive-init-secrets               # 3. secrets dir 0700, per-service env-files 0600
+docker compose up -d postgres           # 4. the log store — NAME THE SERVICE, see below
+docker compose run --rm migrate         # 5. applies migrations/ to the spine
+docker compose run --rm test            # 6. full suite against live Postgres — your first health check
 ```
 
-Give it a heartbeat with the built-in demo: `docker compose run --rm seed` plans a small project, then the `coordinator` / `worker` / `review` services run it to completion while `board-view` shows the board evolving. Run `omegahive deploy-checks` after any environment change (it verifies credential scope and structural security facts).
+> **Name the service on every `up`.** A bare `docker compose up -d` starts all fourteen non-`ops` services, including the three scripted acceptance actors and the demo seeder — which write demo events into your durable spine under run id `accept` (`OMEGAHIVE_RUN_ID` in `.env`, whose default is `accept` and which `seed`, `coordinator`, `worker`, `review` and `board-view` all share). Nothing is corrupted, but you get a run you did not ask for. Start what you mean: `up -d postgres`, `up -d ui`, `up -d notifier`.
 
-For a real deployment — the secrets layout (per-service env files, never in images or logs), the key-isolation proxy for LLM provider keys, and recovery/restore discipline — read [docs/omegahive_deployment_spec.md](docs/omegahive_deployment_spec.md) before trusting it with anything you'd miss. Two host-side bootstraps are one command each: `scripts/hive-init-secrets` (the secrets directory) and `scripts/hive-init-workspace` (the workspace hub and clone the operator loop reads from).
+Step 3 is only strictly required before starting the `notifier`, but running it up front means the secrets directory exists at the location the compose file already points at, so the two cannot disagree later. It never overwrites a file that already exists. It seeds the three services with committed examples — `notifier.env`, `gateway.env` and `owner.env` (`postgres.env` and `harness.env` must still be written by hand) — and the two credential files it seeds are **inert**, with every variable commented out, so running this at any point on any host cannot arm a half-configured deployment. See [Credentials](#credentials-who-may-write-and-what-each-container-may-see).
 
-**The web UI, and how you reach it.** There is a read-only operator web UI (FastAPI, `src/omegahive/ui/`) — the portfolio (every live run on one page, and the UI's entry point), per-run board lanes, filtered log, and metrics; see [docs/omegahive_ui_spec.md](docs/omegahive_ui_spec.md). The default access path on any host is the loopback publish:
+Give the stack a heartbeat with the built-in demo — `docker compose run --rm seed` plans a small project on the `accept` run, then `docker compose up -d coordinator worker review` runs it to completion while `docker compose run --rm board-view` shows the board. Run `scripts/deploy_checks.sh` after any environment change: seven checks, from the acceptance run and a snapshot/restore replay through the structural security facts to a per-container credential scan.
 
-```bash
-docker compose up -d ui                        # then: http://127.0.0.1:8811/omegahive
-ssh -L 8811:127.0.0.1:8811 <host>              # to reach it from another machine
-```
+For a real deployment — the secrets layout (per-service env files, never in images or logs), the key-isolation proxy for LLM provider keys, and recovery/restore discipline — read [docs/omegahive_deployment_spec.md](docs/omegahive_deployment_spec.md) before trusting it with anything you'd miss.
 
-The UI publishes on `127.0.0.1` only — never `0.0.0.0` — and that is the security posture rather than a default to relax; `OMEGAHIVE_UI_HOST_PORT` and `OMEGAHIVE_UI_BASE_PATH` tune the port and serving prefix. An off-host ingress is a **per-deployment addition, not a requirement**: deployment #0 puts a reverse proxy on `:8443` in front and reaches it over a tailnet ([its record](docs/deployments/deployment-0-beastie.md), [remote-access spec](docs/deployments/omegahive_remote_access_spec.md)), and no ingress ships in this repo. A second deployment needs nothing beyond the tunnel above.
+## Running the stack
 
-#### Scheduled backups
+### The `omegahive` command
 
-The `backup` service does a containerized `pg_dump`; `deploy/git_bundle.sh` bundles the workspace hub. Both land in one directory (`OMEGAHIVE_BACKUP_DIR`), so one directory restores both stores. Two scheduling paths invoke the same two commands — pick by what the host has:
-
-| Host | Path |
-|---|---|
-| systemd (Fedora-family; deployment #0) | `deploy/systemd/*.{service,timer}` — copy to `~/.config/systemd/user/`, `systemctl --user enable --now omegahive-backup.timer omegahive-bundle.timer`. Needs `loginctl enable-linger <user>` so timers run without a login session. |
-| no systemd `--user` | `deploy/cron/omegahive-crontab.example` — fill in the placeholders and `crontab -e`. It sets the environment cron does not give a job (PATH, and `DOCKER_HOST` for rootless Podman). |
-
-The unit files' paths and compose binary are deployment-#0 values, flagged as such in the files themselves — adjust them per host. macOS/launchd is sketched in the crontab example as a **note, not a tested path**. Whichever you use, run both commands by hand once and confirm two files appear in the backup directory: an unverified backup schedule is a belief, not a backup.
-
-## Operating a hive: the CLI
-
-**Where the `omegahive` command comes from.** The deployment stance is *no host runtimes*: the image's entrypoint is the CLI, and the `cli` compose service exposes it generically —
+The image's entrypoint *is* the CLI, and the `cli` compose service exposes it generically:
 
 ```bash
 docker compose run --rm cli report demo --board
@@ -71,7 +79,7 @@ alias omegahive='docker compose run --rm cli'   # after which every example belo
 
 For hacking on the code itself there's a host path too: `uv sync`, then `uv run omegahive …` with `OMEGAHIVE_DATABASE_URL` pointed at `localhost:5432` (the composed Postgres publishes on loopback; note `.env.example`'s DSN uses the in-network host `postgres`, which is right for containers and wrong for your shell).
 
-The `omegahive` command is the operator's loopback tool. **Trust model, stated plainly:** it asserts its own `--role`; the gateway enforces per-role *authority*, but the CLI does not authenticate *identity*. It is for the operator's own shell on a machine they control — not a multi-tenant boundary.
+**Trust model, stated plainly:** the CLI asserts its own `--role`; the gateway enforces per-role *authority*, but the CLI does not authenticate *identity*. It is for the operator's own shell on a machine they control — not a multi-tenant boundary.
 
 | Command | What it does |
 |---|---|
@@ -80,137 +88,67 @@ The `omegahive` command is the operator's loopback tool. **Trust model, stated p
 | `omegahive report --board / --metrics / --human` | fold projections as text |
 | `omegahive portfolio [--json] [--all] [--days N] [--exclude <globs>]` | **one board across every live run** — the whole-portfolio glance in one command |
 | `omegahive board-view <run> [--json] [--all] [--days N]` | one run's board (`--json` emits the machine projection for tooling) |
+| `omegahive runs` | every run in the log with its event count and first/last event time — how you discover a run id without a psql detour |
+| `omegahive bump-generation --run-id <run>` | invalidate every cursor on a run. This is the command behind "restores bump a generation token" above: run it *after* restoring a dump and *before* restarting clients |
 | `omegahive seed-demo` / `omegahive act` | demo planner and scripted reactors |
-| `omegahive simulate` | deterministic multi-seed simulation of scripted scenarios |
-| `omegahive deploy-checks` | structural security checks (credential scope, tier routing) |
+| `omegahive run <scenario.yaml>` / `omegahive simulate` | execute one scripted scenario, or a deterministic multi-seed sweep of them |
+| `omegahive deploy-checks` | structural security checks (tier routing, credential scope, and the two-role open-test — an append attempted on each credential). `scripts/deploy_checks.sh` runs these plus the end-to-end and scan checks |
 
-**The active view (both surfaces, one definition).** The board grows monotonically, so a full-history table fills a screen with settled work. `portfolio` and `board-view <run>` therefore show the **active view** by default: every open task, plus anything closed within the active window (default 7 days, `OMEGAHIVE_ACTIVE_WINDOW_DAYS` or `--days`). `--all` restores full history. "Closed" is `done`/`failed`/`cancelled` or a pruned branch, and recency is measured against **that board's own latest status change**, not wall-clock now — so the same log always renders the same screen, replay included.
+`omegahive notify` (the notifier) and `omegahive ui-serve` (the web UI) are the two long-running commands; both have their own sections below.
 
-`portfolio` discovers its runs from the spine, not from any workspace config: a run is a portfolio project when it carries real wall-clock activity inside the same window and its id does not match a scratch-run glob (`OMEGAHIVE_PORTFOLIO_EXCLUDE` or `--exclude`, default `tooling-drill-*` — the drill seeds real, freshly-active runs on this same spine every time it runs, and nothing in the log tells them apart from a project's). Nothing is dropped silently: the footer counts what the cut removed, and `--all` shows it. The web UI serves the same view at `/portfolio` from the same functions, so the two surfaces cannot drift.
+**The active view (both surfaces, one definition).** The board grows monotonically, so a full-history table fills a screen with settled work. `portfolio` and `board-view <run>` therefore show the **active view** by default: every open task, plus anything closed within the active window (default 7 days, `OMEGAHIVE_ACTIVE_WINDOW_DAYS` or `--days`). `--all` restores full history. "Closed" is `done`/`failed`/`cancelled` or a pruned branch, and recency is measured against **that board's own latest status change**, not wall-clock now — so the same log always renders the same screen, replay included. `portfolio` discovers its runs from the spine rather than from any config: a run is a portfolio project when it carries real wall-clock activity inside the same window and its id does not match a scratch-run glob (`OMEGAHIVE_PORTFOLIO_EXCLUDE` or `--exclude`, default `tooling-drill-*` — the drills seed real, freshly-active runs on this same spine, and nothing in the log tells them apart from a project's). Nothing is dropped silently: the footer counts what the cut removed, and `--all` shows it. The web UI serves the same view at `/portfolio` from the same functions, so the two surfaces cannot drift.
 
-**`board-view <run> --json` is exempt, deliberately.** It is always the run's full history, whatever the window says, because the operator tooling looks tasks up in it by id — a task that had aged out of a display window would read as "not on the board" and quietly change what the launch and close guards decide. The portfolio's JSON (`portfolio --json`) is additive: an array of `{"run": …, "tasks": […]}`, where each `tasks` array is exactly what `board-view <run> --json` emits for that run.
+**`board-view <run> --json` is exempt, deliberately.** It is always the run's full history, whatever the window says, because tooling looks tasks up in it by id — a task that had aged out of a display window would read as "not on the board" and quietly change what a guard decides. `portfolio --json` is additive: an array of `{"run": …, "tasks": […]}`, where each `tasks` array is exactly what `board-view <run> --json` emits for that run.
 
-Day-to-day operation is mostly: seed tasks from work orders (`emit --type task.created`), watch the board, and answer questions. Workers report through the same path — `task.reported` with `kind ∈ {progress, result, question, finding, reflection}` and a pinned workspace ref. A blocking question surfaces as a report plus `task.blocked`; the answer lands as a *commit to the order file* (artifacts carry truth; channels carry pointers); the worker unblocks itself after re-reading — unblock means "answer consumed," not "answer exists."
+Two sibling CLIs ship in the repo: `qual` (the model-qualification battery — can a given LLM drive an agent loop and board ops with discipline; [docs/reference/omegahive_c2_battery_spec.md](docs/reference/omegahive_c2_battery_spec.md)) and `ladder` (the archived stage-2 experiment harness, kept for record reproducibility — see [What we learned](#what-we-learned-before-building-this-way)).
 
-Two sibling CLIs ship in the repo: `qual` (the model-qualification battery — can a given LLM drive an agent loop and board ops with discipline; [docs/reference/omegahive_c2_battery_spec.md](docs/reference/omegahive_c2_battery_spec.md)) and `ladder` (the archived stage-2 experiment harness, kept for record reproducibility — see below).
+### The web UI
 
-## The notifier: attention pager + daily heartbeat
-
-A small long-running service (`omegahive notify`, the compose `notifier` service) follows the spine's **read path** and sends Telegram messages so the operator doesn't have to poll the board. It is **outbound only** — one POST to `sendMessage`, no `getUpdates`, no webhook, no ack path, no bot commands — so it adds no inbound trust surface. It carries **refs, never file content**; messages are a lossy phone-glance *render* of an event (the audit home is the spine), rendered as HTML with full escaping.
-
-**One notifier watches every run.** Like the board, it is a portfolio surface: runs are discovered from the spine's own registry through the same active-run cut `hive portfolio` applies, so a project waking up or going quiet needs no redeploy. There is deliberately **no run id to configure** — a stale one in a deploy env is how the pager spent a week truthfully reporting an empty acceptance run while the real spine moved, and the fix was to delete the setting rather than guard it.
-
-It pages on four attention events — `task.reported(kind=question)`, `task.blocked`, `task.escalated`, and `task.result_posted` (the result that prompts your close action) — folding a burst in one poll interval into a single summary. Everything else is silence, by design. Every message names its run, and the task id links to **that run's** board:
-
-```
-❓ omegahive · sess-notifier-0728 asks on notifier-portfolio: 2026-07-28-cutover-semantics
-⛔ plnbench · sess-slice-0728 is blocked on pw-libpln-slice: needs the active-run cut pinned
-
-🐝 3 attention events · 2 runs
-❓ omegahive · sess-a asks on alpha-t1: 2026-07-28-alpha-one
-⛔ plnbench · sess-b is blocked on beta-t1: needs the cutover decision
-📄 omegahive · sess-a posted a result on alpha-t1: 2026-07-28-alpha-result
-```
-
-On top of the pages it sends **one unconditional daily heartbeat** at `HEARTBEAT_HOUR_UTC` (default `06:00Z`) — one message for the whole portfolio, even and especially when nothing happened:
-
-```
-🐝 hive daily · 2026-07-28 06:00Z
-spine head 15538 · 3 runs
-omegahive +241/24h · ❓2 ⛔1 ⬆0 📄3
-plnbench +34/24h · ❓0 ⛔0 ⬆0 📄1
-sandbox +0/24h · quiet
-open blocks: port-sha (omegahive, 26h), slice (plnbench, 3h)
-```
-
-The comparison is the point: a run sitting at `+0` beside live runs reads as the anomaly it is, which is exactly what a single-run pager could never show. Runs are listed most-recently-active first (the portfolio's order) and capped at eight lines, with any overflow stated (`… and N more run(s)`), so the message stays one phone screen without ever implying it is complete when it isn't. `lag N` appears on a run's line only when the notifier is actually behind that run's head.
-
-The heartbeat makes silence informative: for a long unattended window, a missing heartbeat means the stack or host is down (SSH and check), not that the hive is quiet. It is derived **only** from the notifier's own cursor streams and state file — no board fold, no extra read scope.
-
-**Setup.** Create a bot with [@BotFather](https://t.me/BotFather) (`/newbot`), then put the token and your chat id in a per-service secrets env-file — never in the repo, an image, or a log:
+There is a read-only operator web UI (FastAPI, `src/omegahive/ui/`) — the portfolio (every live run on one page, and the UI's entry point), per-run board lanes, filtered log, and metrics; see [docs/omegahive_ui_spec.md](docs/omegahive_ui_spec.md). The default access path on any host is the loopback publish:
 
 ```bash
-scripts/hive-init-secrets       # creates the secrets dir (0700) + seeds notifier.env (0600)
-$EDITOR "$OMEGAHIVE_SECRETS_DIR/notifier.env"
-# TELEGRAM_BOT_TOKEN=…   TELEGRAM_CHAT_ID=…
+docker compose up -d ui                        # then: http://127.0.0.1:8811/omegahive
+ssh -L 8811:127.0.0.1:8811 <host>              # to reach it from another machine
 ```
 
-`hive-init-secrets` creates the directory and seeds a `<service>.env` at 0600 from each committed `<service>.env.example`, never overwriting a file that already exists. Today the repo ships exactly one such example, `notifier.env.example`, so that is the one file it seeds — the other services named in `secrets-manifest.yaml` (`postgres.env`, `gateway.env`, `harness.env`) have no committed example yet and must be created by hand until they do. `OMEGAHIVE_SECRETS_DIR` defaults to `$HOME/.config/omegahive/secrets` — the canonical location from [the deployment spec](docs/omegahive_deployment_spec.md) §4, and the same default the compose file interpolates, so the pointer and the directory cannot disagree. Set the variable only to move the directory.
+The UI publishes on `127.0.0.1` only — never `0.0.0.0` — and that is the security posture rather than a default to relax; `OMEGAHIVE_UI_HOST_PORT` and `OMEGAHIVE_UI_BASE_PATH` tune the port and serving prefix. An off-host ingress is a **per-deployment addition, not a requirement**, and none ships in this repo; a second deployment needs nothing beyond the tunnel above. *Deployment #0 practice:* a reverse proxy on `:8443` reached over a tailnet ([its record](docs/deployments/deployment-0-beastie.md), [remote-access spec](docs/deployments/omegahive_remote_access_spec.md)).
 
-`HEARTBEAT_HOUR_UTC` is config, not a secret: it rides the compose environment (`environment: HEARTBEAT_HOUR_UTC=${HEARTBEAT_HOUR_UTC:-6}`), not `notifier.env`.
+### The notifier
 
-**Deep links (optional).** Set `OMEGAHIVE_UI_BASE_URL` to whatever origin+prefix your own devices use to reach the web UI, and every task id in a message — page or heartbeat open-block — becomes a tap-through link to the board view of **the run that event came from** (`…/run/<run>/board`, assembled from the event itself, never from static config; the UI serves no per-task page, so the board is the target). With the default loopback access that is `http://127.0.0.1:8811/omegahive` (links open on the host, or through an SSH tunnel); with an ingress in front it is that ingress's origin — deployment #0 uses `https://<host>:8443/omegahive` over its tailnet. It is config, not a secret, and rides the compose environment (`OMEGAHIVE_UI_BASE_URL=${OMEGAHIVE_UI_BASE_URL:-}`) beside `HEARTBEAT_HOUR_UTC`, not `notifier.env`. Leave it unset and messages render exactly as before — the link is purely additive.
+A small long-running service (`docker compose up -d notifier`) follows the spine's read path and sends Telegram messages so you don't have to poll the board — outbound only, no inbound trust surface, carrying refs rather than file content. One instance watches every active run: it pages on questions, blocks, escalations and posted results, and sends one daily heartbeat even when nothing happened, so silence means the host is down rather than the hive is quiet. It needs a bot token in a per-service secrets file; setup, message formats and the deep-link option are in [docs/omegahive_operations.md](docs/omegahive_operations.md) §2.
 
-**A link that only resolves on your own devices is a feature, not a limitation.** The UI is never published beyond loopback by anything in this repo, so a deep link works exactly where you have already arranged access and nowhere else. Deployment #0 arranges that with a tailnet; a tunnel does the same job for one machine. Either way the link's reach is the access you built, which is the posture rather than a gap in it.
+#### Scheduled backups
 
-**Run it persistently** (survives reboot via `restart: unless-stopped`; its per-run read cursors + heartbeat state persist on the `omegahive-notifier` volume, so a restart resumes without replay or a double heartbeat):
+The `backup` service does a containerized `pg_dump`; `deploy/git_bundle.sh` bundles the workspace hub. Both land in one directory (`OMEGAHIVE_BACKUP_DIR`), so one directory restores both stores. Two scheduling paths invoke the same two commands — pick by what the host has:
 
-```bash
-docker compose up -d notifier      # no run id — it follows every active run
-```
-
-**Which runs it follows** is the board's cut, not a second opinion: a run in the spine's registry with real wall-clock activity inside `OMEGAHIVE_ACTIVE_WINDOW_DAYS` (default 7) that does not match `OMEGAHIVE_PORTFOLIO_EXCLUDE` (default `tooling-drill-*`, so drill debris never pages). `omegahive notify --days N` / `--exclude <globs>` override per invocation. **A run the notifier has never seen arms at its head** — it is never paged for a backlog that predates their meeting. A run that falls out of the window **keeps its cursor**: it left because it went quiet, so the cursor is already at its head and resuming replays nothing, while forgetting it would swallow the first question asked when the project wakes up. Its open blocks leave the heartbeat with it, though — the message shows exactly the cut it claims.
-
-### Operator tooling: the launch / answer / close loop
-
-The worked example below spells out the raw emits per hat. Day to day the operator drives three shell wrappers in `scripts/` — one command per judgment (launch, answer, close), which is the whole point of the loop the hive is built around. They are thin front-ends over `emit` / `board-view` / `report`; the same trust model applies (loopback tool, authority not identity). Put `scripts/` on `PATH` (or symlink the three commands into `~/bin`).
-
-**First, bootstrap the workspace.** The loop reads orders and project confs from a **workspace** — a git repo, separate from this one, with a bare *hub* the workers clone from. One command creates both:
-
-```bash
-scripts/hive-init-workspace <project> --code-repo git@github.com:<owner>/<repo>.git
-```
-
-That creates the bare hub (`WS_HUB`, default `~/repos/hive-workspace.git`), the operator's clone (`OPS_WS`, default `~/workspaces/hive`), and `projects/<project>/` with a `project.conf` and the `orders/`, `reports/`, `questions/`, `metrics/` directories — then commits and pushes, because `hive-launch` refuses an order that isn't on the hub. It is idempotent and never clobbers: re-running adds only what's missing, an existing `project.conf` is kept verbatim, and it refuses rather than overwrite a path that holds something else. Run it again per project to add more. It prints the two `export` lines to put in your shell profile. **What it does not create is the workspace's protocol docs** — `WORKER.md` above all, the one file a launched worker reads and follows — because this repo ships the bootstrap, not the operating doctrine; the seeded `README.md` lists them and a worker has no protocol until you author them.
-
-| Command | The one judgment | What it does |
-|---|---|---|
-| `hive-launch <order-file> [--worker <id>] [--anyway]` | *the order is ready* | **infers the project** from the order path (`projects/<name>/orders/...`) and sources its `project.conf` for the run id + code repo, pins the order (refuses dirty/unpushed), seeds `task.created` + `worker.registered` + `task.assigned` on that run, issues the worker a per-seat **emit wrapper** (that run baked in), provisions its isolated clones (`~/work/<worker>/{hive,<project>}` — code cloned from the project's canonical checkout, origin re-pointed to its `CODE_REPO`), and opens a tmux pane named after the task running the worker session with the kickoff pre-filled. The pane is **autonomous by default** — the session command is `HIVE_WORKER_CMD`, whose default carries the worker CLI's autonomy flag (`claude --permission-mode auto`), because a pane that stops on an interactive permission prompt has not started the task, only the ceremony; override the whole string via `project.conf` / env if the CLI's flag drifts. **Adopt:** if the task already exists on the board as `ready` and unowned (e.g. a backlog task seeded by a raw `task.created`), it skips `task.created` and emits only `worker.registered` + `task.assigned` — the task keeps its **original acceptance pin**, which may be stale against the order at HEAD (fine: the worker reads the order at HEAD per WORKER.md). Any other existing state is refused: `assigned`/`blocked`/`in_progress` → recover via `task.reassigned` (RUNBOOK); `in_review`/`done` → already awaiting close / closed, not launchable. **Review WIP throttle (global):** refuses to launch once `HIVE_WIP_REVIEW_MAX` (default 3) tasks sit `in_review` **summed across every project with a conf** — the limit is the operator's review bandwidth, not any one project's — listing the tasks awaiting review; `blocked` tasks are answer debt, not review debt, so they never count; `--anyway` overrides for the deliberate exception |
-| `hive-answer <task> <text…>` | *here is the answer* | resolves the task across **every** `projects/*/orders` (refusing a cross-project ambiguity, listing the candidates), appends `- <date> — <text>` to the order's `## Answers` section (append-only; body untouched), commits + pushes to the hub, and nudges the worker's pane to re-read at HEAD. SSH-friendly: `ssh beastie 'hive-answer port-sha "use event time"'` |
-| `hive-close <task> [--reason <text>] [--no-score]` | *the result holds* | resolves the task across every project (same ambiguity refusal) and acts on **its** run, verifies the board is `in_review` (refuses otherwise), reads the newest `task.result_posted`'s first ref off the spine, and emits `review.passed` + `status_override(done)`, then runs `hive-score` so calibration is a by-product of closing rather than a separate errand. The ordering is absolute and the coupling one-way: the close emits first, and a scoring failure afterwards is loud but never fatal — it can neither block a close nor make a completed one look failed. `--no-score` skips it. Never merges — merging is a separate act in the GitHub app |
-
-The **emit wrapper** (`~/work/hive-wrappers/<worker>.sh`) is the worker's whole write path: `--run-id`/`--role worker`/`--actor <id>` are baked in, so a worker cannot emit as anyone else. It is shaped as a proto-credential — one file per identity, issued at launch, revocable by deletion — so swapping the assertion for a real per-seat key later changes nothing worker-facing.
-
-The wrappers read board state through **`board-view <run> --json`** — a JSON array (one object per task: `task`/`status`/`owner`/`depends_on`/`review`), the machine projection of the same folded board the table renders. They parse this, never the rendered table: a task id wider than the table's column folds across lines, which no `awk`/`grep` survives (a wrapped id once failed a close with "not on the board" while the board plainly showed it `in_review`). An empty board prints `[]` and exits 0. This projection is always the run's **full history** — the active-view filter is a display cut and never reaches it, so a task the operator can no longer see on the table is still found by id here.
-
-#### `project.conf`: project identity vs. deployment facts
-
-The hive runs many projects — one **run per project** (run id = project name). Which run a launch/answer/close acts on is a **committed per-project fact**, not a per-shell env var, because a misconfigured run id is the tooling's most recurrent bug class. That fact lives in `projects/<name>/project.conf` in the workspace, a plain shell-sourceable file the operator tooling reads:
-
-```sh
-# projects/<name>/project.conf — committed, deployment-independent.
-RUN_ID=<name>                                   # the project's run (= project name by convention)
-CODE_REPO=git@github.com:<owner>/<repo>.git     # origin the worker's code clone is re-pointed to
-```
-
-**The fact boundary.** `project.conf` carries only facts true on *any* host (run id, repo URL). Host-specific facts stay in the **deployment layer** (`scripts/hive-common.sh`): `OMEGA_DIR`, `CANON_ROOT`, `WS_HUB`, `OPS_WS`, `WORK_ROOT`, `WRAPPER_DIR`, `HIVE_TMUX_SESSION`, `HIVE_WORKER_CMD`, `HIVE_WIP_REVIEW_MAX`, and the active-view knobs `OMEGAHIVE_ACTIVE_WINDOW_DAYS` / `OMEGAHIVE_PORTFOLIO_EXCLUDE` (display cuts only — the JSON read path the wrappers parse is unaffected). The one *per-project* deployment fact — `CANON_CODE`, the project's canonical code checkout on this host — is derived as `CANON_ROOT/<repo>`, where `<repo>` is the basename of the conf's `CODE_REPO` with any `.git` stripped (override `CANON_CODE` to pin an off-layout checkout). It is the **repo**, not the project directory, because a checkout on disk is whatever `git clone` named it: a project directory `pln-benchmarks` whose repo is `plnbench` is ordinary, and deriving from the directory name refused such a launch outright. This split is the first brick of host-independence: the committed workspace stays portable while host paths live host-side.
-
-**Precedence** (highest first): an **env override** → `project.conf` → the deployment-layer default. `HIVE_RUN_ID` is the run escape hatch — when set it wins over a conf's `RUN_ID` (single-run ops; the drill points it at a scratch run). Adding a project is one file: create `projects/<name>/project.conf`, ensure its checkout exists at `CANON_ROOT/<repo of CODE_REPO>`, and `hive-launch projects/<name>/orders/<first>.md`.
-
-`scripts/hive-tooling-drill.sh` exercises the full lifecycle and every refusal path (including a second project's end-to-end lifecycle, a third whose directory name differs from its repo, cross-project ambiguity refusal, the global review-WIP throttle summed across projects, a wrapping long id, a heading-less order, an unsafe session name, the close→score→commit coupling and an injected scoring failure, the autonomy default of the issued worker command, and the `HIVE_RUN_ID` override) against a throwaway sandbox and scratch run ids — run it after changing any of these scripts; never point a drill run id at the durable `omegahive` run.
-
-### Instruments: metrics and prediction scoring
-
-Two more `scripts/` commands, read-only over the spine. They exist because "the hive gets better over time" is a claim that needs instruments rather than anecdotes: the spine already holds every task's full history, and until something extracts it, nothing consumes it.
-
-| Command | What it produces |
+| Host | Path |
 |---|---|
-| `hive-metrics <project> [--run <id>] [--upto <seq>] [--no-commit]` | `projects/<project>/metrics/tasks.{md,csv}` — one row per **closed** task: create→launch, launch→accept, accept→result, answer wait, result→review, review→close, plus question / rejection / reassignment counts, and position statistics over the set |
-| `hive-score <task> [--project <name>] [--review <verdict>] [--note <text>] [--again] [--no-commit]` | one entry appended to `projects/<project>/metrics/calibration.md` — the order's `## Predictions` quoted verbatim beside the spine's outcome, with a verdict |
+| systemd | `deploy/systemd/*.{service,timer}` — copy to `~/.config/systemd/user/`, `systemctl --user enable --now omegahive-backup.timer omegahive-bundle.timer`. Needs `loginctl enable-linger <user>` so timers run without a login session. |
+| no systemd `--user` | `deploy/cron/omegahive-crontab.example` — fill in the placeholders and `crontab -e`. It sets the environment cron does not give a job (PATH, and `DOCKER_HOST` for rootless Podman). |
 
-**Clock ownership is the whole design.** A task's elapsed time is split between two owners whose numbers mean opposite things, and averaging them produces a figure that means nothing. How long an order waited to be launched, a question waited for an answer, a result waited for review — that is **operator clock**: portfolio reality for the automation lane, and *never* worker-performance signal. The session's own span is **worker clock**. Spans with two owners are labeled *mixed*. `tasks.md` reports the three in separate tables and every summary row carries its label.
+The unit files' paths and compose binary are deployment-#0 values, flagged as such in the files themselves — adjust them per host. macOS/launchd is sketched in the crontab example as a **note, not a tested path**. Whichever you use, run both commands by hand once and confirm two files appear in the backup directory: an unverified backup schedule is a belief, not a backup.
 
-**Project identity comes from `project.conf`, like every other command.** `hive-metrics <project>` resolves the run through `load_project_conf`, so the run is the project's committed `RUN_ID` — never the project name by convention. `hive-score <task>` goes one step further: it resolves the order first (searching every project, refusing cross-project ambiguity) and takes the project from the order's own path, exactly as `hive-launch` does; `--project` is needed only for a task with no order file. `--run` on either maps onto `HIVE_RUN_ID`, so precedence stays the tooling's single rule: env → conf → default. A project with no committed conf is refused rather than guessed at — a project whose identity is not committed has nothing well-defined to measure.
+### Credentials: who may write, and what each container may see
 
-**They measure; they do not judge.** No trends, no plots, no comparison against a previous artifact — reading trends is the improver seat's act (`projects/<project>/seats/improver/PROTOCOL.md`), and a tool that pre-chewed the verdict would take that judgment away from the seat that owns it.
+The spine takes writes from **one credential and no other**. `migrations/0003_two_roles.sql` creates two database roles — `hive_gateway`, which may append to the log, and `hive_reader`, which may only read it — and each service is handed just the one it needs. The UI, the notifier and every read-side CLI path connect as `hive_reader` and are therefore *structurally* incapable of appending; a direct `INSERT` from any of them fails on privilege, not on a convention someone might forget. Schema changes are a third credential again (the database owner), reaching only `migrate`, `test` and `backup`. The gateway's own grant is narrower than it looks: `INSERT`, plus `UPDATE` on exactly the two columns the running system rewrites, and no `DELETE` — so the log is append-only by grant rather than by habit.
 
-**Regeneration is deterministic.** No clock reading, no hostname, no "generated at" — the same spine prefix always renders the same bytes. `tasks.md` records the head seq it was built from, and `hive-metrics <project> --upto <that seq>` reproduces it byte for byte from a later, longer spine. That is what makes a historical regeneration exact rather than approximate, and it is how one retro compares against the last.
+| file | variable | role | reaches |
+|---|---|---|---|
+| `.env` | `OMEGAHIVE_DATABASE_URL` | `hive_reader` | every service |
+| `gateway.env` | `OMEGAHIVE_GATEWAY_DATABASE_URL` | `hive_gateway` | the services that emit |
+| `owner.env` | `OMEGAHIVE_OWNER_DATABASE_URL` | the owner | `migrate`, `test`, `backup` |
 
-**Durations come from `logical_ts`**, which under server time is epoch seconds assigned DB-side under the emit's advisory lock (`events/log.py` §6) — monotonic per run and immune to client clock skew. Events landing in the same wall second are pushed forward one second each, so a burst can inflate a span by up to that many seconds; sub-minute figures should be read as "about a minute", never as precision. `tasks.md` carries this and the rest of the caveats in its own Method section, so the artifact travels with them.
+`.env` reaches every container, so nothing stronger than the read credential may ever live in it — that is the rule the split exists to make enforceable rather than remembered.
 
-`hive-score` records the *absence* of a prediction as loudly as a wrong one: no `## Predictions` section is an entry marked **unpredicted**, a section missing fields is **partial**. The gap is itself the metric — predictions are honest guesses, never commitments, and calibration is the product rather than any single verdict. Review outcome is never inferred: the spine records `review.failed`, not whether a PR needed another round of comments, so that verdict stays `unscored` until a human passes `--review`.
+**The cutover is a separate, reversible operator act**, not something a `git pull` performs. The migration creates the roles without passwords, so they cannot yet authenticate; until you write `gateway.env` and `owner.env` the variables stay unset, the connection helpers fall back to the read DSN, and the stack behaves exactly as it did under one role. Cutting over is: set the two passwords, uncomment and fill the two seeded files, point `.env` at `hive_reader`, restart. Going back is deleting the two files and restarting — `scripts/roles_rollback.sh` (run in the `backup` service, which holds the owner credential) undoes the migration itself. Either direction is verified by `omegahive deploy-checks`, whose check 6 attempts a real append on each credential and reports `PENDING`, not `PASS`, on a deployment that has not cut over.
 
-Neither tool emits. Both **commit and push** what they regenerate, scoped by pathspec to `projects/<project>/metrics/`: the improver seat reads committed instruments, so an artifact left in a working tree is invisible to its only reader, and stopping at "written" handed the operator back the clerical steps the loop exists to collapse. Deterministic regeneration means an unchanged spine prefix simply has nothing to commit — a success, not a failure. `--no-commit` opts out on either; a `hive-metrics --upto` rebuild never commits, since a historical artifact is an inspection and committing one would rewind the record. Both accept `HIVE_SPINE_JSON=<dump>` in place of the live read, which is how `scripts/hive-metrics-drill.sh` drives them: a frozen fixture covering a clean cycle, a messy one (question, block/unblock, a coalesced rejection burst, reassignment), a task retired without ever being worked, one closed by `task.failed`, one closed-reopened-reclosed, one still in flight, and a report filed against a task id that never existed. Its scratch project deliberately carries a `RUN_ID` that differs from the project name, so a tool that guessed the run would find nothing. The drill needs neither the stack nor the database and issues no events at all — run it after changing either script.
+**What each container may see.** `secrets-manifest.yaml` declares the environment-variable **names** each service is allowed to carry, and `scripts/credential_scope_scan.sh` enforces it: for every running container it diffs the actual key names against that service's row. A name present and undeclared exits non-zero naming the service and the key; a declared name the container lacks is reported and does not fail; a running service with no row at all is a hard failure, because an undeclared service is not an exempt one. There is no exception list — a legitimately-present variable is fixed by declaring it in a line a reviewer can see.
+
+The scan reads **key names only**. It never reads, prints, logs or compares a value, so its output is safe to paste into a shared terminal; that constraint is asserted by `tests/test_credential_scan.py` rather than trusted. `scripts/credential_scope_scan.sh -p <project>` points it at any compose project. `scripts/deploy_checks.sh` runs it as check 7 and — pending an operator policy decision — **reports** a finding rather than failing the run; `OMEGAHIVE_SCAN_FATAL=1` makes it fatal. A scan that *could not run at all* (no `jq`, no engine, no running containers — exit 2 rather than 1) is always fatal and that knob does not reach it, because a green harness over a check that never executed is the one result worth nothing.
+
+## Operating a hive
+
+Everything above is the substrate. The way this project actually *runs* on it — one command per operator judgment (`hive-launch` an order, `hive-answer` a blocking question, `hive-close` a result), a Telegram pager, and two instruments that fold task metrics and prediction-calibration records out of the spine — is described in **[docs/omegahive_operations.md](docs/omegahive_operations.md)**. Most of it needs the companion **project workspace**: a second git repo, with a bare hub the workers clone from, where orders, reports and questions live as files the events point at. `scripts/hive-init-workspace <project> --code-repo <url>` creates the hub, your clone, and a project directory in one command. What it deliberately does not create is the workspace's operating protocol — the file a launched worker reads and follows — because this repo ships the bootstrap, not the doctrine.
 
 ## A worked example: one tiny project, end to end
 
@@ -242,7 +180,7 @@ omegahive emit --run-id demo --role worker --actor sess-demo-1 --type task.accep
 
 Board: `t1 in_progress @ sess-demo-1`. If you'd fat-fingered the worker id, the assign would not have silently succeeded — unregistered workers get `rejected: UNKNOWN_WORKER · …`, recorded in the log as a `gateway.rejected` event.
 
-**3. The worker hits a question.** It writes `projects/demo/questions/2026-07-10-tone.md` in the workspace, commits (say the commit is `9d01c4e`), then:
+**3. The worker hits a question.** It writes `projects/demo/questions/2026-07-10-tone.md` in the workspace, commits (say the commit is `9d01c4e`), then reports it. Refs are opaque strings the gateway never resolves, so you can paste these verbatim with no workspace at all and every command still behaves exactly as shown:
 
 ```bash
 omegahive emit --run-id demo --role worker --actor sess-demo-1 --type task.reported --task t1 \
@@ -251,7 +189,7 @@ omegahive emit --run-id demo --role worker --actor sess-demo-1 --type task.block
   --payload '{"reason": "tone: formal vs conversational", "needs": "decision", "ref_report": "projects/demo/questions/2026-07-10-tone.md@9d01c4e"}'
 ```
 
-Board: `t1 blocked (needs decision)`. Your phone buzzes (the notifier fires on `question`/`blocked`/`escalated`). **The answer is not an event** — you edit the order file in the workspace, commit, and nudge the session ("answer landed; re-read your order"). The worker re-reads, then emits `task.unblocked` itself: unblock means *answer consumed*.
+Board: `t1 blocked (needs decision)`. If you have the notifier running, your phone buzzes — it fires on `question`/`blocked`/`escalated`. (`kind` is one of `progress`, `result`, `question`, `finding`, `reflection`; of those, only `question` raises a page.) **The answer is not an event** — you edit the order file in the workspace, commit, and nudge the session ("answer landed; re-read your order"). The worker re-reads, then emits `task.unblocked` itself: unblock means *answer consumed*.
 
 **4. Result and review.** The worker commits its report (say `b52e77d`) and posts it; the reviewer hat passes it; the coordinator hat closes:
 
@@ -267,6 +205,8 @@ omegahive emit --run-id demo --role coordinator --actor operator --type task.sta
 Board: `t1 done · t2 ready · workers: sess-demo-1 idle`. Try to close t2 the same way right now and the gateway answers for the board: `rejected: ILLEGAL_TRANSITION · …` — no review has passed; nothing reaches `done` around the gate. Re-run any command above verbatim and you get `already recorded (idempotent) · seq <n>` — retries are safe by construction, and a no-op is never dressed up as a state change.
 
 The whole run is now a replayable trace: `omegahive report demo` renders every event in order — including the rejections — and `--human` gives the promoted summary view. That's the loop: **files carry content, events carry facts, views are folds, refusals are answers.**
+
+Day to day, this is what the three operator wrappers collapse into one command each.
 
 ## Tests
 
@@ -312,6 +252,15 @@ run twice at once: it drives fixed-name compose services (`coordinator`, `worker
 inside one shared compose project, so concurrent runs collide over containers rather than
 over data. Run it one at a time.
 
+**Checking the whole bring-up path, not just the suite.** `scripts/hive-bringup-drill.sh` walks the quickstart from a clean clone and fails at the first step that does not work as written. It runs in a `mktemp` sandbox on a scratch compose overlay that isolates project name, container names, host ports and the image tag, so it can never touch a stack you care about.
+
+```bash
+scripts/hive-bringup-drill.sh              # full drill, tears down after
+scripts/hive-bringup-drill.sh --no-stack   # the host-side steps only; no container runtime needed
+scripts/hive-bringup-drill.sh --keep       # leave the sandbox + stack up to inspect
+scripts/hive-bringup-drill.sh --dry-run    # print the plan, touch nothing
+```
+
 ## What we learned before building this way
 
 We ran controlled experiments on LLM coordination before pivoting to real work, and the results are committed alongside the code: a mechanical greedy coordinator beat every LLM cell on boards where inaction wins — the LLMs lost by **over-intervening**, and giving them more time and budget made the meddling worse, not the outcomes better. Below a capability bar, the measurements reflect the parser, not the model. The verdict, including the board-validity rule any future synthetic coordination test must pass, is [docs/reference/omegahive_stage2_verdict.md](docs/reference/omegahive_stage2_verdict.md); the frozen run records are under `ladder/records/`. The design consequences are baked in: the default coordinator is mechanical; LLM judgment is reserved for trigger points (a plan changed, a gate failed, a question needs answering); and the cognitively valuable coordination — replanning under surprise, decomposition, verification gating — happens at the project level, over durable state.
@@ -319,16 +268,20 @@ We ran controlled experiments on LLM coordination before pivoting to real work, 
 ## Repo map
 
 ```
-src/omegahive/   the substrate: events, gateway, legality, board fold, port, CLI, UI
+src/omegahive/   the substrate: events, gateway, legality, board fold, port, CLI,
+                 plus the notifier, the UI, metrics, reports and the simulator
 migrations/      spine schema
 docs/            the documentation set — specs are authoritative; code follows them
                  (docs/INDEX.md maps every file: current specs, docs/reference/,
-                 docs/deployments/, docs/archive/, docs/evidence/)
+                 docs/deployments/, docs/archive/, docs/evidence/, docs/whitepaper/)
 qual/            model-qualification battery: catalogs, scenarios, personas, records
 ladder/          archived stage-2 experiment harness + its frozen run records
+experiments/     earlier coordination experiments and their reproduction records
 scenarios/       scripted simulation scenarios (deterministic, CI-run)
-scripts/         operator tooling (hive-launch/answer/close, hive-metrics/score + drills), deploy + backup checks
-deploy/          systemd/quadlet units
+scripts/         bootstraps (hive-init-secrets/workspace), operator tooling
+                 (hive-launch/answer/close, hive-metrics/score), drills, deploy checks
+deploy/          scheduling units (systemd, cron), workspace templates, backup/restore
+                 helpers, and the scratch compose overlay
 tests/           full suite; DB-dependent tests need a live Postgres
 ```
 

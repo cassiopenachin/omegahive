@@ -12,7 +12,7 @@ the idempotent open_run + emit_plan pattern from the acceptance driver.
 from __future__ import annotations
 
 from omegahive.clock import LogicalClock
-from omegahive.db import connect
+from omegahive.db import connect_gateway
 from omegahive.events.envelope import Actor
 from omegahive.events.log import EventLog
 from omegahive.gateway import Gateway
@@ -45,7 +45,7 @@ def fork_scenario(roster: tuple[str, ...] = ()) -> Scenario:
 
 def seed_fork_board(run_id: str, *, url: str | None = None, roster: tuple[str, ...] = ()) -> str:
     """Register the run and emit the fork plan (idempotent — skips if already seeded)."""
-    conn = connect(url)
+    conn = connect_gateway(url)   # registers the run and appends the plan
     try:
         open_run(conn, run_id)
         store = EventLog(conn, LogicalClock(0), run_id, server_time=True)
