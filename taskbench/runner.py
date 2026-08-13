@@ -121,6 +121,11 @@ class CellRun:
     changed_files: list[str]
     stdout_path: str
     stderr_path: str
+    #: What the candidate did to the workspace documents the order made its own. v0 captured
+    #: none of this, so a candidate that wrote the runbook section the order asked for was
+    #: graded as not having attempted it.
+    workspace_diff: str = ""
+    workspace_changed_files: list[str] = field(default_factory=list)
     #: False means the candidate ran with the operator's real HOME, which puts the
     #: full-history clone the manifests pin within its reach. Recorded, not forbidden: some
     #: harnesses need it, and a reader has to be able to weigh the cell.
@@ -302,8 +307,17 @@ def build_kickoff(manifest: TaskManifest, mat: Materialized) -> str:
         f"- `code/` — the {manifest.code.repo} repository at the revision this order was",
         "  written against. Do your work here and commit it. There is no remote and no",
         "  later history; that is expected.",
-        "- `workspace/` — the documents the order cites, read-only inputs.",
+        "- `workspace/` — the documents the order cites.",
     ]
+    if manifest.writable_workspace_paths:
+        lines += [
+            "  Some of them are yours to change, because the order asks for it. Edit them in",
+            "  place and commit them there; the paths are:",
+            *(f"    - `workspace/{p}`" for p in manifest.writable_workspace_paths),
+            "  Everything else under `workspace/` is a read-only input.",
+        ]
+    else:
+        lines += ["  They are read-only inputs."]
     if mat.exported_deps:
         lines += [
             "- `deps/` — offline snapshots of out-of-repo dependencies this task needs:",
@@ -418,8 +432,14 @@ def run_cell(
     cell_id: str,
     *,
     out_dir: str | Path | None = None,
+    prompt_override: str | None = None,
 ) -> CellRun:
-    """Launch the candidate once and capture the run. Raises only on setup errors."""
+    """Launch the candidate once and capture the run. Raises only on setup errors.
+
+    `prompt_override` carries the rework brief for the one remediation attempt. It replaces
+    the kickoff; the tree is left exactly as the attempt left it, because the repair works on
+    what it already wrote.
+    """
     missing = spec.required_labels_present()
     if missing:
         raise ValueError(
@@ -433,8 +453,9 @@ def run_cell(
     stdout_path, stderr_path = logs / "stdout.txt", logs / "stderr.txt"
     verify_log = logs / "bench-verify.log"
 
-    kickoff = build_kickoff(manifest, mat)
-    (root / "TASK.md").write_text(kickoff)
+    kickoff = prompt_override or build_kickoff(manifest, mat)
+    if prompt_override is None:
+        (root / "TASK.md").write_text(kickoff)
 
     argv = list(spec.argv)
     if spec.prompt_mode == "argv":
@@ -539,8 +560,11 @@ def run_cell(
     else:
         progress.terminal_error = _detect_terminal_error(combined)
 
-    diff, changed = _capture_diff(mat)
+    diff, changed = _capture_diff(mat.code)
+    ws_diff, ws_changed = _capture_diff(mat.workspace)
     return CellRun(
+        workspace_diff=ws_diff,
+        workspace_changed_files=ws_changed,
         outward_actions=_read_mock_log(logs / "mocks"),
         task_id=manifest.id,
         cell_id=cell_id,
@@ -562,10 +586,10 @@ def run_cell(
     )
 
 
-def _capture_diff(mat: Materialized) -> tuple[str, list[str]]:
-    """The candidate's whole contribution: committed work plus anything left uncommitted."""
+def _capture_diff(tree: Path) -> tuple[str, list[str]]:
+    """One tree's whole contribution: committed work plus anything left uncommitted."""
     base = subprocess.run(
-        ["git", "-C", str(mat.code), "rev-list", "--max-parents=0", "HEAD"],
+        ["git", "-C", str(tree), "rev-list", "--max-parents=0", "HEAD"],
         capture_output=True,
         text=True,
         check=False,
@@ -573,19 +597,13 @@ def _capture_diff(mat: Materialized) -> tuple[str, list[str]]:
     if not base:
         return "", []
     baseline = base[-1]
-    subprocess.run(
-        ["git", "-C", str(mat.code), "add", "-A"], capture_output=True, check=False
-    )
+    subprocess.run(["git", "-C", str(tree), "add", "-A"], capture_output=True, check=False)
     diff = subprocess.run(
-        ["git", "-C", str(mat.code), "diff", baseline, "--", "."],
-        capture_output=True,
-        text=True,
-        check=False,
+        ["git", "-C", str(tree), "diff", baseline, "--", "."],
+        capture_output=True, text=True, check=False,
     )
     names = subprocess.run(
-        ["git", "-C", str(mat.code), "diff", "--name-only", baseline, "--", "."],
-        capture_output=True,
-        text=True,
-        check=False,
+        ["git", "-C", str(tree), "diff", "--name-only", baseline, "--", "."],
+        capture_output=True, text=True, check=False,
     )
     return diff.stdout, [n for n in names.stdout.splitlines() if n]

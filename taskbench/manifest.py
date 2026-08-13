@@ -229,6 +229,11 @@ class TaskManifest(BaseModel):
     #: Documents the historical launch had but this replay withholds, with the reason. The
     #: only legitimate reason is that the document would spend the held-out reservation.
     withheld_inputs: list[WithheldInput] = Field(default_factory=list)
+    #: Workspace paths (globs) the ORDER makes the candidate's to write — a runbook section,
+    #: a result report. v0 exported the whole workspace read-only and captured none of it, so
+    #: a candidate that did this work had it thrown away before grading and was marked down
+    #: for not doing it. Anything matching enters the candidate diff and the review packet.
+    writable_workspace_paths: list[str] = Field(default_factory=list)
     code: GitPin
     dependency_snapshots: list[DependencySnapshot] = Field(default_factory=list)
 

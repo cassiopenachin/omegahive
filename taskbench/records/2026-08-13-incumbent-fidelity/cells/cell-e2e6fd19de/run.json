@@ -1,0 +1,165 @@
+{
+  "argv": [
+    "/home/cassio/.local/bin/claude",
+    "--model",
+    "opus",
+    "--print",
+    "--output-format",
+    "json",
+    "--permission-mode",
+    "auto"
+  ],
+  "cell_id": "cell-e2e6fd19de",
+  "changed_files": [
+    "docs/deployments/deployment-0-beastie.md",
+    "docs/evidence/2026-07-21-run-registration-result.md",
+    "docs/omegahive_recovery_runbook.md",
+    "src/omegahive/gateway/gateway.py",
+    "tests/test_run_registration.py"
+  ],
+  "diff": "diff --git a/docs/deployments/deployment-0-beastie.md b/docs/deployments/deployment-0-beastie.md\nindex bb7ffeb..f10dace 100644\n--- a/docs/deployments/deployment-0-beastie.md\n+++ b/docs/deployments/deployment-0-beastie.md\n@@ -84,12 +84,15 @@ signals `GENERATION_MISMATCH` to a stale-cursor port client, which re-snapshots\n generation; and `deploy/phantom_ahead.sh` detected a deliberately-created phantom-ahead\n workspace commit. Transcript: `hive-workspace: projects/omegahive/reports/2026-07-13-backups-restore-drill-evidence.md`.\n \n-**Open item \u2014 generation token not wired to the live run.** The `omegahive` run is not in\n-the `runs` registry (the `hive emit` write path never calls `open_run`), so a real restore's\n-generation bump is inert and the **interim floor governs: restore \u21d2 restart every client, no\n-exceptions.** Registering the run (`omegahive.port.open_run`) activates the durable path; the\n-deeper fix is to open the run at project seed / in the emit path. Full restore + phantom-ahead\n-procedure: ops RUNBOOK (`hive-workspace: projects/omegahive/RUNBOOK.md`).\n+**Generation token \u2014 wired on the write path (2026-07-21).** Every emit now registers its\n+own run: the gateway opens it (idempotently) in the same transaction as the event insert, so\n+a run carries a generation token from its first event and `bump-generation` is a live signal.\n+The durable `omegahive` run predates this, so it enters the `runs` registry at its **first\n+emit under a deployed image carrying the change** \u2014 or immediately, via the one-time\n+`omegahive.port.open_run` line in the ops RUNBOOK. Until whichever comes first, its restore\n+floor stays **restart every client**; confirm with `bump-generation --run-id omegahive`, which\n+prints `run not registered` while the row is absent. Full restore + phantom-ahead procedure:\n+ops RUNBOOK (`hive-workspace: projects/omegahive/RUNBOOK.md`).\n \n ## Forward notes (arrive with later stages, not #0)\n \ndiff --git a/docs/evidence/2026-07-21-run-registration-result.md b/docs/evidence/2026-07-21-run-registration-result.md\nnew file mode 100644\nindex 0000000..a44eaa5\n--- /dev/null\n+++ b/docs/evidence/2026-07-21-run-registration-result.md\n@@ -0,0 +1,147 @@\n+# Result \u2014 register the durable run (make the generation token real)\n+\n+**Task:** run-registration \u00b7 **Order:** `hive-workspace: projects/omegahive/orders/2026-07-21-run-registration.md` \u00b7 **Date:** 2026-07-21\n+\n+Filed in the code repo rather than the workspace: this task ran against a code checkout with\n+no workspace write path (see **To operate** \u2192 item 3 for the workspace edits it owes).\n+\n+## What shipped\n+\n+**Code \u2014 branch `feature/run-registration`, off `main`:**\n+\n+- **The emit path opens its run** (`src/omegahive/gateway/gateway.py`, step 2a). Inside the\n+  same `conn.transaction()` as the event insert, under the per-run advisory lock, the gateway\n+  calls `EventLog.open_run()` \u2014 `INSERT INTO runs (run_id) VALUES (\u2026) ON CONFLICT DO NOTHING`.\n+  Every run touched by an emit therefore carries a generation token from its first event, and\n+  `bump-generation` \u2014 the durable cursor-invalidation signal of a restore (port spec \u00a72) \u2014 is\n+  live for it. Placed in the gateway, not the CLI, so every governed write path inherits it:\n+  `hive emit`, the port, the acceptance driver, the sim binding.\n+  - **After the idempotency lookup:** a replay returns the existing event before the lock, as\n+    before; its original emit already registered the run.\n+  - **Before the gate:** a refusal still appends a `gateway.rejected` event (\u00a75), so a rejected\n+    emit registers the run too. The invariant is \"a run with history has a generation\" \u2014 a run\n+    with events and no token is exactly the defect this order exists to fix.\n+  - **Never touches `generation`**, only row existence. An emit into an already-registered run\n+    cannot reset a bumped generation and so cannot un-invalidate cursors a restore just\n+    invalidated.\n+- **Tests** (`tests/test_run_registration.py`, red-green \u2014 all six failed before the gateway\n+  change): four CLI-level, driving the real `omegahive emit` / `bump-generation` end-to-end\n+  against live Postgres (fresh run id registers at generation 1; a second emit is a registry\n+  no-op \u2014 one row, generation unchanged; `bump-generation` succeeds on that run; an emit into\n+  an already-registered, twice-bumped run leaves generation at 3); two gateway-level (an emit\n+  registers; a *rejected* emit registers).\n+- **Docs \u2014 the inert-bump caveats retired.** `docs/omegahive_recovery_runbook.md` restore step\n+  3 now describes the wired path and says what `run not registered` means when you still see\n+  it (a run with no emit since this write path shipped) instead of declaring the durable signal\n+  inert. `docs/deployments/deployment-0-beastie.md`'s \"Open item \u2014 generation token not wired\n+  to the live run\" becomes a statement of the wired path plus the one remaining operator step\n+  for the pre-existing `omegahive` run.\n+\n+**Not shipped:** the `omegahive` row itself. See **To operate** item 1 \u2014 it is an operator act\n+that post-dates this result.\n+\n+## How verified\n+\n+CI-equivalent, host `uv run` against a scratch Postgres database (created for the run, dropped\n+after; the durable database was never written to):\n+\n+- `ruff check .` clean \u00b7 `mypy` clean (182 source files) \u00b7 `pytest -q` \u2014 **408 passed**\n+  (402 before; the 6 new ones are this task's). Run through `bin/bench-verify`.\n+- Red-green: all six new tests fail against the pre-change gateway \u2014 no registry row, so\n+  `EventLog.generation()` is `None` and `bump-generation` exits 1 \u2014 and pass after it.\n+\n+**Scratch-run transcript** (`omegahive` CLI against the scratch DB, run id\n+`scratch-registration-0721`, `runs` queried directly):\n+\n+```\n+--- before: registry row for the run ---\n+[]\n+emitted \u00b7 task.reported \u00b7 seq 3758\n+--- after first emit ---\n+[('scratch-registration-0721', 1)]\n+emitted \u00b7 task.reported \u00b7 seq 3759\n+--- after second emit (registry no-op) ---\n+[(1, 1)]                                  # count(*), max(generation)\n+generation bumped for 'scratch-registration-0721': 1 -> 2\n+--- after bump ---\n+[('scratch-registration-0721', 2)]\n+emitted \u00b7 task.reported \u00b7 seq 3760\n+--- emit after the bump: generation preserved ---\n+[('scratch-registration-0721', 2)]\n+\n+$ omegahive bump-generation --run-id never-emitted-run\n+run not registered (no generation): 'never-emitted-run'   # exit 1 \u2014 still refuses, never fabricates\n+```\n+\n+First emit registers \u00b7 second emit is a no-op \u00b7 the bump succeeds on a run whose only history\n+is emits \u00b7 a later emit does not disturb the bumped generation \u00b7 an untouched run is still\n+refused. **The live run's generation was never bumped** (order stop-line): every bump above is\n+against the scratch run.\n+\n+## To operate\n+\n+1. **Register the durable `omegahive` run.** The run predates this change, so it enters the\n+   registry at its **first emit under a deployed image carrying this branch** \u2014 no action\n+   needed beyond merging and deploying, then letting normal work emit once. To activate it\n+   immediately instead (one-time, reversible), use the RUNBOOK one-liner:\n+   ```sh\n+   docker-compose run --rm --entrypoint python cli -c \\\n+     \"from omegahive.db import connect; from omegahive.port import open_run\n+   c=connect(); open_run(c,'omegahive'); c.commit(); print('registered')\"\n+   # reverse with:  psql ... -c \"DELETE FROM runs WHERE run_id='omegahive'\"\n+   ```\n+   Confirm either way \u2014 this is the query evidence the order's definition of done asks for:\n+   ```sh\n+   docker-compose exec postgres psql -U omegahive -c \\\n+     \"SELECT run_id, generation, created_at FROM runs WHERE run_id='omegahive'\"\n+   ```\n+   Until that row exists, `bump-generation --run-id omegahive` still prints `run not\n+   registered` and the restore floor stays **restart every client**.\n+2. **Nothing else changes operationally.** No schema change (the `runs` table is migration\n+   0002's), no new env var, no new container. Existing deployments need only the new image.\n+3. **Workspace RUNBOOK edit still owed** (this session had no workspace write path). In\n+   `projects/omegahive/RUNBOOK.md` \u2192 \"Backups and restore\" \u2192 restore step 3, replace the\n+   paragraph beginning \"**Caveat (read this):** the bump only works if the run is *registered*\"\n+   with:\n+\n+   > **Registration:** the bump only works on a *registered* run \u2014 and every emit now registers\n+   > its own run (the gateway opens it in the same transaction as the event), so any run with\n+   > history carries a generation. If the command still prints `run not registered`, that run\n+   > has had no emit since the write-path change of 2026-07-21: wire it with the one-time line\n+   > below, or let its next emit do it, then bump.\n+\n+   The \"wire the durable path\" block below it stays \u2014 it is now the *immediate* activation\n+   path for a pre-existing run, not the only one. Once the `omegahive` row exists, the\n+   restart-every-client bullet stops being an interim floor and reads as belt-and-braces.\n+4. **Branch not merged, not pushed** (no remote in this checkout): `feature/run-registration`,\n+   two commits.\n+\n+## Reflection\n+\n+- **The gateway, not the CLI, is the place.** The order says \"the emit path\"; the finding named\n+  `hive emit`. Registering in `Gateway.emit` covers `hive emit` *and* the port, the acceptance\n+  driver, and the sim binding \u2014 one insert per emit under a lock the path already takes, and\n+  the store stays dumb (it still only owns `open_run`; it does not decide when to call it).\n+  `EventLog.append` was the alternative; it would also register runs written by the handful of\n+  test-only direct-append callers, which is registration without governance and not what the\n+  order asked for.\n+- **Rejections register too, deliberately.** A refused emit still appends a `gateway.rejected`\n+  event, so the run has history that a restore can rewind, and cursors reading it need the\n+  invalidation signal. Registering only on accept would leave a run whose entire log is\n+  refusals in exactly the state this order calls a defect. One test pins it.\n+- **The order's item 2 cannot close inside a code checkout.** Registering the live run is a\n+  live-spine mutation (or a merged-and-deployed image plus one emit) \u2014 an operator act, as the\n+  2026-07-13 report already recorded when it refused the same step. The docs are written so\n+  they are true *both* before and after that act happens: they describe the wired write path\n+  and tell the reader exactly what `run not registered` means if they still see it, rather than\n+  asserting a row that does not yet exist. The report's **To operate** item 1 carries the query\n+  the definition of done wants run.\n+- **Two docs carried the caveat, not one.** The order names\n+  `docs/omegahive_recovery_runbook.md`; `docs/deployments/deployment-0-beastie.md` carried the\n+  same finding as an \"Open item\" and would have been left asserting \"the `hive emit` write path\n+  never calls `open_run`\" \u2014 false as of this branch. Updated both.\n+- **`bump-generation`'s refusal is load-bearing and stays.** It is tempting, once emit\n+  registers runs, to have the bump open-then-bump. It must not: fabricating a generation for a\n+  run with no history would hand a client a token for a log the operator may have mistyped the\n+  id of. The existing test pinning the refusal (`test_bump_generation_cli.py`) is unchanged and\n+  still passes.\ndiff --git a/docs/omegahive_recovery_runbook.md b/docs/omegahive_recovery_runbook.md\nindex 51ff606..0280061 100644\n--- a/docs/omegahive_recovery_runbook.md\n+++ b/docs/omegahive_recovery_runbook.md\n@@ -87,12 +87,15 @@ silently skip events. Follow the ordering exactly.\n      ```sh\n      docker compose run --rm cli bump-generation --run-id <run>\n      ```\n-     The bump only works on a *registered* run; it refuses one that was never opened\n-     (`run not registered`). The durable `omegahive` project run is currently unregistered\n-     \u2014 the `hive emit` write path never opens runs \u2014 so the bump is inert until the run is\n-     registered out of band (`omegahive.port.open_run`). See the ops RUNBOOK for the\n-     one-liner; until then the restart floor below is the operative path.\n-   - **Restart *every* client** \u2014 the always-safe interim floor, independent of the token.\n+     Every emit registers its own run \u2014 the gateway opens it (idempotently) in the same\n+     transaction as the event insert \u2014 so a run carries a generation from its first event\n+     and the bump is a live signal, not a no-op. The command still refuses an *unregistered*\n+     run (`run not registered`) rather than fabricating a generation: that answer means the\n+     run has had no emit since this write path shipped (2026-07-21). Register it out of band\n+     with `omegahive.port.open_run` \u2014 one-liner in the ops RUNBOOK \u2014 or let its next emit do\n+     it, then bump.\n+   - **Restart *every* client** \u2014 the always-safe belt-and-braces step, independent of the\n+     token, and the whole invalidation story for any run the bump refuses.\n 4. **Restart** coordinators/workers; each re-snapshots through the port.\n \n Verify a restore reproduces the board: deployment check 3 (`scripts/deploy_checks.sh`)\ndiff --git a/src/omegahive/gateway/gateway.py b/src/omegahive/gateway/gateway.py\nindex 9b81ce6..7f86a5d 100644\n--- a/src/omegahive/gateway/gateway.py\n+++ b/src/omegahive/gateway/gateway.py\n@@ -88,7 +88,9 @@ class Gateway:\n         logical_ts: int | None = None,\n         idempotency_key: str | None = None,\n     ) -> EmitResult:\n-        \"\"\"The write path (\u00a73): one atomic, per-run-serialized unit. conn.transaction()\n+        \"\"\"The write path (\u00a73): one atomic, per-run-serialized unit \u2014 and the run's\n+        idempotent registration, so every run carries a generation token (\u00a72) from its\n+        first event. conn.transaction()\n         commits per emit when the connection has no open transaction (the port / CLI),\n         and nests as a savepoint when one does (unit tests roll the outer one back).\"\"\"\n         conn = self._store.conn\n@@ -102,6 +104,13 @@ class Gateway:\n                         return Accepted(existing)\n                 # 2. serialize per run: advisory lock keyed in Postgres (never Python hash()).\n                 conn.execute(\"SELECT pg_advisory_xact_lock(hashtext(%s))\", (self._store.run_id,))\n+                # 2a. open the run in THIS transaction (ON CONFLICT DO NOTHING) so it\n+                # carries a generation token from its first event \u2014 accepted op or\n+                # recorded refusal alike. A run whose only write path is `emit` would\n+                # otherwise never enter the registry, leaving a restore's generation bump\n+                # inert for it (\u00a72) and restart-every-client the sole invalidation. Never\n+                # touches `generation`: an emit cannot un-invalidate a restore's bump.\n+                self._store.open_run()\n                 # 3. fold + gate against the run prefix under the lock.\n                 board = fold(self._store.read_run())\n                 rej = self._gate(board, actor, event_type, payload, task_id)\ndiff --git a/tests/test_run_registration.py b/tests/test_run_registration.py\nnew file mode 100644\nindex 0000000..53cbf69\n--- /dev/null\n+++ b/tests/test_run_registration.py\n@@ -0,0 +1,152 @@\n+\"\"\"Run registration on the write path: an emit opens its own run (\u00a72 generation token).\n+\n+The registry row is what makes `bump-generation` \u2014 the durable cursor-invalidation\n+signal of a restore \u2014 mean anything: an unregistered run has no generation to bump, so\n+the only correct post-restore floor is \"restart every client\". Before this, `hive emit`\n+(the only write path the durable project run has) never called `open_run`, so the one\n+run that mattered carried no token.\n+\n+The CLI-level tests drive the real `omegahive emit` command end-to-end (it opens its own\n+connection and commits for real, outside the per-test rollback fixture), so they point\n+`connect()` at the test DB and delete the run's events + registry row on teardown. The\n+gateway-level tests use the rolled-back `conn` fixture.\n+\"\"\"\n+\n+from __future__ import annotations\n+\n+import os\n+\n+import pytest\n+from typer.testing import CliRunner\n+\n+from omegahive import cli\n+from omegahive.clock import LogicalClock\n+from omegahive.db import connect\n+from omegahive.events.envelope import Actor\n+from omegahive.events.log import EventLog\n+from omegahive.gateway import Rejected\n+\n+TEST_DATABASE_URL = os.environ.get(\n+    \"OMEGAHIVE_TEST_DATABASE_URL\",\n+    \"postgresql://omegahive:omegahive@localhost:5432/omegahive_test\",\n+)\n+\n+runner = CliRunner()\n+RUN = \"cli-registration-test\"\n+REF = \"docs/omegahive_ui_spec.md@\" + \"abcdef12\" * 5  # a well-formed path@<40-hex-sha>\n+\n+PLANNER = Actor(role=\"planner\", id=\"planner\")\n+WORKER = Actor(role=\"worker\", id=\"w1\")\n+\n+\n+@pytest.fixture\n+def cli_db(monkeypatch):\n+    \"\"\"Point the CLI's connection at the test DB; drop this run's events AND its registry\n+    row on teardown (the registry row is exactly what these tests create).\"\"\"\n+    monkeypatch.setattr(cli, \"connect\", lambda *a, **k: connect(TEST_DATABASE_URL))\n+    yield\n+    c = connect(TEST_DATABASE_URL)\n+    try:\n+        with c.transaction():\n+            c.execute(\"DELETE FROM events WHERE run_id = %s\", (RUN,))\n+            c.execute(\"DELETE FROM runs WHERE run_id = %s\", (RUN,))\n+    finally:\n+        c.close()\n+\n+\n+def _generation() -> int | None:\n+    c = connect(TEST_DATABASE_URL)\n+    try:\n+        return EventLog(c, LogicalClock(0), RUN).generation()\n+    finally:\n+        c.close()\n+\n+\n+def _registry_rows() -> int:\n+    c = connect(TEST_DATABASE_URL)\n+    try:\n+        row = c.execute(\"SELECT count(*) FROM runs WHERE run_id = %s\", (RUN,)).fetchone()\n+        assert row is not None  # count(*) always returns a row\n+        return int(row[0])\n+    finally:\n+        c.close()\n+\n+\n+def _emit(kind: str = \"result\"):\n+    \"\"\"One governed emit through the real CLI. `kind` varies the payload so a second\n+    call is a genuinely new event, not a content+basis idempotency dedup.\"\"\"\n+    return runner.invoke(cli.app, [\n+        \"emit\", \"--run-id\", RUN, \"--role\", \"worker\", \"--actor\", \"w1\",\n+        \"--type\", \"task.reported\", \"--task\", \"t1\",\n+        \"--payload\", f'{{\"ref\": \"{REF}\", \"kind\": \"{kind}\"}}',\n+    ])\n+\n+\n+# --- the emit path opens the run --------------------------------------------\n+\n+def test_first_emit_registers_the_run(cli_db):\n+    \"\"\"A fresh run id has no registry row; its first emit gives it one at generation 1.\"\"\"\n+    assert _generation() is None\n+\n+    r = _emit()\n+    assert r.exit_code == 0, r.output\n+    assert _generation() == 1\n+\n+\n+def test_second_emit_is_a_registry_no_op(cli_db):\n+    \"\"\"Registration is ON CONFLICT DO NOTHING: later emits neither duplicate the row nor\n+    disturb the generation.\"\"\"\n+    assert _emit().exit_code == 0\n+    assert _emit(\"finding\").exit_code == 0\n+\n+    assert _registry_rows() == 1\n+    assert _generation() == 1\n+\n+\n+def test_bump_generation_succeeds_on_an_emitted_run(cli_db):\n+    \"\"\"The point of the whole change: the restore step's durable signal now works on a\n+    run whose only history is emits.\"\"\"\n+    assert _emit().exit_code == 0\n+\n+    r = runner.invoke(cli.app, [\"bump-generation\", \"--run-id\", RUN])\n+    assert r.exit_code == 0, r.output\n+    assert \"1\" in r.output and \"2\" in r.output  # old -> new reported\n+    assert _generation() == 2\n+\n+\n+def test_already_registered_run_keeps_its_generation(cli_db):\n+    \"\"\"An emit into an already-registered run changes nothing in the registry \u2014 in\n+    particular it never resets a bumped generation back to 1 (that would silently\n+    un-invalidate every cursor the restore just invalidated).\"\"\"\n+    assert _emit().exit_code == 0\n+    assert runner.invoke(cli.app, [\"bump-generation\", \"--run-id\", RUN]).exit_code == 0\n+    assert runner.invoke(cli.app, [\"bump-generation\", \"--run-id\", RUN]).exit_code == 0\n+    assert _generation() == 3\n+\n+    assert _emit(\"finding\").exit_code == 0\n+    assert _generation() == 3\n+    assert _registry_rows() == 1\n+\n+\n+# --- gateway level ----------------------------------------------------------\n+\n+def test_gateway_emit_registers_the_run(make_gateway):\n+    \"\"\"Registration happens in the gateway's emit transaction, so every governed write\n+    path inherits it \u2014 not just the CLI.\"\"\"\n+    gateway, store = make_gateway(run_id=\"gw-registration-test\")\n+    assert store.generation() is None\n+\n+    gateway.emit(actor=PLANNER, event_type=\"goal.received\", payload={\"text\": \"g\"})\n+    assert store.generation() == 1\n+\n+\n+def test_rejected_emit_also_registers_the_run(make_gateway):\n+    \"\"\"A refusal still appends an event (gateway.rejected, \u00a75), so the run has history \u2014\n+    and a run with history must carry a generation, or a restore cannot invalidate the\n+    cursors reading it.\"\"\"\n+    gateway, store = make_gateway(run_id=\"gw-registration-reject-test\")\n+    result = gateway.emit(actor=WORKER, event_type=\"goal.received\", payload={\"text\": \"g\"})\n+\n+    assert isinstance(result, Rejected)\n+    assert [e.event_type for e in store.read_run()] == [\"gateway.rejected\"]\n+    assert store.generation() == 1\n",
+  "exit_code": 0,
+  "finished_utc": "2026-08-13T16:17:37Z",
+  "home_is_cell_root": false,
+  "labels": {
+    "harness": "claude-code-2.1.231",
+    "model": "opus",
+    "vendor": "anthropic"
+  },
+  "outward_actions": {},
+  "progress": {
+    "exit": "2026-08-13T16:17:37Z",
+    "first_read": "unknown",
+    "first_response": "2026-08-13T16:17:36Z",
+    "first_verifier": "2026-08-13T16:14:28Z",
+    "first_write": "2026-03-26T00:00:00Z",
+    "missing_surfaces": {
+      "first_read": "harness exposes no tool-call transcript; no read timestamp is observable"
+    },
+    "sources": {
+      "exit": "runner wall clock at process reap",
+      "first_response": "timestamp of the first byte the agent wrote to stdout or stderr",
+      "first_verifier": "bin/bench-verify shim",
+      "first_write": "earliest mtime among files created or modified under code/ during the run"
+    },
+    "terminal_error": null
+  },
+  "resolved_identity": {
+    "api_error_status": null,
+    "available": true,
+    "canonical_model": "claude-opus-5",
+    "duration_ms": 595055,
+    "how_primary_chosen": "largest outputTokens in the harness's own modelUsage map",
+    "is_error": false,
+    "model_usage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costUSD": 0.0009480000000000001,
+        "inputTokens": 863,
+        "maxOutputTokens": 32000,
+        "outputTokens": 17,
+        "provider": "firstParty",
+        "webSearchRequests": 0
+      },
+      "claude-opus-5": {
+        "cacheCreationInputTokens": 95052,
+        "cacheReadInputTokens": 3786430,
+        "canonicalModel": "claude-opus-5",
+        "contextWindow": 1000000,
+        "costUSD": 3.5869550000000006,
+        "inputTokens": 2189,
+        "maxOutputTokens": 64000,
+        "outputTokens": 29291,
+        "provider": "firstParty",
+        "webSearchRequests": 0
+      }
+    },
+    "num_turns": 60,
+    "permission_denials": [],
+    "provider": "firstParty",
+    "resolved_model": "claude-opus-5",
+    "subtype": "success",
+    "terminal_reason": "completed",
+    "total_cost_usd": 3.5879030000000003,
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 95052,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 95052,
+      "cache_read_input_tokens": 3786430,
+      "inference_geo": "not_available",
+      "input_tokens": 2189,
+      "iterations": [
+        {
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 215,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "cache_creation_input_tokens": 215,
+          "cache_read_input_tokens": 110808,
+          "input_tokens": 2,
+          "output_tokens": 1133,
+          "type": "message"
+        }
+      ],
+      "output_tokens": 29291,
+      "output_tokens_details": {
+        "thinking_tokens": 11939
+      },
+      "server_tool_use": {
+        "web_fetch_requests": 0,
+        "web_search_requests": 0
+      },
+      "service_tier": "standard",
+      "speed": "standard"
+    }
+  },
+  "started_utc": "2026-08-13T16:07:40Z",
+  "stderr_path": "run/stderr.txt",
+  "stdout_path": "run/stdout.txt",
+  "task_id": "run-registration",
+  "timed_out": false,
+  "usage": {
+    "available": true,
+    "reported": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 95052,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 95052,
+      "cache_read_input_tokens": 3786430,
+      "inference_geo": "not_available",
+      "input_tokens": 2189,
+      "iterations": [
+        {
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 215,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "cache_creation_input_tokens": 215,
+          "cache_read_input_tokens": 110808,
+          "input_tokens": 2,
+          "output_tokens": 1133,
+          "type": "message"
+        }
+      ],
+      "output_tokens": 29291,
+      "output_tokens_details": {
+        "thinking_tokens": 11939
+      },
+      "server_tool_use": {
+        "web_fetch_requests": 0,
+        "web_search_requests": 0
+      },
+      "service_tier": "standard",
+      "speed": "standard"
+    },
+    "source": "harness result envelope",
+    "total_cost_usd": 3.5879030000000003
+  },
+  "wall_ms": 596571
+}

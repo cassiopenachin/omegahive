@@ -307,3 +307,121 @@ def test_an_agent_without_execution_identity_is_refused(world):
 
     spec = AgentSpec(argv=["true"], labels={"vendor": "x", "model": ""})
     assert spec.required_labels_present() == ["model", "harness"]
+
+
+# --- the v0.1 repairs ----------------------------------------------------------------------
+
+@pytest.mark.skipif(not fx.bwrap_available(), reason="bwrap is not available on this host")
+def test_workspace_changes_reach_the_candidate_diff_and_the_review_packet(tmp_path):
+    """The v0 defect, pinned. A candidate wrote the runbook section its order asked for into
+    `workspace/`; nothing captured it, the reviewer was shown a diff without it, and — from
+    the incomplete source set it was given — recorded the leg as not attempted."""
+    src, base, solution = fx.make_source_repo(tmp_path)
+    ws, ws_sha = fx.make_workspace_repo(tmp_path)
+    root = fx.make_corpus(
+        tmp_path, source_repo=src, base_sha=base, solution_sha=solution,
+        ws_repo=ws, ws_sha=ws_sha,
+    )
+    manifest_path = root / "tasks" / "greeting.yaml"
+    import yaml as _yaml
+
+    m = _yaml.safe_load(manifest_path.read_text())
+    m["writable_workspace_paths"] = ["projects/demo/PROTOCOL.md"]
+    manifest_path.write_text(_yaml.safe_dump(m))
+
+    corpus = load_corpus(root)
+    agent, reviewer = fx.specs(tmp_path, agent_body=fx.WORKSPACE_AGENT)
+    rec, verdicts = pipeline.run_batch(
+        corpus, ["greeting"], work_root=tmp_path / "work", out_dir=tmp_path / "records",
+        record_id="ws", date="2026-08-13", agent=agent, reviewer=reviewer,
+    )
+    cell = next((rec / "cells").iterdir())
+
+    run = json.loads((cell / "run.json").read_text())
+    assert "projects/demo/PROTOCOL.md" in run["workspace_changed_files"]
+    assert "Half-launch" in (cell / "workspace.patch").read_text()
+
+    declared = json.loads((cell / "review" / "packet-manifest.json").read_text())["inputs"]
+    assert "artefacts/workspace.patch" in declared, "the reviewer must be shown the doc work"
+    shown = (tmp_path / "work" / cell.name / "packet" / "artefacts" / "workspace.patch")
+    assert "The section the order asked for" in shown.read_text()
+
+    kickoff = (tmp_path / "work" / cell.name / "TASK.md").read_text()
+    assert "Some of them are yours to change" in kickoff
+    assert "projects/demo/PROTOCOL.md" in kickoff
+
+
+@pytest.mark.skipif(not fx.bwrap_available(), reason="bwrap is not available on this host")
+def test_one_repair_cycle_turns_a_red_first_shot_green_and_records_both(tmp_path):
+    """The pipeline HIP-1 is evaluating is a worker plus a review budget, so a cell is a
+    bounded cycle — and the first-shot verdict is never rewritten by the repair."""
+    src, base, solution = fx.make_source_repo(tmp_path)
+    ws, ws_sha = fx.make_workspace_repo(tmp_path)
+    corpus = load_corpus(fx.make_corpus(
+        tmp_path, source_repo=src, base_sha=base, solution_sha=solution,
+        ws_repo=ws, ws_sha=ws_sha,
+    ))
+    agent, reviewer = fx.specs(tmp_path, agent_body=fx.REWORK_AGENT)
+    rec, verdicts = pipeline.run_batch(
+        corpus, ["greeting"], work_root=tmp_path / "work", out_dir=tmp_path / "records",
+        record_id="cycle", date="2026-08-13", agent=agent, reviewer=reviewer,
+    )
+    assert verdicts[0].passed, verdicts[0].because
+
+    cell = next((rec / "cells").iterdir())
+    cycle = json.loads((cell / "cycle.json").read_text())
+    assert cycle["first_pass"]["passed"] is False, "the failed first shot is never rewritten"
+    assert cycle["remediated"] is True
+    assert cycle["final"]["deterministic"]["passed"] is True
+    assert (cell / "remediation-run.json").is_file()
+    assert (cell / "remediation.patch").read_text().strip()
+
+    aggregate = (rec / "aggregate.md").read_text()
+    assert "First-shot generation quality: 0/1" in aggregate
+    assert "Pipeline quality: 1/1" in aggregate
+
+
+def test_the_rework_brief_carries_findings_but_never_the_answer(tmp_path):
+    """A worker in rework sees its order, the findings and its own verifier output. Nothing
+    about the historical patch, the grader-only facts, or which candidate it is."""
+    from taskbench import remediation
+    from taskbench.grade import CheckResult, DeterministicLeg, ReviewLeg
+
+    det = DeterministicLeg(
+        passed=False,
+        checks=[CheckResult("greeting-exists", False, 1, "exit 1", "GREETING.txt missing")],
+        missing_artefacts=["GREETING.txt"],
+    )
+    rev = ReviewLeg(False, True, True, 1, "1 defect", verdict={
+        "verdict": "fail",
+        "would_have_shipped_defects": [
+            {"summary": "the artefact is absent", "why_blocking": "the order is not closed",
+             "evidence": "candidate.patch"}
+        ],
+    })
+    brief = remediation.build_brief(
+        title="greeting", order_path="projects/demo/orders/order.md", det=det, review=rev
+    )
+    assert "the artefact is absent" in brief
+    assert "GREETING.txt missing" in brief
+    assert "one** opportunity" in brief
+    for forbidden in ("historical", "accepted_outcome", "solution", "scripted-1", "vendor"):
+        assert forbidden not in brief, f"the rework brief leaks {forbidden}"
+
+
+def test_a_review_that_never_ran_earns_no_repair_opportunity():
+    """Handing a worker no findings and calling the result repaired would launder an
+    instrument failure into a model result."""
+    from taskbench import remediation
+    from taskbench.grade import ReviewLeg
+
+    broken = ReviewLeg(False, False, False, 0, "cold-reader probe failed")
+    go, why = remediation.should_remediate(False, broken)
+    assert not go and "did not run" in why
+
+    findings = ReviewLeg(False, True, True, 1, "1 defect", verdict={"verdict": "fail"})
+    go, why = remediation.should_remediate(False, findings)
+    assert go
+
+    go, why = remediation.should_remediate(True, findings)
+    assert not go and "no repair opportunity was used" in why

@@ -57,7 +57,11 @@ def test_the_later_solution_is_absent_from_the_object_database(world):
 def test_only_declared_workspace_inputs_are_exported(world):
     corpus, tmp, _ = world
     m = materialize(corpus.manifests["greeting"], tmp / "cell")
-    present = sorted(str(p.relative_to(m.workspace)) for p in m.workspace.rglob("*") if p.is_file())
+    present = sorted(
+        str(p.relative_to(m.workspace))
+        for p in m.workspace.rglob("*")
+        if p.is_file() and ".git" not in p.parts
+    )
     assert present == ["projects/demo/PROTOCOL.md", "projects/demo/orders/order.md"]
 
 

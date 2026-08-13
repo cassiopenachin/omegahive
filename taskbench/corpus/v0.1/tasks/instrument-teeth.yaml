@@ -1,0 +1,148 @@
+# taskbench corpus v0.1 — manifest for instrument-teeth. Frozen; edits increment the corpus version.
+id: instrument-teeth
+project: omegahive
+run: omegahive
+title: instrument-teeth — the predictions gate becomes a tool, not a reading
+task_class: bounded
+work_shape: shell-tooling
+bounded_because: 'Six numbered scope items, each with its own lettered acceptance case in the DoD, and
+  two pre-decided folds. Every case is a drill assertion; the order even fixes the vocabulary the validator
+  must accept and the two Watch folds'' dispositions. Nothing is left for the worker to design: the
+  one wording gap it contains (the phrase that spells the declared-unpredicted disposition) is a naming
+  choice inside a stated case, not a design decision.'
+workspace_repo: hive-workspace
+workspace_inputs:
+- path: projects/omegahive/orders/2026-07-29-instrument-teeth.md
+  sha: 8d95b46edacc4e7283737377a54af9e311a52600
+  role: order
+- path: projects/omegahive/WORKER.md
+  sha: 0f1170faf446d6318a1044ddd0a6982074b9b533
+  role: context
+- path: projects/omegahive/RUNBOOK.md
+  sha: 94623860780dc8c1a545b0575aa3d352339549eb
+  role: context
+- path: projects/omegahive/retros/2026-07-29-retro.md
+  sha: ac7fea9ac8c52ba65a2f6082499506d90fe62215
+  role: context
+- path: projects/omegahive/seats/design-partner/PROTOCOL.md
+  sha: ac7fea9ac8c52ba65a2f6082499506d90fe62215
+  role: context
+- path: projects/omegahive/seats/coordinator/PROTOCOL.md
+  sha: ac7fea9ac8c52ba65a2f6082499506d90fe62215
+  role: context
+- path: projects/omegahive/NOW.md
+  sha: 8d95b46edacc4e7283737377a54af9e311a52600
+  role: context
+withheld_inputs:
+- path: projects/omegahive/orders/2026-07-28-cli-qol.md
+  reason: cli-qol is held out of corpus v0. Shipping its order into a qualification launch packet would
+    spend the reservation.
+- path: projects/omegahive/reports/2026-07-28-cli-qol-result.md
+  reason: cli-qol is held out of corpus v0. Its result report is that task's answer.
+code:
+  repo: cassiopenachin/omegahive
+  pre_task_base_sha: 6e58802aa288cd47b08ede51a244d52a33ca60a7
+  local_path: ~/src/SNET/omegahive
+expected_output_kinds:
+- code_patch
+- doc_update
+required_artefacts:
+- scripts/hive-common.sh
+- scripts/hive-launch
+- scripts/hive-score
+environment_needs:
+- shellcheck on PATH.
+- '`scripts/hive-metrics-drill.sh` is hermetic — it points its own OMEGA_DIR at an empty directory,
+  issues no events and touches no run — so it is the deterministic leg that carries this cell.'
+verifiers:
+- id: shellcheck
+  argv:
+  - shellcheck
+  - -x
+  - scripts/hive-launch
+  - scripts/hive-answer
+  - scripts/hive-close
+  - scripts/hive-score
+  - scripts/hive-metrics
+  - scripts/hive-common.sh
+  - scripts/hive-tooling-drill.sh
+  - scripts/hive-metrics-drill.sh
+  description: shellcheck -x clean on the loop scripts, DoD (i)
+- id: metrics-drill
+  argv:
+  - scripts/hive-metrics-drill.sh
+  timeout_s: 1800
+  description: the hermetic metrics/scoring drill, green including the new cases
+- id: tooling-drill
+  argv:
+  - scripts/hive-tooling-drill.sh
+  timeout_s: 2400
+  description: the operator-loop drill, green including the launch-gate cases
+  applicable: operator
+checklist:
+- id: one-parser
+  text: 'DoD (c): the launch-side gate and the scorer are demonstrably ONE parser — a single input yields
+    the same verdict from both callers, proven by a case, not by two implementations that currently
+    agree.'
+- id: refuse-unparsed-not-absent
+  text: 'DoD (a)/(b): an order whose Predictions section parses zero of three fields is refused BEFORE
+    any spine write, with an override flag; an order with no Predictions section at all, and one carrying
+    the declared-unpredicted disposition, both launch with no refusal; a partial section warns and launches.'
+- id: absent-vs-unparsed-distinct
+  text: 'DoD (d): coverage records section-absent and section-present-but-unparsed as two different
+    strings.'
+- id: review-vocabulary
+  text: 'DoD (e): the review field accepts only the three values, case-insensitively, stored lowercase;
+    anything else is refused naming them.'
+- id: close-ordering
+  text: 'DoD (f): the close emits first; a regeneration failure afterwards is loud and non-fatal and
+    never makes a successful close look failed.'
+- id: refuse-not-rebase
+  text: 'DoD (g): on push failure the metrics commit helper refuses — commits locally, prints the manual
+    step, exits non-zero — and does not rebase.'
+- id: named-risks-unscored
+  text: The fourth prediction bullet stays required-but-unscored and is DOCUMENTED as unscored. Quietly
+    starting to score it is a stop-line.
+- id: drill-hygiene-reported
+  text: 'DoD (h): the bounded two-class drill-hygiene sweep is reported — files read, instances found,
+    fixes made, or ''none found'' stated.'
+- id: result-report
+  text: A result report exists under the project's reports directory carrying What shipped / How verified
+    / To operate / Reflection, and its claims match what the attempt actually did.
+  applicable: offline
+stop_lines:
+- id: no-prediction-field-changes
+  text: No prediction fields are added, removed, or newly scored.
+- id: no-event-model
+  text: No event-model, board-guard, adopt-logic, gateway, notifier or web-UI changes.
+  forbidden_paths:
+  - src/omegahive/events/*
+  - src/omegahive/gateway/*
+  - src/omegahive/notifier/*
+  - src/omegahive/ui/*
+- id: never-edit-orders
+  text: Tooling never edits an order or report body; the launch check reads and refuses and writes nothing
+    back.
+rubric: rubrics/instrument-teeth.md
+grading: grading/instrument-teeth.yaml
+non_replayable_legs:
+- leg: '`scripts/hive-tooling-drill.sh` green, including this task''s new cases.'
+  reason: The loop drill emits scratch spine events, which this instrument's own scope forbids, and
+    it drives tmux. At this task's baseline the drill predates the tmux isolation that the task itself
+    introduces, so running it necessarily creates sessions on the operator's live tmux server — the
+    server holding every worker pane. An offline evaluation instrument must not carry that blast radius.
+    The operator runs the drill against a green cell.
+  executed_by: operator
+- leg: Announce the result on the spine per WORKER.md.
+  reason: A spine emit, which this instrument's own scope forbids. The report the order asks for IS
+    written and graded — only the announcement is out of reach.
+  executed_by: not-executed
+required_changes:
+- scripts/hive-launch
+- scripts/hive-score
+- scripts/hive-close
+- scripts/hive-common.sh
+- scripts/hive-metrics-drill.sh
+writable_workspace_paths:
+- projects/omegahive/RUNBOOK.md
+- projects/omegahive/reports/*

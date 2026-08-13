@@ -30,7 +30,8 @@ from .runner import AgentSpec
 app = typer.Typer(help="OmegaHive task-replay benchmark (HIP-1 M1b).", no_args_is_help=True)
 console = Console()
 
-DEFAULT_CORPUS = CORPUS_ROOT / "v0"
+#: v0 remains on disk, unmodified: the v0 record pins its hash and must stay reproducible.
+DEFAULT_CORPUS = CORPUS_ROOT / "v0.1"
 
 
 def _corpus(path: str | None):

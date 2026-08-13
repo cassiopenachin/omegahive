@@ -10,7 +10,7 @@ import yaml
 from taskbench import CORPUS_ROOT
 from taskbench.manifest import HeldOutRefused, TaskManifest, load_corpus
 
-V0 = CORPUS_ROOT / "v0"
+V0 = CORPUS_ROOT / "v0.1"
 
 HELD_IN = {"launch-pane-fix", "instrument-teeth", "docs-triage", "run-registration",
            "ptc-revalidate"}
@@ -176,6 +176,18 @@ def test_corpus_content_hash_is_stable_and_covers_every_file(corpus):
         for p in (V0 / sub).glob("*"):
             if p.is_file():
                 assert str(p.relative_to(V0)) in corpus.file_hashes
+
+
+def test_v0_is_retained_unmodified_so_its_record_stays_reproducible(corpus):
+    """v0.1 supersedes v0 as the corpus in use; it does not erase it. The v0 incumbent record
+    pins v0's content hash, and a pin nobody can reproduce is not evidence."""
+    import json
+
+    v0 = CORPUS_ROOT / "v0"
+    assert v0.is_dir(), "the superseded corpus must survive"
+    frozen = json.loads((v0 / "HASHES").read_text())
+    assert frozen["corpus_content_hash"] == load_corpus(v0).content_hash
+    assert load_corpus(v0).content_hash != corpus.content_hash
 
 
 def test_frozen_hashes_match_the_tree(corpus):

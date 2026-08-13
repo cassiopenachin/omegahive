@@ -109,6 +109,9 @@ class ReviewerSpec(BaseModel):
 
     argv: list[str]
     labels: dict[str, str]
+    #: Set to `claude-code-json` when the reviewer runs with `--output-format json`, so its
+    #: own token and cache counts land in the record beside the candidate's.
+    result_envelope: str | None = None
     #: Wrapper argv with a `{packet}` placeholder. `[]` means no isolation — allowed only
     #: so the probe can demonstrate that it catches exactly that case.
     sandbox_argv: list[str] = Field(default_factory=lambda: list(DEFAULT_SANDBOX_ARGV))
@@ -148,6 +151,8 @@ class ReviewOutcome:
     exit_code: int
     ran: bool
     reason: str = ""
+    #: The reviewer's own resolved identity and consumption, from its result envelope.
+    usage: dict[str, Any] = field(default_factory=dict)
 
 
 def sandbox_wrapper(spec: ReviewerSpec, packet: Path) -> list[str]:
@@ -386,6 +391,9 @@ def run_review(
                 reason=f"reviewer timed out after {spec.timeout_s}s and wrote no verdict",
             )
 
+    from .runner import parse_result_envelope
+
+    usage = parse_result_envelope(spec.result_envelope, out.read_text(errors="replace"))
     verdict_file = packet / "verdict.json"
     verdict: dict[str, Any] | None = None
     reason = ""
@@ -404,4 +412,5 @@ def run_review(
         exit_code=proc_rc,
         ran=True,
         reason=reason,
+        usage=usage,
     )

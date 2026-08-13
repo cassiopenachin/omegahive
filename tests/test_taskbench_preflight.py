@@ -166,7 +166,7 @@ def test_the_launcher_pins_the_corpus_it_was_written_against():
     something nobody approved."""
     from taskbench import CORPUS_ROOT
 
-    frozen = load_corpus(CORPUS_ROOT / "v0").content_hash
+    frozen = load_corpus(CORPUS_ROOT / "v0.1").content_hash
     assert frozen in LAUNCHER.read_text(), (
         "the launcher's expected corpus hash has drifted from the frozen corpus"
     )

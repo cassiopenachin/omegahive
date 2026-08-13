@@ -49,6 +49,38 @@ subprocess.run(["gh", "issue", "create", "--repo", "up/stream", "--title", "gree
 print("agent: filed and done", flush=True)
 """
 
+WORKSPACE_AGENT = """\
+#!/usr/bin/env python3
+'''A candidate that does the code work AND edits the workspace doc the order names.'''
+import pathlib, subprocess, os
+root = pathlib.Path(os.environ["BENCH_CELL_ROOT"])
+(root / "code" / "GREETING.txt").write_text("hello from the candidate\\n")
+subprocess.run(["git", "add", "-A"], cwd=root / "code", check=True)
+subprocess.run(["git", "-c", "user.name=a", "-c", "user.email=a@b", "commit", "-qm", "work"],
+               cwd=root / "code", check=True)
+doc = root / "workspace" / "projects" / "demo" / "PROTOCOL.md"
+doc.write_text(doc.read_text() + "\\n## Half-launch\\n\\nThe section the order asked for.\\n")
+print("agent: code and workspace both done", flush=True)
+"""
+
+REWORK_AGENT = """\
+#!/usr/bin/env python3
+'''Fails the first attempt, then fixes it when handed the review findings.'''
+import pathlib, subprocess, os
+root = pathlib.Path(os.environ["BENCH_CELL_ROOT"])
+target = root / "code" / "GREETING.txt"
+if (root / "REWORK.md").exists():
+    brief = (root / "REWORK.md").read_text()
+    assert "What the review found" in brief, "the rework brief must carry the findings"
+    target.write_text("hello from the candidate\\n")
+    subprocess.run(["git", "add", "-A"], cwd=root / "code", check=True)
+    subprocess.run(["git", "-c", "user.name=a", "-c", "user.email=a@b", "commit", "-qm", "fix"],
+                   cwd=root / "code", check=True)
+    print("agent: repaired", flush=True)
+else:
+    print("agent: first attempt, doing nothing useful", flush=True)
+"""
+
 DUMMY_REVIEWER = """\
 #!/usr/bin/env python3
 '''A scripted reviewer: passes when the artefact exists in the patch it was given.'''

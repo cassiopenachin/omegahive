@@ -1,0 +1,109 @@
+{
+  "because": "all legs green",
+  "cell_id": "cell-e30274cd40",
+  "deterministic": {
+    "checks": [
+      {
+        "detail": "ok",
+        "exit_code": 0,
+        "id": "shellcheck",
+        "output_tail": "",
+        "passed": true
+      },
+      {
+        "detail": "ok",
+        "exit_code": 0,
+        "id": "metrics-drill",
+        "output_tail": "metrics drill: sandbox=/tmp/hive-metrics-drill.bE7niw\n\nmetrics drill: hive-metrics\n  PASS  tasks.md written\n  PASS  tasks.csv written\n  PASS  the artifacts were committed\n  PASS  the artifacts reached the upstream\n  PASS  the workspace was left clean\n  PASS  a no-change re-run says so\n  PASS  a no-change re-run adds no commit\n  PASS  --no-commit leaves the regenerated artifact uncommitted\n  PASS  the follow-up run recorded it after all\n  PASS  generated marker present\n  PASS  tasks.md ends with a newline\n  PASS  tasks.csv ends with a newline\n  PASS  alpha row present\n  PASS  gamma listed as retired\n  PASS  delta (in flight) not measured\n  PASS  delta listed as open, not measured\n  PASS  alpha launch latency 60s\n  PASS  alpha pickup 60s\n  PASS  alpha accept->result 3600s\n  PASS  alpha result->review 180s\n  PASS  alpha result->close 240s\n  PASS  alpha 0 questions\n  PASS  alpha shape=worked\n  PASS  beta blocked 600s\n  PASS  beta accept->result 3600s\n  PASS  beta net of blocked 3000s\n  PASS  beta 1 question\n  PASS  beta 3 rejections (coalesced)\n  PASS  beta 3 worker rejections\n  PASS  beta 1 reassignment\n  PASS  gamma shape=retired\n  PASS  gamma has no accept duration\n  PASS  epsilon measured (closed by task.failed)\n  PASS  epsilon final_status=failed\n  PASS  epsilon not listed as open\n  PASS  epsilon post-result block = 500s\n  PASS  epsilon net <= gross\n  PASS  zeta measured once\n  PASS  zeta closed at the second close\n  PASS  zeta final_status=done\n  PASS  zeta 3599s renders as 1h0m\n  PASS  no impossible clock strings\n  PASS  unattributed probe surfaced\n  PASS  pipe in a task id is escaped\n  PASS  no unescaped pipe in probe row\n  PASS  tasks.md regeneration is byte-identical\n  PASS  tasks.csv regeneration is byte-identical\n  PASS  artifact records its head seq\n  PASS  --upto head reproduces the artifact\n  PASS  --upto before beta close drops beta\n  PASS  --upto before beta close keeps alpha\n  PASS  --upto never commits the rewound artifact\n  PASS  --upto says why it did not commit\n  PASS  --upto does NOT advise committing it\n  PASS  --upto names the restore command\n  PASS  --upto never leaks the seq into prose\n  PASS  unreachable/empty run refused\n  PASS  --upto below the first seq refused\n  PASS  refused --upto left the artifact intact\n\nmetrics drill: hive-score\n  PASS  calibration.md written\n  PASS  alpha entry recorded\n  PASS  alpha predicted effort quoted\n  PASS  alpha actual effort scored\n  PASS  alpha effort verdict = hit\n  PASS  alpha questions verdict = hit\n  PASS  alpha review left unscored\n  PASS  alpha coverage full\n  PASS  the score was committed\n  PASS  the score reached the upstream\n  PASS  scoring left the workspace clean\n  PASS  the score commit touched only the metrics dir\n  PASS  --no-commit appends but does not commit\n  PASS  --no-commit adds no commit\n  PASS  re-scoring refused\n  PASS  --again re-scores\n  PASS  epsilon effort verdict = over\n  PASS  epsilon scorable (task.failed closed it)\n  PASS  zeta effort verdict = under\n  PASS  zeta questions verdict = under\n  PASS  zeta predicted range quoted\n  PASS  beta recorded as partial\n  PASS  beta effort prediction quoted\n  PASS  beta absent fields marked\n  PASS  beta absent field unpredicted\n  PASS  beta's partial coverage names the fields it missed\n  PASS  gamma recorded as unpredicted\n  PASS  gamma effort unpredicted\n\nmetrics drill: coverage tells absent from unparsed from declared\n  PASS  gamma (no section) says exactly that\n  PASS  eta (section present, 0 of 3 parsed) says exactly that\n  PASS  theta (declared unpredicted) says exactly that\n  PASS  the three 0-field coverages are three different strings\n  PASS  eta's order really does predict (in the unparseable dialect)\n  PASS  eta's fields are still recorded as not predicted\n  PASS  the calibration header says three fields are scored, not four\n  PASS  the calibration header names Named risks as unscored\n\nmetrics drill: --review vocabulary\n  PASS  --review Rework stores lowercase rework\n  PASS  --review 'Minor Rework' stores 'minor rework'\n  PASS  --review clean stores clean\n  PASS  --review bogus is refused, naming the three values\n  PASS  a near-miss verdict is refused too, not silently coerced\n  PASS  a refused verdict wrote no entry\n\nmetrics drill: one parser, two callers\n  PASS  parser: alpha reads full\n  PASS  parser: beta reads partial\n  PASS  parser: gamma reads absent\n  PASS  parser: eta reads unparseable\n  PASS  parser: theta reads declared\n  PASS  parser: iota reads partial (2 of 3)\n  PASS  parser: a missing file reads absent, it does not error\n  PASS  the gate's verdict and the scorer's record agree on eta\n  PASS  the gate's verdict and the scorer's record agree on gamma\n  PASS  the parser lives in hive-common.sh\n  PASS  hive-launch calls the shared parser\n  PASS  hive-score calls the shared parser\n  PASS  hive-launch carries NO prediction regex of its own\n  PASS  hive-score carries NO prediction regex of its own\n\nmetrics drill: the launch predictions gate\n  PASS  launch REFUSES an order whose predictions parse 0 of 3\n  PASS  the refusal prints the effort label, literally\n  PASS  the refusal prints the questions label\n  PASS  the refusal prints the review-outcome label\n  PASS  the refusal prints the fourth label too\n  PASS  the refusal says Named risks is read by no instrument\n  PASS  the refusal quotes the offending lines\n  PASS  the refusal names the escape hatch\n  PASS  the refused launch provisioned nothing\n  PASS  the refused launch issued no wrapper\n  PASS  the refused launch left the fixture untouched\n  PASS  the refused launch wrote nothing back into the order\n  PASS  --anyway launches the same order past the gate\n  PASS  --anyway announces the override instead of passing silently\n  PASS  an order with NO Predictions section launches past the gate\n  PASS  ...and is not refused\n  PASS  ...and did not need --anyway\n  PASS  ...and says the gap is a metric, not an error\n  PASS  a declared-unpredicted order launches past the gate\n  PASS  ...and is not refused\n  PASS  ...and did not need --anyway\n  PASS  ...and is recognised as declared, not merely absent\n  PASS  a 2-of-3 partial order launches past the gate\n  PASS  ...and is not refused\n  PASS  ...but warns loudly, naming what did not parse\n  PASS  ...and the warning shows the literal labels\n  PASS  the gate reads labels, not the heading\n  PASS  no launch in this section provisioned anything\n\nmetrics drill: commit_metrics refuses rather than rebases\n  PASS  a failed push exits non-zero\n  PASS  it says committed locally, NOT on the hub\n  PASS  it refuses to rebase, and says so\n  PASS  it prints the one manual resolution step\n  PASS  the entry really is committed locally\n  PASS  no rebase was left in progress\n  PASS  no rebase appears in the reflog\n  PASS  the prior history was not rewritten\n  PASS  hive-common.sh runs no pull --rebase anywhere\n  PASS  scoring an open task refused\n  PASS  un-inferable project refused\n  PASS  scoring an unknown task refused\n  PASS  ambiguous order refused, not scored as unpredicted\n  PASS  traversal in --project refused\n  PASS  unknown --project refused\n  PASS  no escaped calibration file written\n  PASS  run resolved from project.conf, not the name\n  PASS  entries cite the conf's run\n  PASS  --run overrides the conf\n  PASS  project without a conf refused\n\nmetrics drill: stop-lines\n  PASS  fixture untouched\n  PASS  hive-metrics contains no emit\n  PASS  hive-score contains no emit\n  PASS  neither tool commits to git\n\nmetrics drill: PASS=167  FAIL=0  (no events issued; no run touched)\n",
+        "passed": true
+      }
+    ],
+    "excluded_legs": [
+      {
+        "executed_by": "operator",
+        "leg": "`scripts/hive-tooling-drill.sh` green, including this task's new cases.",
+        "reason": "The loop drill emits scratch spine events, which this instrument's own scope forbids, and it drives tmux. At this task's baseline the drill predates the tmux isolation that the task itself introduces, so running it necessarily creates sessions on the operator's live tmux server \u2014 the server holding every worker pane. An offline evaluation instrument must not carry that blast radius. The operator runs the drill against a green cell."
+      }
+    ],
+    "missing_artefacts": [],
+    "passed": true,
+    "stop_line_violations": [],
+    "untouched_required_changes": []
+  },
+  "passed": true,
+  "review": {
+    "defect_count": 0,
+    "passed": true,
+    "probe_ok": true,
+    "ran": true,
+    "reason": "",
+    "verdict": {
+      "cell_id": "cell-e30274cd40",
+      "dod_legs": [
+        {
+          "leg": "one-parser",
+          "met": "yes",
+          "note": "predictions_parse/predictions_verdict/predictions_coverage live in scripts/hive-common.sh (candidate.patch:151-258); hive-score's old inline regexes are deleted (candidate.patch:879-891) and it calls predictions_parse (hive-score:869 in patch), as does hive-launch's gate (artefacts/scripts/hive-launch:107). Proven both behaviourally and structurally: metrics-drill.log:112-126 \u2014 'the gate's verdict and the scorer's record agree on eta/gamma', 'the parser lives in hive-common.sh', 'hive-launch/hive-score carries NO prediction regex of its own'."
+        },
+        {
+          "leg": "refuse-unparsed-not-absent",
+          "met": "yes",
+          "note": "Gate at hive-launch:107-147 runs before the WIP throttle (line 148), the order pin (line 239) and every emit (lines 294-304); unparseable exits 1 unless --anyway. metrics-drill.log:128-156 covers all four shapes: refuses 0-of-3 printing the four literal labels and the offending lines, names --anyway, provisioned nothing / wrote nothing back; no-section, declared-unpredicted and 2-of-3 all launch un-refused, the partial one warning loudly and naming the missed field."
+        },
+        {
+          "leg": "absent-vs-unparsed-distinct",
+          "met": "yes",
+          "note": "predictions_coverage emits four distinct strings (candidate.patch:249-258). metrics-drill.log:94-102 asserts the literal strings for gamma (absent), eta (section present, 0 of 3 fields parsed) and theta (declared), plus an explicit check that the three are different strings."
+        },
+        {
+          "leg": "review-vocabulary",
+          "met": "yes",
+          "note": "hive-score:76-81 lowercases and accepts only clean|minor rework|rework, refusing up front (before the spine read and the append) with a message naming the three. metrics-drill.log:104-110: Rework->rework, 'Minor Rework'->'minor rework', bogus and the near-miss 'needs rework' refused, and a refused verdict wrote no entry."
+        },
+        {
+          "leg": "close-ordering",
+          "met": "yes",
+          "note": "hive-close step 6 (candidate.patch:92-121) runs strictly after the review.passed/status_override emits, guards hive-metrics inside an if-condition so no failure is fatal, and on failure prints a loud warning stating the close is durable, the calibration entry unaffected, and the one recovery command. The two by-products are independent (a scoring failure does not skip metrics and vice versa); the script's last command in either branch returns 0."
+        },
+        {
+          "leg": "refuse-not-rebase",
+          "met": "yes",
+          "note": "commit_metrics' push->pull --rebase->push retry is replaced by commit-locally / print the manual step / return 1 (candidate.patch:288-303). metrics-drill.log:158-167: non-zero exit, 'committed LOCALLY, NOT on the hub', 'Refusing to rebase', the manual step printed, commit present locally, no rebase in progress or in the reflog, prior history not rewritten, and hive-common.sh runs no pull --rebase anywhere."
+        },
+        {
+          "leg": "named-risks-unscored",
+          "met": "yes",
+          "note": "Named risks is not parsed and not counted (coverage stays out of three), and is documented as unscored in hive-common.sh's parser header, the calibration.md header ('Three fields are scored, not four'), the launch refusal text ('read by no instrument'), and README. metrics-drill.log:101-102 and 134 assert the header and refusal wording. No prediction field is added, removed or newly scored."
+        },
+        {
+          "leg": "drill-hygiene-reported",
+          "met": "yes",
+          "note": "Bounded to the two named classes and reported by name in the swept file: the SIGPIPE class was found and fixed \u2014 the three stop-line checks piping `code` into `grep -Eq` are rewritten as plain `grep ... >/dev/null` (candidate.patch:796-803) with the rationale recorded at the `code` helper (candidate.patch:429-443, including that the negated form turns a real violation into a PASS); the EXIT-trap-before-isolation class is stated as having no instance here, with the reason (cleanup touches only the sandbox, created above the trap) at candidate.patch:445-452. No rewrite or new drill framework."
+        },
+        {
+          "leg": "shellcheck",
+          "met": "yes",
+          "note": "verifier/shellcheck.log is empty \u2014 no findings on the touched scripts."
+        },
+        {
+          "leg": "metrics-drill",
+          "met": "yes",
+          "note": "verifier/metrics-drill.log:186 \u2014 PASS=167 FAIL=0, no events issued and no run touched, including the new coverage, --review vocabulary, one-parser, launch-gate and commit_metrics sections."
+        },
+        {
+          "leg": "stop-lines",
+          "met": "yes",
+          "note": "Patch touches only scripts/ (hive-close, hive-common.sh, hive-launch, hive-score, the two drills) and README.md \u2014 no event-model, board-guard, adopt-logic, gateway, notifier or web-UI change. The gate reads and refuses only: metrics-drill.log:140 and the tooling-drill case at candidate.patch:1069-1072 assert nothing is written back into the order it read."
+        },
+        {
+          "leg": "tooling-drill-green",
+          "met": "not-applicable",
+          "note": "Explicitly out of scope per rubric \u2014 the loop drill emits scratch spine events and drives tmux, so it was not run here. New cases for the gate, the close's metrics by-product and its injected failure, and commit_metrics were nonetheless authored into scripts/hive-tooling-drill.sh (candidate.patch:1005-1017, 1026-1124, 1133-1200)."
+        }
+      ],
+      "verdict": "pass",
+      "would_have_shipped_defects": []
+    }
+  },
+  "task_id": "instrument-teeth"
+}

@@ -191,6 +191,9 @@ def write_cell(
     packet_manifest: list[str],
     probe: dict[str, Any],
     review_verdict: dict[str, Any] | None,
+    cycle: Any = None,
+    remediation_run: CellRun | None = None,
+    spend: dict[str, Any] | None = None,
 ) -> Path:
     cell = root / "cells" / run.cell_id
     _atomic_write_text(
@@ -216,6 +219,24 @@ def write_cell(
         cell / "review" / "verdict.json",
         json.dumps(review_verdict, indent=2, sort_keys=True) + "\n" if review_verdict else "null\n",
     )
+    if run.workspace_diff:
+        _atomic_write_text(cell / "workspace.patch", run.workspace_diff)
+    if cycle is not None:
+        _atomic_write_text(
+            cell / "cycle.json", json.dumps(cycle.to_json(), indent=2, sort_keys=True) + "\n"
+        )
+    if remediation_run is not None:
+        _atomic_write_text(
+            cell / "remediation-run.json",
+            json.dumps(remediation_run.to_json(), indent=2, sort_keys=True) + "\n",
+        )
+        _atomic_write_text(cell / "remediation.patch", remediation_run.diff or "")
+        if remediation_run.workspace_diff:
+            _atomic_write_text(
+                cell / "remediation-workspace.patch", remediation_run.workspace_diff
+            )
+    if spend is not None:
+        _atomic_write_text(cell / "spend.json", json.dumps(spend, indent=2, sort_keys=True) + "\n")
     _atomic_write_text(
         cell / "task.txt",
         f"{manifest.id}\n{manifest.project}\n{manifest.work_shape}\n",
@@ -254,17 +275,40 @@ def render_aggregate(
         "",
         f"**{green}/{len(verdicts)} task-level verdicts green.**",
         "",
-        "| task | project | work shape | deterministic | review | verdict | because |",
-        "|---|---|---|---|---|---|---|",
+        "| task | project | work shape | first shot | after one repair | deterministic | "
+        "review | because |",
+        "|---|---|---|---|---|---|---|---|",
     ]
+    cycles = config.get("cycles") or {}
     for v in sorted(verdicts, key=lambda x: x.task_id):
         m = corpus.manifests[v.task_id]
         det = "pass" if v.deterministic.passed else "FAIL"
         rev = "pass" if v.review.passed else ("FAIL" if v.review.ran else "not run")
+        c = cycles.get(v.task_id) or {}
+        first = "green" if c.get("first_passed") else "RED"
+        after = "—" if not c.get("remediated") else ("green" if v.passed else "RED")
         lines.append(
-            f"| {v.task_id} | {m.project} | {m.work_shape} | {det} | {rev} | "
-            f"{'green' if v.passed else 'RED'} | {v.because} |"
+            f"| {v.task_id} | {m.project} | {m.work_shape} | {first} | {after} | {det} | "
+            f"{rev} | {v.because} |"
         )
+    first_green = sum(1 for c in cycles.values() if c.get("first_passed"))
+    lines += [
+        "",
+        f"**First-shot generation quality: {first_green}/{len(verdicts)} green without any "
+        f"repair. Pipeline quality: {green}/{len(verdicts)} green after at most one "
+        "review-and-repair cycle.** Both are reported because a model that routinely needs "
+        "rescue must not read as a clean generator.",
+    ]
+    spend = config.get("spend_by_leg") or {}
+    if spend:
+        lines += [
+            "",
+            "| leg | reported list-price spend |",
+            "|---|---|",
+            *(f"| {k} | {v if v is not None else 'not reported'} |" for k, v in spend.items()),
+            "",
+            "A leg whose harness reported nothing is *not reported*, never zero.",
+        ]
     lines += ["", "## Per-task caveats", ""]
     for v in sorted(verdicts, key=lambda x: x.task_id):
         m = corpus.manifests[v.task_id]

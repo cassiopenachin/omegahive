@@ -17,7 +17,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import grade, materialize, record, review, runner
+from . import grade, materialize, record, remediation, review, runner
 from .manifest import LoadedCorpus, TaskManifest
 from .review import ReviewerSpec
 from .runner import AgentSpec
@@ -42,6 +42,9 @@ class CellOutcome:
     probe: dict
     review_verdict: dict | None
     verifier_logs: dict[str, str]
+    cycle: remediation.CycleRecord
+    remediation_run: runner.CellRun | None = None
+    spend: dict | None = None
 
 
 def ensure_canary(work_root: str | Path) -> Path:
@@ -117,36 +120,68 @@ def run_one_cell(
         cell_root, manifest, _historical_patch(corpus, manifest, source_repos)
     )
 
-    det = grade.run_deterministic(
-        manifest, mat, log_dir=cell_root / "verifier", corpus_root=corpus.root
-    )
+    def grade_and_review(stage: str, run_now: runner.CellRun):
+        det = grade.run_deterministic(
+            manifest, mat, log_dir=cell_root / f"verifier{stage}", corpus_root=corpus.root
+        )
+        packet_dir = cell_root / f"packet{stage}"
+        inputs = review.build_packet(
+            manifest,
+            packet_dir=packet_dir,
+            cell_id=cell_id,
+            order_text=(mat.workspace / manifest.order_input.path).read_text(),
+            rubric_text=corpus.rubric_text(task_id),
+            candidate_patch=run_now.diff,
+            verifier_outputs=det.outputs(),
+            artefacts={
+                **_collect_artefacts(manifest, mat),
+                **_outward_artefacts(run_now),
+                **_workspace_artefacts(run_now),
+            },
+        )
+        probe_now = review.run_probe(
+            reviewer, packet_dir=packet_dir, canary_path=canary,
+            solution_path=solution, declared_inputs=inputs,
+        )
+        outcome_now = review.run_review(
+            reviewer, packet_dir=packet_dir, cell_id=cell_id,
+            probe=probe_now, log_dir=cell_root / f"review{stage}",
+        )
+        return det, inputs, probe_now, outcome_now, grade.score_review(outcome_now)
 
-    packet_inputs = review.build_packet(
-        manifest,
-        packet_dir=cell_root / "packet",
-        cell_id=cell_id,
-        order_text=(mat.workspace / manifest.order_input.path).read_text(),
-        rubric_text=corpus.rubric_text(task_id),
-        candidate_patch=run.diff,
-        verifier_outputs=det.outputs(),
-        artefacts={**_collect_artefacts(manifest, mat), **_outward_artefacts(run)},
+    det, packet_inputs, probe, outcome, rev = grade_and_review("", run)
+    first = grade.task_verdict(manifest, cell_id, det, rev)
+
+    # --- the one repair opportunity -------------------------------------------------------
+    remediate, why = remediation.should_remediate(first.passed, rev)
+    cycle = remediation.CycleRecord(
+        first_deterministic=det, first_review=rev, first_passed=first.passed,
+        remediated=remediate, remediation_reason=why,
     )
-    probe = review.run_probe(
-        reviewer,
-        packet_dir=cell_root / "packet",
-        canary_path=canary,
-        solution_path=solution,
-        declared_inputs=packet_inputs,
+    verdict = first
+    remediation_run = None
+    reviews = [outcome.usage]
+
+    if remediate:
+        brief = remediation.build_brief(
+            title=manifest.title, order_path=manifest.order_input.path, det=det, review=rev
+        )
+        remediation.write_brief(cell_root, brief)
+        remediation_run = runner.run_cell(
+            manifest, mat, agent, cell_id,
+            out_dir=cell_root / "run-remediation", prompt_override=brief,
+        )
+        det2, packet_inputs, probe, outcome, rev2 = grade_and_review("-final", remediation_run)
+        cycle.final_deterministic, cycle.final_review = det2, rev2
+        verdict = grade.task_verdict(manifest, cell_id, det2, rev2)
+        det = det2
+        reviews.append(outcome.usage)
+
+    spend = remediation.spend_by_leg(
+        attempt=run.usage,
+        remediation=remediation_run.usage if remediation_run else None,
+        reviews=reviews,
     )
-    outcome = review.run_review(
-        reviewer,
-        packet_dir=cell_root / "packet",
-        cell_id=cell_id,
-        probe=probe,
-        log_dir=cell_root / "review",
-    )
-    rev = grade.score_review(outcome)
-    verdict = grade.task_verdict(manifest, cell_id, det, rev)
 
     return CellOutcome(
         manifest=manifest,
@@ -163,7 +198,27 @@ def run_one_cell(
         },
         review_verdict=outcome.verdict,
         verifier_logs=det.outputs(),
+        cycle=cycle,
+        remediation_run=remediation_run,
+        spend=spend,
     )
+
+
+def _workspace_artefacts(run: runner.CellRun) -> dict[str, str]:
+    """What the candidate did to the workspace documents the order made its own.
+
+    v0 captured none of this. A candidate that wrote the runbook section the order asked for
+    had it thrown away before grading, and the reviewer — reasoning correctly from what it
+    was shown — recorded the leg as not attempted.
+    """
+    if not run.workspace_diff:
+        return {}
+    return {
+        "workspace.patch": (
+            "# Changes the attempt made to the workspace documents this order names\n"
+            f"# ({', '.join(run.workspace_changed_files)})\n\n" + run.workspace_diff
+        )
+    }
 
 
 def _outward_artefacts(run: runner.CellRun) -> dict[str, str]:
@@ -235,6 +290,9 @@ def run_batch(
                 packet_manifest=outcome.packet_manifest,
                 probe=outcome.probe,
                 review_verdict=outcome.review_verdict,
+                cycle=outcome.cycle,
+                remediation_run=outcome.remediation_run,
+                spend=outcome.spend,
             )
             verdicts.append(outcome.verdict)
             rows.append(
@@ -246,6 +304,9 @@ def run_batch(
                     "usage": outcome.run.usage,
                     "wall_ms": outcome.run.wall_ms,
                     "passed": outcome.verdict.passed,
+                    "first_passed": outcome.cycle.first_passed,
+                    "remediated": outcome.cycle.remediated,
+                    "spend": outcome.spend,
                 }
             )
     finally:
@@ -254,6 +315,22 @@ def run_batch(
         config["resolved_models"] = sorted(
             {r["resolved_model"] for r in rows if r.get("resolved_model")}
         )
+        config["cycles"] = {
+            r["task_id"]: {"first_passed": r["first_passed"], "remediated": r["remediated"]}
+            for r in rows
+        }
+        totals: dict[str, float] = {}
+        for r in rows:
+            for leg, value in ((r.get("spend") or {}).items()):
+                if leg == "candidate_attempt" or leg == "candidate_remediation":
+                    usd = (value or {}).get("usd")
+                    if usd is not None:
+                        totals[leg] = round(totals.get(leg, 0.0) + usd, 4)
+                elif leg == "review":
+                    for one in value or []:
+                        if one.get("usd") is not None:
+                            totals["review"] = round(totals.get("review", 0.0) + one["usd"], 4)
+        config["spend_by_leg"] = totals or None
         # Finalize whatever completed even when a later cell aborts. A half-written record
         # that cannot be validated is a worse artefact than a short one that can, and the
         # cells that did run are evidence the operator paid for.

@@ -111,6 +111,8 @@ def _export_tree(source_repo: Path, sha: str, dest: Path) -> None:
 
 def _init_single_baseline(dest: Path, base_sha: str, repo: str) -> None:
     """Turn an exported tree into a one-commit repository with no remotes."""
+    if (dest / ".git").exists():
+        return
     _git(dest, "init", "--quiet", "--initial-branch=main")
     _git(dest, "config", "user.name", "taskbench materializer")
     _git(dest, "config", "user.email", "taskbench@localhost")
@@ -206,6 +208,10 @@ def materialize(
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(blob.stdout)
         exported_inputs.append(item.path)
+
+    # A one-commit repository, for the same reason `code/` is one: it makes what the
+    # candidate did to these documents visible, without carrying any later workspace state.
+    _init_single_baseline(workspace, "workspace inputs", manifest.workspace_repo)
 
     deps.mkdir(parents=True, exist_ok=True)
     exported_deps = [_export_dependency(d, deps, overrides) for d in manifest.dependency_snapshots]
@@ -304,7 +310,7 @@ def leakage_scan(m: Materialized, manifest: TaskManifest) -> list[str]:
 
     allowed = {w.path for w in manifest.workspace_inputs}
     for p in m.workspace.rglob("*"):
-        if not p.is_file():
+        if not p.is_file() or ".git" in p.parts:
             continue
         rel = str(p.relative_to(m.workspace))
         if rel not in allowed:

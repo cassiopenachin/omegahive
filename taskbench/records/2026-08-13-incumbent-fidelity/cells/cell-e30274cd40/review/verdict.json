@@ -1,0 +1,67 @@
+{
+  "cell_id": "cell-e30274cd40",
+  "dod_legs": [
+    {
+      "leg": "one-parser",
+      "met": "yes",
+      "note": "predictions_parse/predictions_verdict/predictions_coverage live in scripts/hive-common.sh (candidate.patch:151-258); hive-score's old inline regexes are deleted (candidate.patch:879-891) and it calls predictions_parse (hive-score:869 in patch), as does hive-launch's gate (artefacts/scripts/hive-launch:107). Proven both behaviourally and structurally: metrics-drill.log:112-126 \u2014 'the gate's verdict and the scorer's record agree on eta/gamma', 'the parser lives in hive-common.sh', 'hive-launch/hive-score carries NO prediction regex of its own'."
+    },
+    {
+      "leg": "refuse-unparsed-not-absent",
+      "met": "yes",
+      "note": "Gate at hive-launch:107-147 runs before the WIP throttle (line 148), the order pin (line 239) and every emit (lines 294-304); unparseable exits 1 unless --anyway. metrics-drill.log:128-156 covers all four shapes: refuses 0-of-3 printing the four literal labels and the offending lines, names --anyway, provisioned nothing / wrote nothing back; no-section, declared-unpredicted and 2-of-3 all launch un-refused, the partial one warning loudly and naming the missed field."
+    },
+    {
+      "leg": "absent-vs-unparsed-distinct",
+      "met": "yes",
+      "note": "predictions_coverage emits four distinct strings (candidate.patch:249-258). metrics-drill.log:94-102 asserts the literal strings for gamma (absent), eta (section present, 0 of 3 fields parsed) and theta (declared), plus an explicit check that the three are different strings."
+    },
+    {
+      "leg": "review-vocabulary",
+      "met": "yes",
+      "note": "hive-score:76-81 lowercases and accepts only clean|minor rework|rework, refusing up front (before the spine read and the append) with a message naming the three. metrics-drill.log:104-110: Rework->rework, 'Minor Rework'->'minor rework', bogus and the near-miss 'needs rework' refused, and a refused verdict wrote no entry."
+    },
+    {
+      "leg": "close-ordering",
+      "met": "yes",
+      "note": "hive-close step 6 (candidate.patch:92-121) runs strictly after the review.passed/status_override emits, guards hive-metrics inside an if-condition so no failure is fatal, and on failure prints a loud warning stating the close is durable, the calibration entry unaffected, and the one recovery command. The two by-products are independent (a scoring failure does not skip metrics and vice versa); the script's last command in either branch returns 0."
+    },
+    {
+      "leg": "refuse-not-rebase",
+      "met": "yes",
+      "note": "commit_metrics' push->pull --rebase->push retry is replaced by commit-locally / print the manual step / return 1 (candidate.patch:288-303). metrics-drill.log:158-167: non-zero exit, 'committed LOCALLY, NOT on the hub', 'Refusing to rebase', the manual step printed, commit present locally, no rebase in progress or in the reflog, prior history not rewritten, and hive-common.sh runs no pull --rebase anywhere."
+    },
+    {
+      "leg": "named-risks-unscored",
+      "met": "yes",
+      "note": "Named risks is not parsed and not counted (coverage stays out of three), and is documented as unscored in hive-common.sh's parser header, the calibration.md header ('Three fields are scored, not four'), the launch refusal text ('read by no instrument'), and README. metrics-drill.log:101-102 and 134 assert the header and refusal wording. No prediction field is added, removed or newly scored."
+    },
+    {
+      "leg": "drill-hygiene-reported",
+      "met": "yes",
+      "note": "Bounded to the two named classes and reported by name in the swept file: the SIGPIPE class was found and fixed \u2014 the three stop-line checks piping `code` into `grep -Eq` are rewritten as plain `grep ... >/dev/null` (candidate.patch:796-803) with the rationale recorded at the `code` helper (candidate.patch:429-443, including that the negated form turns a real violation into a PASS); the EXIT-trap-before-isolation class is stated as having no instance here, with the reason (cleanup touches only the sandbox, created above the trap) at candidate.patch:445-452. No rewrite or new drill framework."
+    },
+    {
+      "leg": "shellcheck",
+      "met": "yes",
+      "note": "verifier/shellcheck.log is empty \u2014 no findings on the touched scripts."
+    },
+    {
+      "leg": "metrics-drill",
+      "met": "yes",
+      "note": "verifier/metrics-drill.log:186 \u2014 PASS=167 FAIL=0, no events issued and no run touched, including the new coverage, --review vocabulary, one-parser, launch-gate and commit_metrics sections."
+    },
+    {
+      "leg": "stop-lines",
+      "met": "yes",
+      "note": "Patch touches only scripts/ (hive-close, hive-common.sh, hive-launch, hive-score, the two drills) and README.md \u2014 no event-model, board-guard, adopt-logic, gateway, notifier or web-UI change. The gate reads and refuses only: metrics-drill.log:140 and the tooling-drill case at candidate.patch:1069-1072 assert nothing is written back into the order it read."
+    },
+    {
+      "leg": "tooling-drill-green",
+      "met": "not-applicable",
+      "note": "Explicitly out of scope per rubric \u2014 the loop drill emits scratch spine events and drives tmux, so it was not run here. New cases for the gate, the close's metrics by-product and its injected failure, and commit_metrics were nonetheless authored into scripts/hive-tooling-drill.sh (candidate.patch:1005-1017, 1026-1124, 1133-1200)."
+    }
+  ],
+  "verdict": "pass",
+  "would_have_shipped_defects": []
+}

@@ -19,10 +19,11 @@
 set -euo pipefail
 
 # --- what this batch is ------------------------------------------------------------------
-# The corpus hash is a literal on purpose. If the corpus moves, this refuses rather than
-# quietly measuring something else.
-readonly EXPECT_CORPUS_HASH="sha256:b9f14e1be7ff4997b828da55691d6e9141bce3470e2f8bbaef14b5ff12d6b897"
-readonly RECORD_BASE="incumbent-fidelity"
+# Corpus v0.1: the same eight frozen tasks as v0, with the workspace-capture repair and the
+# one review-and-repair cycle. The hash is a literal on purpose — if the corpus moves, this
+# refuses rather than quietly measuring something else.
+readonly EXPECT_CORPUS_HASH="sha256:6bdbb73352bcf61bddef97ddd50c51d3dc1cdf283a42648ceb1086bab0a23085"
+readonly RECORD_BASE="incumbent-fidelity-v0-1"
 readonly MODEL_ALIAS="opus"          # a request; the resolved id is read back from the harness
 readonly VENDOR="anthropic"
 

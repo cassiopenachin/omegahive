@@ -1,0 +1,16 @@
+{
+  "cell_id": "cell-31b07c38af",
+  "inputs": [
+    "README.md",
+    "artefacts/docs/ptc-verdict.md",
+    "artefacts/outward/gh.md",
+    "candidate.patch",
+    "cell.json",
+    "order.md",
+    "packet-manifest.json",
+    "rubric.md",
+    "verifier/repro-script-present.log",
+    "verifier/subjects-unpatched.log",
+    "verifier/verdict-shape.log"
+  ]
+}
