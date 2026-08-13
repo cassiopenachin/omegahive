@@ -272,6 +272,45 @@ def aggregate_cmd(
     console.print(text)
 
 
+@app.command("schema")
+def schema_cmd(
+    out: str | None = typer.Option(None, "--out", help="write to a file instead of stdout"),
+) -> None:
+    """Print the runner config's JSON Schema — what `--config` accepts, generated from the
+    models that read it, so the two cannot drift."""
+    doc = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "taskbench runner config",
+        "description": (
+            "Passed to `taskbench run --config`. Credentials never appear here: they reach "
+            "the agent and the reviewer through the operator's environment, named by "
+            "`env_passthrough`, and taskbench neither reads nor stores them."
+        ),
+        "type": "object",
+        "required": ["agent", "reviewer"],
+        "properties": {
+            "agent": AgentSpec.model_json_schema(),
+            "reviewer": ReviewerSpec.model_json_schema(),
+            "workspace_repo_path": {
+                "type": "string",
+                "description": "Local path to the workspace clone the manifests pin against.",
+            },
+            "source_repos": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "description": "repo identifier → local clone path, for the materializer.",
+            },
+        },
+        "additionalProperties": False,
+    }
+    text = json.dumps(doc, indent=2, sort_keys=True) + "\n"
+    if out:
+        Path(out).write_text(text)
+        console.print(f"wrote {out}")
+    else:
+        print(text)
+
+
 @app.command("sandbox-default")
 def sandbox_default() -> None:
     """Print the default review sandbox wrapper, for an operator writing a runner config."""

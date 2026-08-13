@@ -65,6 +65,9 @@ Copy `taskbench/configs/incumbent-fidelity.example.yaml`, fill in the two `label
 with the model ids you actually resolved and the harness version from `claude --version`,
 then:
 
+<!-- The config's shape is `taskbench/configs/runner-config.schema.json`, regenerated from
+     the models that read it with `taskbench schema --out <path>`. -->
+
 ```bash
 uv run --frozen taskbench run \
   --config taskbench/configs/incumbent-fidelity.yaml \

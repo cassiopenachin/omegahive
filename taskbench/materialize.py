@@ -227,8 +227,9 @@ def _export_dependency(dep, deps_dir: Path, overrides: dict[str, str]) -> str | 
         shutil.rmtree(scratch, ignore_errors=True)
         (deps_dir / f"{dep.name}.README.txt").write_text(
             f"{dep.name} pinned at {rev}, as an offline git bundle.\n\n"
-            f"  git clone -b pinned {bundle.name} {dep.name}\n\n"
-            "There is no network fetch of this dependency; the bundle is the only source.\n"
+            f"  git clone -b pinned deps/{bundle.name} <wherever you want it>\n\n"
+            "Run that from the cell root. There is no network fetch of this dependency; the\n"
+            "bundle is the only source, and it holds the pinned commit's ancestry and no more.\n"
         )
         return f"{dep.name}.bundle"
     if dep.kind == "image":
