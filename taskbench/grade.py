@@ -70,12 +70,17 @@ class TaskVerdict:
     review: ReviewLeg
     #: One line naming what actually decided the cell, for the aggregate's red column.
     because: str
+    #: The session died for a reason that is not judgment — a rate limit, an auth failure, a
+    #: reviewer that never answered. Such a cell is NOT a model result and must never be
+    #: counted as one; it is a cell that still needs running.
+    inconclusive: bool = False
 
     def to_json(self) -> dict:
         return {
             "task_id": self.task_id,
             "cell_id": self.cell_id,
             "passed": self.passed,
+            "inconclusive": self.inconclusive,
             "because": self.because,
             "deterministic": asdict(self.deterministic),
             "review": asdict(self.review),
@@ -227,9 +232,35 @@ def score_review(outcome: ReviewOutcome) -> ReviewLeg:
     )
 
 
+def environment_failures(runs: list, rev: ReviewLeg) -> list[str]:
+    """Reasons this cell says nothing about the model."""
+    out = [
+        f"the session died: {r.progress.terminal_error}"
+        for r in runs
+        if r is not None and r.progress.terminal_error
+    ]
+    if rev.ran and rev.verdict is None:
+        out.append(f"the review returned no verdict: {rev.reason}")
+    if not rev.ran and not rev.probe_ok:
+        out.append(f"the cold-reader probe failed, so no review ran: {rev.reason}")
+    return out
+
+
 def task_verdict(
-    manifest: TaskManifest, cell_id: str, det: DeterministicLeg, rev: ReviewLeg
+    manifest: TaskManifest,
+    cell_id: str,
+    det: DeterministicLeg,
+    rev: ReviewLeg,
+    runs: list | None = None,
 ) -> TaskVerdict:
+    broken = environment_failures(runs or [], rev)
+    if broken:
+        return TaskVerdict(
+            task_id=manifest.id, cell_id=cell_id, passed=False, deterministic=det, review=rev,
+            because="INCONCLUSIVE — " + "; ".join(broken)
+            + ". This cell is not a model result and must be run again.",
+            inconclusive=True,
+        )
     reasons: list[str] = []
     if not det.passed:
         failed = [c.id for c in det.checks if not c.passed]

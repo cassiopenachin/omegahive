@@ -101,7 +101,10 @@ def test_an_idle_candidate_fails_even_when_every_deliverable_already_exists(worl
     assert not det.passed
     assert det.missing_artefacts == []
     assert det.untouched_required_changes == ["keep.txt"]
-    v = grade.task_verdict(manifest, "c", det, grade.ReviewLeg(True, True, True, 0, ""))
+    clean_review = grade.ReviewLeg(
+        True, True, True, 0, "", verdict={"verdict": "pass", "would_have_shipped_defects": []}
+    )
+    v = grade.task_verdict(manifest, "c", det, clean_review)
     assert "never touched" in v.because
 
     (m.code / "keep.txt").write_text("real work\n")
@@ -222,7 +225,13 @@ def test_the_task_verdict_names_what_decided_it(world):
     corpus, tmp = world
     manifest = corpus.manifests["greeting"]
     det = grade.DeterministicLeg(passed=False, missing_artefacts=["GREETING.txt"])
-    rev = grade.ReviewLeg(False, True, True, 2, "2 would-have-shipped defect(s)")
+    rev = grade.ReviewLeg(
+        False, True, True, 2, "2 would-have-shipped defect(s)",
+        verdict={
+            "verdict": "fail",
+            "would_have_shipped_defects": [{"summary": "a"}, {"summary": "b"}],
+        },
+    )
     v = grade.task_verdict(manifest, "cell-1", det, rev)
     assert not v.passed
     assert "missing artefacts" in v.because and "review leg" in v.because

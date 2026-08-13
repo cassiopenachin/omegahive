@@ -197,6 +197,10 @@ def run_cmd(
     expect_corpus_hash: str | None = typer.Option(
         None, "--expect-corpus-hash", help="refuse unless the corpus hashes to exactly this"
     ),
+    resume_from: str | None = typer.Option(
+        None, "--resume-from",
+        help="carry every conclusive cell forward from this record; re-run only the rest",
+    ),
     skip_preflight: bool = typer.Option(
         False, "--skip-preflight", help="diagnostics only; never for a batch that costs money"
     ),
@@ -247,10 +251,18 @@ def run_cmd(
         supersedes=supersedes,
         source_repos=cfg.get("source_repos"),
         workspace_repo_path=cfg.get("workspace_repo_path"),
+        resume_from=resume_from,
     )
     green = sum(1 for v in verdicts if v.passed)
+    unresolved = [v.task_id for v in verdicts if v.inconclusive]
     console.print(f"wrote record: {root}")
     console.print(f"[bold]{green}/{len(verdicts)}[/bold] task-level verdicts green")
+    if unresolved:
+        console.print(
+            f"[bold]{len(unresolved)} cell(s) INCONCLUSIVE[/bold] — the environment killed "
+            f"them, so they are not model results: {', '.join(unresolved)}. Re-run to finish; "
+            "the conclusive cells will be carried forward, not repeated."
+        )
     problems = record.validate_record(root)
     if problems:
         for p in problems:
@@ -289,6 +301,32 @@ def preflight_cmd(
     if problems:
         raise typer.Exit(code=3)
     console.print("preflight: every precondition agrees")
+
+
+@app.command("resume-target")
+def resume_target_cmd(
+    base: str = typer.Option(..., "--base"),
+    out: str = typer.Option("taskbench/records", "--out"),
+    corpus: str | None = typer.Option(None, "--corpus"),
+) -> None:
+    """Print `<record-dir-to-resume-from> <n-conclusive>`, or `- 0`. The launcher uses this so
+    finishing an interrupted batch stays a no-argument command."""
+    c = _corpus(corpus)
+    root = Path(out)
+    best, count = None, 0
+    if root.is_dir():
+        for rec in sorted(root.iterdir(), reverse=True):
+            cfg = rec / "config.json"
+            if not cfg.is_file() or not rec.name.endswith(tuple(f"-{base}".split())):
+                continue
+            data = json.loads(cfg.read_text())
+            if data.get("corpus_content_hash") != c.content_hash:
+                continue
+            cells = record.resumable_cells(rec)
+            if cells:
+                best, count = rec, len(cells)
+                break
+    print(f"{best or '-'} {count}")
 
 
 @app.command("next-record-id")

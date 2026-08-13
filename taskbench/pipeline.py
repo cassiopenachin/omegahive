@@ -13,6 +13,7 @@ matter live here and are visible in one read:
 
 from __future__ import annotations
 
+import json
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -150,10 +151,15 @@ def run_one_cell(
         return det, inputs, probe_now, outcome_now, grade.score_review(outcome_now)
 
     det, packet_inputs, probe, outcome, rev = grade_and_review("", run)
-    first = grade.task_verdict(manifest, cell_id, det, rev)
+    first = grade.task_verdict(manifest, cell_id, det, rev, [run])
 
     # --- the one repair opportunity -------------------------------------------------------
     remediate, why = remediation.should_remediate(first.passed, rev)
+    if first.inconclusive:
+        # Nothing here says anything about the model, so there is nothing to repair. Handing
+        # a worker a rate-limited non-review and grading the result would manufacture a
+        # verdict out of an outage.
+        remediate, why = False, f"no remediation: {first.because}"
     cycle = remediation.CycleRecord(
         first_deterministic=det, first_review=rev, first_passed=first.passed,
         remediated=remediate, remediation_reason=why,
@@ -173,7 +179,7 @@ def run_one_cell(
         )
         det2, packet_inputs, probe, outcome, rev2 = grade_and_review("-final", remediation_run)
         cycle.final_deterministic, cycle.final_review = det2, rev2
-        verdict = grade.task_verdict(manifest, cell_id, det2, rev2)
+        verdict = grade.task_verdict(manifest, cell_id, det2, rev2, [run, remediation_run])
         det = det2
         reviews.append(outcome.usage)
 
@@ -265,8 +271,15 @@ def run_batch(
     supersedes: str | None = None,
     source_repos: dict[str, str] | None = None,
     workspace_repo_path: str | None = None,
+    resume_from: str | Path | None = None,
 ) -> tuple[Path, list[grade.TaskVerdict]]:
-    """Run an approved batch and write one immutable record. Fresh session per task."""
+    """Run an approved batch and write one immutable record. Fresh session per task.
+
+    `resume_from` carries forward every cell of a prior record that produced a real verdict —
+    green or red — and re-runs only the ones the environment killed. Re-running a genuine red
+    would be re-rolling for a better number; re-running a rate-limited cell is just finishing
+    the work.
+    """
     for tid in task_ids:
         corpus.require_held_in(tid)
 
@@ -274,12 +287,50 @@ def run_batch(
         record_id=record_id, date=date, corpus=corpus,
         agent=agent, reviewer=reviewer, supersedes=supersedes,
     )
+
+    carried: dict[str, Path] = {}
+    if resume_from:
+        prior = Path(resume_from)
+        prior_config = json.loads((prior / "config.json").read_text())
+        problems = record.check_resume_compatible(prior_config, config)
+        if problems:
+            raise CellAborted("; ".join(problems))
+        carried = {
+            tid: cell for tid, cell in record.resumable_cells(prior).items() if tid in task_ids
+        }
+        config["resumed_from"] = str(prior)
+        config["prior_taskbench_code_sha"] = prior_config.get("taskbench_code_sha")
+        config["carried_cells"] = sorted(carried)
+        config["rerun_cells"] = [t for t in task_ids if t not in carried]
+
     root = record.open_record(out_dir, config)
 
     verdicts: list[grade.TaskVerdict] = []
     rows: list[dict] = []
     try:
-        for tid in task_ids:
+        for tid, cell in carried.items():
+            record.carry_cell(root, cell)
+            data = json.loads((cell / "verdict.json").read_text())
+            verdicts.append(
+                grade.TaskVerdict(
+                    task_id=data["task_id"], cell_id=data["cell_id"], passed=data["passed"],
+                    deterministic=grade.DeterministicLeg(passed=data["deterministic"]["passed"]),
+                    review=grade.ReviewLeg(
+                        data["review"]["passed"], data["review"]["ran"],
+                        data["review"]["probe_ok"], data["review"]["defect_count"],
+                        data["review"]["reason"],
+                    ),
+                    because=data["because"] + "  [carried forward, not re-run]",
+                    inconclusive=data.get("inconclusive", False),
+                )
+            )
+            prior_rows: list[dict] = json.loads(
+                (cell.parent.parent / "cells.json").read_text()
+            )
+            prior_row = next((r for r in prior_rows if r.get("task_id") == tid), {})
+            rows.append({**prior_row, "carried_forward": True})
+
+        for tid in [t for t in task_ids if t not in carried]:
             outcome = run_one_cell(
                 corpus, tid, work_root=work_root, agent=agent, reviewer=reviewer,
                 source_repos=source_repos, workspace_repo_path=workspace_repo_path,

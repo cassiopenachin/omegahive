@@ -115,6 +115,14 @@ def check_agent_command(spec: AgentSpec, label: str) -> list[str]:
             f"{label}: declares the claude-code-json result envelope but its argv never asks "
             "for it, so the record would carry no resolved model id and no token counts"
         )
+    if spec.result_envelope is None and "--output-format" in spec.argv:
+        # The converse, and the one that actually bit: the reviewer ran with --output-format
+        # json and reported its spend on stdout, and the record threw it away because nothing
+        # declared the envelope. Per-leg spend is what the economics clause needs.
+        problems.append(
+            f"{label}: its argv asks the harness for a JSON result envelope but the config "
+            "declares no `result_envelope`, so its identity and spend would be dropped"
+        )
     for arg in spec.argv:
         if any(ch in arg for ch in "|&;<>$`"):
             problems.append(
@@ -126,7 +134,11 @@ def check_agent_command(spec: AgentSpec, label: str) -> list[str]:
 
 def check_reviewer_sandbox(spec: ReviewerSpec) -> list[str]:
     problems = check_agent_command(
-        AgentSpec(argv=spec.argv, labels=spec.labels, prompt_mode=spec.prompt_mode), "reviewer"
+        AgentSpec(
+            argv=spec.argv, labels=spec.labels, prompt_mode=spec.prompt_mode,
+            result_envelope=spec.result_envelope,
+        ),
+        "reviewer",
     )
     if not spec.sandbox_argv:
         problems.append(

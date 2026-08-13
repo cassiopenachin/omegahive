@@ -25,6 +25,7 @@ import hashlib
 import json
 import os
 import platform
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -156,6 +157,89 @@ def next_record_id(out_dir: str | Path, base: str, date: str) -> tuple[str, str 
         existing.append(f"{base}-{n}")
         n += 1
     return f"{base}-{n}", f"{date}-{existing[-1]}"
+
+
+#: What a carried-forward cell must satisfy. A cell the environment killed says nothing about
+#: the model and is re-run; a cell that produced a real verdict — green OR red — is carried,
+#: because re-running a genuine red is re-rolling the dice for a better number.
+def cell_is_conclusive(cell: Path) -> bool:
+    """Derived from the cell's own evidence, never from a flag alone.
+
+    Records written before the `inconclusive` flag existed carry rate-limited cells that look
+    like ordinary reds. Trusting the flag would carry those forward as model results, so the
+    terminal errors and the missing review verdict are read directly out of the cell.
+    """
+    verdict_file = cell / "verdict.json"
+    if not verdict_file.is_file():
+        return False
+    try:
+        verdict = json.loads(verdict_file.read_text())
+    except json.JSONDecodeError:
+        return False
+    if verdict.get("inconclusive"):
+        return False
+
+    for name in ("run.json", "remediation-run.json"):
+        path = cell / name
+        if not path.is_file():
+            continue
+        try:
+            run = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            return False
+        if (run.get("progress") or {}).get("terminal_error"):
+            return False
+
+    review = verdict.get("review") or {}
+    if review.get("ran") and not review.get("passed") and "no verdict" in str(review.get("reason")):
+        return False
+    if not review.get("ran") and not review.get("probe_ok"):
+        return False
+    return True
+
+
+def resumable_cells(prior_record: str | Path) -> dict[str, Path]:
+    """task id → cell directory, for every cell in a prior record worth carrying forward."""
+    root = Path(prior_record)
+    out: dict[str, Path] = {}
+    cells = root / "cells"
+    if not cells.is_dir():
+        return out
+    for cell in sorted(cells.iterdir()):
+        task_file = cell / "task.txt"
+        if not cell.is_dir() or not task_file.is_file() or not cell_is_conclusive(cell):
+            continue
+        out[task_file.read_text().splitlines()[0].strip()] = cell
+    return out
+
+
+def check_resume_compatible(prior_config: dict, config: dict) -> list[str]:
+    """A carried verdict is only evidence if it was produced under the same conditions.
+
+    The harness sha is deliberately NOT required to match — a resume exists because something
+    broke, and fixing it changes the code. The difference is recorded instead of forbidden, so
+    a reader can see it.
+    """
+    problems = []
+    for pin in ("corpus_version", "corpus_content_hash", "agent_labels", "reviewer_labels"):
+        if prior_config.get(pin) != config.get(pin):
+            problems.append(
+                f"cannot resume: {pin} differs — prior {prior_config.get(pin)!r} vs "
+                f"now {config.get(pin)!r}. A carried verdict would not be comparable."
+            )
+    return problems
+
+
+def carry_cell(root: Path, cell: Path) -> None:
+    """Copy a prior cell in verbatim, stamped with where it came from."""
+    target = root / "cells" / cell.name
+    shutil.copytree(cell, target)
+    _atomic_write_text(
+        target / "CARRIED-FORWARD.txt",
+        f"This cell was not re-run. It was carried forward verbatim from {cell.parent.parent}\n"
+        "because it produced a real verdict there and the corpus and labels are identical.\n"
+        "It is evidence from that sitting, not this one.\n",
+    )
 
 
 class RecordExists(RuntimeError):

@@ -144,6 +144,11 @@ def should_remediate(first_passed: bool, review: ReviewLeg) -> tuple[bool, str]:
         return False, "first pass was green; no repair opportunity was used"
     if not review.ran:
         return False, f"no remediation: the review leg did not run ({review.reason})"
+    if review.verdict is None:
+        # The guard was checking the wrong thing: a reviewer that started and died answers
+        # nothing, so there is nothing to hand a worker. Spending the one repair against an
+        # empty review is exactly the laundering this function exists to prevent.
+        return False, f"no remediation: the review returned no verdict ({review.reason})"
     return True, "first pass was red and the review produced findings to work from"
 
 

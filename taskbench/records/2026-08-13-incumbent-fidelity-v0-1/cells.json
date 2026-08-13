@@ -1,0 +1,366 @@
+[
+  {
+    "cell_id": "cell-ec9db4b378",
+    "first_passed": true,
+    "labels": {
+      "harness": "claude-code-2.1.231",
+      "model": "opus",
+      "vendor": "anthropic"
+    },
+    "passed": true,
+    "remediated": false,
+    "resolved_model": "claude-opus-5",
+    "spend": {
+      "candidate_attempt": {
+        "available": true,
+        "cache_creation_input_tokens": 136248,
+        "cache_read_input_tokens": 4144471,
+        "input_tokens": 71,
+        "output_tokens": 65477,
+        "usd": 5.0731395
+      },
+      "candidate_remediation": null,
+      "note": "Per-leg list-price spend as each harness reported it. A leg reporting nothing is null, never zero. The generation/review split is what the all-in economics comparison needs; it is not computed here.",
+      "review": [
+        {
+          "available": false,
+          "missing_surface": "launch config declared no result_envelope"
+        }
+      ],
+      "total_usd_reported": 5.0731
+    },
+    "task_id": "launch-pane-fix",
+    "usage": {
+      "available": true,
+      "reported": {
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 136248,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "cache_creation_input_tokens": 136248,
+        "cache_read_input_tokens": 4144471,
+        "inference_geo": "not_available",
+        "input_tokens": 71,
+        "iterations": [
+          {
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 918,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "cache_creation_input_tokens": 918,
+            "cache_read_input_tokens": 151301,
+            "input_tokens": 2,
+            "output_tokens": 1197,
+            "type": "message"
+          }
+        ],
+        "output_tokens": 65477,
+        "output_tokens_details": {
+          "thinking_tokens": 34399
+        },
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      },
+      "source": "harness result envelope",
+      "total_cost_usd": 5.0731395
+    },
+    "wall_ms": 899596
+  },
+  {
+    "cell_id": "cell-0fca07b8c4",
+    "first_passed": true,
+    "labels": {
+      "harness": "claude-code-2.1.231",
+      "model": "opus",
+      "vendor": "anthropic"
+    },
+    "passed": true,
+    "remediated": false,
+    "resolved_model": "claude-opus-5",
+    "spend": {
+      "candidate_attempt": {
+        "available": true,
+        "cache_creation_input_tokens": 251373,
+        "cache_read_input_tokens": 16542838,
+        "input_tokens": 181,
+        "output_tokens": 107375,
+        "usd": 13.471630000000003
+      },
+      "candidate_remediation": null,
+      "note": "Per-leg list-price spend as each harness reported it. A leg reporting nothing is null, never zero. The generation/review split is what the all-in economics comparison needs; it is not computed here.",
+      "review": [
+        {
+          "available": false,
+          "missing_surface": "launch config declared no result_envelope"
+        }
+      ],
+      "total_usd_reported": 13.4716
+    },
+    "task_id": "instrument-teeth",
+    "usage": {
+      "available": true,
+      "reported": {
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 251373,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "cache_creation_input_tokens": 251373,
+        "cache_read_input_tokens": 16542838,
+        "inference_geo": "not_available",
+        "input_tokens": 181,
+        "iterations": [
+          {
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 347,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "cache_creation_input_tokens": 347,
+            "cache_read_input_tokens": 266997,
+            "input_tokens": 2,
+            "output_tokens": 1098,
+            "type": "message"
+          }
+        ],
+        "output_tokens": 107375,
+        "output_tokens_details": {
+          "thinking_tokens": 26114
+        },
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      },
+      "source": "harness result envelope",
+      "total_cost_usd": 13.471630000000003
+    },
+    "wall_ms": 1508506
+  },
+  {
+    "cell_id": "cell-020def0f1d",
+    "first_passed": false,
+    "labels": {
+      "harness": "claude-code-2.1.231",
+      "model": "opus",
+      "vendor": "anthropic"
+    },
+    "passed": false,
+    "remediated": true,
+    "resolved_model": "claude-opus-5",
+    "spend": {
+      "candidate_attempt": {
+        "available": true,
+        "cache_creation_input_tokens": 137879,
+        "cache_read_input_tokens": 4810634,
+        "input_tokens": 80,
+        "output_tokens": 41852,
+        "usd": 4.978619499999999
+      },
+      "candidate_remediation": {
+        "available": true,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "usd": 0
+      },
+      "note": "Per-leg list-price spend as each harness reported it. A leg reporting nothing is null, never zero. The generation/review split is what the all-in economics comparison needs; it is not computed here.",
+      "review": [
+        {
+          "available": false,
+          "missing_surface": "launch config declared no result_envelope"
+        },
+        {
+          "available": false,
+          "missing_surface": "launch config declared no result_envelope"
+        }
+      ],
+      "total_usd_reported": 4.9786
+    },
+    "task_id": "docs-triage",
+    "usage": {
+      "available": true,
+      "reported": {
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 137879,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "cache_creation_input_tokens": 137879,
+        "cache_read_input_tokens": 4810634,
+        "inference_geo": "not_available",
+        "input_tokens": 80,
+        "iterations": [
+          {
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 344,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "cache_creation_input_tokens": 344,
+            "cache_read_input_tokens": 153506,
+            "input_tokens": 2,
+            "output_tokens": 1069,
+            "type": "message"
+          }
+        ],
+        "output_tokens": 41852,
+        "output_tokens_details": {
+          "thinking_tokens": 13957
+        },
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      },
+      "source": "harness result envelope",
+      "total_cost_usd": 4.978619499999999
+    },
+    "wall_ms": 596279
+  },
+  {
+    "cell_id": "cell-c767d306cc",
+    "first_passed": false,
+    "labels": {
+      "harness": "claude-code-2.1.231",
+      "model": "opus",
+      "vendor": "anthropic"
+    },
+    "passed": false,
+    "remediated": true,
+    "resolved_model": null,
+    "spend": {
+      "candidate_attempt": {
+        "available": true,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "usd": 0
+      },
+      "candidate_remediation": {
+        "available": true,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "usd": 0
+      },
+      "note": "Per-leg list-price spend as each harness reported it. A leg reporting nothing is null, never zero. The generation/review split is what the all-in economics comparison needs; it is not computed here.",
+      "review": [
+        {
+          "available": false,
+          "missing_surface": "launch config declared no result_envelope"
+        },
+        {
+          "available": false,
+          "missing_surface": "launch config declared no result_envelope"
+        }
+      ],
+      "total_usd_reported": 0
+    },
+    "task_id": "run-registration",
+    "usage": {
+      "available": true,
+      "reported": {
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "inference_geo": "",
+        "input_tokens": 0,
+        "iterations": [],
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        },
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      },
+      "source": "harness result envelope",
+      "total_cost_usd": 0
+    },
+    "wall_ms": 2173
+  },
+  {
+    "cell_id": "cell-99e69c357f",
+    "first_passed": false,
+    "labels": {
+      "harness": "claude-code-2.1.231",
+      "model": "opus",
+      "vendor": "anthropic"
+    },
+    "passed": false,
+    "remediated": true,
+    "resolved_model": null,
+    "spend": {
+      "candidate_attempt": {
+        "available": true,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "usd": 0
+      },
+      "candidate_remediation": {
+        "available": true,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "usd": 0
+      },
+      "note": "Per-leg list-price spend as each harness reported it. A leg reporting nothing is null, never zero. The generation/review split is what the all-in economics comparison needs; it is not computed here.",
+      "review": [
+        {
+          "available": false,
+          "missing_surface": "launch config declared no result_envelope"
+        },
+        {
+          "available": false,
+          "missing_surface": "launch config declared no result_envelope"
+        }
+      ],
+      "total_usd_reported": 0
+    },
+    "task_id": "ptc-revalidate",
+    "usage": {
+      "available": true,
+      "reported": {
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "inference_geo": "",
+        "input_tokens": 0,
+        "iterations": [],
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        },
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      },
+      "source": "harness result envelope",
+      "total_cost_usd": 0
+    },
+    "wall_ms": 1873
+  }
+]

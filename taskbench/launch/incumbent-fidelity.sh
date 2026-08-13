@@ -88,6 +88,18 @@ if [ "$SUPERSEDES" != "-" ]; then
 fi
 say "work:     $WORK_ROOT"
 
+# Finishing an interrupted batch stays a no-argument command: any cell of an earlier record
+# that produced a REAL verdict — green or red — is carried forward, and only the ones the
+# environment killed are run again. Re-running a genuine red would be re-rolling for a better
+# number; re-running a rate-limited cell is just finishing the work.
+read -r RESUME_FROM RESUME_COUNT <<<"$(cd "$REPO_ROOT" && uv run --frozen taskbench resume-target \
+  --base "$RECORD_BASE" --out "$RECORDS_DIR")"
+readonly RESUME_FROM RESUME_COUNT
+if [ "$RESUME_FROM" != "-" ]; then
+  say "resume:   carrying $RESUME_COUNT conclusive cell(s) forward from $(basename "$RESUME_FROM")"
+  say "          only the cells the environment killed are run again"
+fi
+
 mkdir -p "$WORK_ROOT" "$RECORDS_DIR"
 
 # --- the config: every argument for all five cells and all five reviews --------------------
@@ -116,6 +128,7 @@ readonly CONFIG
   printf '         "--permission-mode", "auto"]\n'
   printf '  labels: {vendor: "%s", model: "%s", harness: "%s"}\n' \
          "$VENDOR" "$MODEL_ALIAS" "$HARNESS_VERSION"
+  printf '  result_envelope: claude-code-json\n'
   printf '  env_passthrough: ["LANG", "TERM"]\n'
   printf '  timeout_s: 3600\n'
   printf '  prompt_mode: argv\n'
@@ -158,22 +171,16 @@ say "Nothing has called a model yet. Preflight runs first and refuses if anythin
 set +e
 (
   cd "$REPO_ROOT" || exit 1
-  if [ "$SUPERSEDES" = "-" ]; then
-    uv run --frozen taskbench run \
-      --config "$CONFIG" \
-      --record-id "$RECORD_ID" \
-      --work-root "$WORK_ROOT" \
-      --out "$RECORDS_DIR" \
-      --expect-corpus-hash "$EXPECT_CORPUS_HASH"
-  else
-    uv run --frozen taskbench run \
-      --config "$CONFIG" \
-      --record-id "$RECORD_ID" \
-      --work-root "$WORK_ROOT" \
-      --out "$RECORDS_DIR" \
-      --expect-corpus-hash "$EXPECT_CORPUS_HASH" \
-      --supersedes "$SUPERSEDES"
-  fi
+  args=(
+    --config "$CONFIG"
+    --record-id "$RECORD_ID"
+    --work-root "$WORK_ROOT"
+    --out "$RECORDS_DIR"
+    --expect-corpus-hash "$EXPECT_CORPUS_HASH"
+  )
+  [ "$SUPERSEDES" != "-" ] && args+=(--supersedes "$SUPERSEDES")
+  [ "$RESUME_FROM" != "-" ] && args+=(--resume-from "$RESUME_FROM")
+  uv run --frozen taskbench run "${args[@]}"
 )
 status=$?
 set -e
@@ -183,12 +190,16 @@ RECORD_DIR="$RECORDS_DIR/$(date +%F)-$RECORD_ID"
 step "Status"
 case "$status" in
   0)
-    say "ALL FIVE CELLS RAN AND THE RECORD VALIDATES."
+    say "EVERY CELL HAS A VERDICT AND THE RECORD VALIDATES."
     say ""
     say "Read the headline in:  $RECORD_DIR/aggregate.md"
-    say "Fidelity is green only at 5/5. Anything less stops HIP-1 M1b at diagnosis:"
-    say "repair the package, the verifier or the grader and re-run — never the task or the"
-    say "pass rule."
+    say "Fidelity is green only at 5/5 CONCLUSIVE cells. A cell the environment killed"
+    say "(a rate limit, an auth failure, a reviewer that never answered) is reported"
+    say "INCONCLUSIVE, not red: it is not a model result. Re-run this same command to finish"
+    say "those — the conclusive cells are carried forward, not repeated."
+    say ""
+    say "Anything less than 5/5 for a real reason stops HIP-1 M1b at diagnosis: repair the"
+    say "package, the verifier or the grader and re-run — never the task or the pass rule."
     ;;
   3)
     say "PREFLIGHT REFUSED. No model was called, nothing was written, nothing to clean up."

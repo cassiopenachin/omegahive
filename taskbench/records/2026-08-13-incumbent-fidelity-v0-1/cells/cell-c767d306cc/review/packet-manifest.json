@@ -1,0 +1,17 @@
+{
+  "cell_id": "cell-c767d306cc",
+  "inputs": [
+    "README.md",
+    "artefacts/docs/omegahive_recovery_runbook.md",
+    "artefacts/src/omegahive/gateway/gateway.py",
+    "candidate.patch",
+    "cell.json",
+    "order.md",
+    "packet-manifest.json",
+    "rubric.md",
+    "verifier/mypy.log",
+    "verifier/pytest.log",
+    "verifier/registration-property.log",
+    "verifier/ruff.log"
+  ]
+}
