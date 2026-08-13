@@ -132,17 +132,31 @@ def resolve(
     )
 
 
-def _redact_argv(argv: list[str], kickoff: str) -> list[str]:
-    """Elide the kickoff from a displayed argv.
+def _redact_argv(argv: list[str], kickoff: str, env: Mapping[str, str]) -> list[str]:
+    """Prepare an argv for display: elide the kickoff, and never print an env VALUE.
 
-    Not because it is secret — it is not — but because it is a multi-hundred-character
-    multi-line block, and a preflight an operator will not read is a preflight that
-    does not check anything.
+    The kickoff is elided not because it is secret — it is not — but because it is a
+    multi-hundred-character multi-line block, and a preflight an operator will not read
+    is a preflight that does not check anything.
+
+    The env-value substitution is the load-bearing half. `preflight_text` promises that
+    environment values never appear, and it enforces that for the `env` block by
+    printing names only — but an adapter may legitimately place an env value INTO the
+    argv (the fake adapter puts `HIVE_FAKE_HARNESS` at argv[0], and a future adapter
+    could pass a config path the same way). Redacting per-adapter would leave the
+    invariant one new adapter away from being false, so it is enforced here instead:
+    any argv element equal to an env value is shown as `<env:NAME>`, whatever produced
+    it. Short values are left alone — a one- or two-character env value collides with
+    ordinary flags by accident, and `<env:X>` in place of `auto` would be noise, not
+    redaction.
     """
+    by_value = {v: k for k, v in sorted(env.items()) if len(v) > 3}
     out = []
     for a in argv:
         if kickoff and a == kickoff:
             out.append(f"<kickoff: {len(kickoff)} chars, {kickoff.count(chr(10)) + 1} lines>")
+        elif a in by_value:
+            out.append(f"<env:{by_value[a]}>")
         else:
             out.append(a)
     return out
@@ -168,7 +182,7 @@ def to_json(plan: ResolvedPlan, *, kickoff: str) -> dict[str, Any]:
         "identity": plan.identity.model_dump(mode="json"),
         "price_basis": plan.price_basis.model_dump(mode="json") if plan.price_basis else None,
         "argv": plan.launch.argv,
-        "argv_redacted": _redact_argv(plan.launch.argv, kickoff),
+        "argv_redacted": _redact_argv(plan.launch.argv, kickoff, plan.launch.env),
         "env": plan.launch.env,
         "env_names": sorted(plan.launch.env),
         "version_argv": plan.launch.version_argv,

@@ -188,7 +188,19 @@ require_omega_dir() {  # require_omega_dir  (reads OMEGA_DIR)
 }
 
 # The stack CLI, run in the canonical dir (compose file + running pg live there).
+#
+# HIVE_CLI_CMD overrides the containerized path with a direct invocation. Two uses, both
+# real: a drill or test can exercise the operator tooling without a container, and — the
+# case that will bite an operator first — a NEWLY MERGED CLI command does not exist in
+# the running `cli` image until it is rebuilt, so `HIVE_CLI_CMD='uv run omegahive'` is
+# the way to drive the new path from a checkout before the rebuild lands. Unset by
+# default; the shipped path is always the container.
 hive() {
+  if [ -n "${HIVE_CLI_CMD:-}" ]; then
+    # shellcheck disable=SC2086  # HIVE_CLI_CMD is legitimately several words
+    $HIVE_CLI_CMD "$@"
+    return $?
+  fi
   require_omega_dir
   resolve_compose
   # shellcheck disable=SC2086  # HIVE_COMPOSE is legitimately two words ("podman compose")

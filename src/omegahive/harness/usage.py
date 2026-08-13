@@ -93,6 +93,7 @@ def extract_claude_code_transcript(lines: Iterable[str]) -> UsageEvidence:
 
     by_id: dict[str, dict[str, Any]] = {}
     seen_records = 0
+    idless = 0
     for rec in records:
         if rec.get("type") != "assistant":
             continue
@@ -106,7 +107,9 @@ def extract_claude_code_transcript(lines: Iterable[str]) -> UsageEvidence:
         mid = message.get("id")
         if not isinstance(mid, str) or not mid:
             # No id means no dedup key. Counting it would risk double-counting a
-            # message whose other blocks DO carry ids, so it is dropped and reported.
+            # message whose other blocks DO carry ids, so it is dropped — and counted
+            # here so the notes can report it rather than losing it silently.
+            idless += 1
             continue
         if mid in by_id:
             continue
@@ -140,12 +143,18 @@ def extract_claude_code_transcript(lines: Iterable[str]) -> UsageEvidence:
     notes = [f"{seen_records} usage record(s) deduplicated to {len(rows)} message(s)"]
     if bad:
         notes.append(f"{bad} unparseable line(s) skipped (truncated transcript is expected)")
-    dropped = seen_records - sum(1 for _ in rows)
+    # An id-less record is excluded from the totals, and saying so is the whole point:
+    # without this note, tokens dropped for want of a dedup key are indistinguishable
+    # from ordinary content-block deduplication, and the total silently under-reports.
+    # Under-reporting is the same class of lie as the false zero, just quieter.
+    if idless:
+        notes.append(
+            f"{idless} usage record(s) had no message id and were EXCLUDED from the "
+            "totals (no dedup key; counting them risks double-counting)"
+        )
     sidechain_rows = sum(1 for r in rows if r["sidechain"])
     if sidechain_rows:
         notes.append(f"{sidechain_rows} message(s) were subagent traffic (counted in totals)")
-    if dropped < 0:  # pragma: no cover - arithmetic guard, not a reachable state
-        notes.append("record accounting inconsistent")
 
     return UsageEvidence(
         usage=ExecutionUsage(

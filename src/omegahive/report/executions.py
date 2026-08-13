@@ -26,6 +26,10 @@ from omegahive.events.envelope import Event
 FILTERABLE = (
     "task", "execution_id", "model_vendor", "provider", "model", "harness",
     "billing_market", "credential_pool", "route", "purpose", "outcome",
+    # Not one of the order's named dimensions, but every row carries it and an
+    # operator debugging a launch will reach for it; a filterable field that refuses
+    # would read as a missing feature.
+    "adapter",
 )
 
 _LIFECYCLE = ("execution.route_approved", "execution.started", "execution.finished")
