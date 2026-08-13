@@ -3,7 +3,7 @@
 #                   [--note <text>] [--again] [--no-commit]
 #
 # Scores a closed task's order-file predictions against what actually happened,
-# appending one entry to projects/<project>/metrics/calibration.md.
+# recording ONE entry per task in projects/<project>/metrics/calibration.md.
 #
 # The product is calibration, not the number (coordinator PROTOCOL): a prediction
 # that was wrong and recorded as wrong is worth more than one quietly dropped. So:
@@ -15,15 +15,29 @@
 #   * predictions are quoted verbatim next to the outcome, so a reader can
 #     disagree with the verdict without re-deriving anything.
 #
+# One row per task (retro 3 D4): `--again` on an already-scored task REPLACES
+# that task's entry in place — same position, older duplicates for the same task
+# dropped — rather than appending a second row. `hive-score --again` with no
+# explicit `--review` carries forward the newest human verdict already on record
+# for that task; only a task that has never carried a human verdict stays
+# `unscored`. An explicit `--review` always wins over the carried-forward one.
+# Without `--again`, an already-scored task still refuses outright.
+#
+# `--review clean` is refused when the spine's `review.failed` count for the task
+# is nonzero (retro 3 D2/R3's code twin): the verdict covers the task's whole
+# post-result review cycle, not just whether the final artefact reads clean. The
+# refusal fires whether the `clean` came from `--review` or was carried forward,
+# and writes no row.
+#
 # Intended call time is at or after close, and it works retroactively: every
 # outcome comes from the spine, so scoring a task closed weeks ago gives the same
 # answer it would have given on the day.
 #
 # READ-ONLY over the spine, like hive-metrics: one `report <run> --json` read and
-# no emits ever. Appending to calibration.md is its only write — and scoring then
-# commits and pushes that file, because a score is only real once it is committed:
-# the improver seat reads committed instruments, so an uncommitted calibration.md
-# is invisible to the only reader it has. `--no-commit` restores the old
+# no emits ever. calibration.md is its only write — and scoring then commits and
+# pushes that file, because a score is only real once it is committed: the
+# improver seat reads committed instruments, so an uncommitted calibration.md is
+# invisible to the only reader it has. `--no-commit` restores the old
 # write-and-stop behaviour for a dry run or a hand-curated commit.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -62,13 +76,11 @@ done
 # stores lowercase. Wave 2 produced `Rework`, `rework`, `Clean`, `clean`, and
 # `minor rework` into the same column (retro 1's instrument note, unenforced
 # since) — `rework` and `minor rework` are two distinct severities, so an
-# uncontrolled column is not just cosmetic.
+# uncontrolled column is not just cosmetic. validate_review_verdict
+# (hive-common.sh) is the SAME validator hive-close uses, so the two can never
+# drift apart.
 if [ -n "$REVIEW_VERDICT" ]; then
-  case "$(printf '%s' "$REVIEW_VERDICT" | tr '[:upper:]' '[:lower:]')" in
-    clean|"minor rework"|rework)
-      REVIEW_VERDICT=$(printf '%s' "$REVIEW_VERDICT" | tr '[:upper:]' '[:lower:]') ;;
-    *) die "--review must be one of: clean | minor rework | rework (case-insensitive), got '$REVIEW_VERDICT'" ;;
-  esac
+  REVIEW_VERDICT=$(validate_review_verdict "$REVIEW_VERDICT")
 fi
 
 command -v jq >/dev/null 2>&1 || die "jq is required"
@@ -226,6 +238,67 @@ else
   ACT_EFFORT_H=""
 fi
 
+# --- one row per task: resolve the calibration file up front -------------------
+# Needed here (not just at append time) because carrying forward a prior human
+# verdict and refusing a false clean both have to happen BEFORE the verdict is
+# computed below, not after.
+OUT_DIR="$OPS_WS/projects/$PROJECT/metrics"
+CAL="$OUT_DIR/calibration.md"
+# One literal, awk-based occurrence count feeds every downstream decision
+# (exists? refuse without --again? how many rows to collapse later?) — a task id
+# carrying a BRE metacharacter (the id charset allows ".") must be seen the same
+# way by every check, so there is exactly one occurrence-counting expression here,
+# not a `grep` now and a separate `awk` at write time that could silently
+# disagree on what "already scored" means for that same task id.
+PRIOR_COUNT=0
+if [ -f "$CAL" ]; then
+  PRIOR_COUNT=$(awk -v t="### $TASK — " 'index($0, t) == 1 { c++ } END { print c + 0 }' "$CAL")
+fi
+PRIOR_ENTRIES=0
+[ "$PRIOR_COUNT" -gt 0 ] && PRIOR_ENTRIES=1
+
+if [ "$PRIOR_ENTRIES" -eq 1 ] && [ "$AGAIN" -eq 0 ]; then
+  die "task '$TASK' is already scored in $CAL; pass --again to replace it in place"
+fi
+
+# find_prior_review_verdict <cal-file> <task> -> the newest human verdict (clean |
+# minor rework | rework, case-insensitively matched — legacy rows carry `Clean`)
+# recorded in ANY of the task's existing entries, in file order (append-only, so
+# file order is chronological). Empty if the task has never carried a human
+# verdict, only `unscored`/`unpredicted`.
+find_prior_review_verdict() {
+  local cal="$1" task="$2"
+  [ -f "$cal" ] || return 0
+  awk -v t="### $task — " '
+    index($0, t) == 1 { inb = 1; next }
+    /^### / { inb = 0 }
+    inb && /^\| review outcome \|/ {
+      # Each row is "| a | b | c | d |" — the trailing "|" makes the LAST field
+      # from split() empty, so the verdict (the 4th visible column) sits at parts[n-1].
+      n = split($0, parts, "|")
+      v = parts[n - 1]
+      gsub(/^[ \t]+|[ \t]+$/, "", v)
+      lv = tolower(v)
+      if (lv == "clean" || lv == "minor rework" || lv == "rework") last = lv
+    }
+    END { if (last != "") print last }
+  ' "$cal"
+}
+
+CARRIED_VERDICT=""
+if [ -z "$REVIEW_VERDICT" ] && [ "$PRIOR_ENTRIES" -eq 1 ]; then
+  CARRIED_VERDICT=$(find_prior_review_verdict "$CAL" "$TASK")
+  [ -n "$CARRIED_VERDICT" ] && REVIEW_VERDICT="$CARRIED_VERDICT"
+fi
+
+# Retro 3 D2/R3's code twin: `clean` asserts the task's whole post-result review
+# cycle went clean, and the spine's own review.failed count can contradict that
+# regardless of whether the verdict was just typed or carried forward from an
+# older row — so both paths are checked here, in one place, before any write.
+if [ "$REVIEW_VERDICT" = "clean" ] && [ "$ACT_REVIEW_FAILED" -gt 0 ]; then
+  die "task '$TASK' has review.failed x$ACT_REVIEW_FAILED on the spine; --review clean is refused — use 'minor rework' or 'rework' instead (the verdict covers the task's post-result review cycle, not merely the final artefact)"
+fi
+
 # --- the order's Predictions section -------------------------------------------
 # The order was resolved up front (it names the project). A closed task with no
 # order file at all is a real, and interesting, case: it scores as unpredicted.
@@ -307,19 +380,20 @@ case "$PRED_VERDICT" in
   *)        COVERAGE="unpredicted (section present, 0 of 3 fields parsed)" ;;
 esac
 
-# --- append --------------------------------------------------------------------
-OUT_DIR="$OPS_WS/projects/$PROJECT/metrics"
-CAL="$OUT_DIR/calibration.md"
+# --- write ---------------------------------------------------------------------
+# CAL/OUT_DIR/PRIOR_ENTRIES were already resolved above (needed for the carry-
+# forward and false-clean checks before the verdict was computed).
 mkdir -p "$OUT_DIR"
 
 if [ ! -f "$CAL" ]; then
   cat > "$CAL" <<EOF
 # Prediction calibration — $PROJECT
 
-Append-only. One entry per scoring act (\`hive-score <task>\`), newest at the bottom.
-Predictions are quoted verbatim from the task's order file; outcomes are read from
-the spine, so an entry says the same thing whether it was written on the day of the
-close or months later.
+One row per task (see below), positioned where that task's row already sits, so this
+is not a strictly append-only or chronological file — a rescored task's row does not
+move to the bottom. Predictions are quoted verbatim from the task's order file;
+outcomes are read from the spine, so an entry says the same thing whether it was
+written on the day of the close or months later.
 
 Predictions are honest guesses, never commitments — the product here is the
 calibration trend, not any single verdict. Reading that trend is the improver
@@ -336,13 +410,15 @@ Actual effort is elapsed wall-clock between \`task.accepted\` and \`task.result_
 minus recorded blocked time. A session that idles looks like a session that works;
 it is a proxy, and predictions should be read against it as one.
 
+**One row per task.** \`--again\` replaces a task's entry in place (dropping any
+older duplicate rows for the same task) rather than appending a second one. With
+no explicit \`--review\`, a replacement carries forward the newest human verdict
+already on record for that task; an explicit \`--review\` always overrides it.
+
 EOF
 fi
 
-if grep -q "^### $TASK — " "$CAL" && [ "$AGAIN" -eq 0 ]; then
-  die "task '$TASK' is already scored in $CAL; pass --again to record a second entry"
-fi
-
+ENTRY_TMP=$(mktemp)
 {
   echo "### $TASK — closed $CLOSED_DAY"
   echo
@@ -358,13 +434,45 @@ fi
   if [ -n "$NOTE" ]; then echo "- note: $NOTE"; fi
   echo "- scored: $(date +%F)"
   echo
-} >> "$CAL"
+} > "$ENTRY_TMP"
+
+if [ "$PRIOR_ENTRIES" -eq 1 ]; then
+  # In-place replace: the new entry takes the position of the task's LAST existing
+  # occurrence (stable relative to every other task's row); any earlier occurrences
+  # of the same task are dropped rather than left as stale duplicates. One awk pass:
+  # on the Nth (last, per PRIOR_COUNT above) header line, emit the new entry instead
+  # of the old one and suppress the old header+body the same way every earlier
+  # occurrence's header+body is suppressed. A unique CAL_TMP (not a fixed name) so
+  # two hive-score invocations racing on the same project's calibration.md cannot
+  # corrupt each other's temp file before either `mv` lands.
+  CAL_TMP=$(mktemp "${CAL}.XXXXXX")
+  awk -v t="### $TASK — " -v total="$PRIOR_COUNT" -v newfile="$ENTRY_TMP" '
+    BEGIN { while ((getline l < newfile) > 0) nl[n++] = l }
+    /^### / {
+      if (index($0, t) == 1) {
+        seen++
+        intgt = 1
+        if (seen == total) { for (i = 0; i < n; i++) print nl[i] }
+        next
+      } else { intgt = 0 }
+    }
+    { if (!intgt) print }
+  ' "$CAL" > "$CAL_TMP" && mv "$CAL_TMP" "$CAL"
+  WRITE_VERB="replaced in place (older duplicates dropped)"
+else
+  cat "$ENTRY_TMP" >> "$CAL"
+  WRITE_VERB="appended"
+fi
+rm -f "$ENTRY_TMP"
 
 echo "hive-score: $TASK — coverage: $COVERAGE"
 echo "  effort     predicted $PRED_EFFORT · actual $ACT_EFFORT · $V_EFFORT"
 echo "  questions  predicted $PRED_QUESTIONS · actual $ACT_QUESTIONS · $V_QUESTIONS"
 echo "  review     predicted $PRED_REVIEW · $V_REVIEW"
-echo "  appended to $CAL"
+if [ -n "$CARRIED_VERDICT" ]; then
+  echo "  review verdict carried forward from the newest prior entry: $CARRIED_VERDICT"
+fi
+echo "  $WRITE_VERB in $CAL"
 
 # Recording the score is part of scoring. The append above is worth nothing to the
 # improver until it is committed, so this is one act, not two — and the pathspec

@@ -29,6 +29,7 @@ RUN = "cli-bumpgen-test"
 def cli_db(monkeypatch):
     """Point the CLI's connection at the test DB; delete this run's registry row on teardown."""
     monkeypatch.setattr(cli, "connect", lambda *a, **k: connect(TEST_DATABASE_URL))
+    monkeypatch.setattr(cli, "connect_gateway", lambda *a, **k: connect(TEST_DATABASE_URL))
     yield
     c = connect(TEST_DATABASE_URL)
     try:

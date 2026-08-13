@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import typer
@@ -16,7 +17,7 @@ from .acceptance.checks import run_structural_checks
 from .board import fold
 from .board.state import Board
 from .clock import LogicalClock
-from .db import connect, migrate
+from .db import connect, connect_gateway, connect_owner, migrate
 from .events.envelope import Actor
 from .events.log import EventLog, UnknownEventType, read_run_ids, read_run_summaries
 from .gateway import Gateway, Policy, Rejected
@@ -50,6 +51,10 @@ console = Console()
 PLANNER = Actor(role="planner", id="planner")
 
 
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
 def _payload_error(exc: ValidationError) -> str:
     """First validation error as `field.path: msg`. The location saved a grep the
     first time an emit failed on a missing nested field — `artifact_refs.0.quality:
@@ -61,8 +66,14 @@ def _payload_error(exc: ValidationError) -> str:
 
 @app.command("db-migrate")
 def db_migrate() -> None:
-    """Apply migrations/*.sql in order."""
-    with connect() as conn:
+    """Apply migrations/*.sql in order — as the database OWNER, never the gateway.
+
+    DDL needs ownership, so this is the one command that carries the owner credential
+    (OMEGAHIVE_OWNER_DATABASE_URL, delivered to the `migrate` service alone via
+    owner.env). Running it in a container that only holds `hive_gateway` fails on
+    privilege, which is the correct answer: schema change is an operator act.
+    """
+    with connect_owner() as conn:
         applied = migrate(conn)
     if applied:
         console.print(f"applied {len(applied)} migration(s): {', '.join(applied)}")
@@ -98,7 +109,7 @@ def bump_generation_cmd(
     Refuses an unregistered run (generation `None`) rather than fabricating one — a run
     carries a generation only after it is opened by its first emit.
     """
-    with connect() as conn:
+    with connect_gateway() as conn:
         store = EventLog(conn, LogicalClock(0), run_id)
         current = store.generation()
         if current is None:
@@ -123,7 +134,7 @@ def run(
     scenario = load_scenario(scenario_path)
     rid = run_id or f"{scenario.scenario_id}-{uuid4().hex[:8]}"
 
-    with connect() as conn:
+    with connect_gateway() as conn:
         store = EventLog(conn, LogicalClock(0), rid)
         gateway = Gateway(store, Policy())
         emit_plan(gateway.handle(PLANNER), scenario)
@@ -217,7 +228,7 @@ def simulate_cmd(
         n = replications if replications is not None else scenario.run.replications
         seed_list = list(range(n))
 
-    with connect() as conn:
+    with connect_gateway() as conn:
         result = simulate(scenario, seed_list, conn)
         conn.commit()
 
@@ -313,7 +324,7 @@ def emit_cmd(
         console.print("invalid --payload: must be a JSON object")
         raise typer.Exit(code=1)
 
-    with connect() as conn:
+    with connect_gateway() as conn:
         # head before our emit, in its own committed transaction (a bare read would strand
         # one and turn the emit's per-op commit into an uncommitted savepoint). Comparing
         # the returned seq to it distinguishes a fresh append from an idempotent dedup.
@@ -418,7 +429,9 @@ def portfolio_cmd(
     )
     with connect() as conn:
         summaries = read_run_summaries(conn)
-        rows = portfolio_runs(summaries, window_days=days, exclude=globs, include_all=show_all)
+        rows = portfolio_runs(
+            summaries, window_days=days, exclude=globs, include_all=show_all, now=_utcnow()
+        )
         entries = []
         for row in rows:
             view = HiveCoordinatorPort(

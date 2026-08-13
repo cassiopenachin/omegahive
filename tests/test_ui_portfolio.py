@@ -63,6 +63,7 @@ def _client(base_path: str = "") -> TestClient:
     app = create_app(
         port_factory=lambda run_id, generation: _FixturePort(run_id, generation),
         runs_factory=lambda: list(SUMMARIES),
+        now_factory=lambda: NOW,
         poll_seconds=0.001,
         base_path=base_path,
     )

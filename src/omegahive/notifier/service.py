@@ -83,11 +83,13 @@ class PortSpineReader:
         *,
         window_days: int | None = None,
         exclude: Sequence[str] | None = None,
+        now: Callable[[], datetime] | None = None,
     ) -> None:
         self._connect = connect
         self._actor = actor
         self._window_days = window_days
         self._exclude = exclude
+        self._now = now or _utcnow
         self._build()
 
     def _build(self) -> None:
@@ -109,9 +111,11 @@ class PortSpineReader:
         """The active runs, most recently active first — the portfolio's own order."""
         days = configured_window_days() if self._window_days is None else self._window_days
 
+        now = self._now()
+
         def _query() -> list[dict]:
             return portfolio_runs(
-                read_run_summaries(self._conn), window_days=days, exclude=self._exclude
+                read_run_summaries(self._conn), window_days=days, exclude=self._exclude, now=now
             )
 
         return [row["run_id"] for row in self._retry(_query)]

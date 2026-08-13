@@ -43,6 +43,44 @@ x-omega: &omega
     # durable basis_seq per (run, actor) — crash-redispatch idempotency (port spec §3a).
     - omegahive-basis:/var/lib/omegahive
 
+# --- the three DB credentials (migrations/0003_two_roles.sql) -----------------
+#
+# `.env` (in the anchor above) carries the READ credential and reaches EVERY service,
+# which is exactly why nothing stronger may live there: a file every container reads
+# grants every container what it holds. The two write-capable credentials are per-service
+# env-files under ${OMEGAHIVE_SECRETS_DIR} instead, merged in below by the services that
+# need them.
+#
+# Which service gets which is stated once, enforceably, in secrets-manifest.yaml — every
+# row's `compose_services:` is what the credential scan checks the running containers
+# against, so that file is the copy that cannot quietly go stale.
+#
+# ORDER IS LOAD-BEARING in `<<: [*gateway-env, *omega]`. A YAML merge key with a SEQUENCE
+# resolves earlier entries first and never lets a later one override them, so the credential
+# anchor must come BEFORE *omega — with the two swapped, *omega's `env_file: [.env]` wins,
+# the per-service file is silently dropped, and every write path falls back to the read
+# credential. That failure is invisible in `compose config`'s YAML output (which prints the
+# anchors themselves as top-level `x-` keys, easily misread as a service's resolved value);
+# `compose config --format json | jq '.services.<svc>.environment'` is what actually shows it.
+#
+# `required: false` so a host that has not cut over still parses and runs: with the file
+# absent the variable is unset, connect_gateway()/connect_owner() fall back to the read
+# DSN, and the stack behaves exactly as it did under one role. The cutover is therefore a
+# deployment act (write the files, restart), never a code release — and it is reversible
+# by deleting them. `scripts/credential_scope_scan.sh` is what keeps these lists honest:
+# every key each container ends up with is diffed against secrets-manifest.yaml.
+x-gateway-env: &gateway-env
+  env_file:
+    - .env
+    - path: ${OMEGAHIVE_SECRETS_DIR:-${HOME}/.config/omegahive/secrets}/gateway.env
+      required: false
+
+x-owner-env: &owner-env
+  env_file:
+    - .env
+    - path: ${OMEGAHIVE_SECRETS_DIR:-${HOME}/.config/omegahive/secrets}/owner.env
+      required: false
+
 services:
   postgres:
     image: postgres:16@sha256:1570e4013933875bf54995e9010e31420b5e21dd5f2524e5395089d480cc2df1
@@ -69,15 +107,21 @@ services:
   # generic CLI entry: `docker compose run --rm cli <command …>` (the image ENTRYPOINT
   # is `omegahive`). Alias for daily use: alias omegahive='docker compose run --rm cli'
   cli:
-    <<: *omega
+    <<: [*gateway-env, *omega]
     command: ["--help"]
 
+  # DDL, so the owner credential and no other. `db-migrate` is the one command that runs
+  # as the owner; a container holding only hive_gateway fails it on privilege, which is
+  # the correct answer (schema change is an operator act, not a running service's).
+  # Doubles as the harness's owner-privileged shell: deploy_checks.sh drives
+  # tests/scratch_db.py through THIS service, because creating and dropping databases
+  # needs the same authority and must not put it in `cli`.
   migrate:
-    <<: *omega
+    <<: [*owner-env, *omega]
     command: ["db-migrate"]
 
   seed:
-    <<: *omega
+    <<: [*gateway-env, *omega]
     command: ["seed-demo", "--run-id", "${OMEGAHIVE_RUN_ID:-accept}",
               "--plan", "scenarios/demo_plan.yaml"]
 
@@ -85,15 +129,15 @@ services:
   # through Postgres via the port. `compose up coordinator worker review` is the
   # multi-process acceptance run (deployment spec §7 step 6 / port spec §9).
   coordinator:
-    <<: *omega
+    <<: [*gateway-env, *omega]
     command: ["act", "coordinator", "--run-id", "${OMEGAHIVE_RUN_ID:-accept}", "--workers", "w1"]
 
   worker:
-    <<: *omega
+    <<: [*gateway-env, *omega]
     command: ["act", "worker", "--run-id", "${OMEGAHIVE_RUN_ID:-accept}", "--agent-id", "w1"]
 
   review:
-    <<: *omega
+    <<: [*gateway-env, *omega]
     command: ["act", "review", "--run-id", "${OMEGAHIVE_RUN_ID:-accept}"]
 
   board-view:
@@ -140,8 +184,11 @@ services:
     restart: unless-stopped
 
   # Full suite in-container (deployment spec §4: no host pytest).
+  # The suite creates and drops a scratch database per run (tests/scratch_db.py), which
+  # is owner authority — so tests carry owner.env and OMEGAHIVE_TEST_DATABASE_URL rides
+  # there too, not in the shared .env where every read-only follower would inherit it.
   test:
-    <<: *omega
+    <<: [*owner-env, *omega]
     entrypoint: ["pytest"]
     command: ["-q"]
 
@@ -151,7 +198,7 @@ services:
     command: ["ruff check . && mypy"]
 
   deploy-checks:
-    <<: *omega
+    <<: [*gateway-env, *omega]
     command: ["deploy-checks"]
 
   # The LLM coordinator ladder (R1+). The provider key is a *host-passthrough* env var,
@@ -161,7 +208,7 @@ services:
   # §5.2): the key lives only in the harness run context. Run e.g.
   #   OPENROUTER_API_KEY=… docker compose run --rm ladder smoke --model openrouter/<model>
   ladder:
-    <<: *omega
+    <<: [*gateway-env, *omega]
     environment:
       - OPENROUTER_API_KEY
       - ANTHROPIC_API_KEY
@@ -229,10 +276,15 @@ services:
   # operator pulls them over the tailnet SSH path; the workspace git bundles land in the
   # same directory (deploy/git_bundle.sh) so one directory restores both stores.
   # OMEGAHIVE_BACKUP_KEEP bounds retention (default 14; disk is finite, operator remote).
+  #
+  # Owner credential: a dump must read every table and a restore must CREATE DATABASE,
+  # neither of which hive_reader or hive_gateway can do. This is also the service that
+  # runs scripts/roles_rollback.sh — rolling the split back is owner authority by
+  # construction, since the roles being dropped cannot drop themselves.
   backup:
     image: postgres:16@sha256:1570e4013933875bf54995e9010e31420b5e21dd5f2524e5395089d480cc2df1
     profiles: ["ops"]
-    env_file: [.env]
+    <<: *owner-env
     environment:
       - OMEGAHIVE_BACKUP_KEEP
     depends_on:

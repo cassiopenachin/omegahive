@@ -525,10 +525,15 @@ check "the score reached the upstream" "log_has '$HUB' 'score: alpha on run metr
 check "scoring left the workspace clean" "[ -z \"\$(git -C '$WS' status --porcelain -- 'projects/$PROJECT/metrics')\" ]"
 check "the score commit touched only the metrics dir" \
   "[ -z \"\$(git -C '$WS' show --name-only --format= HEAD | grep -v '^projects/$PROJECT/metrics/')\" ]"
-# --no-commit is the escape hatch: appended, deliberately not recorded.
+# --no-commit is the escape hatch: written, deliberately not recorded. An explicit
+# --review that actually changes the verdict, not a bare --again: with the
+# one-row rewrite, a no-op rescore on an unchanged day is legitimately
+# byte-identical to what is already there and leaves nothing to be uncommitted —
+# same determinism hive-metrics already has. This assertion is about --no-commit,
+# not about that determinism, so force a real content change.
 SCORE_COMMITS_BEFORE=$(git -C "$WS" rev-list --count HEAD)
-"$S" alpha --again --no-commit >/dev/null
-check "--no-commit appends but does not commit" \
+"$S" alpha --review "minor rework" --again --no-commit >/dev/null
+check "--no-commit writes but does not commit" \
   "[ -n \"\$(git -C '$WS' status --porcelain -- 'projects/$PROJECT/metrics')\" ]"
 check "--no-commit adds no commit" \
   "[ \"\$(git -C '$WS' rev-list --count HEAD)\" = '$SCORE_COMMITS_BEFORE' ]"
@@ -536,7 +541,14 @@ git -C "$WS" checkout --quiet -- "projects/$PROJECT/metrics"
 
 expect_fail_msg "re-scoring refused"  "already scored" "$S" alpha
 "$S" alpha --again >/dev/null
-check "--again re-scores"             "[ \"\$(grep -c '^### alpha — ' '$CAL')\" = 2 ]"
+# One row per task (item 3): --again REPLACES the entry in place rather than
+# appending a second one, and a bare --again with no prior human verdict on
+# record (alpha's first score above passed no --review) carries nothing forward
+# — it stays unscored, it does not invent a verdict.
+check "--again replaces in place (still one row, not two)" \
+  "[ \"\$(grep -c '^### alpha — ' '$CAL')\" = 1 ]"
+check "bare --again with no prior human verdict stays unscored" \
+  "verdict alpha 'review outcome' | grep '^unscored' >/dev/null"
 
 "$S" epsilon >/dev/null
 check "epsilon effort verdict = over" "[ \"\$(verdict epsilon effort)\" = over ]"

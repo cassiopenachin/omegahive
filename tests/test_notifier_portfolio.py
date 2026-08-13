@@ -124,7 +124,7 @@ def test_discovery_uses_the_boards_cut_and_drops_drill_debris(monkeypatch):
         _summary("ancient", now - timedelta(days=90)),          # dormant: outside the window
     ]
     monkeypatch.setattr("omegahive.notifier.service.read_run_summaries", lambda conn: summaries)
-    reader = PortSpineReader(lambda: _FakeConn(), actor=None)
+    reader = PortSpineReader(lambda: _FakeConn(), actor=None, now=_fixed(now))
     assert reader.run_ids() == ["omegahive", "plnbench"]  # most recently active first
 
 
@@ -133,7 +133,7 @@ def test_discovery_honours_an_explicit_exclude_list(monkeypatch):
     summaries = [_summary("omegahive", now), _summary("tooling-drill-1753", now)]
     monkeypatch.setattr("omegahive.notifier.service.read_run_summaries", lambda conn: summaries)
     # the drill runs itself with an empty exclude list — it must be able to see its own runs
-    reader = PortSpineReader(lambda: _FakeConn(), actor=None, exclude=())
+    reader = PortSpineReader(lambda: _FakeConn(), actor=None, exclude=(), now=_fixed(now))
     assert reader.run_ids() == ["omegahive", "tooling-drill-1753"]
 
 

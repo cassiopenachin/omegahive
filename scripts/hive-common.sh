@@ -285,6 +285,18 @@ find_order() {  # find_order <task>  -> prints workspace-relative path (unique a
   printf '%s\n' "${m[0]}"
 }
 
+# Fetch the hub and confirm <sha> is reachable from its main — the ONE "is this
+# really landed" check every caller needs (order_pin at launch, hive-answer
+# --sha), so a future change to what "landed" means (default-branch rename,
+# fetch semantics) updates a single place instead of two copies that could
+# silently drift apart. Dies with the caller-supplied messages, since a launch
+# pin and an answer verification read differently to the operator.
+hub_confirms_ancestor() {  # hub_confirms_ancestor <sha> <fetch-fail-msg> <not-ancestor-msg>
+  local sha="$1" fetch_msg="$2" notanc_msg="$3"
+  git -C "$OPS_WS" fetch --quiet origin || die "$fetch_msg"
+  git -C "$OPS_WS" merge-base --is-ancestor "$sha" origin/main || die "$notanc_msg"
+}
+
 # Pin a workspace-relative path to its full commit sha, refusing dirty or
 # unpushed state — the pin must resolve on the hub, since the worker's fresh
 # clone comes from the hub.
@@ -295,9 +307,8 @@ order_pin() {  # order_pin <workspace-relative-path>  -> prints sha
     || die "$path is dirty in $OPS_WS; commit before launch"
   sha=$(git -C "$OPS_WS" log -1 --format=%H -- "$path")
   [ -n "$sha" ] || die "$path has no commit in $OPS_WS"
-  git -C "$OPS_WS" fetch --quiet origin || die "cannot fetch hub ($WS_HUB)"
-  git -C "$OPS_WS" merge-base --is-ancestor "$sha" origin/main \
-    || die "$path@$sha is not pushed to the hub; push before launch"
+  hub_confirms_ancestor "$sha" "cannot fetch hub ($WS_HUB)" \
+    "$path@$sha is not pushed to the hub; push before launch"
   printf '%s\n' "$sha"
 }
 
@@ -450,6 +461,19 @@ commit_metrics() {  # commit_metrics <project> <commit-message>  -> 0 committed/
     return 1
   fi
   echo "  committed + pushed: $spec ($msg)"
+}
+
+# The one place the human review-verdict vocabulary is validated — hive-close and
+# hive-score both call this so the two enums can never drift apart the way the
+# unenforced column did before (retro 1's instrument note: `Rework`, `rework`,
+# `Clean`, `clean`, and `minor rework` all landed in the same field). Prints the
+# canonical lowercase form, or dies naming the legal values verbatim.
+validate_review_verdict() {  # validate_review_verdict <value> -> prints canonical lowercase form
+  local v; v=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  case "$v" in
+    clean|"minor rework"|rework) printf '%s\n' "$v" ;;
+    *) die "--review must be one of: clean | minor rework | rework (case-insensitive), got '$1'" ;;
+  esac
 }
 
 # The folded board as a JSON array (board-view --json): the machine projection —
