@@ -82,6 +82,7 @@ def stub_spine(monkeypatch):
     monkeypatch.setattr(cli, "connect", _connect)
     monkeypatch.setattr(cli, "read_run_summaries", lambda conn: list(SUMMARIES))
     monkeypatch.setattr(cli, "HiveCoordinatorPort", _FakePort)
+    monkeypatch.setattr(cli, "_utcnow", lambda: NOW)
     monkeypatch.setenv("OMEGAHIVE_PORTFOLIO_EXCLUDE", "tooling-drill-*")
 
 
