@@ -8,6 +8,7 @@
 - omegahive_session_agents.md — worker-side binding story for CLI coding agents (wake patterns, hooks→MCP instrumentation); design doc v1, current
 - omegahive_ui_spec.md — operator-facing web UI spec; v0.1, shipped (`src/omegahive/ui/` implements it)
 - omegahive_recovery_runbook.md — human-only recovery path: backup, restore, drain-before-migrate; v1, current
+- omegahive_worker_harness.md — how a launch chooses a model and how that choice is recorded: route catalog vs launch binding, adapters, the supervisor, the execution lifecycle facts and their query; v1, current (HIP-1 M2 `worker-harness-core`)
 
 ## docs/reference/ (normative-or-historical sources; consult, don't start here — see reference/README.md)
 - omegahive_spec_1_1.md — upstream OmegaHive 1.1 spec (Ben Goertzel), text-faithful PDF conversion; reference source
