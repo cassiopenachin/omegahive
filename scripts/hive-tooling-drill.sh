@@ -163,6 +163,24 @@ log_has() {
   git -C "$repo" log --all --format=%s -- "$@" | grep -F -- "$needle" >/dev/null
 }
 
+# cal_entry <project> <task> -> that task's LAST calibration entry (the block of
+# lines under its newest "### <task> — " header). Empty if the task has no entry.
+cal_entry() {
+  awk -v t="### $2 — " '
+    index($0, t) == 1 { buf = ""; inb = 1; next }
+    /^### / { inb = 0 }
+    inb { buf = buf $0 "\n" }
+    END { printf "%s", buf }
+  ' "$WS/projects/$1/metrics/calibration.md" 2>/dev/null
+}
+
+# cal_count <project> <task> -> how many "### <task> — " entries calibration.md
+# carries for that task right now (0 if the file or the task is absent). The
+# one-row-per-task assertion this drill leans on repeatedly (item 3).
+cal_count() {
+  grep -c "^### $2 — " "$WS/projects/$1/metrics/calibration.md" 2>/dev/null || true
+}
+
 cleanup() {
   # Kill ONLY the drill's own server. The check is not paranoia: an unguarded
   # `tmux kill-server` reaching the default socket would take down the operator's
@@ -367,7 +385,7 @@ check "result -> in_review" "[ \"\$(bstatus '$ARUN' alpha-demo)\" = in_review ]"
 
 echo
 echo "== project '$APROJ': close (resolves the task's run) — and scores as one act =="
-ACLOSE="$("$SCRIPT_DIR/hive-close" alpha-demo --reason "drill close")"
+ACLOSE="$("$SCRIPT_DIR/hive-close" alpha-demo --review clean --reason "drill close")"
 printf '%s\n' "$ACLOSE"
 check "close -> done"                  "[ \"\$(bstatus '$ARUN' alpha-demo)\" = done ]"
 check "close named the resolved run"   "printf '%s' \"\$ACLOSE\" | grep -qF 'run=$ARUN'"
@@ -377,6 +395,8 @@ check "close certified the result ref" "printf '%s' \"\$ACLOSE\" | grep -qF '$AR
 # — the part that actually bit the first improver sitting — it no longer stops at
 # an uncommitted working tree. Assert all three links: appended, committed, pushed.
 check "close scored the task"                "grep -q '^### alpha-demo — closed' '$WS/projects/$APROJ/metrics/calibration.md'"
+check "the scored row carries the --review verdict straight through" \
+  "cal_entry '$APROJ' alpha-demo | grep -E '^\| review outcome \|' | grep -qF '| clean |'"
 check "the score is COMMITTED in the workspace clone" \
   "log_has '$WS' 'score: alpha-demo on run $ARUN' 'projects/$APROJ/metrics'"
 check "the score reached the hub"            "log_has '$HUB' 'score: alpha-demo on run $ARUN'"
@@ -419,7 +439,7 @@ BRESULT="projects/$BPROJ/reports/2026-07-13-beta-demo-result.md@0123456789abcdef
 "$BWRAP" --type task.result_posted --task beta-demo \
   --payload "$(jq -cn --arg r "$BRESULT" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
 check "beta: result -> in_review on beta's run"  "[ \"\$(bstatus '$BRUN' beta-demo)\" = in_review ]"
-BCLOSE="$("$SCRIPT_DIR/hive-close" beta-demo --reason "beta drill close")"
+BCLOSE="$("$SCRIPT_DIR/hive-close" beta-demo --review clean --reason "beta drill close")"
 printf '%s\n' "$BCLOSE"
 check "beta: close resolved beta's run"          "printf '%s' \"\$BCLOSE\" | grep -qF 'run=$BRUN'"
 check "beta: close -> done on beta's run"        "[ \"\$(bstatus '$BRUN' beta-demo)\" = done ]"
@@ -482,7 +502,7 @@ expect_fail_msg "ambiguity refusal lists the alpha candidate" "projects/$APROJ/o
 expect_fail_msg "ambiguity refusal lists the beta candidate" "projects/$BPROJ/orders/2026-07-13-shared.md" \
   "$SCRIPT_DIR/hive-answer" shared "hello"
 expect_fail_msg "close refuses the same cross-project ambiguity" "ambiguous across projects" \
-  "$SCRIPT_DIR/hive-close" shared
+  "$SCRIPT_DIR/hive-close" shared --review clean
 
 echo
 echo "== review WIP throttle is GLOBAL: summed across every project with a conf =="
@@ -518,7 +538,7 @@ check "throttle refusal provisioned nothing" "[ ! -e '$WORK/sess-throttled-${STA
 check "--anyway overrides the throttle -> assigned" "[ \"\$(bstatus '$ARUN' drill-throttled)\" = assigned ]"
 
 # Drain by closing the beta in_review task; a plain alpha launch then succeeds (1 < 2).
-"$SCRIPT_DIR/hive-close" drill-rev-b --reason "drain" >/dev/null
+"$SCRIPT_DIR/hive-close" drill-rev-b --review clean --reason "drain" >/dev/null
 check "drain-by-close on BETA dropped the global count" "[ \"\$(bcount_review '$BRUN')\" = 0 ]"
 DORDER=$(add_order "$APROJ" "2026-07-13-drill-drained" "drained")
 "$SCRIPT_DIR/hive-launch" "$DORDER" --worker "sess-drained-${STAMP}" >/dev/null
@@ -542,7 +562,7 @@ LRESULT="projects/$APROJ/reports/2026-07-13-$LTASK-result.md@0123456789abcdef012
 "$LWRAP" --type task.result_posted --task "$LTASK" \
   --payload "$(jq -cn --arg r "$LRESULT" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
 check "long id: result -> in_review" "[ \"\$(bstatus '$ARUN' '$LTASK')\" = in_review ]"
-"$SCRIPT_DIR/hive-close" "$LTASK" --reason "long-id drill close" >/dev/null
+"$SCRIPT_DIR/hive-close" "$LTASK" --review clean --reason "long-id drill close" >/dev/null
 check "long id: close -> done (in_review verified past the wrap)" "[ \"\$(bstatus '$ARUN' '$LTASK')\" = done ]"
 
 # ==============================================================================
@@ -620,14 +640,6 @@ echo "== predictions launch-gate: refuses unparseable, not absent; warns on part
 # section scored `unpredicted` with no error anywhere — the whole tenant
 # project's first wave was lost exactly this way. hive-launch now runs the
 # SAME parser (predictions_classify, hive-common.sh) hive-score uses.
-cal_entry() {  # cal_entry <project> <task> -> that task's LAST calibration entry
-  awk -v t="### $2 — " '
-    index($0, t) == 1 { buf = ""; inb = 1; next }
-    /^### / { inb = 0 }
-    inb { buf = buf $0 "\n" }
-    END { printf "%s", buf }
-  ' "$WS/projects/$1/metrics/calibration.md"
-}
 
 BADTASK="drill-predictions-bad"
 BADREL="projects/$APROJ/orders/2026-07-13-$BADTASK.md"
@@ -753,7 +765,7 @@ BADWRAP="$WRAPPERS/sess-predbad-${STAMP}.sh"
 "$BADWRAP" --type task.accepted --task "$BADTASK" >/dev/null
 "$BADWRAP" --type task.result_posted --task "$BADTASK" \
   --payload "$(jq -cn --arg r "projects/$APROJ/reports/2026-07-13-$BADTASK-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
-"$SCRIPT_DIR/hive-close" "$BADTASK" --reason "predictions-gate drill close" >/dev/null
+"$SCRIPT_DIR/hive-close" "$BADTASK" --review clean --reason "predictions-gate drill close" >/dev/null
 check "the same D1-dialect order scores 'section present, 0 of 3 fields parsed'" \
   "cal_entry '$APROJ' '$BADTASK' | grep -F 'coverage: unpredicted (section present, 0 of 3 fields parsed)' >/dev/null"
 
@@ -941,7 +953,7 @@ SFWRAP="$WRAPPERS/$SFWORKER.sh"
 COMMITS_BEFORE_SF=$(git -C "$WS" rev-list --count HEAD)
 git -C "$WS" remote set-url origin "$SANDBOX/nonexistent.git"
 SFRC=0
-SFOUT="$("$SCRIPT_DIR/hive-close" "$SFTASK" --reason "score-failure drill" 2>&1)" || SFRC=$?
+SFOUT="$("$SCRIPT_DIR/hive-close" "$SFTASK" --review clean --reason "score-failure drill" 2>&1)" || SFRC=$?
 git -C "$WS" remote set-url origin "$HUB"
 printf '%s\n' "$SFOUT"
 check "the close still exits 0 despite both regeneration failures" "[ '$SFRC' -eq 0 ]"
@@ -988,11 +1000,292 @@ check "standalone hive-score records the entry"   "grep -q '^### $NSTASK — clo
 check "standalone hive-score carries the verdict" "grep -qF 'clean' '$WS/projects/$APROJ/metrics/calibration.md'"
 check "standalone hive-score committed + pushed"  "log_has '$HUB' 'score: $NSTASK on run $ARUN'"
 check "standalone hive-score left the tree clean" "[ -z \"\$(git -C '$WS' status --porcelain)\" ]"
-# --no-commit is the other escape hatch: written, deliberately not recorded.
-"$SCRIPT_DIR/hive-score" "$NSTASK" --again --no-commit </dev/null >/dev/null
+# --no-commit is the other escape hatch: written, deliberately not recorded. An
+# explicit --review that actually CHANGES the verdict, not a bare --again: with
+# the one-row rewrite (item 3), a no-op rescore on an unchanged day legitimately
+# produces byte-identical content and therefore no diff to leave uncommitted —
+# the same determinism hive-metrics already has. Forcing a real content change
+# is what makes this assertion about --no-commit, not about determinism.
+"$SCRIPT_DIR/hive-score" "$NSTASK" --again --review "rework" --no-commit </dev/null >/dev/null
 check "--no-commit leaves the entry uncommitted" \
   "[ -n \"\$(git -C '$WS' status --porcelain -- 'projects/$APROJ/metrics')\" ]"
+check "--no-commit still only replaced in place (one row)" "[ \"\$(cal_count '$APROJ' '$NSTASK')\" = 1 ]"
 git -C "$WS" checkout --quiet -- "projects/$APROJ/metrics"
+
+# ==============================================================================
+echo
+echo "== close carries the verdict: --review is required unless --no-score (DoD a) =="
+RRTASK="drill-review-required"
+RRORDER=$(add_order "$APROJ" "2026-07-13-$RRTASK" "review required")
+RRWORKER="sess-reviewreq-${STAMP}"
+"$SCRIPT_DIR/hive-launch" "$RRORDER" --worker "$RRWORKER" >/dev/null
+RRWRAP="$WRAPPERS/$RRWORKER.sh"
+"$RRWRAP" --type task.accepted --task "$RRTASK" >/dev/null
+"$RRWRAP" --type task.result_posted --task "$RRTASK" \
+  --payload "$(jq -cn --arg r "projects/$APROJ/reports/2026-07-13-$RRTASK-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
+check "review-required: task reached in_review" "[ \"\$(bstatus '$ARUN' '$RRTASK')\" = in_review ]"
+
+expect_fail_msg "close refuses with neither --review nor --no-score" "requires --review" \
+  "$SCRIPT_DIR/hive-close" "$RRTASK" --reason "missing review"
+check "the refusal wrote nothing to the board (still in_review)" "[ \"\$(bstatus '$ARUN' '$RRTASK')\" = in_review ]"
+
+expect_fail_msg "close refuses an invalid --review value, naming the vocabulary" "must be one of" \
+  "$SCRIPT_DIR/hive-close" "$RRTASK" --review "banana" --reason "bad verdict"
+check "the invalid-verdict refusal also wrote nothing to the board" "[ \"\$(bstatus '$ARUN' '$RRTASK')\" = in_review ]"
+
+# --no-score is still the explicit opt-out — no --review needed at all.
+"$SCRIPT_DIR/hive-close" "$RRTASK" --no-score --reason "opted out of scoring" >/dev/null
+check "--no-score closes without --review" "[ \"\$(bstatus '$ARUN' '$RRTASK')\" = done ]"
+check "--no-score really recorded no row" "[ \"\$(cal_count '$APROJ' '$RRTASK')\" = 0 ]"
+# ...and a properly-reviewed close on a fresh task produces exactly one scored row.
+RRTASK2="drill-review-required-2"
+RRORDER2=$(add_order "$APROJ" "2026-07-13-$RRTASK2" "review required 2")
+RRWORKER2="sess-reviewreq2-${STAMP}"
+"$SCRIPT_DIR/hive-launch" "$RRORDER2" --worker "$RRWORKER2" >/dev/null
+RRWRAP2="$WRAPPERS/$RRWORKER2.sh"
+"$RRWRAP2" --type task.accepted --task "$RRTASK2" >/dev/null
+"$RRWRAP2" --type task.result_posted --task "$RRTASK2" \
+  --payload "$(jq -cn --arg r "projects/$APROJ/reports/2026-07-13-$RRTASK2-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
+"$SCRIPT_DIR/hive-close" "$RRTASK2" --review "minor rework" --reason "reviewed properly" >/dev/null
+check "a valid --review close produces exactly one scored row (DoD b)" "[ \"\$(cal_count '$APROJ' '$RRTASK2')\" = 1 ]"
+check "the row carries the verdict given at close" \
+  "cal_entry '$APROJ' '$RRTASK2' | grep -E '^\| review outcome \|' | grep -qF '| minor rework |'"
+
+echo
+echo "== hive-score refuses a false clean when review.failed > 0 (DoD c) =="
+RFTASK="drill-reviewfail"
+RFORDER=$(add_order "$APROJ" "2026-07-13-$RFTASK" "review fail refusal")
+RFWORKER="sess-reviewfail-${STAMP}"
+"$SCRIPT_DIR/hive-launch" "$RFORDER" --worker "$RFWORKER" >/dev/null
+RFWRAP="$WRAPPERS/$RFWORKER.sh"
+"$RFWRAP" --type task.accepted --task "$RFTASK" >/dev/null
+"$RFWRAP" --type task.result_posted --task "$RFTASK" \
+  --payload "$(jq -cn --arg r "projects/$APROJ/reports/2026-07-13-$RFTASK-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
+# Close with --no-score so the fixture controls the calibration file exactly, then
+# record a review.failed on the spine — legal from any status (the guard is just
+# "task exists"), the same way a real rejection cycle would leave its mark even
+# after the task eventually closed clean.
+"$SCRIPT_DIR/hive-close" "$RFTASK" --no-score --reason "fixture close" >/dev/null
+raw_emit "$ARUN" instrument operator review.failed --task "$RFTASK" --payload "$(jq -cn '{ref_result:"n/a"}')"
+
+expect_fail_msg "hive-score refuses --review clean when review.failed > 0" "review.failed x1" \
+  "$SCRIPT_DIR/hive-score" "$RFTASK" --review clean </dev/null
+expect_fail_msg "the refusal names 'minor rework' as a legal alternative" "minor rework" \
+  "$SCRIPT_DIR/hive-score" "$RFTASK" --review clean </dev/null
+expect_fail_msg "the refusal names 'rework' as a legal alternative" "rework" \
+  "$SCRIPT_DIR/hive-score" "$RFTASK" --review clean </dev/null
+check "the refusal wrote no calibration row" "[ \"\$(cal_count '$APROJ' '$RFTASK')\" = 0 ]"
+
+"$SCRIPT_DIR/hive-score" "$RFTASK" --review "rework" </dev/null >/dev/null
+check "a truthful non-clean verdict is accepted" "[ \"\$(cal_count '$APROJ' '$RFTASK')\" = 1 ]"
+check "the row shows the real review.failed count" \
+  "cal_entry '$APROJ' '$RFTASK' | grep -E '^\| review outcome \|' | grep -qF 'review.failed x1'"
+
+# A carried-forward verdict is checked the same as an explicit one: rescoring with
+# no --review must carry 'rework' forward (not silently drift to unscored), and an
+# EXPLICIT clean on the same task must still be refused — the guard is not
+# bypassable just by typing the word again.
+"$SCRIPT_DIR/hive-score" "$RFTASK" --again </dev/null >/dev/null
+check "carry-forward keeps the real verdict, not clean" \
+  "cal_entry '$APROJ' '$RFTASK' | grep -E '^\| review outcome \|' | grep -qF '| rework |'"
+check "carry-forward still leaves exactly one row" "[ \"\$(cal_count '$APROJ' '$RFTASK')\" = 1 ]"
+expect_fail_msg "an explicit clean is refused too, not just a carried-forward one" "review.failed x1" \
+  "$SCRIPT_DIR/hive-score" "$RFTASK" --again --review clean </dev/null
+check "the blocked explicit-clean attempt left the row untouched" \
+  "cal_entry '$APROJ' '$RFTASK' | grep -E '^\| review outcome \|' | grep -qF '| rework |'"
+check "the blocked attempt did not create a second row" "[ \"\$(cal_count '$APROJ' '$RFTASK')\" = 1 ]"
+
+echo
+echo "== one task, one row: repeated --again never grows past one row (DoD d) =="
+ORTASK="drill-onerow"
+ORORDER=$(add_order "$APROJ" "2026-07-13-$ORTASK" "one row")
+ORWORKER="sess-onerow-${STAMP}"
+"$SCRIPT_DIR/hive-launch" "$ORORDER" --worker "$ORWORKER" >/dev/null
+ORWRAP="$WRAPPERS/$ORWORKER.sh"
+"$ORWRAP" --type task.accepted --task "$ORTASK" >/dev/null
+"$ORWRAP" --type task.result_posted --task "$ORTASK" \
+  --payload "$(jq -cn --arg r "projects/$APROJ/reports/2026-07-13-$ORTASK-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
+"$SCRIPT_DIR/hive-close" "$ORTASK" --review "minor rework" --reason "first close" >/dev/null
+check "one-row: close produced exactly one row" "[ \"\$(cal_count '$APROJ' '$ORTASK')\" = 1 ]"
+
+TOTAL_ROWS_BEFORE=$(grep -c '^### ' "$WS/projects/$APROJ/metrics/calibration.md")
+expect_fail_msg "hive-score without --again still refuses an already-scored task" "replace it in place" \
+  "$SCRIPT_DIR/hive-score" "$ORTASK" </dev/null
+
+"$SCRIPT_DIR/hive-score" "$ORTASK" --again </dev/null >/dev/null
+check "one-row: bare --again stays at one row" "[ \"\$(cal_count '$APROJ' '$ORTASK')\" = 1 ]"
+check "one-row: bare --again carries the prior verdict forward" \
+  "cal_entry '$APROJ' '$ORTASK' | grep -E '^\| review outcome \|' | grep -qF '| minor rework |'"
+
+"$SCRIPT_DIR/hive-score" "$ORTASK" --again --review "clean" </dev/null >/dev/null
+check "one-row: an explicit --review always overrides the carried verdict" \
+  "cal_entry '$APROJ' '$ORTASK' | grep -E '^\| review outcome \|' | grep -qF '| clean |'"
+check "one-row: still exactly one row after the explicit override" "[ \"\$(cal_count '$APROJ' '$ORTASK')\" = 1 ]"
+
+"$SCRIPT_DIR/hive-score" "$ORTASK" --again </dev/null >/dev/null
+check "one-row: the NEXT bare --again carries forward the NEW newest verdict" \
+  "cal_entry '$APROJ' '$ORTASK' | grep -E '^\| review outcome \|' | grep -qF '| clean |'"
+TOTAL_ROWS_AFTER=$(grep -c '^### ' "$WS/projects/$APROJ/metrics/calibration.md")
+check "one-row: the file's total row count never grew (stable ordering, other tasks untouched)" \
+  "[ '$TOTAL_ROWS_AFTER' = '$TOTAL_ROWS_BEFORE' ]"
+check "one-row: alpha-demo's own row is still exactly one (unaffected by another task's rescoring)" \
+  "[ \"\$(cal_count '$APROJ' alpha-demo)\" = 1 ]"
+
+echo
+echo "== the rewrite collapses pre-existing legacy duplicates (DoD e) =="
+# Both shapes retro 3 D4 found in the real pln-benchmarks calibration.md, replayed
+# here as fixtures: a task with a human verdict already on record before a
+# no-review rescore (shape A: ptc-revalidate — a real verdict at risk of being
+# silently destroyed), and a task with no prior human verdict before one arrives
+# (shape B: pw-libpln-slice — no prior verdict to lose, but still 3 duplicate
+# rows). Hand-seeded because the fixed hive-score can no longer produce duplicate
+# rows itself — the duplicates are exactly the pre-existing state this rewrite has
+# to clean up on its first touch.
+seed_legacy_row() {  # seed_legacy_row <project> <task> <verdict-text>
+  local proj="$1" task="$2" verdict="$3"
+  local cal="$WS/projects/$proj/metrics/calibration.md"
+  {
+    echo "### $task — closed 2026-07-13"
+    echo
+    echo "| field | predicted | actual | verdict |"
+    echo "|---|---|---|---|"
+    echo "| effort | *not predicted* | 0.1h | unpredicted |"
+    echo "| questions | *not predicted* | 0 | unpredicted |"
+    echo "| review outcome | *not predicted* | review.failed x0 on the spine (PR-level rework is not an event) | $verdict |"
+    echo
+    echo "- coverage: unpredicted (no usable \`## Predictions\` section)"
+    echo "- order: \`projects/$proj/orders/2026-07-13-$task.md\`"
+    echo "- outcome source: run \`$ARUN\` at seq 1 · final status \`done\`"
+    echo "- scored: 2026-07-13"
+    echo
+  } >> "$cal"
+}
+
+SATASK="drill-shape-a"
+SAORDER=$(add_order "$APROJ" "2026-07-13-$SATASK" "legacy shape a")
+SAWORKER="sess-shapea-${STAMP}"
+"$SCRIPT_DIR/hive-launch" "$SAORDER" --worker "$SAWORKER" >/dev/null
+SAWRAP="$WRAPPERS/$SAWORKER.sh"
+"$SAWRAP" --type task.accepted --task "$SATASK" >/dev/null
+"$SAWRAP" --type task.result_posted --task "$SATASK" \
+  --payload "$(jq -cn --arg r "projects/$APROJ/reports/2026-07-13-$SATASK-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
+"$SCRIPT_DIR/hive-close" "$SATASK" --no-score --reason "shape-a fixture" >/dev/null
+# ptc-revalidate's real shape: an explicit human verdict (legacy capitalization),
+# then a no-review recovery rescore that (pre-fix) silently wiped it to unscored,
+# then a manual fix restoring it. Three rows for one task.
+seed_legacy_row "$APROJ" "$SATASK" "Clean"
+seed_legacy_row "$APROJ" "$SATASK" "unscored (needs a human verdict: --review)"
+seed_legacy_row "$APROJ" "$SATASK" "Clean"
+check "shape-a fixture: three legacy rows seeded" "[ \"\$(cal_count '$APROJ' '$SATASK')\" = 3 ]"
+
+"$SCRIPT_DIR/hive-score" "$SATASK" --again </dev/null >/dev/null
+check "shape-a: the rewrite collapses three legacy rows to one" "[ \"\$(cal_count '$APROJ' '$SATASK')\" = 1 ]"
+check "shape-a: legacy 'Clean' capitalization is matched and normalized to lowercase" \
+  "cal_entry '$APROJ' '$SATASK' | grep -E '^\| review outcome \|' | grep -qF '| clean |'"
+
+SBTASK="drill-shape-b"
+SBORDER=$(add_order "$APROJ" "2026-07-13-$SBTASK" "legacy shape b")
+SBWORKER="sess-shapeb-${STAMP}"
+"$SCRIPT_DIR/hive-launch" "$SBORDER" --worker "$SBWORKER" >/dev/null
+SBWRAP="$WRAPPERS/$SBWORKER.sh"
+"$SBWRAP" --type task.accepted --task "$SBTASK" >/dev/null
+"$SBWRAP" --type task.result_posted --task "$SBTASK" \
+  --payload "$(jq -cn --arg r "projects/$APROJ/reports/2026-07-13-$SBTASK-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
+"$SCRIPT_DIR/hive-close" "$SBTASK" --no-score --reason "shape-b fixture" >/dev/null
+# pw-libpln-slice's real shape: no human verdict at all until the last row —
+# nothing destroyed, but still three duplicate rows for one task.
+seed_legacy_row "$APROJ" "$SBTASK" "unpredicted"
+seed_legacy_row "$APROJ" "$SBTASK" "unscored (needs a human verdict: --review)"
+seed_legacy_row "$APROJ" "$SBTASK" "minor rework"
+check "shape-b fixture: three legacy rows seeded" "[ \"\$(cal_count '$APROJ' '$SBTASK')\" = 3 ]"
+
+"$SCRIPT_DIR/hive-score" "$SBTASK" --again </dev/null >/dev/null
+check "shape-b: the rewrite collapses three legacy rows to one" "[ \"\$(cal_count '$APROJ' '$SBTASK')\" = 1 ]"
+check "shape-b: the newest prior human verdict carries forward" \
+  "cal_entry '$APROJ' '$SBTASK' | grep -E '^\| review outcome \|' | grep -qF '| minor rework |'"
+
+echo
+echo "== hive-answer --sha: verifies an already-pushed commit, then nudges only (DoD f) =="
+SHATASK="drill-sha-answer"
+SHAORDER=$(add_order "$APROJ" "2026-07-13-$SHATASK" "sha answer")
+SHAWORKER="sess-shaanswer-${STAMP}"
+"$SCRIPT_DIR/hive-launch" "$SHAORDER" --worker "$SHAWORKER" >/dev/null
+check "sha-answer: a window exists to nudge" \
+  "tmux list-windows -t '=$TMUX_SESSION' -F '#{window_name}' | grep -qxF '$SHATASK'"
+
+# --- success: a pure addition below '## Answers', already committed + pushed ---
+printf '\n## Answers\n- 2026-07-13 — long-form answer landed via --sha, not the text arg\n' >> "$WS/$SHAORDER"
+git -C "$WS" add -- "$SHAORDER"
+git -C "$WS" commit --quiet -m "answer: $SHATASK (via --sha)"
+git -C "$WS" push --quiet origin HEAD:main
+GOOD_SHA=$(git -C "$WS" rev-parse HEAD)
+SHAOUT="$("$SCRIPT_DIR/hive-answer" "$SHATASK" --sha "$GOOD_SHA")"
+printf '%s\n' "$SHAOUT"
+check "sha-answer: verifies without recommitting" "printf '%s' \"\$SHAOUT\" | grep -qF 'verified'"
+check "sha-answer: nudges the pane"               "printf '%s' \"\$SHAOUT\" | grep -qF 'nudged pane'"
+check "sha-answer: the content really is on the hub" "log_has '$HUB' 'answer: $SHATASK (via --sha)'"
+check "sha-answer: created no NEW commit (the author's stands alone)" \
+  "[ \"\$(git -C '$WS' rev-parse HEAD)\" = '$GOOD_SHA' ]"
+
+# --- refusals: each is its own violation, isolated so the message is meaningful ---
+expect_fail_msg "sha-answer: refuses an abbreviated sha" "40-character" \
+  "$SCRIPT_DIR/hive-answer" "$SHATASK" --sha "${GOOD_SHA:0:10}"
+
+# unreachable: pushed to a side branch, never merged into main.
+git -C "$WS" checkout --quiet -b sha-unreachable
+printf -- '\n- unreachable answer attempt\n' >> "$WS/$SHAORDER"
+git -C "$WS" commit --quiet -am "answer: $SHATASK (unreachable)"
+UNREACH_SHA=$(git -C "$WS" rev-parse HEAD)
+git -C "$WS" push --quiet origin HEAD:refs/heads/sha-unreachable-branch
+git -C "$WS" checkout --quiet main
+git -C "$WS" branch -D --quiet sha-unreachable
+expect_fail_msg "sha-answer: refuses a commit not reachable from the hub's main" "not reachable" \
+  "$SCRIPT_DIR/hive-answer" "$SHATASK" --sha "$UNREACH_SHA"
+
+# mixed commit: touches the order AND an unrelated file in the same commit.
+echo "unrelated scratch content" > "$WS/scratch-unrelated.txt"
+printf -- '\n- mixed commit attempt\n' >> "$WS/$SHAORDER"
+git -C "$WS" add -A
+git -C "$WS" commit --quiet -m "answer: $SHATASK (mixed)"
+git -C "$WS" push --quiet origin HEAD:main
+MIXED_SHA=$(git -C "$WS" rev-parse HEAD)
+expect_fail_msg "sha-answer: refuses a commit touching more than the target order" "more than the target order" \
+  "$SCRIPT_DIR/hive-answer" "$SHATASK" --sha "$MIXED_SHA"
+
+# merge commit: an actual two-parent commit whose diff touches the order.
+git -C "$WS" checkout --quiet -b sha-merge-src
+printf -- '\n- merge-sourced answer\n' >> "$WS/$SHAORDER"
+git -C "$WS" commit --quiet -am "answer: $SHATASK (merge source)"
+git -C "$WS" checkout --quiet main
+echo "unrelated 2" > "$WS/scratch-unrelated2.txt"
+git -C "$WS" add -A && git -C "$WS" commit --quiet -m "unrelated commit to diverge history"
+git -C "$WS" merge --no-ff --quiet -m "merge: $SHATASK sha test" sha-merge-src
+git -C "$WS" push --quiet origin HEAD:main
+MERGE_SHA=$(git -C "$WS" rev-parse HEAD)
+git -C "$WS" branch -D --quiet sha-merge-src
+expect_fail_msg "sha-answer: refuses a merge commit" "merge commit" \
+  "$SCRIPT_DIR/hive-answer" "$SHATASK" --sha "$MERGE_SHA"
+
+# deletion: removes a line that was already below the heading, adds nothing.
+grep -v 'long-form answer landed via --sha' "$WS/$SHAORDER" > "$WS/$SHAORDER.tmp" \
+  && mv "$WS/$SHAORDER.tmp" "$WS/$SHAORDER"
+git -C "$WS" commit --quiet -am "answer: $SHATASK (deletion)"
+git -C "$WS" push --quiet origin HEAD:main
+DEL_SHA=$(git -C "$WS" rev-parse HEAD)
+expect_fail_msg "sha-answer: refuses a commit that deletes lines" "deletes" \
+  "$SCRIPT_DIR/hive-answer" "$SHATASK" --sha "$DEL_SHA"
+
+# edit above the heading: a pure INSERTION above '## Answers' (no deletion, so the
+# deletions guard cannot be what fires) — must still be caught by the prefix check.
+awk '{ print; if ($0 == "## Scope") print "Injected content above the heading." }' \
+  "$WS/$SHAORDER" > "$WS/$SHAORDER.tmp" && mv "$WS/$SHAORDER.tmp" "$WS/$SHAORDER"
+git -C "$WS" commit --quiet -am "answer: $SHATASK (insert above heading)"
+git -C "$WS" push --quiet origin HEAD:main
+ABOVE_SHA=$(git -C "$WS" rev-parse HEAD)
+check "the above-heading fixture really added zero deletions" \
+  "[ \"\$(git -C '$WS' diff --numstat HEAD~1 HEAD -- '$SHAORDER' | awk '{print \$2}')\" = 0 ]"
+expect_fail_msg "sha-answer: refuses a commit that edits above the heading" "above the" \
+  "$SCRIPT_DIR/hive-answer" "$SHATASK" --sha "$ABOVE_SHA"
 
 echo
 echo "== refusal paths =="
@@ -1032,10 +1325,10 @@ EWRAP="$WRAPPERS/$EWORKER.sh"
 "$EWRAP" --type task.accepted --task drill-empty >/dev/null 2>&1
 "$EWRAP" --type task.result_posted --task drill-empty --payload "$(jq -cn '{artifact_refs:[]}')" >/dev/null 2>&1
 check "empty-result task reached in_review" "[ \"\$(bstatus '$ARUN' drill-empty)\" = in_review ]"
-expect_fail "close refuses a result with no artifact ref" "$SCRIPT_DIR/hive-close" "drill-empty"
+expect_fail "close refuses a result with no artifact ref" "$SCRIPT_DIR/hive-close" "drill-empty" --review clean
 
 # (f) close on a task that is not in_review (alpha-demo is already done).
-expect_fail "close refuses when board is not in_review" "$SCRIPT_DIR/hive-close" "alpha-demo"
+expect_fail "close refuses when board is not in_review" "$SCRIPT_DIR/hive-close" "alpha-demo" --review clean
 
 # (g) failed push — point OPS_WS origin at a dead remote so push (and rebase) fail.
 git -C "$WS" remote set-url origin "$SANDBOX/nonexistent.git"
