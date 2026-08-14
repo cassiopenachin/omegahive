@@ -104,3 +104,8 @@ procedure: ops RUNBOOK (`hive-workspace: projects/omegahive/RUNBOOK.md`).
 - **Stage 4** adds the two-role DB split (reader vs gateway INSERT — T1 check 6) and the network-route layer of the tier-routing check (real outbound capability). Deployment #0 has no outbound at all, so only the gateway layer of check 4 is asserted here. The two-role machinery shipped 2026-08-01; check 6 reports `PENDING` until this deployment performs the cutover (RUNBOOK "Two-role cutover"), and the per-container credential scan (check 7) is live now.
 - The omegahive image is a local build; before any second host, push it and pin the RepoDigest in this lockfile.
 - **Out-of-band recovery drill** (test plan E2.5) is deferred to **stage 2**: it verifies that no self-managing component can lock humans out, and #0 has no resident agent, adapters, or outbound — plain SSH is currently the *only* control path, not a fallback, so there is nothing to drill against. It becomes meaningful once the agent container lands.
+- **hive MCP** (hive-mcp order): the UI service now also answers `GET /api/v1/*` on
+  the same loopback publish and Caddy route — no new port, container, or secret. See
+  `docs/reference/omegahive_hive_mcp.md` for the threat boundary and the designed
+  operator round-trip; its record is appended there once the operator has run it
+  against this deployment.

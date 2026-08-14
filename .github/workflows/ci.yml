@@ -46,3 +46,35 @@ jobs:
 
       - name: Test (pytest)
         run: uv run pytest -q
+
+      - name: API schema doc is up to date
+        run: uv run python scripts/emit_api_schemas.py --check
+
+  mcp:
+    # omegahive-mcp is a fully standalone project (its own pyproject.toml/uv.lock,
+    # no shared venv with the job above) — the Mac-side executable this proves out
+    # never carries the server's dependencies. Its dev-only schema-parity test does
+    # depend on `omegahive` (path = ".."), which this checkout provides.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync dependencies
+        working-directory: omegahive-mcp
+        run: uv sync --group dev
+
+      - name: Lint (ruff)
+        working-directory: omegahive-mcp
+        run: uv run ruff check .
+
+      - name: Type-check (mypy)
+        working-directory: omegahive-mcp
+        run: uv run mypy src tests
+
+      - name: Test (pytest)
+        working-directory: omegahive-mcp
+        run: uv run pytest -q
