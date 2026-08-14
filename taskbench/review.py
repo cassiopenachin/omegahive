@@ -304,6 +304,11 @@ def run_probe(
             ok=False, canary_denied=False, solution_denied=False, inputs_readable=False,
             detail={"probe_failed": "the probe timed out; the sandbox wrapper did not return"},
         )
+    except OSError as exc:
+        return ProbeResult(
+            ok=False, canary_denied=False, solution_denied=False, inputs_readable=False,
+            detail={"probe_failed": f"could not execute the sandbox wrapper: {exc}"},
+        )
     if proc.returncode != 0:
         return ProbeResult(
             ok=False,
@@ -389,6 +394,11 @@ def run_review(
                 exit_code=-1,
                 ran=True,
                 reason=f"reviewer timed out after {spec.timeout_s}s and wrote no verdict",
+            )
+        except OSError as exc:
+            return ReviewOutcome(
+                cell_id=cell_id, probe=probe, verdict=None, exit_code=-1, ran=False,
+                reason=f"could not execute the reviewer or its sandbox wrapper: {exc}",
             )
 
     from .runner import parse_result_envelope

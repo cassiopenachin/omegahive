@@ -207,7 +207,9 @@ def test_a_reviewer_that_hangs_is_a_red_cell_not_a_dead_batch(world, tmp_path):
         corpus.manifests["greeting"], packet_dir=tmp / "packet", cell_id="cell-x",
         order_text="o", rubric_text="r", candidate_patch="p", verifier_outputs={},
     )
-    spec = fx.specs(tmp)[1].model_copy(update={"argv": ["sleep", "30"], "timeout_s": 1})
+    spec = fx.specs(tmp, sandbox=[])[1].model_copy(
+        update={"argv": ["sleep", "30"], "timeout_s": 1}
+    )
     outcome = review.run_review(
         spec,
         packet_dir=tmp / "packet",
@@ -324,3 +326,32 @@ def test_a_failed_probe_stops_the_reviewer_from_running(world, tmp_path):
     assert not outcome.ran
     assert "probe failed" in outcome.reason
     assert not (tmp / "packet" / "verdict.json").exists()
+
+
+def test_a_missing_sandbox_wrapper_is_one_dead_leg_not_a_dead_batch(world, tmp_path):
+    """Preflight refuses a wrapper that is not on PATH, so this is defence in depth — but if
+    it ever slips through, the cost must be one cell's review leg, not every remaining cell."""
+    corpus, tmp = world
+    inputs = review.build_packet(
+        corpus.manifests["greeting"], packet_dir=tmp / "packet", cell_id="cell-x",
+        order_text="o", rubric_text="r", candidate_patch="p", verifier_outputs={},
+    )
+    canary = tmp / "CANARY.txt"
+    canary.write_text("canary")
+    solution = tmp / "solution.patch"
+    solution.write_text("the answer")
+    spec = fx.specs(tmp, sandbox=["definitely-not-installed", "--", "{packet}"])[1]
+
+    probe = review.run_probe(
+        spec, packet_dir=tmp / "packet", canary_path=canary, solution_path=solution,
+        declared_inputs=inputs,
+    )
+    assert not probe.ok
+    assert "could not execute the sandbox wrapper" in probe.detail["probe_failed"]
+
+    outcome = review.run_review(
+        spec, packet_dir=tmp / "packet", cell_id="cell-x",
+        probe=ProbeResult(True, True, True, True), log_dir=tmp / "review",
+    )
+    assert not outcome.ran and "could not execute" in outcome.reason
+    assert not grade.score_review(outcome).passed
