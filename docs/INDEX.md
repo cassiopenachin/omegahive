@@ -12,6 +12,7 @@
 ## docs/reference/ (normative-or-historical sources; consult, don't start here — see reference/README.md)
 - omegahive_spec_1_1.md — upstream OmegaHive 1.1 spec (Ben Goertzel), text-faithful PDF conversion; reference source
 - omegahive_port_spec.md — the port milestone build spec (`HiveCoordinatorPort`); shipped, semantics normative
+- omegahive_hive_mcp.md — the versioned JSON API (`src/omegahive/api/`) and the standalone stdio MCP server (`omegahive-mcp/`); v1, shipped; threat-boundary table, setup, the designed operator round-trip (pending its record), the `capacity-view` extension contract
 - omegahive_stage2_verdict.md — closes the stage-2 coordinator ladder, states what stages 3+ assume; decision record, governs
 - omegahive_c2_battery_spec.md — build spec for the `qual` CLI (model-qualification battery); shipped, still normative, cited by `qual/__init__.py`
 - omegahive_o2_fork_patches.md — OmegaClaw fork patch operational decisions (channels, skills, config, Landlock); shipped, normative binding-story facts
