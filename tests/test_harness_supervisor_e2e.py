@@ -591,3 +591,29 @@ def test_the_launchers_jq_projection_matches_binding_metadata(rig):
     # And the invariant both must hold: no file contents, no settings values.
     assert "config_content" not in from_jq
     assert "permissions" not in json.dumps(from_jq)
+
+
+def test_a_lone_switch_required_flag_verifies_rather_than_failing_every_launch(rig):
+    """A required flag can be a pair or a lone switch, and the supervisor must know which.
+
+    Read as a pair, a lone switch makes the check look for a following EMPTY argv
+    element, which never exists — so every launch under such a descriptor would fail
+    boundary verification and record a terminal failure with no started fact. Codex's
+    shipped descriptor already carries `--ignore-user-config`, so this is not
+    hypothetical; it is one credential away from being live.
+    """
+    _approve_route(rig)
+    plan_path = rig["run_dir"] / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    # Add a lone switch the argv already carries, and one it does not.
+    plan["binding"]["required_flags"].append(["--model"])          # present in the argv
+    plan_path.write_text(json.dumps(plan))
+    assert _run_supervisor(rig, "success").returncode == 0, "a satisfied lone switch must verify"
+
+    plan["binding"]["required_flags"].append(["--a-switch-nobody-passes"])
+    plan_path.write_text(json.dumps(plan))
+    for stale in ("finished.json", "started.json"):
+        (rig["run_dir"] / stale).unlink(missing_ok=True)
+    proc = _run_supervisor(rig, "success")
+    assert proc.returncode == 1
+    assert "--a-switch-nobody-passes" in proc.stdout + proc.stderr

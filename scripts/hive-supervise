@@ -235,8 +235,21 @@ verify_binding() {  # verify_binding -> prints a reason on failure, empty on suc
     fi
   fi
   n=${#ARGV[@]}
-  while IFS= read -r flag && IFS= read -r value; do
+  # A required flag is either a pair (`--permission-mode auto`) or a lone switch
+  # (`--ignore-user-config`). The arity travels as a THIRD field rather than being
+  # inferred from an empty value: a lone switch read as a pair looks for a following
+  # empty argv element, which never exists, so every launch under such a descriptor
+  # would fail verification and record a terminal failure. Codex's descriptor already
+  # carries one, and the Claude Code descriptor is one edit away from carrying one.
+  while IFS= read -r arity && IFS= read -r flag && IFS= read -r value; do
     [ -n "$flag" ] || continue
+    if [ "$arity" = "1" ]; then
+      for ((i = 0; i < n; i++)); do
+        [ "${ARGV[i]}" = "$flag" ] && continue 2
+      done
+      printf '%s' "the argv about to be exec'd does not carry the required boundary flag '$flag'"
+      return
+    fi
     for ((i = 0; i < n - 1; i++)); do
       if [ "${ARGV[i]}" = "$flag" ] && [ "${ARGV[i + 1]}" = "$value" ]; then
         continue 2
@@ -244,7 +257,7 @@ verify_binding() {  # verify_binding -> prints a reason on failure, empty on suc
     done
     printf '%s' "the argv about to be exec'd does not carry the required boundary flag '$flag $value'"
     return
-  done < <(jq -r '.binding.required_flags[]? | .[0], (.[1] // "")' "$PLAN")
+  done < <(jq -r '.binding.required_flags[]? | (length | tostring), .[0], (.[1] // "")' "$PLAN")
   printf ''
 }
 
