@@ -67,25 +67,58 @@ Each is a distinct remedy, so each has a distinct code.
 |---|---|---|
 | Status | **proven** on beastie, harness 2.1.232, 2026-08-14 | **declared** — routes refuse |
 | Config surface | project-local `.claude/settings.local.json` in the worker root | none authored (`config_path: null`) |
-| Launch flags | `--setting-sources project,local`, `--permission-mode auto` | `--sandbox workspace-write`, `--ask-for-approval never` (declared) |
+| Launch flags | `--setting-sources project,local`, `--permission-mode auto` | `--sandbox workspace-write`, `--ignore-user-config` (observed on 0.147.0) |
 | P1 access layer | deny `Bash(*sudo *)`, `Bash(*systemctl *)`, `Bash(*tailscale *)` | OS sandbox (declared, unmeasured) |
-| P2 secrets | deny `Read(**/*.env)`, `Read(~/.ssh/**)`, `Bash(*compose config*)`; env allowlist | env allowlist only — **the read half has no native mechanism** |
+| P2 secrets | deny `Read(**/*.env)`, `Read(~/.ssh/**)`, `Bash(*compose config*)`; env allowlist | env allowlist (binds — the launcher owns it); **the read half is unestablished** |
 | P3 durable stack | deny podman mutations, `git push --force`, **`tmux kill-server`** | OS sandbox (declared, unmeasured) |
 | P4 raw fetch | deny `Bash(*curl *)`, `Bash(*wget *)`; allow the development tools | sandbox network-off (declared, unmeasured) |
-| Evidence | `docs/evidence/harness_binding_probe_claude_code_2026_08_14.md` | none — the binary is not installed here |
+| Evidence | `docs/evidence/harness_binding_probe_claude_code_2026_08_14.md` | none — the binary is installed and **not logged in** |
 
 The Codex row is written rather than blank on purpose. `permissions.md` says an empty
 row is a launch that does not happen; a filled-in `declared` row says the same thing and
-additionally tells an operator what *would* bind and what would not, which is the input
-to deciding whether installing the harness is worth it.
+additionally tells an operator what *would* bind and what would not.
+
+**What blocks the Codex row is now one operator act.** `codex-cli 0.147.0` is installed
+on this host — it arrived on 2026-08-14, after `worker-harness-core` recorded its absence
+— but `codex login status` reports *not logged in*. No model call is possible, so no
+class can be proven through the real agent loop.
+
+Two things follow, and both are worth knowing before someone picks this up:
+
+- **The flag names in that descriptor are observed, not documented.** They come from
+  `codex exec --help` and `codex sandbox --help` on the installed build. An earlier draft,
+  written from documentation, named `--ask-for-approval never`, which does not exist on
+  `codex exec` in 0.147.0. That is precisely the error a `declared` status exists to keep
+  suspect, and it is why `declared` refuses rather than warns.
+- **`--ignore-user-config` is the find that matters.** The binary documents it as "Do not
+  load `$CODEX_HOME/config.toml`; auth still uses `CODEX_HOME`" — Codex's exact analogue
+  of `--setting-sources`, and the thing that makes a Codex boundary not depend on the
+  operator's global config.
+
+One retraction, stated plainly: an earlier draft asserted Codex has no per-command
+allow/deny list at all. **That claim is withdrawn.** `codex exec --ignore-rules` is
+documented by the binary as "Do not load user or project execpolicy `.rules` files", so
+an execpolicy mechanism exists. Its format, its scope resolution, and whether a rule can
+express a per-path *read* denial were not established here — which is exactly what P2's
+residual now says instead of the stronger claim.
+
+**The cheap path to proving P1 and P3 costs no tokens at all.** `codex sandbox
+--permission-profile <name> <command>` runs a command under Codex's own sandbox with no
+model call and no authentication, which means an attempted write outside the workspace
+root is a deterministic probe. Establishing a permission profile is the prerequisite;
+`scripts/hive-binding-probe` has no Codex driver today and refuses rather than guessing
+an interface it has never exercised.
 
 ### Two things about the Claude Code rules
 
 **They are substring patterns**, `Bash(*token*)`, not the prefix form `Bash(token *)`.
 Measured on 2.1.232: a prefix rule is evaded by an absolute path (`/bin/curl`) and by an
 interpreter (`sh -c "curl ..."`); the substring form catches both. The cost is
-deliberate over-match — a command that merely *mentions* a denied token is refused too —
-which is loud and self-correcting, unlike the silence it replaces.
+deliberate over-match — a command that merely *mentions* a denied token is refused too,
+which cost the author a commit within minutes of binding the rule. The trade is taken per
+file rather than globally: the worker boundary keeps the substring form, the workspace's
+own `.claude/settings.json` keeps the prefix form, and
+`docs/evidence/harness_binding_probe_claude_code_2026_08_14.md` records why.
 
 **`--setting-sources project,local` is load-bearing.** It excludes the operator's
 user-level settings from the child's resolved configuration, so no pre-existing global
