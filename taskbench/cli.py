@@ -303,6 +303,102 @@ def preflight_cmd(
     console.print("preflight: every precondition agrees")
 
 
+@app.command("run-gateway")
+def run_gateway_cmd(
+    config_path: str = typer.Option(..., "--config"),
+    record_id: str = typer.Option(..., "--record-id"),
+    preset: str = typer.Option(..., "--preset", help="preset slug this batch is pinned to"),
+    tasks: str | None = typer.Option(None, "--tasks"),
+    corpus: str | None = typer.Option(None, "--corpus"),
+    work_root: str = typer.Option(..., "--work-root"),
+    out: str = typer.Option("taskbench/records", "--out"),
+    supersedes: str | None = typer.Option(None, "--supersedes"),
+    expect_corpus_hash: str | None = typer.Option(None, "--expect-corpus-hash"),
+    resume_from: str | None = typer.Option(None, "--resume-from"),
+) -> None:
+    """Run a batch whose candidate reaches its model through OpenRouter, capturing receipts.
+
+    Identical to `run` except that a receipt recorder sits between the harness and the gateway
+    for the whole batch, and afterwards every observed call is attributed to the cell and leg
+    that made it. The scored pipeline is untouched; the recorder is a seam around it.
+
+    The preset and its endpoint are re-checked here, immediately before the batch — not only at
+    setup — because a preset is editable from a web page and a batch that trusted a check from
+    an hour ago would be measuring whatever the route is now.
+    """
+    from . import openrouter as orouter
+    from . import qualify, qualify_batch
+    from .receipts import ReceiptRecorder, api_key_from_env
+
+    pin = {p.slug: p for p in (orouter.DEEPSEEK_PIN, orouter.MUSE_PIN)}.get(preset)
+    if pin is None:
+        console.print(f"[bold]refused[/bold]: {preset!r} is not a pinned preset")
+        raise typer.Exit(code=2)
+
+    api_key = api_key_from_env()
+    gate = qualify.check_preset(pin, api_key) + qualify.check_endpoints(pin, api_key)
+    for check in gate:
+        console.print(("[bold]✓[/bold] " if check.ok else "[bold]✗[/bold] ") + check.detail)
+    if any(not c.ok for c in gate):
+        console.print(
+            "\n[bold]REFUSED[/bold] — the pinned route no longer holds. Nothing was called. A "
+            "changed preset, upstream or endpoint capability is a stop, not a reroute."
+        )
+        raise typer.Exit(code=3)
+
+    cfg = yaml.safe_load(Path(config_path).read_text())
+    Path(work_root).mkdir(parents=True, exist_ok=True)
+    recorder = ReceiptRecorder(Path(work_root) / "gateway-calls.jsonl").start()
+    console.print(f"receipt recorder listening on {recorder.base_url}")
+
+    batch_exit: typer.Exit | None = None
+    try:
+        cfg["agent"].setdefault("env", {}).update(qualify_batch.recorder_env(recorder))
+        cfg_path = Path(work_root) / "runner-config.resolved.yaml"
+        cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=False))
+        run_cmd(
+            config_path=str(cfg_path), record_id=record_id, tasks=tasks, corpus=corpus,
+            work_root=work_root, out=out, supersedes=supersedes,
+            expect_corpus_hash=expect_corpus_hash, resume_from=resume_from,
+            skip_preflight=False,
+        )
+    except typer.Exit as exc:
+        # A batch that stopped still spent money. Reconcile before propagating, or the record
+        # of what a failed batch cost would exist only in a JSONL nobody reads.
+        batch_exit = exc
+    finally:
+        if not recorder.stop(drain_timeout=120):
+            console.print(
+                "[bold]WARNING[/bold] the recorder did not finish writing every observed call; "
+                "the receipts below may omit one and must be read as a floor."
+            )
+
+    record_root = Path(out) / f"{_date.today().isoformat()}-{record_id}"
+    if recorder.calls:
+        summary = qualify_batch.reconcile_record(
+            record_root, recorder.out_path, api_key, calls=recorder.calls
+        )
+        console.print(f"gateway receipts: {record_root / 'gateway-receipts.json'}")
+        console.print(
+            f"{summary['calls_observed']} call(s) observed across "
+            f"{len(summary['legs'])} leg(s)"
+        )
+        if "unattributed" in summary:
+            console.print(
+                f"[bold]{summary['unattributed']['count']} call(s) could not be attributed"
+                "[/bold] to any leg and are excluded from every per-leg total; they are kept "
+                "in the record."
+            )
+    else:
+        console.print(
+            "the recorder observed no gateway calls. For an arm that is supposed to reach "
+            "OpenRouter, that means the harness did not use ANTHROPIC_BASE_URL — the batch "
+            "measured a different route from the one it recorded."
+        )
+    if batch_exit is not None:
+        raise batch_exit
+
+
 @app.command("qualify-preflight")
 def qualify_preflight_cmd(
     out: str = typer.Option(..., "--out", help="where the preflight record is written"),
