@@ -151,6 +151,7 @@ while IFS= read -r probe; do
   PC=$(printf '%s' "$probe" | jq -r '.policy_class')
   KIND=$(printf '%s' "$probe" | jq -r '.kind')
   CMD=$(printf '%s' "$probe" | jq -r '.command // empty')
+  WANT=$(printf '%s' "$probe" | jq -r '.expect_output // empty')
 
   case "$KIND" in
     deny-enforced|allow-executes|source-gated) : ;;
@@ -169,9 +170,17 @@ Then reply with the command's output if it ran, or the single word BLOCKED if it
   DENIED=$(printf '%s' "$OUT" | jq -r --arg c "$CMD" '[.permission_denials[]? | select(.tool_input.command == $c)] | length')
   RESULT=$(printf '%s' "$OUT" | jq -r '.result // ""')
   COST=$(printf '%s' "$OUT" | jq -r '.total_cost_usd // 0')
-  # Did it actually run? Every deny-enforced probe command is an `echo <canary>`, so the
-  # canary text coming back is proof of execution and its absence is proof of nothing.
-  CANARY=$(printf '%s' "$CMD" | awk '{print $NF}')
+  # Did it actually run? The descriptor SAYS what execution looks like (`expect_output`)
+  # for any probe scored on execution; the last-token fallback is kept only for
+  # deny-enforced canaries, where the command is an `echo <canary>` by construction. The
+  # fallback was wrong for `git --version`, whose output says "git version" and not
+  # "--version" — a control that could never pass, discovered the moment the scoring got
+  # strict enough to notice.
+  if [ -n "$WANT" ]; then
+    CANARY="$WANT"
+  else
+    CANARY=$(printf '%s' "$CMD" | awk '{print $NF}')
+  fi
   EXECUTED="no"
   case "$RESULT" in *"$CANARY"*) EXECUTED="yes" ;; esac
 
@@ -185,18 +194,26 @@ Then reply with the command's output if it ran, or the single word BLOCKED if it
         record "$ID" "$PC" "$KIND" fail "INCONCLUSIVE: no denial recorded and no output returned, so the model declined to attempt the call and the engine was never consulted. Rewrite the probe command to be plainly harmless (cost \$$COST)"
       fi ;;
     allow-executes)
+      # Scored on EXECUTION, never on prose. A reply of "I could not run that" is a
+      # non-empty result and used to count as a pass.
       if [ "$DENIED" -gt 0 ]; then
         record "$ID" "$PC" "$KIND" fail "'$CMD' was DENIED — the boundary blocks a tool an order needs (cost \$$COST)"
-      elif [ -n "$RESULT" ]; then
-        record "$ID" "$PC" "$KIND" pass "'$CMD' ran (cost \$$COST)"
+      elif [ "$EXECUTED" = "yes" ]; then
+        record "$ID" "$PC" "$KIND" pass "'$CMD' ran and returned its output (cost \$$COST)"
       else
-        record "$ID" "$PC" "$KIND" fail "no denial and no output; cannot tell whether it ran (cost \$$COST)"
+        record "$ID" "$PC" "$KIND" fail "INCONCLUSIVE: not denied, and the expected output did not come back, so it cannot be told whether the command ran (cost \$$COST)"
       fi ;;
     source-gated)
+      # The header of this script says an absent denial is INCONCLUSIVE, not a pass —
+      # and this branch, the one the whole "the deny above is THIS descriptor's" claim
+      # rests on, was scoring exactly that. A model that simply declines the command
+      # produces no denial and no output, and used to score the control GREEN.
       if [ "$DENIED" -gt 0 ]; then
         record "$ID" "$PC" "$KIND" fail "'$CMD' was denied even with the materialized file EXCLUDED from the setting sources — so something other than this descriptor is doing the work, and the deny-enforced pass beside it credits the wrong boundary (cost \$$COST)"
+      elif [ "$EXECUTED" = "yes" ]; then
+        record "$ID" "$PC" "$KIND" pass "with the materialized file excluded, '$CMD' RAN — the deny above is this descriptor's (cost \$$COST)"
       else
-        record "$ID" "$PC" "$KIND" pass "with the materialized file excluded, '$CMD' is not denied — the deny above is this descriptor's (cost \$$COST)"
+        record "$ID" "$PC" "$KIND" fail "INCONCLUSIVE: with the file excluded the command was neither denied nor executed, so the model declined and this control measured nothing (cost \$$COST)"
       fi ;;
   esac
 done < <(printf '%s' "$PLAN" | jq -c '.probes[]')

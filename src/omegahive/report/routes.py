@@ -31,12 +31,18 @@ from typing import Any
 
 from omegahive.harness.adapters import LaunchContext, get_adapter
 from omegahive.harness.bindings import (
+    check_argv,
     load_binding_descriptor,
     materialize,
     run_local_probes,
 )
 from omegahive.harness.plan import _credential_gate, resolve_harness_binding
-from omegahive.harness.records import RefusalError, RouteEntry, load_catalog
+from omegahive.harness.records import (
+    RefusalError,
+    RouteEntry,
+    load_catalog,
+    resolve_route,
+)
 
 # A deterministic stand-in for the launch context. The report builds each route's argv
 # through the REAL adapter — an argv-flag probe over a hand-written vector would check
@@ -88,6 +94,18 @@ def evaluate_routes(
     env = dict(parent_env or {})
     rows: list[dict[str, Any]] = []
     for route in catalog.routes:
+        # Resolve the route by NAME through the same function the launcher uses, before
+        # anything else. The catalog is hand-edited and `RouteCatalog` has no
+        # duplicate-name validator, so two entries sharing a name is an ordinary edit —
+        # and this report used to render BOTH as launchable while a launch refused with
+        # ROUTE_AMBIGUOUS. The direction is fail-safe, but the operator reads two
+        # different models under one approved name, from the document whose whole job is
+        # answering "what is launchable".
+        try:
+            resolve_route(catalog, route.name)
+        except RefusalError as exc:
+            rows.append(_row(route, refusal_code=exc.code, reason=exc.message))
+            continue
         if not route.enabled:
             rows.append(
                 _row(
@@ -136,6 +154,7 @@ def evaluate_routes(
                 code_root="",
             )
             launch = adapter.build(route, ctx, binding)
+            check_argv(binding, launch.argv)
             mat = materialize(binding, extra_dirs=[])
             probes = run_local_probes(
                 binding,

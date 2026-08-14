@@ -514,18 +514,45 @@ def test_the_shipped_rules_do_not_refuse_the_tools_an_order_needs(command):
     assert not bash_denies(SHIPPED_CLAUDE, command), f"{command!r} is ordinary work"
 
 
-def test_the_boundary_file_cannot_be_rewritten_through_a_tool_call():
-    """`Bash(...)` rules do not gate the Write and Edit tools, so the shell rule above is
-    not enough on its own."""
-    rules = [
-        r
-        for c in SHIPPED_CLAUDE.classes
-        for m in c.mechanisms
-        if m.kind == "settings-deny"
-        for r in m.rules
-    ]
-    assert any(r.startswith("Edit(") and "settings.local.json" in r for r in rules)
-    assert any(r.startswith("Write(") and "settings.local.json" in r for r in rules)
+def tool_denies(binding, tool: str, path: str) -> bool:
+    """Would a `Tool(pattern)` rule refuse this path?"""
+    for c in binding.classes:
+        for m in c.mechanisms:
+            if m.kind != "settings-deny":
+                continue
+            for rule in m.rules:
+                prefix = f"{tool}("
+                if rule.startswith(prefix) and rule.endswith(")"):
+                    if fnmatch(path, rule[len(prefix) : -1]):
+                        return True
+    return False
+
+
+@pytest.mark.parametrize("tool", ["Edit", "Write"])
+@pytest.mark.parametrize(
+    "path",
+    ["/srv/work/w1/hive/.claude/settings.local.json",
+     "/srv/work/w1/hive/.claude/settings.json"],
+)
+def test_the_boundary_cannot_be_rewritten_through_a_tool_call(tool, path):
+    """`Bash(...)` rules do not gate the Write and Edit tools, so the shell rules are not
+    enough on their own — and BOTH halves of the loaded union need protecting, because
+    the project-scope file can carry hooks, which execute outside the permission engine."""
+    assert tool_denies(SHIPPED_CLAUDE, tool, path)
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["rm .claude/settings.local.json", "rm -rf .claude", "rm -f .claude/settings.json",
+     "git clean -xfd", "git stash -u",
+     "printf '{}' > .claude/settings.json"],
+)
+def test_the_boundary_cannot_be_removed_from_the_shell_either(command):
+    """Naming the file left three neighbours open: removing the directory, removing it
+    without naming it (`git clean` and `git stash` are allow-listed under `Bash(git *)`
+    and effective because the file is gitignored), and rewriting the other half of the
+    union."""
+    assert bash_denies(SHIPPED_CLAUDE, command), f"{command!r} disarms the boundary"
 
 
 def test_a_managed_policy_file_is_looked_for_on_both_platforms():
@@ -909,3 +936,141 @@ def test_the_shipped_codex_descriptor_is_this_shape_deliberately():
     with pytest.raises(RefusalError) as exc:
         materialize(b, extra_dirs=[])
     assert exc.value.code == "HARNESS_BINDING_UNRENDERABLE"
+
+
+# --- controls the second review found untested -------------------------------------
+
+
+def test_check_argv_is_wired_into_resolve_not_only_callable(monkeypatch):
+    """The earlier test called `check_argv` directly with a hand-written vector, so
+    deleting the call from `resolve` left the suite green.
+
+    A descriptor alone cannot drive this, by design: the adapter emits `required_flags`
+    verbatim, so the two agree by construction. The failure this check exists for is an
+    ADAPTER that stops honouring the descriptor — so that is what is simulated, and the
+    assertion is that `resolve` catches it rather than that the function exists.
+    """
+    from omegahive.harness.adapters import Adapter
+
+    monkeypatch.setattr(
+        Adapter, "boundary_flags", staticmethod(lambda binding: []), raising=True
+    )
+    with pytest.raises(RefusalError) as exc:
+        plan()
+    assert exc.value.code == "HARNESS_FLAG_MISSING"
+
+
+def test_a_forbidden_token_in_the_built_argv_refuses():
+    """`forbidden_argv_tokens` was only ever asserted as descriptor DATA — no argv was
+    ever built carrying one, so the enforcement had no falsifying test."""
+    over = {"forbidden_argv_tokens": ["project,local"]}   # a token the adapter does emit
+    with pytest.raises(RefusalError) as exc:
+        plan(routes=[route(**pins(**over))], descriptors=descriptors_map(**over))
+    assert exc.value.code == "HARNESS_MODE_UNSAFE"
+
+
+def test_a_malformed_required_flags_entry_refuses_by_name():
+    """It raised IndexError rather than a coded refusal. Fails closed either way; a
+    traceback is not an operator-facing contract."""
+    from omegahive.harness.bindings import check_argv
+
+    b = HarnessBinding(**descriptor(required_flags=[["--setting-sources", "project,local"]]))
+    b = b.model_copy(update={"required_flags": [[]]})
+    with pytest.raises(RefusalError) as exc:
+        check_argv(b, ["claude"])
+    assert exc.value.code == "HARNESS_BINDING_MALFORMED"
+
+
+def test_a_proven_descriptor_whose_rules_moved_refuses():
+    """`status: proven` must be evidence about THESE rules. Editing the rules while the
+    verification block stands leaves a passing record describing a different boundary,
+    and the catalog re-pin it forces is an operator pasting a number, not re-proving."""
+    stale = descriptor()
+    stale["verification"] = {**stale["verification"], "config_digest": "sha256:" + "a" * 64}
+    raw = json.dumps(stale, indent=2).encode()
+    r = route(binding_id="fake.v1", binding_digest=binding_digest(raw))
+    with pytest.raises(RefusalError) as exc:
+        plan(routes=[r], descriptors={"fake.v1": raw})
+    assert exc.value.code == "HARNESS_BINDING_UNPROVEN"
+    assert "proven against a configuration" in exc.value.message
+
+
+def test_the_shipped_claude_descriptors_evidence_matches_what_it_renders_today():
+    """The same rule, applied to what ships. This is what makes `proven` mean something
+    for the file an operator will actually pin."""
+    b = load_binding_descriptor(shipped("claude-code.v1"))
+    assert b.verification is not None
+    assert b.verification.config_digest == materialize(b, extra_dirs=[]).digest
+
+
+def test_a_class_whose_deny_rules_no_probe_names_refuses():
+    """The guarantee has to be as strong as the mechanisms a class claims, not as strong
+    as the probes its author happened to write. Deleting a mechanism whose rules nothing
+    names would otherwise be caught by nothing."""
+    classes = [a_class(pc) for pc in POLICY_CLASSES]
+    classes[0]["probes"] = [
+        {"id": "unrelated", "kind": "rule-present",
+         "rules": ["Bash(*a-rule-this-class-does-not-declare*)"], "expect": "present"}
+    ]
+    with pytest.raises(RefusalError) as exc:
+        check_coverage(HarnessBinding(**descriptor(classes=classes)))
+    assert exc.value.code == "POLICY_CLASS_UNPROBED"
+
+
+def test_a_class_bound_only_by_flags_cannot_render_an_empty_boundary():
+    """B1's second door. `launch-flag`, `sandbox-flag`, `setting-source-gating` and
+    `env-allowlist` are all enforceable and all legitimately carry no rules — so four
+    such classes passed coverage and materialized `{"permissions": {}}` while the
+    preflight and the spine both reported four bound classes."""
+    hollow = [
+        {"policy_class": pc, "title": f"{pc}",
+         "mechanisms": [{"kind": "launch-flag", "rules": [], "detail": "a flag"}],
+         "probes": [{"id": f"{pc.lower()}-argv", "kind": "argv-flag",
+                     "argv": ["--setting-sources", "project,local"], "expect": "present"}],
+         "residual": None}
+        for pc in POLICY_CLASSES
+    ]
+    b = HarnessBinding(**descriptor(classes=hollow))
+    check_coverage(b)                      # shape is fine; that was always the problem
+    with pytest.raises(RefusalError) as exc:
+        materialize(b, extra_dirs=[])
+    assert exc.value.code == "HARNESS_BINDING_UNRENDERABLE"
+
+
+def test_a_rule_moved_from_deny_to_allow_fails_its_own_probe():
+    """`rule-present` used to substring-search the whole file, so a rule sitting in the
+    ALLOW list satisfied the probe that says it is denied."""
+    classes = [a_class(pc) for pc in POLICY_CLASSES]
+    rule = classes[3]["mechanisms"][0]["rules"][0]
+    classes[3]["mechanisms"] = [
+        {"kind": "settings-deny", "rules": ["Bash(*something-else*)"], "detail": "d"},
+        {"kind": "settings-allow", "rules": [rule], "detail": "widened"},
+    ]
+    classes[3]["probes"] = [
+        {"id": "p4-rules-present", "kind": "rule-present", "rules": [rule], "expect": "present"},
+        {"id": "p4-other", "kind": "rule-present",
+         "rules": ["Bash(*something-else*)"], "expect": "present"},
+    ]
+    b = HarnessBinding(**descriptor(classes=classes))
+    res = run_local_probes(b, materialized=materialize(b, extra_dirs=[]), argv=[], env={})
+    got = next(r for r in res if r.probe_id == "p4-rules-present")
+    assert got.state == "fail"
+    assert "ALLOW list" in got.detail
+
+
+def test_the_report_refuses_a_duplicate_route_name_the_way_a_launch_does():
+    """The report is the document answering "what is launchable at all", and it rendered
+    two LAUNCHABLE rows for a name a launch refuses as ambiguous — two different models
+    under one approved name."""
+    proven = binding_digest(shipped("claude-code.v1"))
+    rows = evaluate_routes(
+        catalog_raw=catalog_bytes(
+            route(name="dupe", model="model-a", binding_id="claude-code.v1",
+                  binding_digest=proven),
+            route(name="dupe", model="model-b", binding_id="claude-code.v1",
+                  binding_digest=proven),
+        ),
+        descriptors_raw=shipped_map(),
+    )
+    assert [r["state"] for r in rows] == ["refused", "refused"]
+    assert {r["refusal_code"] for r in rows} == {"ROUTE_AMBIGUOUS"}

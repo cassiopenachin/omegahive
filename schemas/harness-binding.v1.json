@@ -27,6 +27,10 @@
           ],
           "title": "Outcome",
           "type": "string"
+        },
+        "config_digest": {
+          "title": "Config Digest",
+          "type": "string"
         }
       },
       "required": [
@@ -34,7 +38,8 @@
         "harness_version",
         "ran_at",
         "probe_record",
-        "outcome"
+        "outcome",
+        "config_digest"
       ],
       "title": "BindingVerification",
       "type": "object"
@@ -179,6 +184,18 @@
           ],
           "default": null,
           "title": "Path"
+        },
+        "expect_output": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expect Output"
         },
         "expect": {
           "enum": [

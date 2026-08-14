@@ -44,7 +44,8 @@
     "harness_version": "2.1.232",
     "ran_at": "2026-08-14",
     "probe_record": "docs/evidence/harness_binding_probe_claude_code_2026_08_14.md",
-    "outcome": "pass"
+    "outcome": "pass",
+    "config_digest": "sha256:96dffe19475307f600087efb81313571e71a63afe4a951d92542c56b2b60c476"
   },
   "note": "Every deny rule is written as a SUBSTRING pattern (Bash(*token*)) rather than the prefix form (Bash(token *)) the workspace settings file uses. Measured on this harness at 2.1.232: a prefix pattern is evaded by an absolute path (/bin/echo) and by an interpreter (sh -c \"...\"), while the substring form catches both. THE COST IS REAL AND WAS PAID IMMEDIATELY, so it is stated here rather than discovered later: a substring rule denies any shell command whose TEXT contains the token, not only one that invokes it. The rule for the multiplexer-destruction command refused the very commit that was introducing it, because the phrase was in the commit message. On a worker boundary that trade is right - a worker that needs to type a denied token into a shell command is nearly always doing something the class exists to stop, the refusal is loud and self-correcting, and the Write tool remains available for prose. On a file that also binds document-writing sessions it is not, which is why the workspace .claude/settings.json keeps the prefix form. Reversing this trade is a one-line edit per rule here, followed by a re-pin of every route that names this descriptor.",
   "classes": [
@@ -108,7 +109,8 @@
           "kind": "source-gated",
           "command": "echo sudo probe-canary",
           "expect": "executed",
-          "note": "the paired negative: with --setting-sources excluding the materialized file, the same command is NOT denied. This is what proves the materialized file is doing the work rather than something else in the environment."
+          "note": "the paired negative: with --setting-sources excluding the materialized file, the same command is NOT denied. This is what proves the materialized file is doing the work rather than something else in the environment.",
+          "expect_output": "probe-canary"
         },
         {
           "id": "p1-managed-policy-absent",
@@ -139,9 +141,18 @@
             "Read(**/*.env)",
             "Read(**/.env.*)",
             "Read(~/.ssh/**)",
+            "Read(~/.claude/**)",
+            "Read(~/.config/gh/**)",
+            "Read(~/.config/omegahive/**)",
+            "Read(~/.aws/**)",
+            "Read(~/.netrc)",
+            "Read(~/.git-credentials)",
+            "Bash(*credentials*)",
+            "Bash(*.netrc*)",
+            "Bash(*hosts.yml*)",
             "Bash(*compose*config*)"
           ],
-          "detail": "direct reads of credential files are refused by the engine, and so is the ONE mechanism by which a secret actually reached a worker terminal twice (2026-07-28, 2026-08-01): a compose config that dereferences the secrets file and prints it. The wildcard between the two words is load-bearing - an adjacency rule `Bash(*compose config*)` is walked past by `podman compose -f compose.yml config`, which is how anyone actually invokes it in this repository, and that spelling was in the first draft"
+          "detail": "permissions.md P2 says a worker does not read `.env` files OR ANY FILE HOLDING CREDENTIALS, and the first draft bound only the first half. An independent review enumerated what actually exists on this host at the worker's own uid, with HOME inherited by design: ~/.claude/.credentials.json (the harness's own OAuth material), ~/.claude/history.jsonl (the operator's prompt history), ~/.config/gh/hosts.yml, and ~/.config/omegahive/secrets/. None was denied, and `cat` is positively allow-listed by the workspace's committed settings, so the shell route was open too. The Read rules cover the tool path and the Bash substrings cover the shell path. Also here: the ONE mechanism by which a secret actually reached a worker terminal twice (2026-07-28, 2026-08-01), a compose config that dereferences the secrets file and prints it - with a wildcard between the two words, because the adjacency form is walked past by `podman compose -f compose.yml config`"
         },
         {
           "kind": "env-allowlist",
@@ -165,8 +176,10 @@
           "kind": "rule-present",
           "rules": [
             "Read(**/*.env)",
-            "Read(**/.env.*)",
             "Read(~/.ssh/**)",
+            "Read(~/.claude/**)",
+            "Read(~/.config/omegahive/**)",
+            "Bash(*credentials*)",
             "Bash(*compose*config*)"
           ],
           "expect": "present"
@@ -203,9 +216,17 @@
             "Bash(*podman pod rm*)",
             "Bash(*podman pod stop*)",
             "Bash(*podman volume rm *)",
-            "Bash(*podman *prune*)",
-            "Bash(*docker *prune*)",
             "Bash(*podman stop *)",
+            "Bash(*docker system *)",
+            "Bash(*docker rm *)",
+            "Bash(*docker container rm*)",
+            "Bash(*docker rmi *)",
+            "Bash(*docker kill *)",
+            "Bash(*docker restart *)",
+            "Bash(*docker network rm*)",
+            "Bash(*docker volume rm *)",
+            "Bash(*docker stop *)",
+            "Bash(*prune*)",
             "Bash(*compose down*)",
             "Bash(*compose stop*)",
             "Bash(*compose rm*)",
@@ -213,9 +234,14 @@
             "Bash(*git push --force*)",
             "Bash(*git push -f*)",
             "Bash(*git push *+*)",
-            "Bash(*tmux kill-*)"
+            "Bash(*git push --delete*)",
+            "Bash(*git push * :*)",
+            "Bash(*tmux kill*)",
+            "Bash(*tmux killw*)",
+            "Bash(*tmux killp*)",
+            "Bash(*tmux send-keys*)"
           ],
-          "detail": "permissions.md P3 says a worker does not stop, remove, or prune containers, volumes, or networks, and does not force-push. The first draft bound a LIST OF SPELLINGS rather than that set of effects, and several ordinary commands reached a named effect unmatched. Two of them mattered most. `Bash(podman compose *)` is ALLOWED under P4 as a development tool, and nothing denied `podman compose down -v`, `compose stop` or `compose rm` - an allow entry that admitted the exact class P3 exists to prevent, which is the failure mode 'deny beats allow' does not protect against when there is no deny to beat it. And `tmux kill-server` was bound while `tmux kill-session -t hive` was not, though killing that session destroys every live worker's pane - the same effect as the 2026-07-29 incident, reached by a sibling subcommand. Also added: podman kill/restart/network rm/container rm/rmi (stop and remove by other spellings), any container-runtime prune, and the `-f` and `+refspec` forms of force-push. Every rule binds an effect the policy already names; none extends it."
+          "detail": "permissions.md P3 says a worker does not stop, remove, or prune containers, volumes, or networks, and does not force-push. Two review passes found this row binding SPELLINGS rather than that set of effects, and each round the misses were ordinary commands, not obfuscation. Round one: podman kill, podman container rm, podman rmi, any prune but the two enumerated, `git push -f`, and - the sharpest - `podman compose down -v`, which the P4 allow entry `Bash(podman compose *)` ADMITTED and no deny matched, because deny-beats-allow does not help when there is no deny to beat. Round two: the whole docker verb set (resolve_compose supports docker as a first-class runtime, so on a docker host this row was essentially absent), remote-branch deletion by `git push --delete` and `git push origin :main`, and tmux's documented `killw`/`killp` aliases plus `send-keys`, which injects commands into another live worker's pane. `Bash(*tmux kill*)` now covers every kill subcommand and its aliases. Every rule binds an effect the policy already names; none extends it"
         },
         {
           "kind": "setting-source-gating",
@@ -225,13 +251,16 @@
         {
           "kind": "settings-deny",
           "rules": [
-            "Edit(**/.claude/settings.local.json)",
-            "Write(**/.claude/settings.local.json)",
-            "Edit(**/.claude/settings.json)",
-            "Write(**/.claude/settings.json)",
-            "Bash(*settings.local.json*)"
+            "Edit(**/.claude/**)",
+            "Write(**/.claude/**)",
+            "Bash(*settings.local.json*)",
+            "Bash(*settings.json*)",
+            "Bash(*rm *.claude*)",
+            "Bash(*rm -rf .claude*)",
+            "Bash(*git clean*)",
+            "Bash(*git stash*)"
           ],
-          "detail": "THE BOUNDARY FILE IS SHARED INFRASTRUCTURE TOO. It is materialized into the worker's own writable tree, and the supervisor verifies its digest exactly once, immediately before the child forks. Nothing after that re-checks it, and a resumed or hand-restarted session never passes through the check at all - so without these rules a worker could overwrite its own boundary with an empty one. Both tool paths and the shell path are denied; the Bash rule is a substring so it also covers rm, mv, and a redirect onto the file"
+          "detail": "THE BOUNDARY FILE IS SHARED INFRASTRUCTURE TOO, and protecting it by name was one indirection short. It is materialized into the worker's own writable tree and the supervisor verifies its digest exactly once, immediately before the child forks; nothing after that re-checks it, and a resumed or hand-restarted session never passes through the check at all. Naming the file left three neighbours open, all found by review: removing the DIRECTORY (`rm -rf .claude`), removing it without naming it (`git clean -xfd` and `git stash -u`, both allow-listed under `Bash(git *)` and both effective because the file is gitignored), and rewriting the OTHER half of the loaded union, .claude/settings.json, from the shell - a file that can carry hooks, which execute outside the permission engine entirely. The Edit/Write rules now cover the directory rather than the file"
         }
       ],
       "probes": [
@@ -239,10 +268,11 @@
           "id": "p3-rules-present",
           "kind": "rule-present",
           "rules": [
-            "Bash(*tmux kill-*)",
+            "Bash(*tmux kill*)",
             "Bash(*git push -f*)",
             "Bash(*compose down*)",
-            "Bash(*podman *prune*)"
+            "Bash(*prune*)",
+            "Bash(*docker kill *)"
           ],
           "expect": "present"
         },
@@ -314,7 +344,8 @@
           "kind": "allow-executes",
           "command": "git --version",
           "expect": "executed",
-          "note": "the positive control. Without it a descriptor that denied everything would score four green classes and be useless."
+          "note": "the positive control. Without it a descriptor that denied everything would score four green classes and be useless.",
+          "expect_output": "git version"
         }
       ],
       "residual": "An order needing a documented exception says so in its text and the operator grants it at launch (permissions.md P4). This binding has no per-order exception mechanism; an exception is a different materialized descriptor, deliberately, so that it is visible in the route catalog rather than hidden in a flag."

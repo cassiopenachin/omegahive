@@ -171,6 +171,12 @@ class Probe(BaseModel):
     # `config-absent`: a path that must not exist, because its presence would override
     # the materialized boundary (an admin/managed policy file).
     path: str | None = None
+    # `allow-executes` / `source-gated`: the text that PROVES the command ran. Declared
+    # rather than guessed. The runner first inferred it from the command's last token,
+    # which is right for an `echo <canary>` and silently wrong for `git --version`
+    # (whose output says "git version", not "--version") — and the failure mode of a
+    # wrong guess here is a control that cannot pass, or worse, one that passes on prose.
+    expect_output: str | None = None
     expect: Literal["denied", "executed", "absent", "present"]
     note: str | None = None
 
@@ -211,6 +217,15 @@ class Probe(BaseModel):
                 f"a {self.kind!r} probe needs a non-empty {required[0]!r}; without it the "
                 "probe cannot fail and reports a pass over nothing"
             )
+        # A probe whose expectation is EXECUTION must say what execution looks like.
+        # Without it the runner has to guess, and a control that is scored on an absence
+        # is the failure this whole probe design exists to avoid.
+        if self.expect == "executed" and not self.expect_output:
+            raise ValueError(
+                f"probe {self.id!r} expects the command to execute and does not say what "
+                "output proves it; scoring execution on an absence is how a control "
+                "passes over a model that simply declined"
+            )
         return self
 
     @property
@@ -246,6 +261,19 @@ class BindingVerification(BaseModel):
     ran_at: str
     probe_record: str      # repository-relative path to the recorded probe run
     outcome: Literal["pass", "fail"]
+    # The digest of the materialized configuration the probes actually ran against.
+    # Without it, `status: proven` survives an edit to the rules it was proven over: the
+    # catalog digest pin then forces the operator to paste a new number, which does not
+    # ask whether anything was re-probed. With it, a rule change invalidates its own
+    # evidence and says so.
+    config_digest: str
+
+    @field_validator("config_digest")
+    @classmethod
+    def _digest_shape(cls, v: str) -> str:
+        if not _DIGEST_SHAPE.fullmatch(v):
+            raise ValueError(f"config_digest must be 'sha256:<64 hex>', got {v!r}")
+        return v
 
 
 class HarnessBinding(BaseModel):
@@ -410,6 +438,26 @@ def check_coverage(binding: HarnessBinding) -> None:
                 f"{binding.binding_id}: policy class {c.policy_class} carries no probe; "
                 "a mechanism nobody checks is a claim, not a control",
             )
+        # Only for a descriptor that actually renders a file. One whose format is `none`
+        # declares its rules for a renderer that does not exist yet, and `materialize`
+        # refuses it by name (HARNESS_BINDING_UNRENDERABLE) rather than asking it to
+        # probe a configuration nothing writes.
+        declared = (
+            {r for m in c.mechanisms if m.kind == "settings-deny" for r in m.rules}
+            if binding.config_format != "none"
+            else set()
+        )
+        if declared:
+            named = {r for p in c.probes if p.kind == "rule-present" for r in p.rules}
+            if not declared & named:
+                raise RefusalError(
+                    "POLICY_CLASS_UNPROBED",
+                    f"{binding.binding_id}: policy class {c.policy_class} declares "
+                    f"{len(declared)} deny rule(s) and no rule-present probe names any of "
+                    "them. Deleting the mechanism would then be caught by nothing — the "
+                    "guarantee has to be as strong as the mechanisms the class claims, "
+                    "not as strong as the probes its author happened to write",
+                )
         if any(m.kind == "instruction" for m in c.mechanisms) and not c.residual:
             raise RefusalError(
                 "POLICY_CLASS_RESIDUAL_UNSTATED",
@@ -464,6 +512,12 @@ def check_argv(binding: HarnessBinding, argv: list[str]) -> None:
                 "descriptor forbids outright",
             )
     for pair in binding.required_flags:
+        if not pair or len(pair) > 2:
+            raise RefusalError(
+                "HARNESS_BINDING_MALFORMED",
+                f"{binding.binding_id}: required_flags entries are [flag] or "
+                f"[flag, value]; got {pair!r}",
+            )
         if len(pair) == 1:
             if pair[0] not in argv:
                 raise RefusalError(
@@ -501,6 +555,20 @@ def check_status(binding: HarnessBinding) -> None:
             "HARNESS_BINDING_UNPROVEN",
             f"descriptor {binding.binding_id!r} claims status 'proven' with no passing "
             "verification record; the claim and its evidence must travel together",
+        )
+    # And the evidence must be evidence about THESE rules. A descriptor whose rules were
+    # edited after the probe run keeps a passing record that no longer describes it; the
+    # catalog re-pin the edit forces is an operator pasting a number, not an operator
+    # re-proving a boundary.
+    proved = binding.verification.config_digest
+    current = materialize(binding, extra_dirs=[]).digest
+    if proved != current:
+        raise RefusalError(
+            "HARNESS_BINDING_UNPROVEN",
+            f"descriptor {binding.binding_id!r} was proven against a configuration "
+            f"hashing to {proved}, and now renders {current}. The rules changed after the "
+            "probe run, so the record is evidence about a boundary that is no longer this "
+            "one. Re-run scripts/hive-binding-probe and update the verification block",
         )
 
 
@@ -542,6 +610,11 @@ class Materialized(BaseModel):
     content: str                # exact bytes to write (empty when path is None)
     digest: str                 # sha256 over `content`
     rules: list[str]            # every enforceable rule the file carries, flattened
+    # Kept apart as well as flattened, because a substring search over the whole file
+    # cannot tell a deny from an allow — and a rule MOVED from deny to allow would then
+    # still satisfy its own `rule-present` probe over a file that now permits it.
+    deny: list[str] = Field(default_factory=list)
+    allow: list[str] = Field(default_factory=list)
 
 
 def _claude_code_settings(binding: HarnessBinding, extra_dirs: list[str]) -> dict[str, Any]:
@@ -612,12 +685,29 @@ def materialize(binding: HarnessBinding, *, extra_dirs: list[str]) -> Materializ
         doc = _claude_code_settings(binding, extra_dirs)
         content = json.dumps(doc, indent=2, sort_keys=False) + "\n"
         perms = doc["permissions"]
+        # The last gate, and the one that catches what the per-mechanism check cannot.
+        # `_rule_bearing_kinds_carry_rules` refuses an EMPTY settings-deny; it says
+        # nothing about a class that names only `launch-flag` or `env-allowlist` — both
+        # legitimately carry no rules, both are enforceable, and four such classes pass
+        # coverage while rendering `{"permissions": {}}`. A descriptor that renders a
+        # file must render a boundary into it; the alternative is `config_format: none`,
+        # which is a different and honestly-labelled thing.
+        if not perms.get("deny"):
+            raise RefusalError(
+                "HARNESS_BINDING_UNRENDERABLE",
+                f"{binding.binding_id}: renders {binding.config_path} with no deny rules "
+                "at all. Four classes can each name an enforceable mechanism and still "
+                "produce an empty configuration; a descriptor whose format writes a file "
+                "must write a boundary into it",
+            )
         rules = list(perms.get("deny", [])) + list(perms.get("allow", []))
         return Materialized(
             path=binding.config_path,
             content=content,
             digest=binding_digest(content.encode("utf-8")),
             rules=rules,
+            deny=list(perms.get("deny", [])),
+            allow=list(perms.get("allow", [])),
         )
     raise RefusalError(
         "HARNESS_BINDING_MALFORMED",
@@ -658,7 +748,6 @@ def run_local_probes(
     turn the expensive half of the evidence into a thing nobody notices is missing.
     """
     results: list[ProbeResult] = []
-    file_text = materialized.content
     for c in binding.classes:
         for p in c.probes:
             if not p.local:
@@ -673,7 +762,7 @@ def run_local_probes(
                 )
                 continue
             state, detail = _run_local_probe(
-                p, file_text, argv, env, dict(parent_env or {}), present_paths
+                p, materialized, argv, env, dict(parent_env or {}), present_paths
             )
             results.append(
                 ProbeResult(
@@ -689,17 +778,28 @@ def run_local_probes(
 
 def _run_local_probe(
     p: Probe,
-    file_text: str,
+    materialized: Materialized,
     argv: list[str],
     env: dict[str, str],
     parent_env: dict[str, str],
     present_paths: frozenset[str],
 ) -> tuple[Literal["pass", "fail"], str]:
     if p.kind == "rule-present":
-        missing = [r for r in p.rules if json.dumps(r)[1:-1] not in file_text]
+        # Checked against the DENY array, not against the file's text. A substring search
+        # over the whole file is satisfied by a rule sitting in the allow list — so
+        # moving `Bash(*curl *)` from deny to allow keeps its own probe green over a
+        # configuration that now explicitly permits curl. The probe must know which side
+        # of the boundary its rule landed on.
+        missing = [r for r in p.rules if r not in materialized.deny]
         if missing:
-            return "fail", f"materialized config is missing {missing}"
-        return "pass", f"{len(p.rules)} rule(s) present in the materialized config"
+            widened = [r for r in missing if r in materialized.allow]
+            if widened:
+                return "fail", (
+                    f"{widened} appear in the ALLOW list rather than the deny list — the "
+                    "materialized config permits what this probe says it refuses"
+                )
+            return "fail", f"materialized config denies none of {missing}"
+        return "pass", f"{len(p.rules)} rule(s) present in the materialized deny list"
     if p.kind == "argv-flag":
         joined = "\x00".join(argv)
         want = "\x00".join(p.argv)

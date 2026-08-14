@@ -10,6 +10,7 @@ answers "what would happen", because there is nothing else for it to do.
 from __future__ import annotations
 
 import hashlib
+import textwrap
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -452,7 +453,11 @@ def preflight_text(doc: dict[str, Any]) -> str:
         lines.append(f"  {pc}: {mech}   [{tally}]")
         residual = b["residuals"].get(pc)
         if residual:
-            lines.append(f"      residual: {residual[:150]}")
+            # Printed whole, wrapped. These are the honest half of the design and they
+            # run 200-1000 characters; truncating cut P1's off immediately before its
+            # point, in the one place an operator meets it.
+            lines.append("      residual:")
+            lines.extend(f"        {line}" for line in textwrap.wrap(residual, 86))
     if not doc["launchable"]:
         lines.append(f"NOT LAUNCHABLE [{doc['refusal_code']}]: {doc['unlaunchable_reason']}")
     return "\n".join(lines)

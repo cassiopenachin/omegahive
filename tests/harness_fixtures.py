@@ -16,9 +16,15 @@ import json
 from pathlib import Path
 from typing import Any
 
-from omegahive.harness.bindings import binding_digest
+from omegahive.harness.bindings import (
+    HarnessBinding,
+    binding_digest,
+    materialize,
+)
+from omegahive.harness.records import RefusalError
 
 REPO = Path(__file__).resolve().parents[1]
+_NULL_DIGEST = "sha256:" + "0" * 64
 SHIPPED_BINDINGS = REPO / "harness-bindings"
 
 
@@ -87,6 +93,18 @@ def descriptor(**over: Any) -> dict[str, Any]:
         "note": None,
     }
     base.update(over)
+    # `check_status` refuses a `proven` descriptor whose recorded config_digest is not the
+    # one it renders today. Computing it here keeps every fixture honest by construction
+    # rather than by remembering — a hard-coded digest would break on any change to
+    # `a_class`, and a test that WANTS the mismatch overrides `verification` explicitly.
+    if isinstance(base.get("verification"), dict) and "config_digest" not in base["verification"]:
+        probe = dict(base)
+        probe["verification"] = {**base["verification"], "config_digest": _NULL_DIGEST}
+        try:
+            rendered = materialize(HarnessBinding(**probe), extra_dirs=[]).digest
+        except (ValueError, RefusalError):
+            rendered = _NULL_DIGEST
+        base["verification"] = {**base["verification"], "config_digest": rendered}
     return base
 
 

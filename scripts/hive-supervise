@@ -229,6 +229,14 @@ verify_binding() {  # verify_binding -> prints a reason on failure, empty on suc
     printf '%s' "the plan carries no binding block, so there is no boundary to verify"
     return
   fi
+  # An EMPTY block is the same absence wearing a key. `"binding": {}` used to pass:
+  # `config_path // empty` is empty so the digest branch is skipped, `required_flags[]?`
+  # yields nothing so the argv loop never runs, and the function returns "verified". A
+  # present block must carry both fields, or there is nothing here that could fail.
+  if [ "$(jq -r '.binding | has("config_path") and has("required_flags")' "$PLAN")" != "true" ]; then
+    printf '%s' "the plan's binding block declares no config_path and required_flags, so nothing in it can be verified"
+    return
+  fi
   rel=$(jq -r '.binding.config_path // empty' "$PLAN")
   if [ -n "$rel" ]; then
     if [ ! -f "${CWD:-$PWD}/$rel" ]; then

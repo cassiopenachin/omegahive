@@ -15,7 +15,7 @@
       "enabled": true,
       "note": "the incumbent worker tier; no per-token list price applies to a subscription route, so price_basis is absent rather than zero",
       "binding_id": "claude-code.v1",
-      "binding_digest": "sha256:29ee8d482fe42d1e1ae9037bf30db2d3faa6ef3627df9f31b9905bfc9eeb54ff",
+      "binding_digest": "sha256:d5be18de965e87fd858ba995eb5a24944a4b54768d528993af07cc43e15e7b63",
       "credential_mode": "harness-native"
     },
     {
@@ -30,7 +30,7 @@
       "enabled": true,
       "note": "HIP-1 W2 cheap-tier candidate, subscription-billed",
       "binding_id": "claude-code.v1",
-      "binding_digest": "sha256:29ee8d482fe42d1e1ae9037bf30db2d3faa6ef3627df9f31b9905bfc9eeb54ff",
+      "binding_digest": "sha256:d5be18de965e87fd858ba995eb5a24944a4b54768d528993af07cc43e15e7b63",
       "credential_mode": "harness-native"
     },
     {
@@ -45,7 +45,7 @@
       "enabled": false,
       "note": "disabled rather than deleted: the Codex harness is not installed on deployment #0, so a launch must refuse loudly instead of finding no such route. Note it would refuse even if enabled: codex.v1 is a DECLARED binding descriptor, written from documentation and never probed against a running binary, so HARNESS_BINDING_UNPROVEN fires before anything else. Its usage and resolved-model surfaces are UNVERIFIED too — see the adapter docstring.",
       "binding_id": "codex.v1",
-      "binding_digest": "sha256:7ee20ab46e244906afa5ae2200e0d9eb631160885da27608953ee498c7bc6b08",
+      "binding_digest": "sha256:c62d06f688fce4cd7bb7bb7f802a5d6a8ee86f4aa7730e71b5a407d99c551d52",
       "credential_mode": "harness-native"
     },
     {
@@ -69,7 +69,7 @@
       },
       "note": "STRUCTURAL EXAMPLE ONLY, and it refuses twice over. An api-market route validates and resolves, and `hive-launch --check` will show it, but launching one refuses with ROUTE_CREDENTIAL_MODE: a direct-API route may not run on the harness's own credentials, because the long-lived provider credential must stay outside the worker. The price_basis is what makes a historical cost derivable later without consulting a catalog that has since changed.",
       "binding_id": "codex.v1",
-      "binding_digest": "sha256:7ee20ab46e244906afa5ae2200e0d9eb631160885da27608953ee498c7bc6b08",
+      "binding_digest": "sha256:c62d06f688fce4cd7bb7bb7f802a5d6a8ee86f4aa7730e71b5a407d99c551d52",
       "credential_mode": "harness-native"
     },
     {
@@ -93,7 +93,7 @@
       },
       "note": "THE OTHER HALF OF THE API SEAM. This route asks for the only credential shape in which a direct-API route could ever launch — an operator-owned broker that alone reads the long-lived credential and issues an opaque, expiring, execution-scoped capability — and it refuses with BROKER_NOT_IMPLEMENTED, because no broker exists on this deployment. That slice is conditional on a committed HIP-1 qualification naming a direct-API bundle as a live qualifier, and at 2026-08-14 none did. The refusal is the feature: there is no fallback path that puts a raw key near a worker.",
       "binding_id": "codex.v1",
-      "binding_digest": "sha256:7ee20ab46e244906afa5ae2200e0d9eb631160885da27608953ee498c7bc6b08",
+      "binding_digest": "sha256:c62d06f688fce4cd7bb7bb7f802a5d6a8ee86f4aa7730e71b5a407d99c551d52",
       "credential_mode": "broker"
     }
   ]

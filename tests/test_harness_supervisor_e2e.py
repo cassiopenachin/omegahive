@@ -449,13 +449,67 @@ def test_a_tampered_boundary_is_a_terminal_failure_with_no_started_fact(rig):
 
 def test_a_missing_boundary_file_is_a_terminal_failure_too(rig):
     """Absent and drifted are the same answer. A file that was never written is not a
-    permissive default."""
+    permissive default.
+
+    The assertion is on the SPINE, not on a substring of the output. An earlier version
+    asserted `"missing" in proc.stdout + proc.stderr` and could not fail: pytest's own
+    `tmp_path` contains the test's name, which contains the word — so the test stayed
+    green with the fail-closed branch disabled. Proven by mutation.
+    """
     _approve_route(rig)
     rig["config_file"].unlink()
     proc = _run_supervisor(rig, "success")
     assert proc.returncode == 1
-    assert "missing" in (proc.stdout + proc.stderr)
+    assert "BOUNDARY VERIFICATION FAILED" in proc.stdout + proc.stderr
+
+    kinds = [e[0] for e in _events(rig)]
+    assert "execution.started" not in kinds
+    finished = [e for e in _events(rig) if e[0] == "execution.finished"]
+    assert len(finished) == 1
+    assert finished[0][3]["outcome"] == "failure"
+    assert "boundary" in finished[0][3]["usage"]["reason"]
+
+
+def test_an_empty_binding_block_is_the_same_absence_wearing_a_key(rig):
+    """`"binding": {}` used to verify clean: no config_path so the digest branch is
+    skipped, no required_flags so the argv loop never runs, and the function returns
+    success. A present block must carry something that could fail."""
+    _approve_route(rig)
+    plan_path = rig["run_dir"] / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["binding"] = {}
+    plan_path.write_text(json.dumps(plan))
+
+    proc = _run_supervisor(rig, "success")
+    assert proc.returncode == 1
+    assert "nothing in it can be verified" in proc.stdout + proc.stderr
     assert "execution.started" not in [e[0] for e in _events(rig)]
+
+
+def test_a_pair_flag_missing_from_the_argv_is_caught_too(rig):
+    """The lone-switch branch had a test; the pair branch did not, and it is the branch
+    every shipped descriptor actually uses."""
+    _approve_route(rig)
+    plan_path = rig["run_dir"] / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["binding"]["required_flags"].append(["--setting-sources", "a-value-nobody-passes"])
+    plan_path.write_text(json.dumps(plan))
+
+    proc = _run_supervisor(rig, "success")
+    assert proc.returncode == 1
+    assert "a-value-nobody-passes" in proc.stdout + proc.stderr
+    assert "execution.started" not in [e[0] for e in _events(rig)]
+
+
+def test_the_run_dir_and_plan_are_not_world_readable(tmp_path):
+    """The plan is the root of trust for the boundary check — the supervisor compares the
+    file on disk to the plan's own digest and execs the plan's own argv. It was written
+    at the default umask while the boundary it anchors was carefully chmod 0600."""
+    import re
+
+    launcher = (REPO / "scripts" / "hive-launch").read_text()
+    assert re.search(r'chmod 0600 "\$EXEC_DIR/plan\.json"', launcher)
+    assert re.search(r'chmod 0700 "\$EXEC_DIR"', launcher)
 
 
 def test_the_started_fact_carries_the_boundary_that_was_verified(rig):

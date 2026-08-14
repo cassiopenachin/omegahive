@@ -174,7 +174,8 @@
           "kind": "allow-executes",
           "command": "git status",
           "expect": "executed",
-          "note": "the positive control; evaluates to `allow` offline"
+          "note": "the positive control; evaluates to `allow` offline",
+          "expect_output": "git version"
         }
       ],
       "residual": "If the sandbox turns network off wholesale, the POSITIVE half needs measuring: git over https and package installs must still work or the route is bound and useless. Codex also exposes network_rule (host + protocol + decision, no wildcards) and an allowed-domains surface, so the answer is likely partial rather than binary - which is precisely what a probe run settles and no document can."

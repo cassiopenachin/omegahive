@@ -510,7 +510,13 @@ exec \$COMPOSE run --rm -T cli \\
   emit --run-id "$RUN" --role instrument --actor "supervisor-$WORKER" "\$@"
 SUPWRAP
   chmod +x "$SUP_WRAPPER"
+  # The plan is the root of trust for the boundary check: the supervisor compares the
+  # file on disk to THIS file's config_digest and execs THIS file's argv. It was written
+  # at the default umask while the boundary it anchors was carefully chmod 0600, which is
+  # the wrong way round. Locking the run-dir too, because emit.sh lives there.
   printf '%s\n' "$PLAN_JSON" | jq --arg cwd "$WS_ROOT" '. + {cwd: $cwd}' > "$EXEC_DIR/plan.json"
+  chmod 0700 "$EXEC_DIR"
+  chmod 0600 "$EXEC_DIR/plan.json"
   echo "  execution: $EXEC_ID  (run-dir $EXEC_DIR)"
 fi
 
