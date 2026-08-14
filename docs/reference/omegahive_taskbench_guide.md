@@ -195,3 +195,128 @@ an `unknown` as a note about the harness, never as a zero.
   baseline, so each manifest also names `required_changes`: globs the attempt's diff must
   touch. Every one is a path the order itself names; none is read off the historical patch,
   which would be the exact-diff scoring the stop-lines forbid.
+
+---
+
+# Qualification: running the five candidate bundles (HIP-1 M1b part two)
+
+Everything above describes running *one* bundle against the corpus. This part describes the
+qualification study: the incumbent plus five candidate bundles, three of which reach their model
+through OpenRouter and are therefore scored on the gateway's own accounting rather than on
+anything a harness reports about itself.
+
+**Nothing here qualifies anything.** These commands produce records; the M1c designation is an
+operator act in a committed disposition, after the checkpoint at the end of the result report.
+
+## The one credential, and where it lives
+
+`OPENROUTER_API_KEY` is the single operator-owned secret for all three direct-cost arms. It
+reaches every process in this study **through the environment and through nothing else**:
+taskbench never reads it from a file, never writes it into a generated config, never puts it in
+argv, and never prints it — not its value, not its length, not a prefix.
+
+```bash
+export OPENROUTER_API_KEY=...        # from your own secret surface
+```
+
+Two places derive a differently-named variable from it, both because a harness demands it and
+both under a stated condition:
+
+- `cell-claude-openrouter.sh` exports `ANTHROPIC_API_KEY` **inside the cell process**. Nothing
+  is persisted.
+- `cell-reasonix.sh` writes it into a mode-0600 `.env` inside that cell's private, disposable
+  `REASONIX_HOME`, because Reasonix v1.25.2 refuses inherited provider-key environment
+  variables and reads only that file. It is created under `umask 077` and removed on EXIT, INT,
+  TERM and HUP. Neither wrapper may use `exec`: `exec` replaces the shell's process image and
+  discards the EXIT trap, which is how an earlier revision left that file on disk in every cell
+  root.
+
+## Step 1 — prove the routes, before anything spends
+
+```bash
+taskbench/launch/qualify-setup.sh
+```
+
+No arguments. Free local checks first — the scored instrument against the pinned revision, the
+corpus by content hash, the incumbent record, every harness build — then the gateway: both
+presets, both endpoint capability sets, and a **live validation of the receipt recorder**. That
+last part makes four sixteen-token calls (one direct and one through the recorder, per preset)
+and reconciles both against `/generation`, because the order requires the recorder to be proved
+against a real gateway response before any scored call and that is not a claim code can make
+about itself.
+
+It writes `~/work/taskbench/qualify-preflight/qualify-preflight.json`, recording what was
+**observed** — resolved models, upstreams, endpoint capabilities, the canonical preset config
+that was hashed, each generation receipt — not merely pass or fail.
+
+**If it refuses, no batch may run.** Read the disagreeing checks with their observations. If the
+block is a missing usage or receipt surface, the remedy is to stop and ask: introducing a
+measurement proxy after scored calls begin is the failure this whole preflight exists to
+prevent, and a bundle that cannot prove its own accounting is recorded `unreachable` rather than
+rerouted through another provider or harness.
+
+**A hash disagreement with every field check green is probably not a moved preset.** The two
+pinned config hashes were computed by an earlier session under a canonicalization rule this code
+does not share. The check records the canonical bytes it hashed beside the result — compare
+them, and settle it with a decision rather than re-pinning to whatever today's fetch returned.
+
+## Step 2 — one signed batch per bundle
+
+Running one **is** the approval for that batch's spend. It never asks again.
+
+```bash
+taskbench/launch/wave-1-haiku-claude-code.sh
+taskbench/launch/wave-2-luna-codex.sh
+taskbench/launch/wave-3-deepseek-paired.sh     # BOTH DeepSeek arms, one signature
+taskbench/launch/wave-4-muse-claude-code.sh
+```
+
+Each one, in order: prints its resolved non-secret config; re-checks its preset and endpoint
+(a preset is editable from a web page, so a check from an hour ago proves nothing); runs a
+**smoke** — one disposable read/edit/test loop using the exact argv the batch will use, with the
+five-minute diagnostic pulse — and stops the batch if it is not green; then runs preflight and
+the five cells, leading with `docs-triage`.
+
+**`docs-triage` first is a pause point.** When it finishes, stop and look. It is never permission
+to score a partial bundle as adequate.
+
+Wave 3 signs both arms at once deliberately: they are one experiment, and signing them separately
+would let one arm run under conditions the other did not. It writes its schedule — adjacent
+matched pairs, alternating lead by task — to the work root *before* the first call, so a
+reordering after the fact is visible to an audit.
+
+## Step 3 — read the money
+
+```bash
+uv run --frozen taskbench gateway-totals <record>     # per-cell receipts, rolled up
+uv run --frozen taskbench matrix \
+  --bundle incumbent=taskbench/records/2026-08-13-incumbent-fidelity-v0-1-2 \
+  --bundle haiku-claude-code=<record> \
+  --bundle luna-codex="UNREACHABLE:<why>" \
+  --out qualification-matrix.md
+```
+
+`gateway-totals` reads the **per-cell** receipt files rather than the record-level one, because a
+record can be assembled over several sittings — the paired wave runs one task at a time to keep
+its arms adjacent, and a resumed batch carries conclusive cells forward verbatim. Each sitting's
+recorder only ever saw its own calls.
+
+An `UNREACHABLE:` bundle is carried into the matrix with its reason rather than omitted. A bundle
+that could not run is a result of this study, not an absence from it.
+
+## What the numbers do and do not mean
+
+- **Neither Claude Code's `total_cost_usd` nor Reasonix's metrics is gateway spend.** The first
+  is a harness-local price-table figure labelled `firstParty`, which describes Claude Code's
+  request path rather than GMICloud or Meta; the second does not exist. For the three OpenRouter
+  arms, spend comes from the receipts and from nowhere else.
+- **Codex reports no server-resolved model id.** Luna's cells carry the requested string and an
+  explicit note that no resolved identity was available. The launch alias is not promoted into
+  one.
+- **Haiku and Luna run on subscriptions**, so there is no per-run price for them at all. It is
+  reported absent, never as zero and never as a price-table estimate.
+- **A total is reported with its coverage.** A field missing from any one receipt makes that
+  total unknown rather than a sum over the subset that carried it, and a capture the recorder
+  could not drain is labelled a floor.
+- **One task is twenty percentage points.** No figure is quoted finer, no population or
+  general-coding claim is made, and ties are left tied.
