@@ -113,7 +113,7 @@ def upstream():
 @pytest.fixture
 def recorder(upstream, tmp_path):
     base, _ = upstream
-    rec = ReceiptRecorder(tmp_path / "receipts.jsonl", upstream=base).start()
+    rec = ReceiptRecorder(tmp_path / "receipts.jsonl", origin=base).start()
     yield rec
     rec.stop()
 
@@ -210,7 +210,7 @@ def test_streaming_is_passed_through_and_usage_is_merged_across_events(recorder)
 
 
 def test_an_unreachable_upstream_is_recorded_not_swallowed(tmp_path):
-    rec = ReceiptRecorder(tmp_path / "r.jsonl", upstream="http://127.0.0.1:1").start()
+    rec = ReceiptRecorder(tmp_path / "r.jsonl", origin="http://127.0.0.1:1").start()
     try:
         resp = httpx.post(
             f"{rec.base_url}/v1/messages", json={"model": "m"}, timeout=30
@@ -274,7 +274,7 @@ def test_drain_waits_for_a_call_that_is_still_being_written(upstream, tmp_path):
     """A call is recorded only after its response has fully streamed, because the usage totals
     arrive last. Reconciling inside that window would drop the final call from every total."""
     base, _ = upstream
-    rec = ReceiptRecorder(tmp_path / "d.jsonl", upstream=base).start()
+    rec = ReceiptRecorder(tmp_path / "d.jsonl", origin=base).start()
     try:
         for _ in range(5):
             httpx.post(
@@ -291,7 +291,7 @@ def test_stop_reports_whether_it_managed_to_drain(upstream, tmp_path):
     """False rather than an exception, so an incomplete capture can be recorded AS incomplete
     instead of becoming a total that quietly omits a call."""
     base, _ = upstream
-    rec = ReceiptRecorder(tmp_path / "s.jsonl", upstream=base).start()
+    rec = ReceiptRecorder(tmp_path / "s.jsonl", origin=base).start()
     httpx.post(f"{rec.base_url}/v1/messages", json={"model": "m"}, timeout=30)
     assert rec.stop(drain_timeout=30) is True
 
@@ -382,7 +382,7 @@ def test_the_proxy_asks_upstream_not_to_compress():
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
-        rec = ReceiptRecorder(f"{tmp}/r.jsonl", upstream=f"http://{host}:{port}").start()
+        rec = ReceiptRecorder(f"{tmp}/r.jsonl", origin=f"http://{host}:{port}").start()
         try:
             httpx.post(
                 f"{rec.base_url}/v1/messages",
@@ -425,7 +425,7 @@ def test_a_call_abandoned_mid_read_does_not_wedge_drain(upstream, tmp_path):
     while the proxy is still reading the body. A leaked in-flight counter makes `drain()` block
     for its full timeout and every such batch report a possibly-incomplete capture."""
     base, _ = upstream
-    rec = ReceiptRecorder(tmp_path / "a.jsonl", upstream=base).start()
+    rec = ReceiptRecorder(tmp_path / "a.jsonl", origin=base).start()
     try:
         seq = rec.next_seq()          # a call begins…
         rec.abandon(seq, "connection reset while reading the request body")

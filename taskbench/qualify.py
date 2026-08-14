@@ -392,6 +392,12 @@ def validate_receipt_recorder(
     *,
     out_dir: Path,
     origin: str = OPENROUTER_ORIGIN,
+    #: How long to wait for `/generation`. The defaults are the live ones — OpenRouter writes
+    #: that record asynchronously and setup saw it absent through a twelve-second poll — but a
+    #: caller that knows better (a test against a local gateway) must be able to say so, or the
+    #: only end-to-end coverage this function can have costs four minutes per case.
+    fetch_attempts: int = 8,
+    fetch_first_delay_s: float = 2.0,
 ) -> list[Check]:
     """The order's precondition for every gateway-billed arm, executed rather than asserted.
 
@@ -459,7 +465,7 @@ def validate_receipt_recorder(
         return checks
 
     # --- 2. the same call through the recorder ---------------------------------------------
-    recorder = ReceiptRecorder(out_dir / "preflight-receipts.jsonl", upstream=origin).start()
+    recorder = ReceiptRecorder(out_dir / "preflight-receipts.jsonl", origin=origin).start()
     try:
         with httpx.Client(timeout=httpx.Timeout(30.0, read=300.0)) as client:
             proxied = client.post(
@@ -543,7 +549,14 @@ def validate_receipt_recorder(
     )
 
     # --- 3. the authoritative receipt -------------------------------------------------------
-    reconciled = reconcile(calls, api_key, origin=origin) if call.generation_id else None
+    reconciled = (
+        reconcile(
+            calls, api_key, origin=origin,
+            attempts=fetch_attempts, first_delay_s=fetch_first_delay_s,
+        )
+        if call.generation_id
+        else None
+    )
     receipt = (reconciled or {}).get("calls", [{}])[0].get("receipt", {})
     got_receipt = bool(receipt.get("available"))
     identity_problems: list[str] = []
@@ -571,7 +584,10 @@ def validate_receipt_recorder(
 
     # The direct call's own receipt too, so the comparison is against the gateway's word on
     # both, not against the proxy's word on one of them.
-    direct_receipt = fetch_generation(direct_id, api_key, upstream=origin)
+    direct_receipt = fetch_generation(
+        direct_id, api_key, origin=origin,
+        attempts=fetch_attempts, first_delay_s=fetch_first_delay_s,
+    )
     if direct_receipt.get("available") and got_receipt:
         d, p = direct_receipt["receipt"], receipt
         agree = d.get("provider_name") == p.get("provider_name") and d.get("model") == p.get(
@@ -602,6 +618,7 @@ def run_gateway_preflight(
     pins: tuple[orouter.PresetPin, ...] = (orouter.DEEPSEEK_PIN, orouter.MUSE_PIN),
     validate_recorder: bool = True,
     origin: str = OPENROUTER_ORIGIN,
+    **recorder_kwargs: Any,
 ) -> list[Check]:
     checks: list[Check] = []
     with httpx.Client(timeout=30.0) as client:
@@ -611,7 +628,7 @@ def run_gateway_preflight(
     if validate_recorder:
         for pin in pins:
             checks += validate_receipt_recorder(
-                pin, api_key, out_dir=out_dir / pin.slug, origin=origin
+                pin, api_key, out_dir=out_dir / pin.slug, origin=origin, **recorder_kwargs
             )
     return checks
 

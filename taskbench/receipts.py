@@ -40,7 +40,12 @@ from typing import Any
 
 import httpx
 
-#: Everything here is keyed off the *origin*, never a base that already carries `/api`.
+#: Everything here is keyed off the *origin*, never a base that already carries `/api`, and the
+#: parameter is called `origin` in every module that takes one. It used to be `upstream` here and
+#: `origin` in `openrouter.py`, which is how `reconcile(..., origin=…)` came to funnel an unknown
+#: keyword into `fetch_generation` and blow up on the operator's first live run. The word
+#: `upstream` is now reserved for the thing the records actually use it for: the PROVIDER that
+#: served a call (GMICloud, Meta), which is a different thing from the host we proxy to.
 #: The proxy forwards `self.path` verbatim, and the path a harness sends already begins
 #: `/api/v1/...` because `base_url` ends in `/api` — so an upstream that also ended in `/api`
 #: would request `/api/api/v1/messages` and 404 every call in the study.
@@ -289,7 +294,7 @@ class _Handler(BaseHTTPRequestHandler):
             k: v for k, v in forward_headers.items() if k.lower() != "accept-encoding"
         }
         forward_headers["Accept-Encoding"] = "identity"
-        url = recorder.upstream.rstrip("/") + self.path
+        url = recorder.origin.rstrip("/") + self.path
         started = time.time()
         captured = bytearray()
         call = ObservedCall(
@@ -378,13 +383,13 @@ class ReceiptRecorder:
         self,
         out_path: str | Path,
         *,
-        upstream: str = OPENROUTER_ORIGIN,
+        origin: str = OPENROUTER_ORIGIN,
         host: str = "127.0.0.1",
         port: int = 0,
     ) -> None:
         self.out_path = Path(out_path)
         self.out_path.parent.mkdir(parents=True, exist_ok=True)
-        self.upstream = upstream
+        self.origin = origin
         self.calls: list[ObservedCall] = []
         self._seq = 0
         self._lock = threading.Lock()
@@ -464,7 +469,7 @@ def fetch_generation(
     generation_id: str,
     api_key: str,
     *,
-    upstream: str = OPENROUTER_ORIGIN,
+    origin: str = OPENROUTER_ORIGIN,
     attempts: int = 8,
     first_delay_s: float = 2.0,
     client: httpx.Client | None = None,
@@ -479,7 +484,7 @@ def fetch_generation(
     """
     owned = client is None
     http = client or httpx.Client(timeout=30.0)
-    url = upstream.rstrip("/") + GENERATION_PATH
+    url = origin.rstrip("/") + GENERATION_PATH
     delay = first_delay_s
     last: str = "no attempt was made"
     try:
@@ -552,7 +557,7 @@ def reconcile(
     calls: list[ObservedCall],
     api_key: str,
     *,
-    upstream: str = OPENROUTER_ORIGIN,
+    origin: str = OPENROUTER_ORIGIN,
     client: httpx.Client | None = None,
     budget_s: float = 900.0,
     **fetch_kwargs: Any,
@@ -606,7 +611,7 @@ def reconcile(
                 }
             else:
                 fetched = fetch_generation(
-                    call.generation_id, api_key, upstream=upstream, client=http, **fetch_kwargs
+                    call.generation_id, api_key, origin=origin, client=http, **fetch_kwargs
                 )
                 if fetched.get("available"):
                     full = fetched["receipt"]
