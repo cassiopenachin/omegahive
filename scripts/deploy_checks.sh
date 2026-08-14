@@ -41,6 +41,26 @@ fi
 FILES=()
 dc() { "${DC[@]}" ${FILES[@]+"${FILES[@]}"} "$@"; }
 
+# The ENGINE CLI, for check 7's `inspect` calls. credential_scope_scan.sh can only infer
+# it from the compose command's NAME, and that inference is wrong on exactly the host this
+# harness prefers: the docker-first order above lands on `docker-compose` on deployment #0,
+# where that binary is podman's external compose provider driving DOCKER_HOST at the
+# rootless podman socket. The name says docker; the only engine CLI installed is podman;
+# the scan exits 2 ("could not run"), which is always fatal, over a completely healthy
+# stack. We resolved the route, so we STATE the engine instead of leaving the scan to guess
+# — that is what the scan documents OMEGAHIVE_ENGINE for.
+#
+# Keyed on the endpoint, not just the command: DOCKER_HOST is the thing that decides which
+# daemon the containers actually live in, and a podman socket means a podman CLI no matter
+# what drove compose. An operator's own OMEGAHIVE_ENGINE still wins.
+if [ -z "${OMEGAHIVE_ENGINE:-}" ]; then
+  case "${DOCKER_HOST:-}:${DC[*]}" in
+    *podman*) OMEGAHIVE_ENGINE=podman ;;
+    *)        OMEGAHIVE_ENGINE=docker ;;
+  esac
+fi
+export OMEGAHIVE_ENGINE
+
 RUN="checks-$(date +%s)"
 export OMEGAHIVE_RUN_ID="$RUN"
 PASS=0; FAIL=0
