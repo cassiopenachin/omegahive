@@ -160,6 +160,84 @@ def reconcile_record(
     return summary
 
 
+def record_gateway_totals(record_root: Path) -> dict[str, Any]:
+    """Roll the per-cell receipts up across a whole record, however many sittings built it.
+
+    Necessary because a record can be assembled over several invocations: the paired DeepSeek
+    batch runs one task at a time so the two arms stay adjacent, and a resumed batch carries
+    conclusive cells forward verbatim. Each invocation's recorder only ever sees its own calls,
+    so the record-level file `reconcile_record` writes covers that sitting alone. The per-cell
+    files are the complete truth — `carry_cell` copies a cell wholesale, receipts included — so
+    this sums those instead.
+
+    Every total is reported beside its coverage. A cell with no receipts file is named rather
+    than treated as costing nothing: a carried cell from before the recorder existed and a cell
+    that cost nothing are not the same fact.
+    """
+    cells_dir = record_root / "cells"
+    per_cell: dict[str, Any] = {}
+    missing: list[str] = []
+    totals = {
+        "gateway_cost_usd": 0.0,
+        "native_tokens_prompt": 0,
+        "native_tokens_completion": 0,
+        "native_tokens_reasoning": 0,
+        "native_tokens_cached": 0,
+        "calls_observed": 0,
+        "calls_with_receipt": 0,
+    }
+    complete = True
+    upstreams: set[str] = set()
+    models: set[str] = set()
+
+    for cell in sorted(cells_dir.iterdir()) if cells_dir.is_dir() else []:
+        if not cell.is_dir():
+            continue
+        files = sorted(cell.glob("gateway-receipts-*.json"))
+        if not files:
+            missing.append(cell.name)
+            continue
+        legs: dict[str, Any] = {}
+        for path in files:
+            leg = path.stem.replace("gateway-receipts-", "")
+            try:
+                doc = json.loads(path.read_text())
+            except json.JSONDecodeError:
+                complete = False
+                continue
+            leg_totals = doc.get("totals") or {}
+            legs[leg] = leg_totals
+            for key in list(totals):
+                value = leg_totals.get(key)
+                if isinstance(value, (int, float)):
+                    totals[key] += value
+                elif key in ("gateway_cost_usd",) and leg_totals.get("calls_with_receipt"):
+                    # A leg that had receipts but no priced field makes the sum a floor.
+                    complete = False
+            upstreams.update(leg_totals.get("resolved_upstreams") or [])
+            models.update(leg_totals.get("resolved_models") or [])
+        per_cell[cell.name] = legs
+
+    out: dict[str, Any] = {
+        "record": str(record_root),
+        "per_cell": per_cell,
+        "totals": totals,
+        "resolved_upstreams": sorted(upstreams),
+        "resolved_models": sorted(models),
+        "complete": complete and not missing,
+    }
+    if missing:
+        out["cells_without_receipts"] = {
+            "cells": missing,
+            "why_it_matters": (
+                "these cells contribute nothing to the totals above. A cell with no receipts "
+                "file is not a cell that cost nothing — it is a cell whose gateway accounting "
+                "is absent, and the two must not be read the same way."
+            ),
+        }
+    return out
+
+
 def recorder_env(recorder: ReceiptRecorder) -> dict[str, str]:
     """What a harness needs so its Anthropic-Messages traffic goes through the recorder.
 

@@ -399,6 +399,47 @@ def run_gateway_cmd(
         raise batch_exit
 
 
+@app.command("gateway-totals")
+def gateway_totals_cmd(
+    record: str = typer.Argument(..., help="record directory"),
+) -> None:
+    """Roll a record's per-cell gateway receipts up into whole-record totals.
+
+    Reads the per-cell files rather than the record-level one, because a record can be built
+    over several sittings — the paired DeepSeek batch runs one task at a time to keep its two
+    arms adjacent, and a resumed batch carries conclusive cells forward verbatim, receipts
+    included. Each sitting's recorder only ever saw its own calls.
+    """
+    from . import qualify_batch
+
+    root = Path(record)
+    if not root.is_dir():
+        console.print(f"[bold]✗[/bold] {root} is not a record directory")
+        raise typer.Exit(code=1)
+    totals = qualify_batch.record_gateway_totals(root)
+    (root / "gateway-totals.json").write_text(
+        json.dumps(totals, indent=2, sort_keys=True) + "\n"
+    )
+    t = totals["totals"]
+    console.print(
+        f"{t['calls_observed']} call(s), {t['calls_with_receipt']} with a gateway receipt"
+    )
+    console.print(
+        f"cost ${t['gateway_cost_usd']:.6f} · prompt {t['native_tokens_prompt']} · "
+        f"cached {t['native_tokens_cached']} · completion {t['native_tokens_completion']} · "
+        f"reasoning {t['native_tokens_reasoning']}"
+    )
+    console.print(
+        f"upstreams {totals['resolved_upstreams']} · models {totals['resolved_models']}"
+    )
+    if not totals["complete"]:
+        console.print(
+            "[bold]INCOMPLETE[/bold] — these are a FLOOR, not totals. "
+            + str(totals.get("cells_without_receipts", {}).get("cells", ""))
+        )
+    console.print(f"written: {root / 'gateway-totals.json'}")
+
+
 @app.command("qualify-preflight")
 def qualify_preflight_cmd(
     out: str = typer.Option(..., "--out", help="where the preflight record is written"),

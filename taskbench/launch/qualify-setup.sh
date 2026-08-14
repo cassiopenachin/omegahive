@@ -42,14 +42,15 @@ step "The credential"
 if [ -z "${OPENROUTER_API_KEY:-}" ]; then
   die "OPENROUTER_API_KEY is not exported.
 
-  It is the operator's secret and lives outside both repositories. Export it into this shell
-  from wherever you keep it, then re-run:
+  It is the operator's secret and lives outside both repositories, in the operator's own secret
+  surface. Export it into this shell from wherever you keep it, then re-run this command.
 
-      export OPENROUTER_API_KEY=...      # or: set -a; . ~/.secrets; set +a
-
-  Nothing here reads a secrets file, and nothing here writes the value anywhere."
+  Nothing here reads a secrets file, names one, or writes the value anywhere: the key reaches
+  every process in this study through the environment and through nothing else."
 fi
-say "OPENROUTER_API_KEY is present (length ${#OPENROUTER_API_KEY}; the value is never printed)."
+# Presence only. Not the length, not a prefix, not a fingerprint — a preflight that described
+# the key would be a preflight that logged part of it.
+say "OPENROUTER_API_KEY is present. Its value is never read, printed, or written down."
 
 step "Where the record goes"
 mkdir -p "$OUT_DIR"

@@ -135,6 +135,7 @@ SCORING_FROZEN = (
 QUALIFY_ADDITIVE = (
     "taskbench/openrouter.py",
     "taskbench/qualify.py",
+    "taskbench/qualify_batch.py",
     "taskbench/receipts.py",
     "taskbench/launch/",
     "taskbench/configs/",
