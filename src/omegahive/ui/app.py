@@ -11,20 +11,27 @@ import os
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import NamedTuple, Protocol
+from typing import NamedTuple
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from ..api import build_api_router
 from ..board.state import Board
-from ..db import connect
 from ..events.envelope import Actor, Event
-from ..events.log import read_run_summaries
 from ..metrics import compute
-from ..port import HiveCoordinatorPort, PortView
+from ..port import PortView
 from ..report.portfolio import active_board, configured_window_days, portfolio_runs
+from ..report.reader import (
+    PortFactory,
+    RunsFactory,
+    database_healthcheck,
+    database_port,
+    database_runs,
+)
+from ..report.reader import read_view as _read
 from .demo import DemoPort, demo_run_summaries
 from .presenters import (
     actor_ids,
@@ -57,46 +64,7 @@ def _normalize_base_path(value: str | None) -> str:
     return f"/{raw}" if raw else ""
 
 
-class ReadPort(Protocol):
-    def read(self, cursor: int | None = None) -> PortView: ...
-
-
-PortFactory = Callable[[str, int | None], ReadPort]
-RunsFactory = Callable[[], list[dict]]
-
-
-def _database_port(run_id: str, generation: int | None) -> ReadPort:
-    """Construct one short-lived port client. The caller closes its DB connection after read."""
-    conn = connect()
-    try:
-        return HiveCoordinatorPort(_UI_ACTOR, run_id, conn, generation=generation)
-    except Exception:
-        conn.close()
-        raise
-
-
-def _database_runs() -> list[dict]:
-    """The spine's run registry — which runs exist at all. Discovery is a listing, not a
-    fold: every board on the portfolio page is still read through the port, one per run,
-    so the UI keeps exactly one fold site (the port's)."""
-    conn = connect()
-    try:
-        return read_run_summaries(conn)
-    finally:
-        conn.close()
-
-
-def _read(
-    factory: PortFactory, run_id: str, cursor: int | None, generation: int | None
-) -> PortView:
-    port = factory(run_id, generation)
-    try:
-        return port.read(cursor)
-    finally:
-        # DemoPort deliberately has no connection. The real port keeps its connection private.
-        conn = getattr(port, "_conn", None)
-        if conn is not None:
-            conn.close()
+_database_port = database_port(_UI_ACTOR)
 
 
 def _sse(event: str, html: str) -> str:
@@ -206,18 +174,28 @@ def create_app(
     port_factory: PortFactory | None = None,
     runs_factory: RunsFactory | None = None,
     now_factory: Callable[[], datetime] | None = None,
+    db_check: Callable[[], None] | None = None,
     poll_seconds: float = 1.5,
     base_path: str | None = None,
 ) -> FastAPI:
-    """Create an injectable app: local visual work uses `DemoPort`; production uses Port."""
+    """Create an injectable app: local visual work uses `DemoPort`; production uses Port.
+
+    `db_check` backs the JSON API's `/api/v1/health` route. It defaults alongside
+    `port_factory`/`runs_factory`: unset in demo mode it is a no-op (`DemoPort` never
+    touches a database), unset otherwise it is the real `database_healthcheck` — but
+    a caller supplying its own `port_factory`/`runs_factory` (as every test does) may
+    also supply its own `db_check`, so a fake-factory test never reaches a real DSN.
+    """
     demo_mode = os.environ.get("OMEGAHIVE_UI_DEMO") == "1"
     factory = port_factory or (
         lambda run_id, generation: (
             DemoPort(run_id, generation) if demo_mode else _database_port(run_id, generation)
         )
     )
-    runs = runs_factory or (demo_run_summaries if demo_mode else _database_runs)
+    runs = runs_factory or (demo_run_summaries if demo_mode else database_runs)
     now = now_factory or _utcnow
+    if db_check is None:
+        db_check = (lambda: None) if demo_mode else database_healthcheck
     # Serve behind the house Caddy at a path prefix (e.g. /omegahive). `root_path` makes
     # Starlette strip the prefix before routing and makes `url_for` re-add it, so the app
     # stays base-aware without any absolute-path assumption. Empty = today's direct serving.
@@ -227,6 +205,11 @@ def create_app(
 
     app = FastAPI(title="OmegaHive", docs_url=None, redoc_url=None, root_path=base_path)
     app.mount("/static", StaticFiles(directory=str(_ROOT / "static")), name="static")
+    app.include_router(
+        build_api_router(
+            port_factory=factory, runs_factory=runs, now_factory=now, db_check=db_check
+        )
+    )
 
     def snapshot(run_id: str) -> PortView:
         return _read(factory, run_id, None, None)
