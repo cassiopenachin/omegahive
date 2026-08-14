@@ -88,7 +88,9 @@ cleanup() { rm -rf "$ROOT"; }
 trap cleanup EXIT
 
 mkdir -p "$(dirname "$ROOT/$CONFIG_PATH")"
-printf '%s' "$(printf '%s' "$PLAN" | jq -r '.config_content')" > "$ROOT/$CONFIG_PATH"
+# `jq -j` writes the content verbatim. A `$(...)` round trip would strip the trailing
+# newline and `jq -r` would add one back; either changes the bytes the digest is over.
+printf '%s' "$PLAN" | jq -j '.config_content' > "$ROOT/$CONFIG_PATH"
 CONFIG_DIGEST="sha256:$(sha256_hex < "$ROOT/$CONFIG_PATH")"
 WANT_DIGEST=$(printf '%s' "$PLAN" | jq -r '.config_digest')
 [ "$CONFIG_DIGEST" = "$WANT_DIGEST" ] \

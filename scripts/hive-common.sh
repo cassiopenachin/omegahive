@@ -166,17 +166,22 @@ harness_present_paths_json() {  # harness_present_paths_json <descriptors-json>
 # is written before the pane opens and re-verified by the supervisor before the child
 # exists, so "we generated a config" and "the child honors it" stay two facts.
 materialize_binding() {  # materialize_binding <plan-json> <worker-root>
-  local plan="$1" root="$2" rel content want got dir
+  local plan="$1" root="$2" rel want got dir
   rel=$(printf '%s' "$plan" | jq -r '.binding.config_path // empty')
   [ -n "$rel" ] || return 0          # argv-only boundary: nothing to write
   case "$rel" in
     /*|*..*) die "refusing to materialize a boundary outside the worker root: $rel" ;;
   esac
-  content=$(printf '%s' "$plan" | jq -r '.binding.config_content')
   want=$(printf '%s' "$plan" | jq -r '.binding.config_digest')
   dir=$(dirname "$root/$rel")
   mkdir -p "$dir" || die "cannot create $dir for the materialized boundary"
-  printf '%s' "$content" > "$root/$rel" || die "cannot write $root/$rel"
+  # `jq -j`, and never `$(jq -r ...)`: the config ends in a newline, command
+  # substitution strips trailing newlines, and `jq -r` adds one back. Either mistake
+  # changes the file's bytes and therefore its digest — which the read-back below
+  # catches, loudly, but only because the digest is taken over EXACT bytes. Writing
+  # straight through is the fix; the read-back is the proof.
+  printf '%s' "$plan" | jq -j '.binding.config_content' > "$root/$rel" \
+    || die "cannot write $root/$rel"
   chmod 0600 "$root/$rel"
   # Read back what actually landed. A write that succeeded and a file that says what we
   # meant are different claims, and only the second one is a boundary.

@@ -409,3 +409,110 @@ def test_kickoff_survives_as_one_argv_element(rig):
     assert argv.count(kickoff) == 1, (
         f"the kickoff must be exactly one argv element, unmodified; got {argv!r}"
     )
+
+
+# --- the permission boundary, across the launcher/supervisor seam -------------------
+
+
+def test_a_tampered_boundary_is_a_terminal_failure_with_no_started_fact(rig):
+    """Between materialization and launch, a clone step, a hook, or a hand edit could
+    change the file the child will read. The supervisor recomputes its digest against
+    the bytes on disk immediately before the child exists, so the drifted case is
+    recorded exactly as the failed version probe is: approved, never started, failed.
+
+    This is the difference between "a configuration was generated" and "the boundary
+    the operator approved is the one in force", which is the whole claim of this
+    milestone and must be checked rather than asserted.
+    """
+    _approve_route(rig)
+    doc = json.loads(rig["config_file"].read_text())
+    doc["permissions"]["deny"] = []          # the tamper: a boundary with nothing in it
+    rig["config_file"].write_text(json.dumps(doc, indent=2) + "\n")
+
+    proc = _run_supervisor(rig, "success")
+    assert proc.returncode == 1
+    assert "BOUNDARY VERIFICATION FAILED" in proc.stdout + proc.stderr
+
+    kinds = [e[0] for e in _events(rig)]
+    assert "execution.started" not in kinds, (
+        "a worker whose boundary does not verify must never be recorded as started"
+    )
+    finished = [e for e in _events(rig) if e[0] == "execution.finished"]
+    assert len(finished) == 1
+    payload = finished[0][3]
+    assert payload["outcome"] == "failure"
+    assert payload["outcome_certainty"] == "certain"
+    assert payload["usage"]["status"] == "unavailable"
+    assert "boundary" in payload["usage"]["reason"]
+
+
+def test_a_missing_boundary_file_is_a_terminal_failure_too(rig):
+    """Absent and drifted are the same answer. A file that was never written is not a
+    permissive default."""
+    _approve_route(rig)
+    rig["config_file"].unlink()
+    proc = _run_supervisor(rig, "success")
+    assert proc.returncode == 1
+    assert "missing" in (proc.stdout + proc.stderr)
+    assert "execution.started" not in [e[0] for e in _events(rig)]
+
+
+def test_the_started_fact_carries_the_boundary_that_was_verified(rig):
+    _approve_route(rig)
+    assert _run_supervisor(rig, "success").returncode == 0
+    started = [e for e in _events(rig) if e[0] == "execution.started"]
+    assert len(started) == 1
+    binding = started[0][3]["binding"]
+    plan = json.loads((rig["run_dir"] / "plan.json").read_text())
+    assert binding["config_digest"] == plan["binding"]["config_digest"]
+    assert binding["binding_digest"] == plan["binding"]["binding_digest"]
+    assert set(binding["mechanisms"]) == {"P1", "P2", "P3", "P4"}
+    # The materialized file itself is never on the spine.
+    assert "config_content" not in binding
+    assert "permissions" not in json.dumps(binding)
+
+
+def test_materialize_binding_writes_the_exact_bytes_the_digest_is_over(rig, tmp_path):
+    """The shell writer, exercised as shell.
+
+    A `$(jq -r ...)` round trip strips the config's trailing newline and adds one back,
+    which changes the bytes and therefore the digest — a real defect this helper had
+    until its own read-back check caught it. The read-back is why the bug was loud; this
+    test is why it stays fixed.
+    """
+    root = tmp_path / "materialize-root"
+    root.mkdir()
+    plan = json.dumps(json.loads((rig["run_dir"] / "plan.json").read_text()))
+    proc = subprocess.run(
+        [
+            "bash", "-c",
+            f'set -euo pipefail; source "{REPO}/scripts/hive-common.sh"; '
+            f'materialize_binding "$1" "$2"',
+            "bash", plan, str(root),
+        ],
+        capture_output=True, text=True, cwd=str(REPO), timeout=60,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    written = root / ".claude" / "settings.local.json"
+    assert written.read_text() == json.loads(plan)["binding"]["config_content"]
+    assert oct(written.stat().st_mode)[-3:] == "600"
+
+
+def test_materialize_binding_refuses_a_path_outside_the_worker_root(rig, tmp_path):
+    """A descriptor is code, but the config path travels through JSON. An absolute or
+    traversing path would let a boundary be written over something that is not the
+    worker's own root — including the operator's global configuration."""
+    plan = json.loads((rig["run_dir"] / "plan.json").read_text())
+    for evil in ("/etc/claude-code/managed-settings.json", "../../.claude/settings.json"):
+        plan["binding"]["config_path"] = evil
+        proc = subprocess.run(
+            [
+                "bash", "-c",
+                f'set -euo pipefail; source "{REPO}/scripts/hive-common.sh"; '
+                f'materialize_binding "$1" "$2"',
+                "bash", json.dumps(plan), str(tmp_path / "root"),
+            ],
+            capture_output=True, text=True, cwd=str(REPO), timeout=60,
+        )
+        assert proc.returncode != 0, evil
+        assert "outside the worker root" in proc.stderr
