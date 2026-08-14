@@ -37,7 +37,8 @@ validated against `schemas/harness-binding.v1.json`.
 | `known_command_modes` / `safe_command_modes` | an unrecognized mode refuses; a recognized-and-unsafe mode refuses |
 | `forbidden_argv_tokens` | tokens that may never appear, at all |
 | `classes` | one entry per policy class: mechanisms, probes, residual |
-| `status` + `verification` | `proven` (probes were run, and where to read the record) or `declared` (written from documentation — **routes refuse**) |
+| `subcommand` | tokens that follow the executable before any flag; a flag can be valid only under one |
+| `status` + `verification` | `proven` (probes were run, and where to read the record) or `declared` (**routes refuse**). `verification` pins the **config digest** and the **harness version** the probes ran against, and both are checked |
 
 A class binds through **mechanisms**. A mechanism is enforceable or it is not:
 `settings-deny`, `settings-allow`, `setting-source-gating`, `launch-flag`,
@@ -63,7 +64,8 @@ Each is a distinct remedy, so each has a distinct code.
 | `POLICY_CLASS_RESIDUAL_UNSTATED` | leaning on instructions without saying what is left open |
 | `HARNESS_MODE_UNKNOWN` / `HARNESS_MODE_UNSAFE` | a mode this descriptor does not recognize, or one that bypasses the engine |
 | `HARNESS_FLAG_MISSING` | the adapter did not put a required flag in the argv |
-| `HARNESS_BINDING_UNPROVEN` | `declared`, or `proven` with no passing verification record |
+| `HARNESS_BINDING_UNPROVEN` | `declared`; `proven` with no passing verification record; or `proven` against a configuration this build no longer renders |
+| `HARNESS_BINDING_UNRENDERABLE` | a descriptor that declares rules no renderer will write, or renders a file with no deny rules in it |
 | `BINDING_PROBE_FAILED` | a preflight probe failed — including a managed policy file being present |
 | `ROUTE_CREDENTIAL_MODE` | an api route on harness-native credentials, or a subscription route asking for a broker |
 | `BROKER_NOT_IMPLEMENTED` | an api route asking for the one shape that could work, which does not exist |
@@ -230,8 +232,18 @@ scripts/hive-binding-probe claude-code.v1 --record /tmp/probe.json
 ```
 
 Six real non-interactive sessions in a disposable `mktemp -d` root, roughly **US$0.08**
-on Haiku. This is what a descriptor's `status: proven` rests on; re-run it after a
-harness upgrade or a rule change and update the descriptor's `verification` block.
+on Haiku. This is what a descriptor's `status: proven` rests on, and both halves of that
+claim are now enforced rather than remembered:
+
+- **Change a rule** and `check_status` refuses the descriptor, because
+  `verification.config_digest` no longer matches what it renders.
+- **Upgrade the harness across a `major.minor`** and the supervisor stops the launch with
+  no `started` fact, because a boundary's proof is a point measurement against one build.
+  A patch bump is announced and allowed — refusing on every auto-update would be a worse
+  failure than the one it prevents.
+
+Either way the remedy is the same: re-run this command, update the `verification` block,
+and re-pin every route naming the descriptor.
 
 It refuses for any harness it has no driver for, rather than guessing an interface it
 has never exercised.
