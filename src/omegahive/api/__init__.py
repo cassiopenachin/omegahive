@@ -8,6 +8,6 @@ port and returns data, never accepts one.
 
 from __future__ import annotations
 
-from .routes import API_SCHEMA_VERSION, build_api_router
+from .routes import API_SCHEMA_VERSION, build_api_router, register_error_handlers
 
-__all__ = ["build_api_router", "API_SCHEMA_VERSION"]
+__all__ = ["build_api_router", "register_error_handlers", "API_SCHEMA_VERSION"]

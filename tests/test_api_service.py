@@ -117,9 +117,7 @@ def test_portfolio_meta_and_anchor_carry_freshness_and_generation():
     factory = _factory({"r1": _view(_BLOCKED_RUN, cursor=4, generation=3)})
     runs = _runs([_summary_row("r1", NOW)])
 
-    resp = portfolio_snapshot(
-        factory, runs, show_all=False, window_days=7, exclude=(), now=NOW
-    )
+    resp = portfolio_snapshot(factory, runs, show_all=False, window_days=7, exclude=(), now=NOW)
 
     assert resp.meta.observed_at == NOW
     assert resp.meta.window_days == 7
@@ -171,10 +169,12 @@ def test_portfolio_simulated_run_reports_duration_unavailable_not_a_number():
 
 def test_portfolio_hidden_run_count_reflects_the_active_cut():
     dormant = NOW - timedelta(days=30)
-    factory = _factory({
-        "r1": _view(_BLOCKED_RUN),
-        "r2": _view(_DONE_RUN),
-    })
+    factory = _factory(
+        {
+            "r1": _view(_BLOCKED_RUN),
+            "r2": _view(_DONE_RUN),
+        }
+    )
     runs = _runs([_summary_row("r1", NOW), _summary_row("r2", dormant)])
 
     resp = portfolio_snapshot(factory, runs, show_all=False, window_days=7, exclude=(), now=NOW)
@@ -242,6 +242,20 @@ def test_task_detail_events_available_is_the_tasks_total_not_the_page_remainder(
 
     assert first_page.events_available == 5
     assert second_page.events_available == 5
+
+
+def test_task_detail_events_truncated_is_false_once_backward_paging_is_exhausted():
+    # Regression: events_truncated compared the post-filter page against the task's
+    # grand TOTAL (events_available), not against what was left after before_seq —
+    # so the last page of a backward walk still reported truncated=True (a client
+    # that loops "while events_truncated" would never terminate).
+    factory = _factory({"r1": _view(_DONE_RUN)})
+
+    last_page = task_detail(factory, "r1", "T2", now=NOW, limit=2, before_seq=2)
+
+    assert [e.seq for e in last_page.events] == [1]
+    assert last_page.events_truncated is False
+    assert last_page.events_available == 5
 
 
 def test_task_detail_hard_cap_applies_even_when_a_caller_asks_for_more():

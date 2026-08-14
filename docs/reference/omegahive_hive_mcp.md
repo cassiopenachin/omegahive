@@ -2,10 +2,13 @@
 
 **Status:** v1, shipped (hive-mcp order). Two components: a versioned JSON API on
 Beastie's existing UI origin (`src/omegahive/api/`), and a standalone stdio MCP
-server for the operator's Mac (`omegahive-mcp/`). Governed by the operator decision
-un-refusing and scoping the hive MCP (workspace `projects/omegahive/decisions.md`,
-2026-08-12) and the settled Mac→tailnet→Beastie shape (workspace
-`projects/omegahive/capacity-routing.md`).
+server for the operator's Mac (`omegahive-mcp/`). This file is self-contained: every
+fact a reader needs to operate or extend this system is stated below. The order that
+requested it, and the two governing operator decisions behind it, live in a separate
+repository (the operator's hive workspace, not this one) and are named here only as
+provenance, not as required reading: `hive-workspace: projects/omegahive/orders/
+2026-08-13-hive-mcp.md`, `hive-workspace: projects/omegahive/decisions.md`
+(2026-08-12 entry), `hive-workspace: projects/omegahive/capacity-routing.md`.
 
 ## 1. What this replaces, and what it does not
 

@@ -152,6 +152,23 @@ def _report_versions() -> None:
     _print(f"mcp SDK version: {mcp_version or 'NOT INSTALLED'}")
 
 
+def _verify_and_smoke(origin: str) -> bool:
+    """The verify+smoke sequence `setup` and `doctor` both run, identically: report
+    versions, check upstream health, then a real MCP list-tools/call smoke test.
+    One place, so a future fix to this sequence can't land in only one command."""
+    _report_versions()
+    ok, detail = _verify(origin)
+    _print(detail)
+    if not ok:
+        return False
+
+    _print("running an MCP list-tools/call smoke test over stdio...")
+    smoke = anyio.run(_run_smoke_test)
+    _print(f"tools: {smoke.tool_names}")
+    _print(smoke.detail)
+    return smoke.ok
+
+
 def cmd_setup(_args: argparse.Namespace) -> int:
     checkout = _discover_checkout(Path.cwd())
     if checkout is not None:
@@ -183,17 +200,7 @@ def cmd_setup(_args: argparse.Namespace) -> int:
         write_config(origin, path)
         _print(f"wrote {path}")
 
-    _report_versions()
-    ok, detail = _verify(origin)
-    _print(detail)
-    if not ok:
-        return 1
-
-    _print("running an MCP list-tools/call smoke test over stdio...")
-    smoke = anyio.run(_run_smoke_test)
-    _print(f"tools: {smoke.tool_names}")
-    _print(smoke.detail)
-    if not smoke.ok:
+    if not _verify_and_smoke(origin):
         return 1
 
     _print("\nsetup complete. Paste this into your MCP client's config:\n")
@@ -210,17 +217,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         return 1
     _print(f"config: {path} -> {origin}")
 
-    _report_versions()
-    ok, detail = _verify(origin)
-    _print(detail)
-    if not ok:
-        return 1
-
-    _print("running an MCP list-tools/call smoke test over stdio...")
-    smoke = anyio.run(_run_smoke_test)
-    _print(f"tools: {smoke.tool_names}")
-    _print(smoke.detail)
-    return 0 if smoke.ok else 1
+    return 0 if _verify_and_smoke(origin) else 1
 
 
 def cmd_serve(_args: argparse.Namespace) -> int:

@@ -79,51 +79,46 @@ def _task_timing(
     return wall_ts, elapsed, "wall"
 
 
-def _task_summary(task: TaskState, events_by_seq: dict[int, Event], now: datetime) -> TaskSummary:
+def _shared_task_fields(
+    task: TaskState, events_by_seq: dict[int, Event], now: datetime
+) -> dict[str, object]:
+    """The fields `TaskSummary` and `TaskDetail` hold in common — `TaskDetail` is a
+    strict superset (provenance + a few more board flags). One place computes them
+    so a rename or a fix to a shared field (e.g. `clock_kind`) can never apply to
+    only one of the two shapes."""
     changed_at, elapsed, clock_kind = _task_timing(task, events_by_seq, now)
-    return TaskSummary(
-        task_id=task.task_id,
-        status=task.status,
-        owner=task.owner,
-        title=task.title,
-        task_type=task.task_type,
-        priority=task.priority,
-        depends_on=sorted(task.depends_on),
-        review=task.latest_review,
-        escalated=task.escalated,
-        blocker_reason=task.blocker_reason,
-        blocker_needs=task.blocker_needs,
-        last_status_change_logical_ts=task.last_status_change_ts,
-        status_changed_at=changed_at,
-        elapsed_seconds=elapsed,
-        clock_kind=clock_kind,
-    )
+    return {
+        "task_id": task.task_id,
+        "status": task.status,
+        "owner": task.owner,
+        "title": task.title,
+        "task_type": task.task_type,
+        "priority": task.priority,
+        "depends_on": sorted(task.depends_on),
+        "review": task.latest_review,
+        "escalated": task.escalated,
+        "blocker_reason": task.blocker_reason,
+        "blocker_needs": task.blocker_needs,
+        "last_status_change_logical_ts": task.last_status_change_ts,
+        "status_changed_at": changed_at,
+        "elapsed_seconds": elapsed,
+        "clock_kind": clock_kind,
+    }
+
+
+def _task_summary(task: TaskState, events_by_seq: dict[int, Event], now: datetime) -> TaskSummary:
+    return TaskSummary(**_shared_task_fields(task, events_by_seq, now))
 
 
 def _task_detail(task: TaskState, events_by_seq: dict[int, Event], now: datetime) -> TaskDetail:
-    changed_at, elapsed, clock_kind = _task_timing(task, events_by_seq, now)
     return TaskDetail(
-        task_id=task.task_id,
-        status=task.status,
-        owner=task.owner,
-        title=task.title,
-        task_type=task.task_type,
-        priority=task.priority,
-        depends_on=sorted(task.depends_on),
+        **_shared_task_fields(task, events_by_seq, now),
         tried_by=sorted(task.tried_by),
         ready_when=task.ready_when,
         join_unsatisfiable=task.join_unsatisfiable,
         pruned=task.pruned,
-        escalated=task.escalated,
-        review=task.latest_review,
-        blocker_reason=task.blocker_reason,
-        blocker_needs=task.blocker_needs,
         last_result_ref=task.last_result_ref,
         last_causing_seq=task.last_causing_seq,
-        last_status_change_logical_ts=task.last_status_change_ts,
-        status_changed_at=changed_at,
-        elapsed_seconds=elapsed,
-        clock_kind=clock_kind,
     )
 
 
@@ -202,6 +197,11 @@ def task_detail(
         task_events = [e for e in task_events if e.seq is not None and e.seq < before_seq]
     capped = max(1, min(limit, TASK_EVENTS_MAX))
     page = task_events[:capped]
+    # `events_truncated` means "more remain beyond THIS page, from the current
+    # cursor" — compared against the post-before_seq-filter count, not `available`
+    # (the task's grand total). Comparing against `available` instead reported
+    # truncated=True even when a caller had already paged through everything.
+    truncated = len(task_events) > len(page)
 
     events_by_seq = _events_by_seq(view.events)
     return TaskDetailResponse(
@@ -221,7 +221,7 @@ def task_detail(
             )
             for e in page
         ],
-        events_truncated=available > len(page),
+        events_truncated=truncated,
         events_returned=len(page),
         events_available=available,
     )

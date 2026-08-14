@@ -121,7 +121,31 @@ def test_task_detail_unknown_task_is_a_typed_404_distinct_from_unknown_run():
 def test_task_detail_limit_is_bounded_by_the_query_schema():
     response = _client().get(f"/api/v1/runs/{DEMO_RUN_ID}/tasks/T2?limit=100000")
 
+    # Regression: FastAPI's own Query(..., le=...) validation raises before this
+    # route's handler ever runs, and it would otherwise answer with FastAPI's stock
+    # {"detail": [...]} shape — a second error envelope this API never documented
+    # and an MCP client's ErrorResponse.model_validate() cannot parse.
     assert response.status_code == 422
+    body = response.json()
+    assert body["error"] == "invalid_request"
+    assert "limit" in body["detail"]
+
+
+def test_invalid_query_params_get_the_same_error_response_shape_as_every_other_route():
+    response = _client().get(f"/api/v1/runs/{DEMO_RUN_ID}/tasks/T2?before_seq=0")
+
+    assert response.status_code == 422
+    assert response.json()["error"] == "invalid_request"
+
+
+def test_a_validation_error_on_an_html_route_is_unaffected_by_the_api_error_handler():
+    # The API's ErrorResponse reshaping must not leak onto non-API routes — this
+    # asserts FastAPI's stock {"detail": [...]} shape survives unchanged there.
+    response = _client().get(f"/run/{DEMO_RUN_ID}/stream?page=not-a-valid-page")
+
+    assert response.status_code == 422
+    assert "detail" in response.json()
+    assert "error" not in response.json()
 
 
 def test_api_exposes_no_write_route():
@@ -133,6 +157,21 @@ def test_api_exposes_no_write_route():
         assert client.post(path).status_code == 405
         assert client.put(path).status_code == 405
         assert client.delete(path).status_code == 405
+
+
+def test_every_registered_api_route_allows_only_get():
+    # Generic, over every route the API package registers — not just today's three
+    # paths — so a future route (e.g. capacity-view's hive_capacity sibling, per
+    # docs/reference/omegahive_hive_mcp.md §8) can never land write-capable without
+    # this test failing, even before anyone writes a POST/PUT/DELETE test for it.
+    # Reads the OpenAPI schema (a stable public API) rather than FastAPI's internal
+    # router-inclusion structure, which is not something a test should depend on.
+    paths = _client().app.openapi()["paths"]
+    api_paths = {path: ops for path, ops in paths.items() if path.startswith("/api/v1")}
+
+    assert api_paths, "no /api/v1 routes were registered — this test would be vacuous"
+    for path, ops in api_paths.items():
+        assert set(ops) == {"get"}, path
 
 
 def test_api_lives_on_the_same_origin_as_the_html_ui():

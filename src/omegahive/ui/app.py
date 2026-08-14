@@ -18,7 +18,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from ..api import build_api_router
+from ..api import build_api_router, register_error_handlers
 from ..board.state import Board
 from ..events.envelope import Actor, Event
 from ..metrics import compute
@@ -214,6 +214,7 @@ def create_app(
             port_factory=factory, runs_factory=runs, now_factory=now, db_check=db_check
         )
     )
+    register_error_handlers(app, base_path=base_path)
 
     def snapshot(run_id: str) -> PortView:
         return _read(factory, run_id, None, None)

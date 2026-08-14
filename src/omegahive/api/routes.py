@@ -13,7 +13,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, FastAPI, Query, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from ..report.portfolio import configured_exclude, configured_window_days
@@ -36,6 +38,23 @@ def _error(status_code: int, error: str, detail: str) -> JSONResponse:
         status_code=status_code,
         content=ErrorResponse(error=error, detail=detail).model_dump(mode="json"),
     )
+
+
+def register_error_handlers(app: FastAPI, *, base_path: str = "") -> None:
+    """Every non-2xx response under `/api/v1` is `ErrorResponse` — including a
+    query-parameter validation failure (`?limit=100000`), which FastAPI would
+    otherwise answer with its own `{"detail": [...]}` shape before a route handler
+    ever runs, silently breaking the one-error-shape contract this API documents
+    (`docs/reference/omegahive_api_schema.md`'s own header). HTML/SSE routes are
+    untouched — this delegates to FastAPI's stock handler for any path outside the
+    API prefix, so their existing validation-error behavior is unchanged."""
+    prefix = f"{base_path}/api/v1"
+
+    @app.exception_handler(RequestValidationError)
+    async def _api_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+        if not request.url.path.startswith(prefix):
+            return await request_validation_exception_handler(request, exc)
+        return _error(422, "invalid_request", str(exc))
 
 
 def _guarded[T](call: Callable[[], T]) -> T | JSONResponse:
