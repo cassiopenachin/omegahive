@@ -10,12 +10,26 @@ answers "what would happen", because there is nothing else for it to do.
 from __future__ import annotations
 
 import hashlib
+import textwrap
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from omegahive.events.types import ExecutionIdentity, PriceBasis
 from omegahive.harness.adapters import LaunchContext, LaunchPlan, get_adapter
+from omegahive.harness.bindings import (
+    HarnessBinding,
+    Materialized,
+    ProbeResult,
+    check_argv,
+    check_command_mode,
+    check_coverage,
+    check_digest,
+    check_status,
+    load_binding_descriptor,
+    materialize,
+    run_local_probes,
+)
 from omegahive.harness.records import (
     LaunchBinding,
     RefusalError,
@@ -26,12 +40,25 @@ from omegahive.harness.records import (
     resolve_route,
 )
 
-# Billing markets a worker may actually be launched on in this order. API routes
-# validate structurally — the catalog can describe them and `--check` will resolve
-# them — but launching one needs credential delivery and permission controls that
-# `worker-harness-bindings` owns. Until then a launch attempt refuses rather than
-# putting a key anywhere near a worker process.
+# Billing markets a worker may be launched on with the harness's own already-
+# authenticated account and nothing handed to the worker. An `api` route bills against
+# a long-lived provider secret, and the only shape in which such a route may launch is
+# through an operator-owned broker that issues a scoped, expiring capability — see
+# `BROKER_IMPLEMENTED` below. This set is NOT the api gate; the credential gate is,
+# and keeping them separate is deliberate: "which markets exist" and "how a credential
+# reaches an execution" are different questions and were conflated once already.
 LAUNCHABLE_MARKETS = frozenset({"subscription"})
+
+# The conditional broker slice of the `worker-harness-bindings` order did NOT activate.
+# Its activation condition is a committed HIP-1 M1b/M1c disposition naming a direct-API
+# bundle as a live qualifier; at kickoff (2026-08-14) `hip1-bench-seed` had landed with
+# fidelity green and NO cheap-candidate qualification had run (`hip1-bench-qualify` is
+# unworked, M1c is sequenced out of wave 4), so no direct-API route has earned live
+# worker status. This constant is therefore False and the denial seam below is the whole
+# credential story: broker status is `not implemented`, said plainly, rather than a stub
+# that reads as a control. Flipping it is not a one-line change — it is the order that
+# builds the broker.
+BROKER_IMPLEMENTED = False
 
 
 @dataclass(frozen=True)
@@ -46,6 +73,14 @@ class ResolvedPlan:
     launch: LaunchPlan
     launchable: bool
     unlaunchable_reason: str | None
+    # The permission boundary, resolved: which descriptor, its exact bytes' digest,
+    # what it materialized, and how every declared probe stands right now.
+    harness_binding: HarnessBinding
+    materialized: Materialized
+    probes: list[ProbeResult]
+    # A stable code for the unlaunchable case, so a reader can branch on the reason
+    # rather than matching prose. None when the route is launchable.
+    refusal_code: str | None = None
 
 
 def execution_id_for(binding: LaunchBinding, binding_ref: str) -> str:
@@ -64,17 +99,103 @@ def execution_id_for(binding: LaunchBinding, binding_ref: str) -> str:
     return f"{task}-a{binding.attempt}-{short}"
 
 
+def resolve_harness_binding(
+    route: RouteEntry, descriptors_raw: Mapping[str, bytes]
+) -> HarnessBinding:
+    """Route -> the one descriptor it is pinned to, fully checked, or a refusal.
+
+    Every check here fails CLOSED, and the order matters: identify the descriptor,
+    prove its bytes are the approved ones, prove it is about this harness, prove it
+    binds all four classes with something enforceable, and only then ask whether its
+    probes have actually been run. Asking "is it proven" before "is it the right file"
+    would let a proven descriptor vouch for a route it does not describe.
+    """
+    raw = descriptors_raw.get(route.binding_id)
+    if raw is None:
+        known = ", ".join(sorted(descriptors_raw)) or "<none>"
+        raise RefusalError(
+            "HARNESS_UNBOUND",
+            f"route {route.name!r} names permission binding {route.binding_id!r} and no "
+            f"such descriptor ships with this launcher (known: {known}). An unbound "
+            "harness is not a warning — it is a launch that does not happen "
+            "(permissions.md, 'an empty row is a launch that does not happen')",
+        )
+    binding = load_binding_descriptor(raw)
+    check_digest(binding, raw, route.binding_digest)
+    if binding.harness != route.harness:
+        raise RefusalError(
+            "HARNESS_BINDING_MISMATCH",
+            f"route {route.name!r} runs harness {route.harness!r} but descriptor "
+            f"{binding.binding_id!r} binds {binding.harness!r}; a boundary written for "
+            "one harness says nothing about another",
+        )
+    check_coverage(binding)
+    check_command_mode(binding, binding.command_mode)
+    check_status(binding)
+    return binding
+
+
+def _credential_gate(route: RouteEntry) -> tuple[str, str] | None:
+    """The credential seam. Returns `(code, reason)` when the route may not launch.
+
+    Subscription routes inherit only the harness's own authenticated channel — the
+    adapter's environment allowlist is what makes "inherit" mean one named channel
+    rather than the parent shell — and hand the worker nothing. An `api` route bills
+    against a long-lived provider secret, which must never be in the binding, the
+    worker environment, the tmux command, the generated config, a transcript, an event,
+    or a result artifact. There is exactly one shape in which such a route could launch,
+    and it does not exist yet.
+    """
+    if route.billing_market == "api":
+        if route.credential_mode != "broker":
+            return (
+                "ROUTE_CREDENTIAL_MODE",
+                f"route {route.name!r} bills against the api market with "
+                f"credential_mode={route.credential_mode!r}. A direct-API route is not "
+                "launchable on the harness's own credentials: the long-lived provider "
+                "secret must stay outside the worker, which needs credential_mode="
+                "'broker' and a live broker",
+            )
+        if not BROKER_IMPLEMENTED:
+            return (
+                "BROKER_NOT_IMPLEMENTED",
+                f"route {route.name!r} requests credential_mode='broker' and no broker "
+                "is implemented on this deployment. The broker slice is conditional on a "
+                "committed HIP-1 qualification naming a direct-API bundle as a live "
+                "qualifier; none exists, so the honest status is 'not implemented' and "
+                "the route refuses rather than falling back to a raw key",
+            )
+    elif route.credential_mode == "broker":
+        return (
+            "ROUTE_CREDENTIAL_MODE",
+            f"route {route.name!r} bills against the subscription market and asks for a "
+            "broker. A subscription route uses the harness's existing authenticated "
+            "account and has no credential for a broker to scope; this combination is a "
+            "catalog mistake, not a configuration",
+        )
+    if route.billing_market not in LAUNCHABLE_MARKETS:
+        return (
+            "MARKET_UNLAUNCHABLE",
+            f"route {route.name!r} bills against the {route.billing_market!r} market, "
+            "which no launch path on this deployment supports",
+        )
+    return None
+
+
 def resolve(
     *,
     binding_raw: bytes,
     catalog_raw: bytes,
+    descriptors_raw: Mapping[str, bytes],
     binding_ref: str,
     expected_task: str | None,
     expected_order_ref: str | None,
     kickoff: str,
     cwd: str,
     session_id: str,
+    code_root: str = "",
     parent_env: Mapping[str, str],
+    present_paths: frozenset[str] = frozenset(),
 ) -> ResolvedPlan:
     """Resolve, verify agreement, and build the plan. Raises `RefusalError` to refuse."""
     binding = load_binding(binding_raw)
@@ -99,6 +220,7 @@ def resolve(
 
     route = resolve_route(catalog, binding.route)
     adapter = get_adapter(route.adapter)
+    harness_binding = resolve_harness_binding(route, descriptors_raw)
 
     ctx = LaunchContext(
         kickoff=kickoff,
@@ -106,17 +228,38 @@ def resolve(
         execution_id=execution_id_for(binding, binding_ref),
         session_id=session_id,
         parent_env=parent_env,
+        code_root=code_root,
     )
-    launch = adapter.build(route, ctx)
+    launch = adapter.build(route, ctx, harness_binding)
 
-    launchable = route.billing_market in LAUNCHABLE_MARKETS
-    unlaunchable_reason = None
-    if not launchable:
-        unlaunchable_reason = (
-            f"route {route.name!r} bills against the {route.billing_market!r} market; "
-            "direct-API routes are not launchable until `worker-harness-bindings` "
-            "supplies credential delivery and permission controls"
+    # Materialize BEFORE checking the argv, because on a harness whose boundary is a
+    # file the argv's job is to make the child read that file — the two are one control
+    # and verifying either alone verifies nothing.
+    extra_dirs = [code_root] if code_root else []
+    mat = materialize(harness_binding, extra_dirs=extra_dirs)
+    check_argv(harness_binding, launch.argv)
+
+    probes = run_local_probes(
+        harness_binding,
+        materialized=mat,
+        argv=launch.argv,
+        env=launch.env,
+        parent_env=parent_env,
+        present_paths=present_paths,
+    )
+    failed = [p for p in probes if p.state == "fail"]
+    if failed:
+        detail = "; ".join(f"{p.policy_class}/{p.probe_id}: {p.detail}" for p in failed)
+        raise RefusalError(
+            "BINDING_PROBE_FAILED",
+            f"{harness_binding.binding_id}: {len(failed)} preflight probe(s) failed — "
+            f"{detail}. The configuration was materialized and does not hold; a launch "
+            "here would be a worker running outside the boundary that was approved",
         )
+
+    gate = _credential_gate(route)
+    launchable = gate is None
+    refusal_code, unlaunchable_reason = (None, None) if gate is None else gate
 
     return ResolvedPlan(
         binding=binding,
@@ -129,6 +272,10 @@ def resolve(
         launch=launch,
         launchable=launchable,
         unlaunchable_reason=unlaunchable_reason,
+        harness_binding=harness_binding,
+        materialized=mat,
+        probes=probes,
+        refusal_code=refusal_code,
     )
 
 
@@ -194,6 +341,61 @@ def to_json(plan: ResolvedPlan, *, kickoff: str) -> dict[str, Any]:
         "unproven_reason": plan.launch.unproven_reason,
         "launchable": plan.launchable,
         "unlaunchable_reason": plan.unlaunchable_reason,
+        "refusal_code": plan.refusal_code,
+        # The boundary, in the form the launcher writes and the supervisor re-checks.
+        # `content` is carried because the launcher must actually write the file;
+        # `digest` is what makes a later "is this still the approved boundary" answerable
+        # without re-reading it, and it is what the supervisor compares before starting.
+        "binding": {
+            "binding_id": plan.harness_binding.binding_id,
+            "binding_digest": plan.route.binding_digest,
+            "harness": plan.harness_binding.harness,
+            "status": plan.harness_binding.status,
+            "command_mode": plan.harness_binding.command_mode,
+            # The harness build the evidence was taken against. The supervisor probes the
+            # installed one and refuses a different series: a boundary's proof is a point
+            # measurement against one binary, and `proven` must not outlive it silently.
+            "proven_harness_version": (
+                plan.harness_binding.verification.harness_version
+                if plan.harness_binding.verification
+                else None
+            ),
+            # Carried so the supervisor can re-check the vector it is about to exec
+            # against the descriptor's own requirement, rather than against a second
+            # copy of that requirement written in shell.
+            "required_flags": plan.harness_binding.required_flags,
+            "mechanisms": plan.harness_binding.mechanism_summary(),
+            "residuals": {
+                c.policy_class: c.residual
+                for c in plan.harness_binding.classes
+                if c.residual
+            },
+            "config_path": plan.materialized.path,
+            "config_content": plan.materialized.content,
+            "config_digest": plan.materialized.digest,
+            "rules": plan.materialized.rules,
+            "probes": [p.model_dump(mode="json") for p in plan.probes],
+        },
+    }
+
+
+def binding_metadata(doc: dict[str, Any]) -> dict[str, Any]:
+    """The subset of the binding that goes on the spine.
+
+    Deliberately NOT the whole block: `config_content` is the materialized file and the
+    execution facts are a public record. What a capacity or audit reader needs is which
+    boundary ran and whether it held — the id, the two digests, the mechanism per class,
+    and the probe verdicts — never the file itself and never a value out of anyone's
+    environment or settings.
+    """
+    b = doc["binding"]
+    return {
+        "binding_id": b["binding_id"],
+        "binding_digest": b["binding_digest"],
+        "config_digest": b["config_digest"],
+        "command_mode": b["command_mode"],
+        "mechanisms": b["mechanisms"],
+        "probes": {p["probe_id"]: p["state"] for p in b["probes"]},
     }
 
 
@@ -237,6 +439,33 @@ def preflight_text(doc: dict[str, Any]) -> str:
     ]
     if doc.get("unproven_reason"):
         lines.append(f"  caveat:    {doc['unproven_reason']}")
+
+    b = doc["binding"]
+    lines += [
+        f"boundary:    {b['binding_id']}  status {b['status']}  mode {b['command_mode']}",
+        f"  descriptor {b['binding_digest']}",
+        f"  config     {b['config_path'] or '<argv only>'}  {b['config_digest']}",
+    ]
+    for pc in ("P1", "P2", "P3", "P4"):
+        mech = ", ".join(b["mechanisms"].get(pc, [])) or "UNBOUND"
+        states = [p["state"] for p in b["probes"] if p["policy_class"] == pc]
+        # A `deferred` probe is shown as deferred, never folded into the pass count.
+        # The expensive half of the evidence lives in the descriptor's verification
+        # record, and a summary that hides its absence is how "we configured it" starts
+        # reading as "the boundary holds".
+        tally = f"{states.count('pass')} pass"
+        if states.count("deferred"):
+            tally += f", {states.count('deferred')} deferred to the probe runner"
+        if states.count("fail"):
+            tally += f", {states.count('fail')} FAIL"
+        lines.append(f"  {pc}: {mech}   [{tally}]")
+        residual = b["residuals"].get(pc)
+        if residual:
+            # Printed whole, wrapped. These are the honest half of the design and they
+            # run 200-1000 characters; truncating cut P1's off immediately before its
+            # point, in the one place an operator meets it.
+            lines.append("      residual:")
+            lines.extend(f"        {line}" for line in textwrap.wrap(residual, 86))
     if not doc["launchable"]:
-        lines.append(f"NOT LAUNCHABLE: {doc['unlaunchable_reason']}")
+        lines.append(f"NOT LAUNCHABLE [{doc['refusal_code']}]: {doc['unlaunchable_reason']}")
     return "\n".join(lines)

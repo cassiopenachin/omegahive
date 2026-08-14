@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "captured_at": "2026-08-13",
-  "note": "REDACTED EXAMPLE — not a live catalog. The live file is a DEPLOYMENT fact and is never committed: see docs/omegahive_worker_harness.md. Credential pools are opaque labels here and must stay that way; a pool name is a pointer for whoever holds the credentials, never the credential, an account id, or a host path.",
+  "captured_at": "2026-08-14",
+  "note": "REDACTED EXAMPLE — not a live catalog. The live file is a DEPLOYMENT fact and is never committed: see docs/omegahive_worker_harness.md. Credential pools are opaque labels here and must stay that way; a pool name is a pointer for whoever holds the credentials, never the credential, an account id, or a host path. Every route names the permission-boundary descriptor it runs under (binding_id) and pins its exact bytes (binding_digest); `omegahive harness-routes` prints the current digest for copy-pasting, and a descriptor that has moved since the pin refuses with BINDING_DIGEST_MISMATCH rather than launching under a boundary nobody approved.",
   "routes": [
     {
       "name": "claude-opus-subscription",
@@ -13,7 +13,10 @@
       "credential_pool": "pool-a",
       "adapter": "claude-code",
       "enabled": true,
-      "note": "the incumbent worker tier; no per-token list price applies to a subscription route, so price_basis is absent rather than zero"
+      "note": "the incumbent worker tier; no per-token list price applies to a subscription route, so price_basis is absent rather than zero",
+      "binding_id": "claude-code.v1",
+      "binding_digest": "sha256:c5bee8b5b218cdb6d307355e7b32a23044de79d2d7552042c4e7fe0098aca66f",
+      "credential_mode": "harness-native"
     },
     {
       "name": "claude-haiku-subscription",
@@ -25,7 +28,10 @@
       "credential_pool": "pool-a",
       "adapter": "claude-code",
       "enabled": true,
-      "note": "HIP-1 W2 cheap-tier candidate, subscription-billed"
+      "note": "HIP-1 W2 cheap-tier candidate, subscription-billed",
+      "binding_id": "claude-code.v1",
+      "binding_digest": "sha256:c5bee8b5b218cdb6d307355e7b32a23044de79d2d7552042c4e7fe0098aca66f",
+      "credential_mode": "harness-native"
     },
     {
       "name": "codex-terra-subscription",
@@ -37,7 +43,10 @@
       "credential_pool": "pool-b",
       "adapter": "codex",
       "enabled": false,
-      "note": "disabled rather than deleted: the Codex harness is not installed on deployment #0, so a launch must refuse loudly instead of finding no such route. Its usage and resolved-model surfaces are UNVERIFIED — see the adapter docstring."
+      "note": "disabled rather than deleted: the Codex harness is not installed on deployment #0, so a launch must refuse loudly instead of finding no such route. Note it would refuse even if enabled: codex.v1 is a DECLARED binding descriptor, written from documentation and never probed against a running binary, so HARNESS_BINDING_UNPROVEN fires before anything else. Its usage and resolved-model surfaces are UNVERIFIED too — see the adapter docstring.",
+      "binding_id": "codex.v1",
+      "binding_digest": "sha256:3c24591084a6b2c1498c6064e870a927d45d16e910254a6335506fc7051a8989",
+      "credential_mode": "harness-native"
     },
     {
       "name": "example-api-route",
@@ -58,7 +67,34 @@
         "source": "example vendor list prices, first-party pricing page",
         "captured_at": "2026-08-13"
       },
-      "note": "STRUCTURAL EXAMPLE ONLY. An api-market route validates and resolves, and `hive-launch --check` will show it, but launching one refuses: credential delivery and permission controls belong to `worker-harness-bindings`. The price_basis is what makes a historical cost derivable later without consulting a catalog that has since changed."
+      "note": "STRUCTURAL EXAMPLE ONLY, and it refuses twice over. An api-market route validates and resolves, and `hive-launch --check` will show it, but launching one refuses with ROUTE_CREDENTIAL_MODE: a direct-API route may not run on the harness's own credentials, because the long-lived provider credential must stay outside the worker. The price_basis is what makes a historical cost derivable later without consulting a catalog that has since changed.",
+      "binding_id": "codex.v1",
+      "binding_digest": "sha256:3c24591084a6b2c1498c6064e870a927d45d16e910254a6335506fc7051a8989",
+      "credential_mode": "harness-native"
+    },
+    {
+      "name": "example-api-route-broker",
+      "model_vendor": "example-vendor",
+      "provider": "example-provider",
+      "model": "example-model-0731",
+      "harness": "codex",
+      "billing_market": "api",
+      "credential_pool": "pool-c",
+      "adapter": "codex",
+      "enabled": true,
+      "price_basis": {
+        "currency": "USD",
+        "per_mtok_input": 0.14,
+        "per_mtok_cache_read": 0.014,
+        "per_mtok_cache_write": 0.14,
+        "per_mtok_output": 0.28,
+        "source": "example vendor list prices, first-party pricing page",
+        "captured_at": "2026-08-13"
+      },
+      "note": "THE OTHER HALF OF THE API SEAM. This route asks for the only credential shape in which a direct-API route could ever launch — an operator-owned broker that alone reads the long-lived credential and issues an opaque, expiring, execution-scoped capability — and it refuses with BROKER_NOT_IMPLEMENTED, because no broker exists on this deployment. That slice is conditional on a committed HIP-1 qualification naming a direct-API bundle as a live qualifier, and at 2026-08-14 none did. The refusal is the feature: there is no fallback path that puts a raw key near a worker.",
+      "binding_id": "codex.v1",
+      "binding_digest": "sha256:3c24591084a6b2c1498c6064e870a927d45d16e910254a6335506fc7051a8989",
+      "credential_mode": "broker"
     }
   ]
 }

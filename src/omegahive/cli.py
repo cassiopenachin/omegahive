@@ -620,8 +620,16 @@ def harness_resolve_cmd(
     try:
         binding_raw = base64.b64decode(req.get("binding_b64", ""), validate=True)
         catalog_raw = base64.b64decode(req.get("catalog_b64", ""), validate=True)
+        # The permission-boundary descriptors ship with the launcher, so unlike the
+        # catalog they are not a host deployment fact — but they travel the same way,
+        # base64 by exact bytes, because the digest the operator pinned in the catalog
+        # is taken over exactly these bytes and a re-encode would break the pin.
+        descriptors_raw = {
+            k: base64.b64decode(v, validate=True)
+            for k, v in (req.get("descriptors_b64") or {}).items()
+        }
     except (ValueError, TypeError) as exc:
-        refuse("REQUEST_MALFORMED", f"binding_b64/catalog_b64 is not valid base64: {exc}")
+        refuse("REQUEST_MALFORMED", f"a base64 field in the request is malformed: {exc}")
         return
 
     kickoff = req.get("kickoff", "")
@@ -629,13 +637,16 @@ def harness_resolve_cmd(
         plan = resolve(
             binding_raw=binding_raw,
             catalog_raw=catalog_raw,
+            descriptors_raw=descriptors_raw,
             binding_ref=req.get("binding_ref", ""),
             expected_task=req.get("expected_task"),
             expected_order_ref=req.get("expected_order_ref"),
             kickoff=kickoff,
             cwd=req.get("cwd", ""),
+            code_root=req.get("code_root", ""),
             session_id=req.get("session_id", ""),
             parent_env=req.get("env") or {},
+            present_paths=frozenset(req.get("present_paths") or []),
         )
     except RefusalError as exc:
         refuse(exc.code, exc.message)
@@ -646,6 +657,115 @@ def harness_resolve_cmd(
         print(preflight_text(doc))
     else:
         print(json.dumps(doc, sort_keys=True))
+
+
+@app.command("harness-materialize")
+def harness_materialize_cmd() -> None:
+    """Render one binding descriptor into the harness-native configuration it declares.
+
+    Reads `{descriptor_b64, extra_dirs}` on stdin; prints the config path, its exact
+    content and digest, the required flags, and every declared probe. This exists so the
+    probe runner and the launcher share ONE renderer: a probe runner that rendered the
+    boundary its own way would test a file no launch ever writes, which is the failure
+    mode the whole descriptor idea is meant to remove.
+    """
+    import base64
+    import sys
+
+    from .harness.bindings import (
+        check_coverage,
+        load_binding_descriptor,
+        materialize,
+    )
+    from .harness.records import RefusalError
+
+    try:
+        req = json.loads(sys.stdin.read())
+        raw = base64.b64decode(req["descriptor_b64"], validate=True)
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        print(json.dumps({"ok": False, "code": "REQUEST_MALFORMED", "message": str(exc)}))
+        raise typer.Exit(code=2) from exc
+
+    try:
+        binding = load_binding_descriptor(raw)
+        check_coverage(binding)
+        mat = materialize(binding, extra_dirs=list(req.get("extra_dirs") or []))
+    except RefusalError as exc:
+        print(json.dumps({"ok": False, "code": exc.code, "message": exc.message}))
+        raise typer.Exit(code=1) from exc
+
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "binding_id": binding.binding_id,
+                "harness": binding.harness,
+                "status": binding.status,
+                "config_path": mat.path,
+                "config_content": mat.content,
+                "config_digest": mat.digest,
+                "required_flags": binding.required_flags,
+                "probes": [
+                    {"policy_class": c.policy_class, **p.model_dump(mode="json")}
+                    for c in binding.classes
+                    for p in c.probes
+                ],
+            },
+            sort_keys=True,
+        )
+    )
+
+
+@app.command("harness-routes")
+def harness_routes_cmd(
+    as_json: bool = typer.Option(False, "--json", help="machine form instead of the report"),
+) -> None:
+    """The refusal report: every catalog route as launchable or refused, and why.
+
+    Reads one JSON request on stdin with keys `catalog_b64`, `descriptors_b64`,
+    `present_paths`, and optionally `env`. Makes NO network call, NO model call, and no
+    change of any kind — in particular it never upgrades a route's state, because a
+    report that could would eventually be run for that.
+
+    Exit code is 0 whether or not routes are refused: a refused route is the correct
+    answer to a question, not an error. It exits 2 only when the request itself or the
+    catalog cannot be read, which is a different thing and must not look alike.
+    """
+    import base64
+    import sys
+
+    from .harness.records import RefusalError
+    from .report.routes import evaluate_routes, routes_to_json, routes_to_text
+
+    raw = sys.stdin.read()
+    try:
+        req = json.loads(raw)
+        if not isinstance(req, dict):
+            raise ValueError("stdin must be a JSON object")
+        catalog_raw = base64.b64decode(req.get("catalog_b64", ""), validate=True)
+        descriptors_raw = {
+            k: base64.b64decode(v, validate=True)
+            for k, v in (req.get("descriptors_b64") or {}).items()
+        }
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        print(f"harness-routes: request is unreadable: {exc}", file=sys.stderr)
+        raise typer.Exit(code=2) from exc
+
+    try:
+        rows = evaluate_routes(
+            catalog_raw=catalog_raw,
+            descriptors_raw=descriptors_raw,
+            parent_env=req.get("env") or {},
+            present_paths=frozenset(req.get("present_paths") or []),
+        )
+    except RefusalError as exc:
+        print(f"harness-routes: {exc.code}: {exc.message}", file=sys.stderr)
+        raise typer.Exit(code=2) from exc
+
+    if as_json:
+        print(routes_to_json(rows))
+    else:
+        print(routes_to_text(rows), end="")
 
 
 @app.command("harness-usage")

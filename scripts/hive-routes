@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# hive-routes [--json]
+#
+# THE REFUSAL REPORT — one command, one answer: which catalog routes can carry a worker
+# right now, under which permission boundary, and for the ones that cannot, exactly why.
+#
+# It is the operator's counterpart to `hive-launch --check`. `--check` answers "would
+# THIS launch work"; this answers "what is launchable at all", without a binding, an
+# order, or a task. Three things it deliberately does not do:
+#
+#   * no network call and no model call — safe on a laptop, in a cron, or into a paste;
+#   * no change of any kind, and in particular it never upgrades a route's state — a
+#     report that could fix what it reports would eventually be run for the fixing;
+#   * no environment value, settings value, or credential is printed. It never receives
+#     them, so this is a property of the data path rather than of a redaction pass.
+#
+# Exit 0 whether or not routes are refused: a refused route is the correct answer to a
+# question, not an error. Exit 2 only when the catalog or the descriptors cannot be read.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/hive-common.sh
+source "$SCRIPT_DIR/hive-common.sh"
+
+AS_JSON=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --json) AS_JSON="--json" ;;
+    -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+    *) echo "hive-routes: unknown argument '$1'" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+command -v jq >/dev/null 2>&1 || die "jq is required"
+
+if [ ! -f "$HIVE_ROUTE_CATALOG" ]; then
+  # An absent catalog is a real deployment state and gets a real answer, not a stack
+  # trace: nothing is launchable, and the operator is told where the file goes.
+  echo "hive-routes: no route catalog at $HIVE_ROUTE_CATALOG" >&2
+  echo "  Nothing is launchable. The catalog is a DEPLOYMENT fact and is never committed;" >&2
+  echo "  create it from schemas/route-catalog.example.json or point HIVE_ROUTE_CATALOG at it." >&2
+  exit 2
+fi
+
+DESCRIPTORS=$(harness_descriptors_json)
+PRESENT=$(harness_present_paths_json "$DESCRIPTORS")
+
+REQ=$(jq -n \
+  --arg c "$(b64 "$HIVE_ROUTE_CATALOG")" \
+  --argjson desc "$DESCRIPTORS" \
+  --argjson present "$PRESENT" \
+  '{catalog_b64:$c, descriptors_b64:$desc, present_paths:$present, env:{}}')
+
+if [ -z "$AS_JSON" ]; then
+  echo "hive-routes: catalog $HIVE_ROUTE_CATALOG"
+  echo "  descriptors: $(harness_bindings_dir)"
+  echo "  digests (paste these into the catalog's binding_digest fields):"
+  for f in "$(harness_bindings_dir)"/*.json; do
+    [ -f "$f" ] || continue
+    printf '    %-24s sha256:%s\n' "$(basename "$f" .json)" "$(sha256_hex < "$f")"
+  done
+  echo
+fi
+
+printf '%s' "$REQ" | hive harness-routes ${AS_JSON:+--json}
