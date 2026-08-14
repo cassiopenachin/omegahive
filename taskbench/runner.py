@@ -359,15 +359,168 @@ def _kill_tree(proc: subprocess.Popen) -> None:
         proc.wait(timeout=15)
 
 
+def _parse_codex_jsonl(stdout_text: str) -> dict[str, Any]:
+    """Codex `exec --json` writes one JSON object per line and totals the turn at the end.
+
+    Shape pinned from a real `codex-cli 0.147.0` run on this host rather than from
+    documentation: `thread.started`, `turn.started`, `item.completed`, then either
+    `turn.completed` carrying `usage` or `turn.failed` carrying `error`.
+
+    **Codex reports no server-resolved model id.** The stream echoes nothing about which model
+    answered; only the session rollout file records the string Codex was configured with, which
+    is a request rather than an identity. That gap is named here instead of being papered over
+    with the launch alias, because a resolved id nobody resolved is precisely the fabrication
+    this record exists to make impossible.
+    """
+    usage: dict[str, Any] | None = None
+    failure: Any = None
+    turns = 0
+    thread_id = None
+    for line in stdout_text.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("type")
+        if kind == "thread.started":
+            thread_id = event.get("thread_id")
+        elif kind == "turn.completed":
+            turns += 1
+            if isinstance(event.get("usage"), dict):
+                usage = event["usage"]
+        elif kind == "turn.failed":
+            turns += 1
+            failure = event.get("error")
+
+    if usage is None and failure is None:
+        return {
+            "available": False,
+            "missing_surface": (
+                "no turn.completed or turn.failed event on stdout (did the command run with "
+                "--json?)"
+            ),
+        }
+    normalised = None
+    if usage:
+        # Codex's own field names, mapped onto the shape every other arm reports, so the
+        # aggregate does not have to special-case one vendor's spelling. The raw block is kept
+        # verbatim beside it.
+        normalised = {
+            "input_tokens": usage.get("input_tokens"),
+            "output_tokens": usage.get("output_tokens"),
+            "cache_read_input_tokens": usage.get("cached_input_tokens"),
+            "cache_creation_input_tokens": usage.get("cache_write_input_tokens"),
+            "reasoning_output_tokens": usage.get("reasoning_output_tokens"),
+        }
+    return {
+        "available": True,
+        "resolved_model": None,
+        "resolved_model_missing_surface": (
+            "codex exec --json reports no server-resolved model id; the launch alias is a "
+            "request, not an identity, and is not promoted to one here"
+        ),
+        "provider": None,
+        "usage": normalised,
+        "usage_raw": usage,
+        "total_cost_usd": None,
+        "cost_missing_surface": (
+            "this arm runs on a ChatGPT subscription; there is no per-run price to report and "
+            "an estimate from a price table would not be one"
+        ),
+        "num_turns": turns,
+        "is_error": failure is not None,
+        "terminal_reason": failure,
+        "thread_id": thread_id,
+        "how_primary_chosen": "codex reports one usage block per turn; the last is the total",
+    }
+
+
+def _parse_reasonix_json(stdout_text: str) -> dict[str, Any]:
+    """Reasonix `-p --output-format json` writes one object; field names are read tolerantly.
+
+    Deliberately forgiving, and safe to be: this arm reaches DeepSeek through OpenRouter, so
+    its *scored* accounting comes from the gateway receipts, not from here. What this adds is
+    the harness's own view — turn count, its token totals — which is useful for the matched
+    comparison and load-bearing for nothing. A field it cannot find is reported absent.
+    """
+    envelope = None
+    for line in reversed(stdout_text.splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                candidate = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict):
+                envelope = candidate
+                break
+    if envelope is None:
+        return {
+            "available": False,
+            "missing_surface": (
+                "no JSON object on stdout (did the command run with --output-format json?)"
+            ),
+        }
+    usage = None
+    for key in ("usage", "tokens", "metrics"):
+        if isinstance(envelope.get(key), dict):
+            usage = envelope[key]
+            break
+
+    def pick(*names: str) -> Any:
+        for name in names:
+            if usage and name in usage:
+                return usage[name]
+        return None
+
+    return {
+        "available": True,
+        "resolved_model": envelope.get("model") or envelope.get("resolved_model"),
+        "provider": envelope.get("provider"),
+        "usage": {
+            "input_tokens": pick("input_tokens", "prompt_tokens", "prompt"),
+            "output_tokens": pick("output_tokens", "completion_tokens", "completion"),
+            "cache_read_input_tokens": pick("cache_read_input_tokens", "cache_hit_tokens",
+                                            "cached_tokens"),
+            "cache_creation_input_tokens": pick("cache_creation_input_tokens",
+                                                "cache_write_tokens"),
+        } if usage else None,
+        "usage_raw": usage,
+        "total_cost_usd": None,
+        "cost_missing_surface": (
+            "Reasonix does not report OpenRouter's server cost; this arm's spend comes from the "
+            "gateway receipts, and a harness-local figure would not be one"
+        ),
+        "num_turns": envelope.get("turns") or envelope.get("steps"),
+        "is_error": bool(envelope.get("error")),
+        "terminal_reason": envelope.get("error"),
+        "how_primary_chosen": "the last JSON object on stdout is Reasonix's run summary",
+    }
+
+
 def parse_result_envelope(kind: str | None, stdout_text: str) -> dict[str, Any]:
     """Read the harness's own end-of-run report, when it writes one.
 
     Returns `{"available": False, "missing_surface": ...}` rather than guessing. Nothing here
     infers: the resolved model id, the token counts and the error status are whatever the
     harness said they were.
+
+    Which arm's numbers come from where, because it is not uniform and the difference matters:
+    Haiku and Luna run on subscriptions and their token counts come from here; the three
+    OpenRouter arms are scored on gateway receipts instead, and their envelopes are corroboration
+    rather than evidence.
     """
     if kind is None:
         return {"available": False, "missing_surface": "launch config declared no result_envelope"}
+    if kind == "codex-jsonl":
+        return _parse_codex_jsonl(stdout_text)
+    if kind == "reasonix-json":
+        return _parse_reasonix_json(stdout_text)
     if kind != "claude-code-json":
         return {"available": False, "missing_surface": f"unknown result_envelope kind {kind!r}"}
 
