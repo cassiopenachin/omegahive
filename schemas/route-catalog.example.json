@@ -15,7 +15,7 @@
       "enabled": true,
       "note": "the incumbent worker tier; no per-token list price applies to a subscription route, so price_basis is absent rather than zero",
       "binding_id": "claude-code.v1",
-      "binding_digest": "sha256:8ef3953d41aa3ff87dea8940fd3dd6ac46ef2ff78a65f209ef6b42b5600ca61f",
+      "binding_digest": "sha256:44a9584cb6e016bb88463c6737af1b6eccda866d44f6849e9ce68ba92f9750bc",
       "credential_mode": "harness-native"
     },
     {
@@ -30,7 +30,7 @@
       "enabled": true,
       "note": "HIP-1 W2 cheap-tier candidate, subscription-billed",
       "binding_id": "claude-code.v1",
-      "binding_digest": "sha256:8ef3953d41aa3ff87dea8940fd3dd6ac46ef2ff78a65f209ef6b42b5600ca61f",
+      "binding_digest": "sha256:44a9584cb6e016bb88463c6737af1b6eccda866d44f6849e9ce68ba92f9750bc",
       "credential_mode": "harness-native"
     },
     {

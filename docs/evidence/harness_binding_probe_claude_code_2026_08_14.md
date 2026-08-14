@@ -107,10 +107,30 @@ Two evasions of the prefix form — an absolute path and an interpreter — are 
 substring form at zero added machinery. The engine also splits on `&&` and evaluates each
 sub-command, which is why the compound case is caught by both.
 
-The cost of the substring form is deliberate over-match: a command that merely *mentions*
-a denied token (`grep curl notes.md`) is refused too. That failure is loud and
-self-correcting — the worker reports a denied command — whereas the one it replaces is
-silent.
+### The cost of the substring form, paid within minutes
+
+The over-match is not hypothetical and it is not small. A substring rule denies any shell
+command whose **text** contains the token, not only one that invokes it — so
+`grep -rn curl docs/` is refused, and so is a `git commit -m` whose message mentions the
+token.
+
+That happened here. After adding the multiplexer-destruction rule to the workspace's
+`.claude/settings.json`, the commit introducing it was refused, because the phrase was in
+the commit message. One rule, one minute, one live false positive.
+
+The disposition, and why it differs by file:
+
+- **The worker boundary (this descriptor) keeps the substring form.** A worker that needs
+  a denied token inside a shell command is nearly always doing the thing the class exists
+  to stop; the refusal is loud and self-correcting; and the `Write` tool is untouched, so
+  prose about an incident is unaffected.
+- **The workspace `.claude/settings.json` keeps the prefix form.** That file also binds
+  the sessions that write the incident reports, and a boundary that stops people
+  describing the incident is the wrong trade there.
+
+Reversing the trade in either direction is a one-line edit per rule, followed by a re-pin
+of every route naming the descriptor — which is the friction the digest pin exists to
+create.
 
 ## What this record does NOT establish
 
