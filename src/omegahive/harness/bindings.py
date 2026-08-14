@@ -357,6 +357,17 @@ def check_coverage(binding: HarnessBinding) -> None:
 def check_command_mode(binding: HarnessBinding, mode: str | None) -> None:
     """Refuse an unrecognized or unsafe command mode before anything is created."""
     if mode is None:
+        # A descriptor that names a mode flag and never emits it would skip this whole
+        # check silently, which is the quiet way to end up with an unchecked mode. The
+        # two coherent states are "no mode flag at all" and "a mode flag with a value";
+        # anything between them is a descriptor defect, not a default.
+        if binding.command_mode_flag is not None:
+            raise RefusalError(
+                "HARNESS_MODE_UNKNOWN",
+                f"{binding.binding_id}: declares command_mode_flag "
+                f"{binding.command_mode_flag!r} and no required flag supplies its value, "
+                "so the mode this launch would run under is unknown and unchecked",
+            )
         return
     if mode not in binding.known_command_modes:
         raise RefusalError(

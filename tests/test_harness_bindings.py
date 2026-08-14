@@ -688,3 +688,21 @@ def test_no_shipped_descriptor_claims_proven_without_a_probe_record_on_disk():
             f"{name} claims proven and its probe record {b.verification.probe_record} "
             "does not exist"
         )
+
+
+def test_a_mode_flag_with_no_value_refuses_rather_than_skipping_the_check():
+    """A descriptor that names a command-mode flag and never emits it would slip past
+    the mode check entirely — an unchecked mode wearing a checked one's clothes."""
+    over = {"command_mode_flag": "--permission-mode",
+            "required_flags": [["--setting-sources", "project,local"]]}
+    with pytest.raises(RefusalError) as exc:
+        plan(routes=[route(**pins(**over))], descriptors=descriptors_map(**over))
+    assert exc.value.code == "HARNESS_MODE_UNKNOWN"
+    assert "unknown and unchecked" in exc.value.message
+
+
+def test_a_descriptor_with_no_mode_flag_at_all_is_fine():
+    """The other coherent state: a harness whose boundary is not mode-shaped."""
+    over = {"command_mode_flag": None}
+    p = plan(routes=[route(**pins(**over))], descriptors=descriptors_map(**over))
+    assert p.launchable is True
