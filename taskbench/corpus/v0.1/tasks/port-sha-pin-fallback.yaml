@@ -1,0 +1,88 @@
+# taskbench corpus v0.1 — manifest for port-sha-pin-fallback. Frozen; edits increment the corpus version.
+id: port-sha-pin-fallback
+project: omegahive
+run: omegahive
+title: port_library_sha pin — resolver chain instead of git dependency
+task_class: bounded
+work_shape: python-service
+bounded_because: The order specifies the three resolver branches in priority order, the invariant (never
+  empty), the validation rule (empty stays refused), the compose passthrough, and one test per branch.
+  Done is a green suite in-container and on host. There is nothing to decide.
+workspace_repo: hive-workspace
+workspace_inputs:
+- path: projects/omegahive/orders/2026-07-10-port-sha-pin-fallback.md
+  sha: 7a535bf7b80d624df184bf4d873098b77a4dbb71
+  role: order
+- path: projects/omegahive/WORKER.md
+  sha: 689dc24f7bba6de9849d5e01a8d827e1c640b513
+  role: context
+code:
+  repo: cassiopenachin/omegahive
+  pre_task_base_sha: a383c4cb2afa75f3133d762c834f9ff60b458682
+  local_path: ~/src/SNET/omegahive
+expected_output_kinds:
+- code_patch
+- tests
+required_artefacts:
+- qual/record.py
+- tests/test_qual_record.py
+environment_needs:
+- uv on PATH; a reachable Postgres for the suite.
+verifiers:
+- id: pytest
+  argv:
+  - uv
+  - run
+  - --frozen
+  - pytest
+  - -q
+  timeout_s: 2400
+  description: the host suite green
+- id: resolver-property
+  argv:
+  - uv
+  - run
+  - --frozen
+  - python
+  - '{corpus}/verifiers/port_sha_resolver_property.py'
+  timeout_s: 900
+  description: 'the order''s property against the candidate''s own code: the pin resolves non-empty
+    with a repo present, with only the environment variable, and with neither; and an empty pin still
+    fails validation'
+checklist:
+- id: compose-passthrough
+  text: The environment variable is passed through on the shared compose service anchor with an empty
+    default — recorded, not required.
+- id: validation-not-weakened
+  text: 'Record validation is neither weakened nor duplicated: empty is still refused.'
+- id: in-container-green
+  text: The advertised in-container health check passes in a fresh deployment.
+  applicable: operator
+- id: result-report
+  text: A result report exists under the project's reports directory carrying What shipped / How verified
+    / To operate / Reflection, and its claims match what the attempt actually did.
+  applicable: offline
+non_replayable_legs:
+- leg: '`docker compose run --rm test` fully green on the deployment host.'
+  reason: Needs a built image and a running compose stack for the candidate's own tree. The runner does
+    not provision infrastructure for a candidate; the host suite is run instead and the in-container
+    leg is the operator's.
+  executed_by: operator
+- leg: Announce the result on the spine per WORKER.md.
+  reason: A spine emit, which this instrument's own scope forbids. The report the order asks for IS
+    written and graded — only the announcement is out of reach.
+  executed_by: not-executed
+stop_lines:
+- id: no-git-in-image
+  text: No git binary added to the image; no .git copied into it.
+- id: no-weakened-validation
+  text: Empty stays refused.
+- id: nothing-beyond-the-pin
+  text: Nothing beyond this pin.
+rubric: rubrics/port-sha-pin-fallback.md
+grading: grading/port-sha-pin-fallback.yaml
+required_changes:
+- qual/record.py
+- tests/test_qual_record.py
+writable_workspace_paths:
+- projects/omegahive/reports/*

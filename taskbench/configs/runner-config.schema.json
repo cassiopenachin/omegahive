@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Passed to `taskbench run --config`. Credentials never appear here: they reach the agent and the reviewer through the operator's environment, named by `env_passthrough`, and taskbench neither reads nor stores them.",
+  "properties": {
+    "agent": {
+      "additionalProperties": false,
+      "description": "How to launch a candidate. Supplied at launch; never inferred, never a shell string.\n\n`labels` is the execution identity the record pins. The runner does not resolve it \u2014\nit records exactly what the launch supplied, because a worker guessing its own model id\nis precisely the fact HIP-1 M2 (`worker-harness`) exists to make real.",
+      "properties": {
+        "argv": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Argv",
+          "type": "array"
+        },
+        "cwd": {
+          "default": "code",
+          "title": "Cwd",
+          "type": "string"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Env",
+          "type": "object"
+        },
+        "env_passthrough": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Env Passthrough",
+          "type": "array"
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Labels",
+          "type": "object"
+        },
+        "prompt_mode": {
+          "default": "argv",
+          "title": "Prompt Mode",
+          "type": "string"
+        },
+        "timeout_s": {
+          "default": 7200,
+          "title": "Timeout S",
+          "type": "integer"
+        },
+        "transcript_jsonl": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Transcript Jsonl"
+        },
+        "usage_json": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Usage Json"
+        }
+      },
+      "required": [
+        "argv",
+        "labels"
+      ],
+      "title": "AgentSpec",
+      "type": "object"
+    },
+    "reviewer": {
+      "additionalProperties": false,
+      "description": "How to launch the blinded reviewer, and how to confine it.",
+      "properties": {
+        "argv": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Argv",
+          "type": "array"
+        },
+        "env_passthrough": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Env Passthrough",
+          "type": "array"
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Labels",
+          "type": "object"
+        },
+        "prompt_mode": {
+          "default": "argv",
+          "title": "Prompt Mode",
+          "type": "string"
+        },
+        "sandbox_argv": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Sandbox Argv",
+          "type": "array"
+        },
+        "sandbox_ro_binds": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Sandbox Ro Binds",
+          "type": "array"
+        },
+        "timeout_s": {
+          "default": 3600,
+          "title": "Timeout S",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "argv",
+        "labels"
+      ],
+      "title": "ReviewerSpec",
+      "type": "object"
+    },
+    "source_repos": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "repo identifier \u2192 local clone path, for the materializer.",
+      "type": "object"
+    },
+    "workspace_repo_path": {
+      "description": "Local path to the workspace clone the manifests pin against.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "agent",
+    "reviewer"
+  ],
+  "title": "taskbench runner config",
+  "type": "object"
+}

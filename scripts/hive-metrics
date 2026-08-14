@@ -19,6 +19,16 @@
 # The artifact therefore reports the two clocks in separate tables, plus a third
 # for the genuinely mixed spans, and every summary row carries its clock label.
 #
+# REVISION (decisions.md 2026-08-01). A task's `task.result_posted` is the CURRENT
+# REVISION of its result, not a one-shot event: fired at the first complete result,
+# re-fired with a corrected ref whenever a review revision changes what the report
+# says. This splits accept→result into two genuinely different spans, and BOTH are
+# derived here: `accept→first result` (worker clock — the production span a
+# revision never moves, and the only one hive-score scores as effort) and
+# `accept→last result` (mixed clock — the full cycle including any revision
+# rework, portfolio reality, never scored as effort). `hive-close` always certifies
+# the LAST ref, unchanged by this split — see its own header comment.
+#
 # READ-ONLY OVER THE SPINE, ALWAYS. This tool issues no events and holds no write
 # path to the spine: it shells out to `omegahive report <run> --json` and nothing
 # else. What it does write, it also records: the two artifacts are committed and
@@ -168,6 +178,27 @@ def blocked($result; $terminal):
 # status unconditionally: a task that really was delivered and reviewed should be
 # measured as delivered, not relabelled by a later whole-plan abort. Recorded in
 # the artifact's Method section.
+# Blocked time strictly up to a cutoff (used for the FIRST-result production
+# span only): a block that OPENS after the cutoff never counts, whether or not
+# it ever closes — review-cycle blocking after the first result belongs to the
+# review-outcome field's territory, and folding it into the effort span is
+# exactly what retro 3 Verdict 4 forbids. A block still open AT the cutoff
+# charges up to the cutoff; one that opens before and closes after is capped at
+# the cutoff rather than counted in full. Null cutoff (no result yet) -> null.
+def blocked_upto($cutoff):
+  if $cutoff == null then null
+  else
+    ( reduce .[] as $e ({open: null, total: 0};
+        if $e.event_type == "task.blocked" and $e.logical_ts <= $cutoff then
+          (if .open == null then .open = $e.logical_ts else . end)
+        elif $e.event_type == "task.unblocked" and .open != null then
+          (if $e.logical_ts <= $cutoff
+             then {open: null, total: (.total + $e.logical_ts - .open)}
+             else {open: null, total: (.total + $cutoff - .open)} end)
+        else . end) ) as $r
+    | $r.total + (if $r.open != null then $cutoff - $r.open else 0 end)
+  end;
+
 def terminal($created; $cancel_ts):
   ( reduce .[] as $e (null;
       if $e.event_type == "task.status_override" and $e.payload.status == "done"
@@ -198,10 +229,12 @@ def terminal($created; $cancel_ts):
   | select($close != null)                       # closed tasks only — work in flight is not measured
   | ($slice | first_ts("task.assigned"))      as $assigned
   | ($slice | first_ts("task.accepted"))      as $accepted
+  | ($slice | first_ts("task.result_posted")) as $first_result
   | ($slice | last_ts("task.result_posted"))  as $result
   | ($slice | last_ts("review.passed"))       as $review
   | ($close.ts)                               as $closed
   | ($slice | blocked($result; $closed))      as $blk
+  | ($slice | blocked_upto($first_result))    as $blk_first
   | ( [ $slice[] | select(.event_type == "task.accepted") | .actor.id ] | last ) as $acceptor
   | ( [ $slice[] | select(.event_type == "task.reassigned") | .payload.to ] | last ) as $reassigned_to
   | ( [ $slice[] | select(.event_type == "task.assigned") | .payload.worker ] | last ) as $assignee
@@ -224,9 +257,15 @@ def terminal($created; $cancel_ts):
       blocked_open:          $blk.open,
       reassignments:         ( [ $slice[] | select(.event_type == "task.reassigned") ] | length ),
 
-      # worker clock
-      accepted_to_result_net_s: ( nn($accepted; $result) as $g
-                                  | if $g == null then null else $g - $blk.total end ),
+      # worker clock — the PRODUCTION span, to the FIRST result_posted (decisions.md
+      # 2026-08-01 revision doctrine / retro 3 Verdict 4). A revision fired any time
+      # after the first result never moves this: it is what prices producing the
+      # result, not the review cycle that follows. Net of blocked time up to that
+      # first firing only (blocked_upto), never the task's full blocked total.
+      accepted_to_first_result_s:     nn($accepted; $first_result),
+      accepted_to_first_result_net_s: ( nn($accepted; $first_result) as $g
+                                        | if $g == null then null else $g - $blk_first end ),
+      blocked_before_first_result_s:  (if $accepted == null then null else $blk_first end),
       questions: ( [ $slice[] | select(.event_type == "task.reported")
                      | select(.payload.kind == "question") ] | length ),
       # Sum of coalesced_count, NOT the event count: the gateway folds a burst of
@@ -241,10 +280,12 @@ def terminal($created; $cancel_ts):
                              | select(.payload.original_actor_role == "worker")
                              | (.payload.coalesced_count // 1) ] | add // 0 ),
 
-      # mixed
-      assigned_to_accepted_s: nn($assigned; $accepted),
-      created_to_accepted_s:  nn($created; $accepted),
-      accepted_to_result_s:   nn($accepted; $result),
+      # mixed — accept to the LAST result_posted (decisions.md 2026-08-01): the full
+      # cycle including any review-revision rework, gross. Portfolio reality for the
+      # automation lane, never worker-performance signal — never score this as effort.
+      assigned_to_accepted_s:   nn($assigned; $accepted),
+      created_to_accepted_s:    nn($created; $accepted),
+      accepted_to_last_result_s: nn($accepted; $result),
 
       review_failed: ( [ $slice[] | select(.event_type == "review.failed") ] | length )
     }
@@ -296,7 +337,8 @@ fi
 read -r -d '' RENDER_CSV <<'JQ' || true
 [ "task","shape","worker","final_status","created","closed",
   "created_to_assigned_s","assigned_to_accepted_s","created_to_accepted_s",
-  "accepted_to_result_s","blocked_s","accepted_to_result_net_s",
+  "accepted_to_first_result_s","blocked_before_first_result_s","accepted_to_first_result_net_s",
+  "accepted_to_last_result_s","blocked_s",
   "result_to_review_s","review_to_close_s","result_to_close_s",
   "questions","blocked_episodes","rejections","rejections_worker",
   "reassignments","review_failed" ] as $h
@@ -305,7 +347,8 @@ read -r -d '' RENDER_CSV <<'JQ' || true
         | [ $t.task, $t.shape, $t.worker, $t.final_status,
             ($t.created_ts | todate), ($t.closed_ts | todate),
             $t.created_to_assigned_s, $t.assigned_to_accepted_s, $t.created_to_accepted_s,
-            $t.accepted_to_result_s, $t.blocked_s, $t.accepted_to_result_net_s,
+            $t.accepted_to_first_result_s, $t.blocked_before_first_result_s, $t.accepted_to_first_result_net_s,
+            $t.accepted_to_last_result_s, $t.blocked_s,
             $t.result_to_review_s, $t.review_to_close_s, $t.result_to_close_s,
             $t.questions, $t.blocked_episodes, $t.rejections, $t.rejections_worker,
             $t.reassignments, $t.review_failed ]
@@ -385,24 +428,35 @@ def countstat($label; $clock; $rows; $field):
 "",
 "## Worker clock — the session's own time",
 "",
-"| task | worker | accept→result (net of blocked) | questions | rejections | review.failed |",
+"`accept→first result` is the PRODUCTION span (decisions.md 2026-08-01 revision",
+"doctrine): accept to the FIRST `task.result_posted`, net of blocked time up to",
+"that firing only. A later revision — a re-fired `result_posted` with a corrected",
+"ref, after review — never moves this column; it is what prices producing the",
+"result, not the review cycle that follows (retro 3 Verdict 4). See the Mixed",
+"clock table below for the full-cycle span including any revision rework.",
+"",
+"| task | worker | accept→first result (net of blocked) | questions | rejections | review.failed |",
 "|---|---|---|---|---|---|"
 ]
-+ [ $worked[] | "| \(.task | cell) | `\(.worker | cell)` | \(.accepted_to_result_net_s | d) | "
++ [ $worked[] | "| \(.task | cell) | `\(.worker | cell)` | \(.accepted_to_first_result_net_s | d) | "
     + "\(.questions) | \(.rejections)\(if .rejections != .rejections_worker then " (\(.rejections_worker) worker)" else "" end) | \(.review_failed) |" ]
 + [
 "",
 "## Mixed clock — spans with two owners",
 "",
 "`launch→accept` is the session's start-up plus whatever the operator did between",
-"emitting the assignment and the session reading its kickoff. `accept→result` is the",
-"worker's span *including* any answer wait inside it — which is why the worker-clock",
-"table above reports the net figure instead.",
+"emitting the assignment and the session reading its kickoff. `accept→last result`",
+"is the FULL CYCLE, gross: accept to the LAST `task.result_posted`, including any",
+"answer wait *and* any review-revision rework inside it — portfolio reality for",
+"the automation lane, **never worker-performance signal**, and never scored as",
+"effort (that is the worker-clock table's `accept→first result` above). A task",
+"whose result was never revised has `accept→last result` == `accept→first result`",
+"by construction, since there is only one `result_posted` to measure either way.",
 "",
-"| task | create→accept | launch→accept | accept→result (gross) |",
+"| task | create→accept | launch→accept | accept→last result (gross, full cycle) |",
 "|---|---|---|---|"
 ]
-+ [ $worked[] | "| \(.task | cell) | \(.created_to_accepted_s | d) | \(.assigned_to_accepted_s | d) | \(.accepted_to_result_s | d) |" ]
++ [ $worked[] | "| \(.task | cell) | \(.created_to_accepted_s | d) | \(.assigned_to_accepted_s | d) | \(.accepted_to_last_result_s | d) |" ]
 + [
 "",
 "## Summary",
@@ -418,14 +472,14 @@ stat("answer wait";    "operator"; $worked; "blocked_s"),
 stat("result→review";  "operator"; $worked; "result_to_review_s"),
 stat("review→close";   "operator"; $worked; "review_to_close_s"),
 stat("result→close";   "operator"; $worked; "result_to_close_s"),
-stat("accept→result (net)"; "worker"; $worked; "accepted_to_result_net_s"),
+stat("accept→first result (net, production)"; "worker"; $worked; "accepted_to_first_result_net_s"),
 countstat("questions"; "worker"; $worked; "questions"),
 countstat("rejections"; "worker"; $worked; "rejections"),
 countstat("review.failed"; "operator"; $worked; "review_failed"),
 countstat("reassignments"; "operator"; $worked; "reassignments"),
 stat("create→accept";  "mixed"; $worked; "created_to_accepted_s"),
 stat("launch→accept";  "mixed"; $worked; "assigned_to_accepted_s"),
-stat("accept→result (gross)"; "mixed"; $worked; "accepted_to_result_s")
+stat("accept→last result (gross, full cycle)"; "mixed"; $worked; "accepted_to_last_result_s")
 ]
 + (if ($retired | length) == 0 then [] else [
 "",
@@ -476,12 +530,33 @@ stat("accept→result (gross)"; "mixed"; $worked; "accepted_to_result_s")
 "  and measures nothing about the operator. The operator's real review latency is",
 "  `result→review`. A large `review→close` means the two halves were emitted by hand,",
 "  separately — worth noticing for that reason alone.",
-"- **Elapsed, not effort.** `accept→result` is wall-clock elapsed between two emits.",
-"  A session that idles overnight and one that works straight through look the same.",
-"  It is the best available proxy for worker effort and it is only a proxy.",
+"- **Elapsed, not effort.** `accept→first result` is wall-clock elapsed between two",
+"  emits. A session that idles overnight and one that works straight through look",
+"  the same. It is the best available proxy for worker effort and it is only a proxy.",
+"- **Revision.** `task.result_posted` may fire more than once per task — it marks",
+"  the CURRENT REVISION of the result, re-fired with a corrected ref whenever a",
+"  review revision changes what the report says (decisions.md 2026-08-01; WORKER.md",
+"  \"Finishing\"). The production span (`accept→first result`, worker clock) is",
+"  measured to the FIRST firing and a later revision never moves it; the full-cycle",
+"  span (`accept→last result`, mixed clock) is measured to the LAST and grows (or",
+"  holds) with every revision. `hive-close`/`review.passed` always certify the LAST",
+"  ref, same as before this distinction existed.",
+"- **Calibration boundary.** Every task closed before this two-span derivation",
+"  shipped has exactly one `result_posted` (revision was not yet a firing a worker",
+"  could make), so its production and full-cycle spans are numerically identical —",
+"  not backfilled, just the same single measurement read into both columns. A trend",
+"  line spanning that boundary is comparing the same number on both sides for every",
+"  pre-existing row; only a genuine revision after the ship date pulls the two",
+"  spans apart, so watch for that divergence starting to appear, not for a level",
+"  shift at the boundary itself.",
 "- **Answer wait** pairs each `task.blocked` with the next `task.unblocked`. A block",
 "  never closed by an unblock is charged to the result (or the close) and marked",
-"  *unclosed* — worth reading as a protocol miss as much as a duration.",
+"  *unclosed* — worth reading as a protocol miss as much as a duration. The",
+"  production span's own blocked figure (`blocked_before_first_result_s`, CSV only)",
+"  is narrower: only blocked time up to the first result counts against it, so a",
+"  block opened during review-revision rework is excluded from the production span",
+"  entirely rather than subtracted from it (folding it in would double-count what",
+"  the review-outcome field already prices).",
 "- **Attribution.** `worker` is the last reassignment target, else the last accepting",
 "  actor. For a reassigned task the whole span is attributed to the final worker; the",
 "  reassignment count is the flag that the span is not one session's.",

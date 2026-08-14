@@ -1,0 +1,111 @@
+{
+  "final": null,
+  "first_pass": {
+    "deterministic": {
+      "checks": [
+        {
+          "detail": "ok",
+          "exit_code": 0,
+          "id": "bash-syntax",
+          "output_tail": "",
+          "passed": true
+        },
+        {
+          "detail": "ok",
+          "exit_code": 0,
+          "id": "shellcheck",
+          "output_tail": "",
+          "passed": true
+        }
+      ],
+      "excluded_legs": [
+        {
+          "executed_by": "operator",
+          "leg": "`scripts/hive-tooling-drill.sh` green, including this task's new cases.",
+          "reason": "The loop drill emits scratch spine events, which this instrument's own scope forbids, and it drives tmux. At this task's baseline the drill predates the tmux isolation that the task itself introduces, so running it necessarily creates sessions on the operator's live tmux server \u2014 the server holding every worker pane. An offline evaluation instrument must not carry that blast radius. The operator runs the drill against a green cell."
+        },
+        {
+          "executed_by": "not-executed",
+          "leg": "Announce the result on the spine per WORKER.md.",
+          "reason": "A spine emit, which this instrument's own scope forbids. The report the order asks for IS written and graded \u2014 only the announcement is out of reach."
+        }
+      ],
+      "missing_artefacts": [],
+      "passed": true,
+      "stop_line_violations": [],
+      "untouched_required_changes": []
+    },
+    "passed": true,
+    "review": {
+      "defect_count": 0,
+      "passed": true,
+      "probe_ok": true,
+      "ran": true,
+      "reason": "",
+      "verdict": {
+        "cell_id": "cell-ec9db4b378",
+        "dod_legs": [
+          {
+            "leg": "repro-evidence",
+            "met": "yes",
+            "note": "Report 'How verified' names the reproduced collision (`tmux new-window -t hive:4` -> `create window failed: index 4 in use`, exit 1, on tmux 3.5a against a private TMUX_TMPDIR server with a stubbed stack) and the state it stranded (clones present, wrapper present, 0 windows, no guidance -- the archaeology case), then shows the fix working on the same fixture: worker window at index 5 above the highest existing index, windows 0/1/3/4 unmoved, gap at 2 untouched, and the full HALF-LAUNCHED block on a forced pane failure. The report also records honestly that the order's 2026-07-27 claim (session-only targeting fails identically) did NOT reproduce on tmux 3.5a, and explains why that does not change the fix -- disclosure rather than smoothing over, which strengthens rather than weakens this leg."
+          },
+          {
+            "leg": "runbook-half-launch",
+            "met": "yes",
+            "note": "artefacts/workspace.patch adds RUNBOOK.md 'Half-launched task (the board owns it, no pane exists)' under dead-worker recovery: recognition (non-zero exit plus `hive-launch: HALF-LAUNCHED <task>`, board shows assigned, no window named for it, clones/wrapper/kickoff.txt already in place), why re-running is wrong ('Do not re-run hive-launch' -- the task is owned so it refuses, and relaunch is not recovery; explicitly 'This is not a dead worker'), the by-hand finish (filled `tmux new-window -a -t 'hive:{end}' ...` plus the prefix-c variant), and the abandon path via task.reassigned. Matches the launcher's actual output strings."
+          },
+          {
+            "leg": "name-collision-refusal",
+            "met": "yes",
+            "note": "hive-launch:140-151 keeps the pre-flight name guard and upgrades it from a one-line die to a refusal that names the recovery path, distinguishing a live/dead worker (kill the pane, then task.reassigned per RUNBOOK) from debris (kill the window, re-run), with the literal `tmux kill-window -t '<session>:<task>'`. It exits 1 before any provisioning or board write, so no second window and no state. Drill (iv) at hive-tooling-drill.sh:429-438 asserts both message contents plus no second window, nothing provisioned, no board state."
+          },
+          {
+            "leg": "result-report",
+            "met": "yes",
+            "note": "projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md carries What shipped / How verified / To operate / Reflection. Claims align with the diff: `-a -t \"$SESSION:{end}\"` (hive-launch:311), half_launch printer routing the kickoff-file write, new-window, new-session and the post-hoc window-exists assertion (hive-launch:247-322), kickoff.txt, the upgraded name refusal, the drill section, and the TMUX_TMPDIR isolation. 'To operate' states the ordering choice (seed then pane, kept) with its rationale (task.accepted is only legal after task.assigned lands; a pane opened first burns a real session on a rejected emit) and confirms every pre-existing refusal path is untouched -- as the order requires. The report is explicit that the drill itself was NOT run and does not claim it. Two numeric wobbles: the report says the new drill section has '22 assertions' and 'two of those 22 are board reads', where the artefact has 24 assertions and 4 bstatus reads (hive-tooling-drill.sh:376-469). This understates coverage rather than overstating it and changes nothing an operator would act on, so it is a precision nit, not a defect."
+          },
+          {
+            "leg": "bash-syntax",
+            "met": "yes",
+            "note": "verifier/bash-syntax.log is empty -- the launcher parses."
+          },
+          {
+            "leg": "shellcheck",
+            "met": "yes",
+            "note": "verifier/shellcheck.log is empty -- shellcheck -x clean on the loop scripts."
+          },
+          {
+            "leg": "no-event-model",
+            "met": "yes",
+            "note": "Stop-line not crossed. The hive-launch diff touches only the pane-name refusal message, a kickoff-file write, the half_launch printer, and the tmux invocation. The emit block (hive-launch:199-220), the board_status/adopt decision table (:113-130) and every guard are byte-identical to the baseline."
+          },
+          {
+            "leg": "no-registry-file",
+            "met": "yes",
+            "note": "Stop-line not crossed. The pane name remains the registry, enforced by the same `grep -qxF` on `#{window_name}` (hive-launch:140-141). The new ~/work/<worker>/kickoff.txt is per-worker prompt text for manual completion, not a task->pane index, and nothing reads it back to resolve ownership."
+          },
+          {
+            "leg": "no-tmux-conf-assumptions",
+            "met": "yes",
+            "note": "Stop-line not crossed. `new-window -a -t \"$SESSION:{end}\"` allocates relative to whatever indices the session has -- {end} is the highest-numbered window, so the appended slot is free by construction regardless of base-index or renumber-windows. The drill proves it by launching under `base-index 11` + `renumber-windows on` (hive-tooling-drill.sh:415-424), and flips those options only on its own private TMUX_TMPDIR server."
+          },
+          {
+            "leg": "drill-green-including-new-cases",
+            "met": "not-applicable",
+            "note": "Out of scope per rubric -- the drill emits scratch spine events and drives tmux. The attempt does not claim to have run it; the report states plainly that it must be run on the stack host before merge."
+          },
+          {
+            "leg": "announce-on-spine",
+            "met": "not-applicable",
+            "note": "Out of scope per rubric -- a spine emit. The report the order asks for is written and filed; only the announcement is out of reach, and the attempt does not claim it."
+          }
+        ],
+        "verdict": "pass",
+        "would_have_shipped_defects": []
+      }
+    }
+  },
+  "remediated": false,
+  "remediation_reason": "first pass was green; no repair opportunity was used"
+}

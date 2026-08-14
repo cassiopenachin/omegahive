@@ -1,0 +1,58 @@
+{
+  "cell_id": "cell-3d91d59a0e",
+  "dod_legs": [
+    {
+      "leg": "repro-evidence",
+      "met": "no",
+      "note": "No result report is present in the patch or artefacts, so nothing names the collision reproduced, the state it stranded, or the allocation working afterwards; the order also asked for the seed-then-pane ordering rationale to be stated in 'To operate' and it appears only as a source comment (hive-launch:239-248). The reproduce step itself runs through the drill, whose execution the rubric puts out of scope, so this is scored as a missing write-up rather than a second independent blocking defect."
+    },
+    {
+      "leg": "runbook-half-launch",
+      "met": "no",
+      "note": "Not attempted. The diff contains no documentation change; the half-launch case exists only as launcher stderr output."
+    },
+    {
+      "leg": "name-collision-refusal",
+      "met": "yes",
+      "note": "hive-launch:139-149 refuses before provisioning or seeding when a window of the task's name is open, states that the name is the registry, forbids a second window, and names the recovery path (kill pane, fresh worker id, task.reassigned, RUNBOOK 'Dead worker recovery')."
+    },
+    {
+      "leg": "bash-syntax",
+      "met": "yes",
+      "note": "verifier/bash-syntax.log is empty (clean)."
+    },
+    {
+      "leg": "shellcheck",
+      "met": "yes",
+      "note": "verifier/shellcheck.log is empty (clean)."
+    },
+    {
+      "leg": "no-event-model",
+      "met": "yes",
+      "note": "Stop-line held: no event-model, board-guard or adopt-logic change; the half_launch print only reports which spine events were already seeded."
+    },
+    {
+      "leg": "no-registry-file",
+      "met": "yes",
+      "note": "Stop-line held: no registry file introduced; window name remains the registry, restated in both new messages."
+    },
+    {
+      "leg": "no-tmux-conf-assumptions",
+      "met": "yes",
+      "note": "Stop-line held: allocation is `new-window -a -t <session>:{end}` \u2014 no index is ever derived or named, so base-index/renumber-windows settings are irrelevant."
+    },
+    {
+      "leg": "drill-green",
+      "met": "not-applicable",
+      "note": "Out of scope per rubric. For the record the drill does gain both cases (occupied-index allocation with a fixture-validity probe, and a half-launch case driven by a PATH-shadowed tmux) and both scripts parse; no claim of a green run is made by the attempt."
+    }
+  ],
+  "verdict": "fail",
+  "would_have_shipped_defects": [
+    {
+      "evidence": "candidate.patch touches only scripts/hive-launch and scripts/hive-tooling-drill.sh (candidate.patch:1, candidate.patch:104); no doc hunk anywhere in the diff. Dangling references at artefacts/scripts/hive-launch:146 and :278.",
+      "summary": "The RUNBOOK dead-worker-recovery section never gains the half-launched-task case \u2014 the attempt changes only the two scripts, so the operator-facing doc the launcher itself points at is left silent on the new failure mode.",
+      "why_blocking": "The order's DoD names the RUNBOOK update explicitly because the operator-facing surface changed, and both new refusal texts send the operator to \"RUNBOOK, 'Dead worker recovery'\" (hive-launch:146, hive-launch:278) for a case that section does not describe. An operator hitting a half-launch \u2014 task owned on the board, clones and wrapper issued, no pane \u2014 gets a stderr print that survives only as long as the terminal scrollback; the moment it is lost or the operator finds the stranded task later (board shows assigned, no window), the doc they are told to consult has no entry for recognising a half-launch, no statement that re-running hive-launch is wrong, and no manual finish procedure. That is exactly the archaeology the order set out to end."
+    }
+  ]
+}

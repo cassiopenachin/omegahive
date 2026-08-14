@@ -1,0 +1,72 @@
+{
+  "cell_id": "cell-0fca07b8c4",
+  "dod_legs": [
+    {
+      "leg": "one-parser",
+      "met": "yes",
+      "note": "parse_predictions lives only in scripts/hive-common.sh:239-285; hive-score (candidate.patch:671) and hive-launch (hive-launch:108) both call it and neither carries a field regex. Proven both structurally and behaviourally: 'the effort regex lives only in hive-common.sh', 'hive-launch does not reimplement the parse', 'both callers call the shared function', plus six same-input gate-vs-scorer agreement checks (eta, gamma, theta, alpha, beta) \u2014 all PASS in verifier/metrics-drill.log."
+    },
+    {
+      "leg": "refuse-unparsed-not-absent",
+      "met": "yes",
+      "note": "hive-launch:108-144 places the gate after the id/tmux-name guards and before the WIP throttle, board read, clones, wrapper and every emit \u2014 so a refusal touches nothing. Refuses only on PRED_SECTION=1 && PRED_FIELDS=0 && PRED_DECLARED=0, prints all four literal labels plus the offending lines, and names --anyway (which launches with a warning). No section and declared-unpredicted both fall through silently/announced; 1-2 of 3 warns loudly on stderr naming the missed fields. The end-to-end drive of these paths lives in hive-tooling-drill.sh (34 new assertions, candidate.patch:759-890), which the rubric puts out of scope to run; the parser verdicts behind each path are asserted hermetically and green in the metrics drill."
+    },
+    {
+      "leg": "absent-vs-unparsed-distinct",
+      "met": "yes",
+      "note": "hive-score:296-306 emits five coverage strings. Fixtures eta (full section in the `- **Effort:**` D1 dialect) and theta (declared one-liner) added alongside existing gamma (no section); drill asserts each string by content AND that gamma/eta and eta/theta are literally different, plus that eta's order really carries a '## Predictions' heading in the D1 dialect. All PASS."
+    },
+    {
+      "leg": "review-vocabulary",
+      "met": "yes",
+      "note": "hive-score:72-77 validates at argument-parse time, before the spine read and any append; case-folded via tr, stored lowercase, else die() naming 'clean | minor rework | rework'. Drill: Rework/MINOR REWORK/clean stored lowercase; bogus, the prefix near-miss 'rewor' and bare 'minor' refused; a refused --review appended nothing and left the tree clean. All PASS."
+    },
+    {
+      "leg": "close-ordering",
+      "met": "yes",
+      "note": "candidate.patch:60-74 puts the hive-metrics refresh after the review.passed/status_override emits and after the score, inside an `if` so a failure cannot trip set -e; the failure branch is a stderr complaint that states the close is durable and names `hive-metrics <project>` as the single recovery, and the script still exits 0. The injected-failure case (tasks.md replaced by a directory) is written in hive-tooling-drill.sh (candidate.patch:930-953) \u2014 that drill is out of scope to run here, and the report says so plainly rather than claiming a green run."
+    },
+    {
+      "leg": "refuse-not-rebase",
+      "met": "yes",
+      "note": "hive-common.sh:338-350 replaces push->pull --rebase->push with: commit locally, print 'push REFUSED' plus the inspect-then-push sequence, return 1. Drilled hermetically against a genuinely diverged bare hub \u2014 tool fails, message says refused and names the manual step, entry is committed locally, the interloper's commit never enters local history, local HEAD is still an ancestor, hub untouched, and the retry is gone from the source. All 10 PASS."
+    },
+    {
+      "leg": "named-risks-unscored",
+      "met": "yes",
+      "note": "`- Named risks:` is printed as the fourth literal label but is not extracted by parse_predictions and not scored; hive-common.sh:205-210, the refusal text (PREDICTION_SCORED_NOTE), hive-score's calibration.md preamble ('Three fields are scored, not four') and RUNBOOK all state it is unscored and that gate contents are the operator's call. No prediction field added, removed or newly scored."
+    },
+    {
+      "leg": "drill-hygiene-reported",
+      "met": "yes",
+      "note": "Report section 'The drill-hygiene sweep': files read named; Class A (EXIT trap before isolation) \u2014 'none found', with the reasoning (cleanup's only side effect is rm -rf on a SANDBOX assigned before the trap); Class B \u2014 three instances found in the stop-line assertions and all three fixed by here-strings (candidate.patch:528-539), with why the negated form made them false-PASS-shaped. Two third-class findings are reported and deliberately not fixed, which is what the stop-line requires."
+    },
+    {
+      "leg": "result-report",
+      "met": "yes",
+      "note": "projects/omegahive/reports/2026-07-29-instrument-teeth-result.md carries What shipped / How verified / To operate / Reflection, names the two pln re-score commands with --project pln-benchmarks --again, and its checkable claims hold: 137 PASS / 0 FAIL matches verifier/metrics-drill.log, 34 new tooling-drill assertions matches the diff, shellcheck clean matches the empty verifier log, and it states outright that hive-tooling-drill.sh was not run and that no independent review happened. One nit, not a defect: the ad-hoc launch-path narrative labels a 2-of-3 order but quotes the 1-of-3 message ('predicts only 1 of 3 \u2026 Not parsed: questions, review outcome'); both strings are real behaviours of hive-launch:137-138 and the drilled fixture asserts 'predicts only 2 of 3 \u2026 Not parsed: review outcome'."
+    },
+    {
+      "leg": "shellcheck",
+      "met": "yes",
+      "note": "verifier/shellcheck.log is empty \u2014 shellcheck -x clean on the touched scripts."
+    },
+    {
+      "leg": "metrics-drill",
+      "met": "yes",
+      "note": "verifier/metrics-drill.log: 'metrics drill: PASS=137 FAIL=0 (no events issued; no run touched)', including every new case for one-parser, coverage strings, --review vocabulary and commit_metrics-on-diverged-hub."
+    },
+    {
+      "leg": "hive-tooling-drill green",
+      "met": "not-applicable",
+      "note": "Explicitly out of scope per the rubric; the cases are written but unrun, and the report claims no more than that."
+    },
+    {
+      "leg": "spine announcement",
+      "met": "not-applicable",
+      "note": "Explicitly out of scope per the rubric; the report itself is filed."
+    }
+  ],
+  "verdict": "pass",
+  "would_have_shipped_defects": []
+}

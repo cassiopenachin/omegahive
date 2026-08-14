@@ -6,6 +6,20 @@
 # result holds — after the PR is merged in the GitHub app. Verifies the board is
 # in_review, pulls the result ref from the spine's own task.result_posted, then
 # emits review.passed + status_override(done), and finally regenerates the
+#
+# REVISION SEMANTICS (decisions.md 2026-08-01; WORKER.md "Finishing"): a worker's
+# task.result_posted is the CURRENT REVISION of the result, not a one-shot event —
+# fired at the first complete result, re-fired with a corrected ref whenever a
+# review revision changes what the report says. The event log is append-only, so
+# "the ref" is always "the newest one": step 2 below already takes the LAST
+# task.result_posted for the task, which is correct by construction with no code
+# change here — a revision fired any time before this close runs is picked up
+# automatically. This is deliberate and was chosen over a `--ref` override (a
+# hand-carried sha at close time is exactly the transcription defect class the
+# figures-are-generated rule exists to kill). A revision that must land AFTER the
+# worker's wrapper is gone — the one case this script cannot help with — falls
+# back to the manual two-emit close in RUNBOOK.md.
+#
 # project's metrics (hive-metrics) and scores the task's predictions (hive-score),
 # carrying the review verdict straight through — so the instrument refresh AND the
 # calibration row are both by-products of closing, not a separate errand the

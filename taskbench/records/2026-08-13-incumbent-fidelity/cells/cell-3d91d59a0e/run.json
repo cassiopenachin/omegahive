@@ -1,0 +1,162 @@
+{
+  "argv": [
+    "/home/cassio/.local/bin/claude",
+    "--model",
+    "opus",
+    "--print",
+    "--output-format",
+    "json",
+    "--permission-mode",
+    "auto"
+  ],
+  "cell_id": "cell-3d91d59a0e",
+  "changed_files": [
+    "scripts/hive-launch",
+    "scripts/hive-tooling-drill.sh"
+  ],
+  "diff": "diff --git a/scripts/hive-launch b/scripts/hive-launch\nindex cb9529c..6c866ed 100755\n--- a/scripts/hive-launch\n+++ b/scripts/hive-launch\n@@ -132,9 +132,20 @@ fi\n # Clobber guards: never overwrite an existing clone or a same-named live pane.\n [ ! -e \"$WS_ROOT\" ]   || die \"$WS_ROOT already exists; pick a fresh --worker id or clear it\"\n [ ! -e \"$CODE_ROOT\" ] || die \"$CODE_ROOT already exists; pick a fresh --worker id or clear it\"\n+# The window NAME is the only collision that carries meaning: it IS the registry\n+# (decisions.md 2026-07-21), so a second window of the same name would make the\n+# registry ambiguous. Refused here, before anything is provisioned or seeded, and\n+# with the recovery path named \u2014 a live-named pane means the task is already out.\n if tmux has-session -t \"$HIVE_TMUX_SESSION\" 2>/dev/null \\\n    && tmux list-windows -t \"$HIVE_TMUX_SESSION\" -F '#{window_name}' 2>/dev/null | grep -qxF \"$TASK\"; then\n-  die \"a tmux window named '$TASK' already exists in session '$HIVE_TMUX_SESSION' (the pane is the registry)\"\n+  {\n+    echo \"hive-launch: refusing to launch '$TASK' \u2014 a tmux window of that name is already open in session '$HIVE_TMUX_SESSION'.\"\n+    echo \"  the window name is the registry (there is no registry file), so that task is already live;\"\n+    echo \"  a second window for it would make the registry ambiguous \u2014 never open one.\"\n+    echo \"  if that worker is dead or wedged this is recovery, not relaunch: kill the pane, register a fresh\"\n+    echo \"  worker id, and emit task.reassigned \u2014 RUNBOOK, 'Dead worker recovery'.\"\n+  } >&2\n+  exit 1\n fi\n \n # --- pin the order and build the seed payloads --------------------------------\n@@ -225,16 +236,72 @@ Container tooling is podman (not docker). Begin by reading both files, then emit\n task.accepted and start.\n KICK\n \n+# --- half-launch fail-safe ------------------------------------------------------\n+# The spine is seeded before the pane exists, so a pane failure strands a task that\n+# is owned on the board with no session and no delivered kickoff. Ordering is kept\n+# (seed, then pane) deliberately: the pane starts the worker, whose first act per\n+# WORKER.md is `task.accepted` \u2014 emitted before task.assigned lands it is rejected\n+# (ownership gate), which is a worse failure than this one. So the launcher pays for\n+# the ordering by making the half-launch self-documenting: everything the operator\n+# needs to finish by hand \u2014 the filled kickoff and the remaining WORKER.md \u00a7Launch\n+# steps \u2014 is printed here, instead of being reconstructed from archaeology later\n+# (2026-07-27: WORKER.md plus the launch output, by hand).\n+half_launch() {  # half_launch <tmux-error-output> <manual-window-command>\n+  {\n+    echo\n+    echo \"hive-launch: HALF-LAUNCH \u2014 '$TASK' is seeded on the board but its pane was NOT opened.\"\n+    echo \"  tmux: ${1:-(no output)}\"\n+    echo\n+    echo \"  Already done \u2014 do NOT re-run hive-launch: '$TASK' is owned on run '$RUN' now, and a\"\n+    echo \"  relaunch of an owned task is refused by design.\"\n+    if [ -n \"$ADOPT\" ]; then\n+      echo \"    board:   worker.registered + task.assigned (adopted; no task.created)  (worker $WORKER)\"\n+    else\n+      echo \"    board:   task.created + worker.registered + task.assigned  (worker $WORKER)\"\n+    fi\n+    echo \"    clones:  $WS_ROOT  +  $CODE_ROOT\"\n+    echo \"    wrapper: $WRAPPER\"\n+    echo\n+    echo \"  FINISH BY HAND \u2014 three steps, then the launch is complete (WORKER.md, 'Launch (operator side)'):\"\n+    echo \"    1. Open the window yourself. Its NAME must be the task id \u2014 the pane name is the registry:\"\n+    echo \"         $2\"\n+    echo \"    2. Start the worker session in it, and accept the per-clone trust dialog with one Enter\"\n+    echo \"       (WORKER.md runs worker sessions as 'claude --permission-mode auto'; below is this\"\n+    echo \"       launcher's configured HIVE_WORKER_CMD):\"\n+    echo \"         cd '$WS_ROOT' && $HIVE_WORKER_CMD\"\n+    echo \"    3. Paste this kickoff as that session's first message, verbatim:\"\n+    echo \"  ----- BEGIN KICKOFF -----\"\n+    printf '%s\\n' \"$KICKOFF\"\n+    echo \"  ----- END KICKOFF -----\"\n+    echo\n+    echo \"  OR ABANDON this launch: the task is owned, so the way back is the manual task.reassigned\"\n+    echo \"  path (RUNBOOK, 'Dead worker recovery'), after which remove $WS_ROOT, $CODE_ROOT and $WRAPPER.\"\n+  } >&2\n+  exit 1\n+}\n+\n # Open the pane. The kickoff travels as an env var (HIVE_KICKOFF) so no multi-line\n # text is ever quoted onto a command line; the window runs the worker command with\n # it as the initial prompt. The pane NAME is the registry \u2014 no registry file.\n+#\n+# Allocation is APPEND-ONLY. We never choose an index: an index we derive can be one\n+# the operator's own windows already hold (\"create window failed: index 4 in use\",\n+# 2026-07-27), and merely omitting it is not enough \u2014 without -a, the -t target still\n+# resolves to a concrete window, which is by definition occupied. `-a -t <session>:{end}`\n+# inserts at the next index up from the LAST window, so tmux picks a free slot every\n+# time; appending at the end (rather than after the current window) also leaves every\n+# existing worker window's index alone. Holds under any base-index / renumber-windows\n+# setting, because no index is ever named. (`{end}`: tmux >= 2.1.)\n launch_cmd=\"$HIVE_WORKER_CMD \\\"\\$HIVE_KICKOFF\\\"\"\n if tmux has-session -t \"$HIVE_TMUX_SESSION\" 2>/dev/null; then\n-  tmux new-window -t \"$HIVE_TMUX_SESSION\" -n \"$TASK\" -c \"$WS_ROOT\" \\\n-    -e HIVE_KICKOFF=\"$KICKOFF\" \"$launch_cmd\"\n+  # pane_manual: the same allocation, for the operator to run by hand if this fails.\n+  pane_manual=\"tmux new-window -a -t '$HIVE_TMUX_SESSION:{end}' -n '$TASK' -c '$WS_ROOT'\"\n+  pane_err=$(tmux new-window -a -t \"$HIVE_TMUX_SESSION:{end}\" -n \"$TASK\" -c \"$WS_ROOT\" \\\n+    -e HIVE_KICKOFF=\"$KICKOFF\" \"$launch_cmd\" 2>&1) || half_launch \"$pane_err\" \"$pane_manual\"\n else\n-  tmux new-session -d -s \"$HIVE_TMUX_SESSION\" -n \"$TASK\" -c \"$WS_ROOT\" \\\n-    -e HIVE_KICKOFF=\"$KICKOFF\" \"$launch_cmd\"\n+  pane_manual=\"tmux new-session -d -s '$HIVE_TMUX_SESSION' -n '$TASK' -c '$WS_ROOT'\"\n+  pane_err=$(tmux new-session -d -s \"$HIVE_TMUX_SESSION\" -n \"$TASK\" -c \"$WS_ROOT\" \\\n+    -e HIVE_KICKOFF=\"$KICKOFF\" \"$launch_cmd\" 2>&1) || half_launch \"$pane_err\" \"$pane_manual\"\n fi\n echo \"  pane:   $HIVE_TMUX_SESSION:$TASK  (attach: tmux attach -t $HIVE_TMUX_SESSION)\"\n echo \"hive-launch: done.\"\ndiff --git a/scripts/hive-tooling-drill.sh b/scripts/hive-tooling-drill.sh\nindex abe7595..343fedd 100755\n--- a/scripts/hive-tooling-drill.sh\n+++ b/scripts/hive-tooling-drill.sh\n@@ -10,7 +10,9 @@\n # project's run. The drill exercises: a full lifecycle on project 'alpha', the\n # same lifecycle on a SECOND project 'beta' (proving multi-project provisioning),\n # cross-project task-id ambiguity refusal, the review-WIP throttle summed ACROSS\n-# projects, the HIVE_RUN_ID override, and every legacy refusal path.\n+# projects, the HIVE_RUN_ID override, collision-free window allocation into a session\n+# whose indices are occupied, the half-launch recovery print, and every legacy refusal\n+# path.\n #\n # It never touches the durable `omegahive` run: both projects carry scratch run\n # ids (tooling-drill-<proj>-<stamp>) in their confs, and OPS_WS points at the\n@@ -405,5 +407,68 @@ git -C \"$WS\" remote set-url origin \"$SANDBOX/nonexistent.git\"\n expect_fail \"answer refuses when push fails\" \"$SCRIPT_DIR/hive-answer\" \"drill-drained\" \"second answer\"\n git -C \"$WS\" remote set-url origin \"$HUB\"\n \n+# ==============================================================================\n+echo\n+echo \"== collision-free window allocation: occupied indices must not break a launch ==\"\n+# 2026-07-27: a launch died on `create window failed: index 4 in use` \u2014 the launcher\n+# named an index and the operator's own windows already held it. The launcher now\n+# names no index at all, so a launch must succeed with EVERY index in the session\n+# occupied and the session's current window not the last one. By here the drill's\n+# session already holds a window per earlier launch, which is the fixture.\n+FIRSTW=$(tmux list-windows -t \"$TMUX_SESSION\" -F '#{window_index}' | head -1)\n+tmux select-window -t \"$TMUX_SESSION:$FIRSTW\"\n+# Fixture validity: naming that occupied index is exactly the recorded failure. If\n+# this ever stops refusing, the fixture no longer reproduces and the case is vacuous.\n+expect_fail_msg \"an occupied window index still refuses (fixture reproduces the 0727 failure)\" \"in use\" \\\n+  tmux new-window -d -t \"$TMUX_SESSION:$FIRSTW\" -n drill-occupied-probe\n+WINS_BEFORE=$(tmux list-windows -t \"$TMUX_SESSION\" -F '#{window_name}' | sort | tr '\\n' ' ')\n+\n+CORDER=$(add_order \"$APROJ\" \"2026-07-13-drill-collision\" \"collision\")\n+CWORKER=\"sess-collision-${STAMP}\"\n+\"$SCRIPT_DIR/hive-launch\" \"$CORDER\" --worker \"$CWORKER\" >/dev/null\n+WINS_AFTER=$(tmux list-windows -t \"$TMUX_SESSION\" -F '#{window_name}' | grep -vxF drill-collision | sort | tr '\\n' ' ')\n+check \"launch succeeds with the session's indices occupied\" \"[ \\\"\\$(bstatus '$ARUN' drill-collision)\\\" = assigned ]\"\n+check \"the task's window exists\"        \"tmux list-windows -t '$TMUX_SESSION' -F '#{window_name}' | grep -qxF drill-collision\"\n+check \"exactly ONE window carries the name (the registry stays unambiguous)\" \\\n+  \"[ \\$(tmux list-windows -t '$TMUX_SESSION' -F '#{window_name}' | grep -cxF drill-collision) -eq 1 ]\"\n+check \"no pre-existing window was lost or renamed\" \"[ \\\"$WINS_AFTER\\\" = \\\"$WINS_BEFORE\\\" ]\"\n+\n+echo\n+echo \"== half-launch: a pane failure after seeding prints the manual completion path ==\"\n+# The spine is seeded before the pane exists (the pane starts the worker, whose first\n+# emit is gated on task.assigned), so a pane failure strands an owned task with no\n+# session. Simulate one with a tmux that refuses window creation and nothing else: the\n+# launcher must convert the half-launch into a documented manual finish.\n+FAKEBIN=\"$SANDBOX/fakebin\"; mkdir -p \"$FAKEBIN\"\n+REAL_TMUX=$(command -v tmux)\n+cat > \"$FAKEBIN/tmux\" <<EOF\n+#!/usr/bin/env bash\n+# refuse window creation only; every other tmux command is the real one\n+case \"\\$1\" in new-window|new-session) echo \"create window failed: index 4 in use\" >&2; exit 1 ;; esac\n+exec \"$REAL_TMUX\" \"\\$@\"\n+EOF\n+chmod +x \"$FAKEBIN/tmux\"\n+\n+HORDER=$(add_order \"$APROJ\" \"2026-07-13-drill-halflaunch\" \"half launch\")\n+HWORKER=\"sess-halflaunch-${STAMP}\"\n+HALF_OUT=$(PATH=\"$FAKEBIN:$PATH\" \"$SCRIPT_DIR/hive-launch\" \"$HORDER\" --worker \"$HWORKER\" 2>&1) \\\n+  && HALF_RC=0 || HALF_RC=$?\n+printf '%s\\n' \"$HALF_OUT\"   # the recovery print itself, in the drill's log\n+check \"pane failure fails the launch loudly\"          \"[ $HALF_RC -ne 0 ]\"\n+check \"the failure is named a HALF-LAUNCH\"            \"printf '%s' \\\"\\$HALF_OUT\\\" | grep -qF HALF-LAUNCH\"\n+check \"it reports what tmux said\"                     \"printf '%s' \\\"\\$HALF_OUT\\\" | grep -qF 'index 4 in use'\"\n+check \"it warns against re-running hive-launch\"       \"printf '%s' \\\"\\$HALF_OUT\\\" | grep -qF 'do NOT re-run'\"\n+check \"it prints the filled kickoff\"                  \"printf '%s' \\\"\\$HALF_OUT\\\" | grep -qF 'You are hive worker $HWORKER on task drill-halflaunch'\"\n+check \"the kickoff is delimited for copy-paste\"       \"printf '%s' \\\"\\$HALF_OUT\\\" | grep -qF 'BEGIN KICKOFF'\"\n+check \"it gives the window command to finish by hand\" \"printf '%s' \\\"\\$HALF_OUT\\\" | grep -qF \\\"new-window -a -t '$TMUX_SESSION:{end}'\\\"\"\n+check \"it cites WORKER.md's launch steps\"             \"printf '%s' \\\"\\$HALF_OUT\\\" | grep -qF WORKER.md\"\n+check \"it names the issued wrapper\"                   \"printf '%s' \\\"\\$HALF_OUT\\\" | grep -qF '$WRAPPERS/$HWORKER.sh'\"\n+check \"it gives the abandon path (task.reassigned)\"   \"printf '%s' \\\"\\$HALF_OUT\\\" | grep -qF task.reassigned\"\n+# ...and the state it describes is the state that is really stranded.\n+check \"half-launch really did seed the board\"    \"[ \\\"\\$(bstatus '$ARUN' drill-halflaunch)\\\" = assigned ]\"\n+check \"half-launch really did provision clones\"  \"[ -d '$WORK/$HWORKER/hive/.git' ]\"\n+check \"half-launch really did issue the wrapper\" \"[ -x '$WRAPPERS/$HWORKER.sh' ]\"\n+check \"half-launch opened no window\"             \"! tmux list-windows -t '$TMUX_SESSION' -F '#{window_name}' | grep -qxF drill-halflaunch\"\n+\n echo\n [ \"$FAIL\" -eq 0 ]\n",
+  "exit_code": 0,
+  "finished_utc": "2026-08-13T15:10:51Z",
+  "home_is_cell_root": false,
+  "labels": {
+    "harness": "claude-code-2.1.231",
+    "model": "opus",
+    "vendor": "anthropic"
+  },
+  "outward_actions": {},
+  "progress": {
+    "exit": "2026-08-13T15:10:51Z",
+    "first_read": "unknown",
+    "first_response": "2026-08-13T15:10:51Z",
+    "first_verifier": "2026-08-13T15:06:40Z",
+    "first_write": "2026-08-13T15:05:17Z",
+    "missing_surfaces": {
+      "first_read": "harness exposes no tool-call transcript; no read timestamp is observable"
+    },
+    "sources": {
+      "exit": "runner wall clock at process reap",
+      "first_response": "timestamp of the first byte the agent wrote to stdout or stderr",
+      "first_verifier": "bin/bench-verify shim",
+      "first_write": "earliest mtime among files created or modified under code/ during the run"
+    },
+    "terminal_error": null
+  },
+  "resolved_identity": {
+    "api_error_status": null,
+    "available": true,
+    "canonical_model": "claude-opus-5",
+    "duration_ms": 1012789,
+    "how_primary_chosen": "largest outputTokens in the harness's own modelUsage map",
+    "is_error": false,
+    "model_usage": {
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costUSD": 0.000997,
+        "inputTokens": 912,
+        "maxOutputTokens": 32000,
+        "outputTokens": 17,
+        "provider": "firstParty",
+        "webSearchRequests": 0
+      },
+      "claude-opus-5": {
+        "cacheCreationInputTokens": 137841,
+        "cacheReadInputTokens": 5727914,
+        "canonicalModel": "claude-opus-5",
+        "contextWindow": 1000000,
+        "costUSD": 6.008337000000003,
+        "inputTokens": 104,
+        "maxOutputTokens": 64000,
+        "outputTokens": 70618,
+        "provider": "firstParty",
+        "webSearchRequests": 0
+      }
+    },
+    "num_turns": 55,
+    "permission_denials": [],
+    "provider": "firstParty",
+    "resolved_model": "claude-opus-5",
+    "subtype": "success",
+    "terminal_reason": "completed",
+    "total_cost_usd": 6.009334000000003,
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 137841,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 137841,
+      "cache_read_input_tokens": 5727914,
+      "inference_geo": "not_available",
+      "input_tokens": 104,
+      "iterations": [
+        {
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 584,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "cache_creation_input_tokens": 584,
+          "cache_read_input_tokens": 153228,
+          "input_tokens": 2,
+          "output_tokens": 1419,
+          "type": "message"
+        }
+      ],
+      "output_tokens": 70618,
+      "output_tokens_details": {
+        "thinking_tokens": 38680
+      },
+      "server_tool_use": {
+        "web_fetch_requests": 0,
+        "web_search_requests": 0
+      },
+      "service_tier": "standard",
+      "speed": "standard"
+    }
+  },
+  "started_utc": "2026-08-13T14:53:57Z",
+  "stderr_path": "run/stderr.txt",
+  "stdout_path": "run/stdout.txt",
+  "task_id": "launch-pane-fix",
+  "timed_out": false,
+  "usage": {
+    "available": true,
+    "reported": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 137841,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 137841,
+      "cache_read_input_tokens": 5727914,
+      "inference_geo": "not_available",
+      "input_tokens": 104,
+      "iterations": [
+        {
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 584,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "cache_creation_input_tokens": 584,
+          "cache_read_input_tokens": 153228,
+          "input_tokens": 2,
+          "output_tokens": 1419,
+          "type": "message"
+        }
+      ],
+      "output_tokens": 70618,
+      "output_tokens_details": {
+        "thinking_tokens": 38680
+      },
+      "server_tool_use": {
+        "web_fetch_requests": 0,
+        "web_search_requests": 0
+      },
+      "service_tier": "standard",
+      "speed": "standard"
+    },
+    "source": "harness result envelope",
+    "total_cost_usd": 6.009334000000003
+  },
+  "wall_ms": 1013660
+}

@@ -1,0 +1,30 @@
+# GRADER-ONLY. Never enters a candidate root and never enters a review packet.
+# Facts about what the closed outcome established, in outcome terms — never a
+# description of the historical patch, because exact-diff scoring is a stop-line.
+task_id: ptc-revalidate
+accepted_outcome:
+- A verdict document at the path the order names, giving a status per chaining mode at the two pinned
+  shas, with both upstream suites' results recorded verbatim.
+- A committed script that rebuilds the whole verdict from a clean clone, plus a note of what each
+  log should contain so a later run can tell 'still broken' from 'the environment differs'.
+- Alternative causes eliminated by running them rather than by argument — at minimum a second runtime
+  sha, the host toolchain, and the locale.
+- 'No upstream source patched: the subjects are under test, and findings are filed rather than fixed.'
+known_defect_classes:
+- Reading a near-total suite failure as a broken build and re-litigating the toolchain, when the
+  split across passing and failing files is the diagnostic.
+- Calling a behaviour unsupported without grepping the subject's own tests for it — the failing-test
+  list is evidence about intent, not only about breakage.
+- Patching or editing the subject to make the environment work. The mount layout, not the subject,
+  is where a path mismatch gets resolved.
+- Mapping an empty result to a semantic answer. Empty is undiagnosed; a chainer that always returns
+  empty scores the base rate by construction.
+source_refs:
+- projects/pln-benchmarks/reports/2026-07-28-ptc-revalidate-result.md
+- projects/pln-benchmarks/orders/2026-07-28-ptc-revalidate.md@c39c4c0
+historical_solution_sha: 8facbfa4770dbb128b81a9ec00fb3a9cd4c6b7af
+notes: The verdict itself is a discovered fact, not a target. If an honest run at these pins reaches
+  a different per-mode status, that is a fidelity signal about the environment or the pins — diagnose
+  it; do not score it as a model result. The order's 'one conversation, two data points' instruction
+  is conditional and its condition was found false on the facts; either disposition, argued, is
+  inside scope.

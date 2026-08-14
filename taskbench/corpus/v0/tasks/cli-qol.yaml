@@ -1,0 +1,105 @@
+# taskbench corpus v0 — manifest for cli-qol. Frozen; edits increment the corpus version.
+id: cli-qol
+project: omegahive
+run: omegahive
+title: CLI QoL sweep — four small pains from waves 1 and 2
+task_class: bounded
+work_shape: shell-tooling
+bounded_because: Four independently-stated pains, each with its own scope paragraph and its own lettered
+  drill case in the DoD. Every item names the file and the behaviour; the coupling rule for the riskiest
+  item (a scoring failure may never make a close look failed) is written into the order rather than
+  left to judgment.
+workspace_repo: hive-workspace
+workspace_inputs:
+- path: projects/omegahive/orders/2026-07-28-cli-qol.md
+  sha: 9f5833f6d808f6a3dacce4b29c46cdabb76396e7
+  role: order
+- path: projects/omegahive/WORKER.md
+  sha: c1ff3c3fc6ebccfe130e93f1ffa579986d9115d1
+  role: context
+- path: projects/omegahive/RUNBOOK.md
+  sha: a52b252dfa0f7ebb90c396234c11ea349340152d
+  role: context
+- path: projects/omegahive/reports/2026-07-27-project-config-result.md
+  sha: 4961ca855b7a2fea10ffd071a4e818e3241f9de8
+  role: context
+- path: projects/omegahive/reports/2026-07-28-launch-pane-fix-result.md
+  sha: 2fb78cef19193dfbcba71bc2cad7fe0ec7c00b11
+  role: context
+- path: projects/omegahive/seats/coordinator/briefs/2026-07-27-wave-2.md
+  sha: 7b1c3862641e635109840b4f3e6f85b843e7e31c
+  role: context
+code:
+  repo: cassiopenachin/omegahive
+  pre_task_base_sha: d103048c5b78eebefff7c3f8d4b2f40d1f697baa
+  local_path: ~/src/SNET/omegahive
+expected_output_kinds:
+- code_patch
+- doc_update
+required_artefacts:
+- scripts/hive-common.sh
+- scripts/hive-score
+- scripts/hive-close
+environment_needs:
+- shellcheck on PATH.
+verifiers:
+- id: shellcheck
+  argv:
+  - shellcheck
+  - -x
+  - scripts/hive-launch
+  - scripts/hive-answer
+  - scripts/hive-close
+  - scripts/hive-score
+  - scripts/hive-metrics
+  - scripts/hive-common.sh
+  - scripts/hive-tooling-drill.sh
+  - scripts/hive-metrics-drill.sh
+  description: shellcheck -x clean
+- id: tooling-drill
+  argv:
+  - scripts/hive-tooling-drill.sh
+  timeout_s: 2400
+  description: the operator-loop drill, green including the five new cases
+  applicable: operator
+checklist:
+- id: derivation
+  text: 'DoD (a): a project whose directory name differs from its repo basename launches with no environment
+    override, and the override still wins.'
+- id: title-fallback
+  text: 'DoD (b): a heading-less order launches, titled by task id.'
+- id: session-guard
+  text: 'DoD (c): an unsafe session name is refused before any spine write.'
+- id: close-score-commit
+  text: 'DoD (d): close then score then commit lands in the sandbox workspace repo, and an injected
+    scoring failure leaves the close intact with a loud complaint.'
+- id: autonomous-default
+  text: 'DoD (e): the issued worker invocation carries the autonomous flag by default and respects the
+    override.'
+stop_lines:
+- id: no-event-model
+  text: No event-model, board-guard, adopt-logic, gateway, notifier or web-UI changes.
+  forbidden_paths:
+  - src/omegahive/events/*
+  - src/omegahive/gateway/*
+  - src/omegahive/notifier/*
+  - src/omegahive/ui/*
+- id: generators-write-metrics-only
+  text: The generators write only their own files under the project's metrics directory — never order
+    or report bodies, never spine emits.
+- id: score-never-fails-close
+  text: A scoring failure may never make a close look failed.
+rubric: rubrics/cli-qol.md
+grading: grading/cli-qol.yaml
+non_replayable_legs:
+- leg: '`scripts/hive-tooling-drill.sh` green, including this task''s new cases.'
+  reason: The loop drill emits scratch spine events, which this instrument's own scope forbids, and
+    it drives tmux. At this task's baseline the drill predates the tmux isolation that the task itself
+    introduces, so running it necessarily creates sessions on the operator's live tmux server — the
+    server holding every worker pane. An offline evaluation instrument must not carry that blast radius.
+    The operator runs the drill against a green cell.
+  executed_by: operator
+required_changes:
+- scripts/hive-common.sh
+- scripts/hive-launch
+- scripts/hive-score

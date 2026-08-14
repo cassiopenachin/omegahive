@@ -1,0 +1,52 @@
+{
+  "cell_id": "cell-541d19233e",
+  "dod_legs": [
+    {
+      "leg": "status-headers",
+      "met": "yes",
+      "note": "Every moved doc gained a prominent banner above its Status header naming its new shelf and why: reference/omegahive_port_spec.md ('REFERENCE \u2014 SHIPPED BUILD SPEC', semantics normative / framing historical), reference/omegahive_spec_1_1.md ('REFERENCE SOURCE', upstream, don't start here), reference/omegahive_stage2_verdict.md ('REFERENCE \u2014 DECISION RECORD', governs but describes the past), archive/omegahive_stage2_spec.md and archive/omegahive_omegaclaw_binding.md ('CLOSED (Jul 28 2026)'), and deployments/omegahive_remote_access_spec.md (Status rewritten to 'deployment-#0 practice, filed with the other deployment records'). Stale keep-current headers refreshed as the order named them: ui_spec 'v0.1 DRAFT \u2014 for discussion' -> 'v0.1 \u2014 shipped and current' (candidate.patch, docs/omegahive_ui_spec.md hunk @@ -1,6 +1,6 @@); deployment_spec bumped to v2.7 with '\u00a77 (Beastie bring-up, deployment #0) is a completed milestone ... read \u00a77 as the record ... and the template for #1', exactly the label the order asked for; hive_native_ops and recovery_runbook gained explicit version/current Status lines. Banners were added above existing text, not in place of it \u2014 omegahive_spec_1_1.md's original Provenance paragraph is retained verbatim below the new banner (candidate.patch:468-471)."
+    },
+    {
+      "leg": "conservative-on-doubt",
+      "met": "yes",
+      "note": "The order's triage listed omegahive_hive_user_migration as Archive ('executed procedure'). The attempt did not move it and stated why in two durable places: the doc's own new Status header \u2014 'current, and not yet finished. Parts A\u2013C ... executed live on Beastie, Jul 27 2026. Part D \u2014 the cutover \u2014 is written and deliberately unexecuted, and Part E's follow-ups are open ... the standing procedure for the Phase-2 gate's OS-separation item, not the record of a completed migration' \u2014 and INDEX.md:21, which carries the same claim on the front path. This is the seam the order itself predicted ('named seam: a triage verdict the doc's content contradicts') resolved the way the stop-line directs. Every other triage verdict was applied as written: spec_1_1 / port_spec / stage2_verdict to reference/, remote_access_spec to deployments/, omegaclaw_binding and stage2_spec to archive/."
+    },
+    {
+      "leg": "convention-readmes",
+      "met": "yes",
+      "note": "artefacts/docs/archive/README.md ('Superseded and closed documents land here \u2014 nothing is deleted, and nothing here is updated') and artefacts/docs/reference/README.md ('Normative-or-historical sources: they still govern, but they are not the front path \u2014 consult them, don't start here'). Both are two lines of substance, both note that per-file Status headers stay intact, and both point at ../INDEX.md as the map \u2014 the three things the order asked these notes to say."
+    },
+    {
+      "leg": "docs-index-complete",
+      "met": "yes",
+      "note": "verifier/docs-index-complete.log: 'ok \u2014 57 file(s) under docs/, each accounted for exactly once'. No NOTE lines, so nothing is unaccounted for and there is nothing to weigh against the order. The INDEX gives each doc what the order asked for \u2014 what it is, its authority scope, its status \u2014 and collapses archive/, evidence/ and whitepaper/ to one line each while naming every file inside, which the order permits ('one line each for those dirs as wholes is fine')."
+    },
+    {
+      "leg": "link-integrity",
+      "met": "yes",
+      "note": "verifier/link-integrity.log: 'ok \u2014 66 relative link(s) in 51 file(s), none dangling'. The moves were chased beyond docs/: README.md (3 links), ladder/README.md, ladder/report.py docstring, qual/schema.py and qual/catalogs/board-ops-v2.yaml comments all repointed. The pre-existing dangling archive link the order flagged was fixed too \u2014 docs/archive/omegahive_m5_spec.md's reference to omegahive_deferred_capability_coordination.md now resolves to ../evidence/. Method is recorded per the DoD in INDEX.md:59-65 (scripts/check_doc_links.py, wired into .github/workflows/ci.yml as a stdlib-only step)."
+    },
+    {
+      "leg": "nothing-deleted",
+      "met": "yes",
+      "note": "verifier/nothing-deleted.log: 'ok \u2014 all 55 baseline document(s) still present somewhere under docs/'. The patch contains no 'deleted file' entries; the six relocations are all git renames at 90\u201399% similarity."
+    },
+    {
+      "leg": "moves-and-labels-only (stop-line)",
+      "met": "yes",
+      "note": "Not crossed. Every hunk in a document body is either a Status header / banner or a relative-path correction. The largest-looking edits are pure link repointing: port_spec \u00a714 and design_1_1 \u00a77 item 5 each change only a bracketed path inside an otherwise byte-identical paragraph, as does archive/omegahive_m5_spec.md's History line. The two new scripts and the CI step are repo tooling that serves the order's own 'link-check pass recorded (method + zero dangling)' DoD leg and its named silent-link-breakage risk; they touch no document content and are not build-ahead of the product."
+    },
+    {
+      "leg": "evidence-untouched (stop-line)",
+      "met": "yes",
+      "note": "Not crossed. No hunk in candidate.patch touches docs/evidence/ (or docs/whitepaper/). evidence/ is labeled as a whole at INDEX.md:50 \u2014 'each is authoritative for the run it describes and for nothing else; they are read, cited, and never reorganised or rewritten' \u2014 with its ten files named so the one-line collapse hides nothing."
+    },
+    {
+      "leg": "dod: README repo-map updated",
+      "met": "yes",
+      "note": "README.md's repo-map block gained a six-line docs/ breakdown (INDEX.md, reference/, deployments/, evidence/, archive/, whitepaper/) and the closing paragraph now routes readers to docs/INDEX.md. No coordination note was needed for readme-restructure because the pointers were reconciled directly."
+    }
+  ],
+  "verdict": "pass",
+  "would_have_shipped_defects": []
+}

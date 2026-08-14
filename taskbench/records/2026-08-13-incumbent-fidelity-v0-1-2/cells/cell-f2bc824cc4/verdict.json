@@ -1,0 +1,112 @@
+{
+  "because": "all legs green",
+  "cell_id": "cell-f2bc824cc4",
+  "deterministic": {
+    "checks": [
+      {
+        "detail": "ok",
+        "exit_code": 0,
+        "id": "verdict-shape",
+        "output_tail": "ok \u2014 verdict present at the named path, both modes addressed, both shas named\n",
+        "passed": true
+      },
+      {
+        "detail": "ok",
+        "exit_code": 0,
+        "id": "repro-script-present",
+        "output_tail": "ok \u2014 repro script(s) committed and referenced by the verdict: tests/ptc-revalidate/run.sh\n",
+        "passed": true
+      },
+      {
+        "detail": "ok",
+        "exit_code": 0,
+        "id": "subjects-unpatched",
+        "output_tail": "ok \u2014 15 changed file(s), none under a vendored subject; 0 vendored checkout(s) clean\n",
+        "passed": true
+      }
+    ],
+    "excluded_legs": [
+      {
+        "executed_by": "not-executed",
+        "leg": "Close the stall-ledger row against the report ref.",
+        "reason": "A write to the live hive workspace. The instrument never touches it."
+      },
+      {
+        "executed_by": "not-executed",
+        "leg": "Announce the result on the spine per WORKER.md.",
+        "reason": "A spine emit, which this instrument's own scope forbids. The report the order asks for IS written and graded \u2014 only the announcement is out of reach."
+      }
+    ],
+    "missing_artefacts": [],
+    "passed": true,
+    "stop_line_violations": [],
+    "untouched_required_changes": []
+  },
+  "inconclusive": false,
+  "passed": true,
+  "review": {
+    "defect_count": 0,
+    "passed": true,
+    "probe_ok": true,
+    "ran": true,
+    "reason": "",
+    "verdict": {
+      "cell_id": "cell-f2bc824cc4",
+      "dod_legs": [
+        {
+          "leg": "suites-verbatim",
+          "met": "yes",
+          "note": "Both upstream suites recorded per test. The MeTTa block quoted in docs/ptc-verdict.md:111-162 is byte-identical to the committed captured/metta-testsuite.log PASS/FAIL/Summary lines (6 passed, 44 failed, verified by diff), and the python block at ptc-verdict.md:76-95 matches captured/unittest.log per test (9 ok / 5 FAIL / 2 ERROR, 'FAILED (failures=5, errors=2)'). Only divergence found anywhere: the doc quotes 'Ran 16 tests in 0.456s' where the committed log reads 0.445s \u2014 a wall-clock duration between the two end-to-end runs the report describes; no per-test result, count or conclusion depends on it."
+        },
+        {
+          "leg": "rerunnable",
+          "met": "yes",
+          "note": "tests/ptc-revalidate/run.sh clones both subjects at hard-checked pins (fails on mismatch), builds PeTTaChainer's own .myclaw image, runs four legs into results/ptc-revalidate/, and re-derives each mode's status from probe output rather than from the prose. Exit codes separate the two cases the rubric asks about: 0 = verdict holds, 2 = a mode's status changed (upstream moved), 1 = a leg could not run (environment). An unrecognised probe line reads UNPARSED/MISSING and stops rather than defaulting to WORKS (run.sh status_of + the trailing case guard). tests/ptc-revalidate/README.md maps each leg to its log and states what each probe isolates."
+        },
+        {
+          "leg": "upstream-filing",
+          "met": "yes",
+          "note": "Executed: artefacts/outward/gh.md carries a `gh issue create --repo rTreutlein/PeTTaChainer` call whose body contains two minimal repros (query empty for a fact compileadd just stored; STV-tagged Implication compiles but never fires), both pinned shas plus swipl/python/janus versions, both suite summaries, and an explicit 'what we ruled out' section (runtime, stale PeTTa pairing incl. d9a437c and 4a62d08, environment, recent regression). The committed copy at tests/ptc-revalidate/upstream-issue.md is identical to the sent body apart from a provenance comment header. known-issues.md #2 rides along as the closing section, as the order asked, with an offer to split threads."
+        },
+        {
+          "leg": "result-report",
+          "met": "yes",
+          "note": "artefacts/workspace.patch adds projects/pln-benchmarks/reports/2026-08-13-ptc-revalidate-result.md with What shipped / How verified / To operate / Reflection. Spot-checked claims hold: the control numbers (157 OK:/0 failures/exit 0 for PeTTa's own suite; 5 passed/45 failed for the d9a437c control with the lib_pln example as the only per-file delta) match captured/control-*.log, and the file inventory matches candidate.patch. To operate gives the rerun command, exit-code semantics, offline/pin knobs, control commands, and what the pipeline arm needs (do not design around query; forward-only viable with CTV-tagged rules; never map empty to Unknown)."
+        },
+        {
+          "leg": "verdict-shape",
+          "met": "yes",
+          "note": "Mechanical check green: 'verdict present at the named path, both modes addressed, both shas named' (verifier/verdict-shape.log). docs/ptc-verdict.md states backward BROKEN, forward WORKS-with-a-CTV/STV-split, and pins 02a85c63\u2026 / 43705f5d\u2026 ."
+        },
+        {
+          "leg": "repro-script-present",
+          "met": "yes",
+          "note": "Mechanical check green: 'repro script(s) committed and referenced by the verdict: tests/ptc-revalidate/run.sh' (verifier/repro-script-present.log); committed with mode 100755."
+        },
+        {
+          "leg": "no-patching-subjects",
+          "met": "yes",
+          "note": "Mechanical check green: '15 changed file(s), none under a vendored subject; 0 vendored checkout(s) clean' (verifier/subjects-unpatched.log). The patch touches only docs/ and tests/ptc-revalidate/; run.sh treats the clones as read-only and the report explicitly declines to diagnose the cause because the subject is under test."
+        },
+        {
+          "leg": "no-parser-changes",
+          "met": "yes",
+          "note": "No semantic-parser files touched, no dataset-scale run (one 7-fact/3-rule ProofWriter theory), no LLM calls in any committed script."
+        },
+        {
+          "leg": "stall-ledger-S1",
+          "met": "not-applicable",
+          "note": "Out of scope per rubric (live hive workspace write). The report does not claim to have done it \u2014 it records S1 as 'reproduced, not cleared', supplies the row's ref, and says closing the row is the operator's write."
+        },
+        {
+          "leg": "spine-announcement",
+          "met": "not-applicable",
+          "note": "Out of scope per rubric. Not claimed anywhere in the report."
+        }
+      ],
+      "verdict": "pass",
+      "would_have_shipped_defects": []
+    }
+  },
+  "task_id": "ptc-revalidate"
+}

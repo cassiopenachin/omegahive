@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""Recording stub for `gh`, installed ahead of the real tool on a candidate's PATH.
+
+The order this stands in for asks the worker to file an issue upstream. Filing one for real
+is outward-facing and irreversible, and the historical filing already exists — but excluding
+the leg leaves the most judgment-heavy part of that task ungraded, since what makes a filing
+good is what it says. So the candidate performs the act, the act is recorded, and the
+recording is what the blinded reviewer grades.
+
+Every invocation is appended to `$BENCH_MOCK_LOG/gh.jsonl` as one JSON object: argv, stdin,
+and the contents of any `--body-file`, so nothing about what would have been sent is lost.
+Responses are the smallest plausible thing the real tool would print.
+
+This is an evaluation stub, not a network jail. It shadows the command name; it does not
+prevent a determined process from reaching the network another way.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import sys
+
+
+def _record(entry: dict) -> None:
+    target = os.environ.get("BENCH_MOCK_LOG")
+    if not target:
+        return
+    d = pathlib.Path(target)
+    d.mkdir(parents=True, exist_ok=True)
+    with (d / "gh.jsonl").open("a") as fh:
+        fh.write(json.dumps(entry, sort_keys=True) + "\n")
+
+
+def _flag(argv: list[str], name: str) -> str | None:
+    for i, a in enumerate(argv):
+        if a == name and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith(name + "="):
+            return a.split("=", 1)[1]
+    return None
+
+
+def main(argv: list[str]) -> int:
+    stdin = ""
+    if not sys.stdin.isatty():
+        try:
+            stdin = sys.stdin.read()
+        except (OSError, ValueError):
+            stdin = ""
+
+    body = _flag(argv, "--body")
+    body_file = _flag(argv, "--body-file")
+    if body_file and body_file != "-":
+        try:
+            body = pathlib.Path(body_file).read_text()
+        except OSError as exc:
+            body = f"(unreadable --body-file {body_file}: {exc})"
+    elif body_file == "-":
+        body = stdin
+
+    repo = _flag(argv, "--repo") or _flag(argv, "-R") or "unknown/unknown"
+    entry = {
+        "argv": argv,
+        "stdin": stdin,
+        "repo": repo,
+        "title": _flag(argv, "--title"),
+        "body": body,
+    }
+    _record(entry)
+
+    sub = [a for a in argv[1:] if not a.startswith("-")]
+    if sub[:2] == ["issue", "create"]:
+        # The real tool prints the URL of what it created; a candidate reasonably quotes it.
+        print(f"https://github.com/{repo}/issues/1")
+        return 0
+    if sub[:2] in (["issue", "list"], ["pr", "list"]):
+        return 0
+    if sub[:1] == ["auth"]:
+        print("Logged in to github.com (staged: outward actions are recorded for review)")
+        return 0
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

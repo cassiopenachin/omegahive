@@ -1,0 +1,26 @@
+# GRADER-ONLY. Never enters a candidate root and never enters a review packet.
+# Facts about what the closed outcome established, in outcome terms — never a
+# description of the historical patch, because exact-diff scoring is a stop-line.
+task_id: docs-triage
+accepted_outcome:
+- Every document in the tree is either kept current with a refreshed status line, moved to the reference
+  directory, moved to the deployment records, or archived — and the index accounts for every file
+  exactly once.
+- Every relative markdown link in the documentation tree and the README resolves after the moves.
+- Nothing is deleted; the archive and reference directories each carry a short README explaining
+  what lands there.
+- Documents the survey did not cover are classified by the same rubric and the reasoning is written
+  down, or left in place with the reason stated.
+known_defect_classes:
+- Silent link breakage in documents the survey never named — the repository-wide grep is the guard,
+  and it must reach code comments and scripts that cite document paths, not only markdown.
+- 'Over-archiving: moving a document the project still reaches for. Conservative-on-doubt is the
+  order''s own rule.'
+- An index that omits, double-counts, or invents a file.
+source_refs:
+- projects/omegahive/reports/2026-07-29-docs-triage-result.md
+- projects/omegahive/orders/2026-07-28-docs-triage.md@8d95b46
+historical_solution_sha: 6e58802aa288cd47b08ede51a244d52a33ca60a7
+notes: The order's context undercounts the tree by eight files. Discovering that and classifying
+  the remainder by the order's own rubric is the correct behaviour, not scope creep; so is leaving
+  one in place with a stated reason.

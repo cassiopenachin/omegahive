@@ -1,0 +1,3 @@
+This cell was not re-run. It was carried forward verbatim from /home/cassio/work/sess-hip1-bench-seed-0812/omegahive/taskbench/records/2026-08-13-incumbent-fidelity-v0-1
+because it produced a real verdict there and the corpus and labels are identical.
+It is evidence from that sitting, not this one.

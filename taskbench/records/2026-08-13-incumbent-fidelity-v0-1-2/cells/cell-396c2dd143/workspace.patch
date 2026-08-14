@@ -1,0 +1,216 @@
+diff --git a/projects/omegahive/RUNBOOK.md b/projects/omegahive/RUNBOOK.md
+index e506223..1494fe4 100644
+--- a/projects/omegahive/RUNBOOK.md
++++ b/projects/omegahive/RUNBOOK.md
+@@ -160,26 +160,20 @@ cd ~/src/SNET/omegahive
+      ```sh
+      docker-compose run --rm cli bump-generation --run-id omegahive
+      ```
+-     **Caveat (read this):** the bump only works if the run is *registered*. Today the
+-     `omegahive` run is **not** registered (the `hive emit` write path never opened it), so
+-     the command prints `run not registered` and the durable signal is inert. Until the run
+-     is wired (below), rely on the restart floor.
++     The bump needs the run to be *registered*, and it is: the write path opens a run on
++     its first emit, so every run with events in it carries a generation token. If the
++     command ever prints `run not registered`, the restored dump predates the run's first
++     emit — the next emit re-registers it, and until then the restart floor below is the
++     only invalidation you have.
+    - **Restart every client** (the always-safe floor, independent of the generation token):
+      ```sh
+      OMEGAHIVE_RUN_ID=omegahive docker-compose up -d notifier   # and any other followers
+      ```
++     The bump does not make this redundant. A restore rewinds the `runs` row along with
++     the log, so the bump that follows can land on a generation some client has already
++     seen (restoring a dump older than a previous restore's bump). Do both, every time.
+ 4. **Restart** coordinators/workers; each re-snapshots through the port.
+ 
+-To **wire the durable path** once (so step 3's bump becomes meaningful), register the run —
+-a one-time, reversible operational choice:
+-
+-```sh
+-docker-compose run --rm --entrypoint python cli -c \
+-  "from omegahive.db import connect; from omegahive.port import open_run
+-c=connect(); open_run(c,'omegahive'); c.commit(); print('registered')"
+-# reverse with:  psql ... -c \"DELETE FROM runs WHERE run_id='omegahive'\"
+-```
+-
+ The restore mechanism itself is drilled — see the drill evidence
+ (`projects/omegahive/reports/2026-07-13-backups-restore-drill-evidence.md`): a dump of the
+ live run restored into a scratch database replays byte-identical, the generation bump
+diff --git a/projects/omegahive/reports/2026-07-21-run-registration-result.md b/projects/omegahive/reports/2026-07-21-run-registration-result.md
+new file mode 100644
+index 0000000..dfa1b2a
+--- /dev/null
++++ b/projects/omegahive/reports/2026-07-21-run-registration-result.md
+@@ -0,0 +1,171 @@
++# Result — register the durable run (make the generation token real)
++
++**Task:** run-registration · **Order:** `projects/omegahive/orders/2026-07-21-run-registration.md` · **Date:** 2026-07-21
++
++## What shipped
++
++**Code (branch `feature/run-registration` in the omegahive repo, off `main`; two commits):**
++
++- **Idempotent open on the write path** — `src/omegahive/gateway/gateway.py`. `Gateway.emit()`
++  now calls `store.open_run()` (an `INSERT … ON CONFLICT DO NOTHING` against `runs`) inside
++  the *same* transaction as the event insert, under the per-run advisory lock that already
++  serialises the write path. A run is registered by its own first event, so no run that has
++  ever been written to is missing its generation token — and `bump-generation` on it is never
++  inert. The open runs *before* the gate, so a refused emit registers the run too: a
++  `gateway.rejected` is an event in the run like any other, and a run holding events but no
++  token is exactly the hole this closes.
++- **Tests** (red-green) — `tests/test_write_path.py` gains a run-registry section: first emit
++  registers (`generation` 1); a second emit is a no-op on the registry (one row, still
++  generation 1); an emit into an already-registered run preserves the generation a restore
++  bumped; a refused emit registers too; and an append that fails structural validation rolls
++  the registration back with it (never a phantom generation).
++  `tests/test_bump_generation_cli.py` gains the end-to-end case: a scratch run written only
++  through `omegahive emit` takes `bump-generation` (1 → 2). The two CLI fixtures now clear
++  their run's `runs` row as well as its events, since an emit writes both.
++- **Docs** — `docs/omegahive_recovery_runbook.md` §4 step 3 and the deployment-#0 record
++  (`docs/deployments/deployment-0-beastie.md`, Restore drill) drop the inert-bump caveat and
++  its "restore ⇒ restart every client, no exceptions" interim rule.
++
++Untouched, per the order's stop-lines: generation semantics, `GENERATION_MISMATCH` handling,
++cursor logic, and the schema (`open_run` was already in the store; nothing new is created).
++No generation was bumped on any run but the throwaway scratch one.
++
++**Workspace:**
++
++- `projects/omegahive/RUNBOOK.md` — restore step 3 loses the caveat and the one-time
++  out-of-band `open_run` wire-up block. Both halves of the invalidation step stay, and the
++  restart half now carries the reason it is permanent rather than interim (below).
++- this report.
++
++## How verified
++
++- **Suite:** `uv run pytest` — **408 passed** against a scratch Postgres database (created
++  for the run, dropped after; the durable store was never touched). `uv run ruff check .`
++  clean; `uv run mypy` clean, 181 source files.
++- **Scratch-run drill** — the order's evidence leg, run end-to-end through the CLI against a
++  throwaway database and run id (`run-registration-drill-<UTC>`), dropped afterwards:
++
++  ```
++  --- runs registry before any emit ---
++  []
++  --- bump-generation BEFORE any emit (must refuse) ---
++  run not registered (no generation): 'run-registration-drill-20260813-223433'
++  exit=1
++  --- first emit through the CLI write path ---
++  emitted · goal.received · seq 1
++  --- runs registry after the first emit ---
++  [('run-registration-drill-20260813-223433', 1)]
++  --- second emit: registry untouched (no-op when present) ---
++  emitted · task.created · seq 2
++  rows: 1 · generation: 1 · events: 2
++  --- bump-generation on the scratch run (must succeed) ---
++  generation bumped for 'run-registration-drill-20260813-223433': 1 -> 2
++  --- a stale cursor now gets GENERATION_MISMATCH ---
++  stale-cursor read -> generation_mismatch: True · generation: 2
++  full snapshot     -> generation_mismatch: False · adopts generation: 2
++  cursor read after snapshot -> generation_mismatch: False
++  ```
++
++  So: refuses before the run exists, registers on the first emit, no-ops on the second,
++  bumps, and the bump reaches a live client as a mismatch it recovers from — the whole
++  restore-invalidation path, on a run that only `emit` ever wrote to.
++- **Not verified here — the live `omegahive` row.** It requires the merged image running on
++  the stack, which post-dates this result. The verification query is in **To operate**.
++
++## To operate
++
++1. **Which wire-up path the live run takes: item 1 of the order — the next real emit.** No
++   one-time command is needed. Once the PR is merged and the image rebuilt, the next emit on
++   the `omegahive` run (any board event — a launch, an answer, a close) opens the run as a
++   side effect, and the RUNBOOK's out-of-band `open_run` block is gone because nothing needs
++   it. Deploy is the ordinary close-time step for a service-touching task:
++
++   ```sh
++   cd ~/src/SNET/omegahive && git checkout main && git pull
++   podman compose build            # rebuild the omegahive image — the CLI is what changed
++   scripts/deploy_checks.sh
++   ```
++
++   Changed services: none run continuously off this code path except the **notifier**
++   (restart it with the rest of the stack as usual); the change lives in the `cli` one-shot
++   that `hive emit` / the wrappers invoke, so it takes effect on the next emit after the
++   rebuild.
++
++2. **Confirm the row, after the next emit:**
++
++   ```sh
++   podman compose --profile ops run --rm --entrypoint sh backup -c \
++     "psql \"\$OMEGAHIVE_DATABASE_URL\" -c \"SELECT * FROM runs WHERE run_id='omegahive'\""
++   ```
++
++   Expect one row at `generation = 1`. Until that row exists, the restore floor is still
++   "restart every client" — which you do anyway (point 4).
++
++3. **If you want the row before the next emit** (e.g. you are about to restore and there has
++   been no board activity since the rebuild), register it directly — one-time, reversible,
++   and *not* a generation bump:
++
++   ```sh
++   podman compose run --rm --entrypoint python cli -c \
++     "from omegahive.db import connect; from omegahive.port import open_run
++   c=connect(); open_run(c,'omegahive'); c.commit(); print('registered')"
++   # reverse with:  psql … -c "DELETE FROM runs WHERE run_id='omegahive'"
++   ```
++
++4. **Restore procedure: still do both halves of step 3.** The bump is no longer inert, but it
++   does not replace restarting every client. A restore rewinds the `runs` row along with the
++   log, so the bump that follows it can land on a generation some client has already seen —
++   restore a dump older than a previous restore's bump and the numbers collide. Both runbooks
++   now say this in place of the old interim wording.
++
++5. **A running notifier needs no restart to pick the token up.** `PortSpineReader` adopts any
++   non-`None` generation it reads, so the first poll after the run is registered seeds it at
++   1 and every later bump reaches it as a mismatch.
++
++6. **Never bump the live run to test this.** A live bump forces every client to re-snapshot
++   and nothing here needs it; the bump evidence above is from the scratch run only.
++
++7. **Open the PR.** The branch is `feature/run-registration` (two commits) in the code clone;
++   pushing and opening the PR is the operator's act, as is merging.
++
++## Reflection
++
++- **Registering on refusals was a deliberate call, and it is the point of the fix.** The
++  order says "the emit path opens the run when absent"; a rejected emit still writes an event
++  (the `gateway.rejected` feedback record, §5). Had I opened only on the accept branch, a run
++  whose first — or only — traffic was refused would hold events with no generation token: the
++  exact defect, one branch further in. So the open sits after the advisory lock and before the
++  gate, and a test pins it.
++- **Placement is the gateway, not the store.** `EventLog.append()` is the dumber seam and
++  would have covered a few direct-append callers too, but "the emit path" in the order is the
++  governed one, and the gateway's `emit()` already owns the atomic per-run unit — the advisory
++  lock, the idempotency lookup, the commit boundary. Putting registration there gets "same
++  transaction as the event insert" for free and leaves the store's read/write helpers alone.
++  Direct `EventLog.append()` callers (a handful of store-level unit tests) stay unregistered;
++  nothing in production writes that way.
++- **The restart step is permanent, not interim — and the old wording hid that.** Both runbooks
++  framed "restart every client" as a stopgap that the generation token would retire. It never
++  could: `runs` lives in the same database as `events`, so a restore rewinds the generation
++  counter too, and the post-restore bump can reproduce a number a client already holds
++  (restoring a dump older than a previous restore's bump). Rare, but the failure mode is a
++  silent skipping read — the exact thing the token exists to prevent. I rewrote both to say
++  "do both, every time", with the reason. This is documentation only; the order's stop-line on
++  generation semantics is intact, and the collision is a property of the design, not of this
++  change.
++- **One doc outside the order's list.** The order names the two runbooks; the deployment-#0
++  record (`docs/deployments/deployment-0-beastie.md`) carried the same caveat as a standing
++  **Open item**, phrased as an operating rule ("restore ⇒ restart every client, no
++  exceptions"). Leaving it would have made the code repo contradict itself on the point this
++  task exists to settle, so I closed it there too — same three sentences, plus the row-check
++  query.
++- **Two legs of the definition of done are not mine to close.** The live `omegahive` row
++  needs the merged image on the stack and an emit after it — an operator act that post-dates
++  any worker's result, the same boundary the backups task recorded. And this report is not
++  announced on the spine: I have no emit wrapper in this environment. Both are named above so
++  nothing depends on remembering them.
++- **A dump older than the rebuild replays as an unregistered run.** Restore one and
++  `bump-generation` refuses again until the next emit re-registers the run — which resets the
++  generation to 1, below whatever clients last saw. The restart-every-client half covers it;
++  the RUNBOOK says so at the point of use. Not worth special-casing in code: it is a
++  one-window artifact of the changeover, and it argues for the restart floor rather than
++  against it.

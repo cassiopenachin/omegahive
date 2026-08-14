@@ -1,0 +1,20 @@
+# GRADER-ONLY. Never enters a candidate root and never enters a review packet.
+# Facts about what the closed outcome established, in outcome terms — never a
+# description of the historical patch, because exact-diff scoring is a stop-line.
+task_id: port-sha-pin-fallback
+accepted_outcome:
+- The pin resolves through a three-branch chain — repository, environment variable, image-derived
+  sentinel — and is never empty.
+- 'Validation is unchanged in meaning: all three forms are accepted, empty is still refused, and
+  the check is not duplicated.'
+- One test per resolver branch, and the suite green both on the host and in-container.
+- The environment variable is passed through on the shared compose anchor with an empty default.
+known_defect_classes:
+- Adding git to the image, or copying the repository metadata into it, to make branch one work everywhere
+  — a stop-line.
+- Weakening validation so an empty pin passes.
+source_refs:
+- projects/omegahive/reports/2026-07-21-port-sha-pin-fallback-result.md
+historical_solution_sha: 418e9e08759e98ca445d26ea2f584316f97a51cb
+notes: HELD OUT. Reserved for zero-regression checks; never run as a qualification cell. The order
+  quotes a stale test count; the count is not the bar, a green suite is.

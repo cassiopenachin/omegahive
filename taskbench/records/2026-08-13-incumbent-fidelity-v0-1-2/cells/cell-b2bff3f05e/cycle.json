@@ -1,0 +1,108 @@
+{
+  "final": null,
+  "first_pass": {
+    "deterministic": {
+      "checks": [
+        {
+          "detail": "ok",
+          "exit_code": 0,
+          "id": "docs-index-complete",
+          "output_tail": "ok \u2014 57 file(s) under docs/, each accounted for exactly once\n",
+          "passed": true
+        },
+        {
+          "detail": "ok",
+          "exit_code": 0,
+          "id": "link-integrity",
+          "output_tail": "ok \u2014 76 relative link(s) in 51 file(s), none dangling\n",
+          "passed": true
+        },
+        {
+          "detail": "ok",
+          "exit_code": 0,
+          "id": "nothing-deleted",
+          "output_tail": "ok \u2014 all 55 baseline document(s) still present somewhere under docs/\n",
+          "passed": true
+        }
+      ],
+      "excluded_legs": [
+        {
+          "executed_by": "not-executed",
+          "leg": "Announce the result on the spine per WORKER.md.",
+          "reason": "A spine emit, which this instrument's own scope forbids. The report the order asks for IS written and graded \u2014 only the announcement is out of reach."
+        }
+      ],
+      "missing_artefacts": [],
+      "passed": true,
+      "stop_line_violations": [],
+      "untouched_required_changes": []
+    },
+    "passed": true,
+    "review": {
+      "defect_count": 0,
+      "passed": true,
+      "probe_ok": true,
+      "ran": true,
+      "reason": "",
+      "verdict": {
+        "cell_id": "cell-b2bff3f05e",
+        "dod_legs": [
+          {
+            "leg": "status-headers",
+            "met": "yes",
+            "note": "All six moved docs gained a prominent bold Status line naming the new home and why: spec_1_1 'reference source' (candidate.patch, docs/reference/omegahive_spec_1_1.md +Status), port_spec 'reference \u2014 shipped build spec \u2026 semantics normative, build framing historical', stage2_verdict 'reference \u2014 decision record; it governs, and it describes the past', remote_access_spec 'v1 \u2014 deployment-#0 practice', omegaclaw_binding 'ARCHIVED \u2014 decided deliberation (Q1, closed)', stage2_spec 'ARCHIVED \u2014 closed ladder'. Stale keep-current headers refreshed: ui_spec 'v0.1 DRAFT \u2014 for discussion' -> 'v0.1 \u2014 current, and shipped' with the write path marked unbuilt; recovery_runbook gained a Status header it lacked; deployment_spec \u00a77 carries a completed-milestone note pointing at deployments/deployment-0-beastie.md."
+          },
+          {
+            "leg": "conservative-on-doubt",
+            "met": "yes",
+            "note": "The 'executed procedure' verdict on omegahive_hive_user_migration.md was not applied. The doc stays in docs/ with a Status header stating Parts A\u2013C ran live and Part D is deliberately unexecuted, and the report's 'What shipped' item 2 and 'To operate' decision 1 state the reason (revision record, recovery_runbook \u00a76 and deploy/hive-user/ route the operator into it) and hand the call back to the operator. INDEX.md:22 carries the same reading."
+          },
+          {
+            "leg": "convention-readmes",
+            "met": "yes",
+            "note": "artefacts/docs/archive/README.md ('superseded and closed docs land here', never deleted/updated in substance, defers to each doc's Status header, points at ../INDEX.md) and artefacts/docs/reference/README.md ('normative-or-historical sources; consult, don't start here'). Both two-line, both leave Status headers as the per-doc authority."
+          },
+          {
+            "leg": "result-report",
+            "met": "yes",
+            "note": "artefacts/workspace.patch adds projects/omegahive/reports/2026-08-13-docs-triage-result.md with What shipped / How verified / To operate / Reflection. Spot-checked claims hold: '6 git mv's' matches the six renames in candidate.patch; '14 dangling links inside docs/archive/' matches 14 changed link targets across the archive files (2 architecture, 2 m5_spec, 3 plan, 2 repo_hygiene_spec, 5 stage2_spec); the three out-of-docs pointer fixes (README.md, ladder/README.md, ladder/report.py) are in the diff; the eight unsurveyed work orders are indexed and each got one Status line without being moved. The report also states plainly that the branch is unmerged and that the spine announcement was not emitted."
+          },
+          {
+            "leg": "docs-index-complete",
+            "met": "yes",
+            "note": "verifier/docs-index-complete.log: 'ok \u2014 57 file(s) under docs/, each accounted for exactly once'. No NOTE lines. INDEX.md indexes archive/, evidence/ and whitepaper/ as wholes, which the order permits."
+          },
+          {
+            "leg": "link-integrity",
+            "met": "yes",
+            "note": "verifier/link-integrity.log: 'ok \u2014 76 relative link(s) in 51 file(s), none dangling'. Method is recorded in the report (scripts/check_docs.py, 127 references, 0 dangling) and is re-runnable."
+          },
+          {
+            "leg": "nothing-deleted",
+            "met": "yes",
+            "note": "verifier/nothing-deleted.log: 'ok \u2014 all 55 baseline document(s) still present somewhere under docs/'. Every disposition in candidate.patch is a rename, not a deletion."
+          },
+          {
+            "leg": "moves-and-labels-only",
+            "met": "yes",
+            "note": "Doc diffs are Status headers and link path fixes only \u2014 per-file churn is 1\u20137 lines everywhere except the new INDEX.md and the two convention READMEs. Where a Status header was rewritten (stage2_spec, port_spec, spec_1_1, omegaclaw_binding) the prior text is retained verbatim below the new line rather than replaced. The one non-doc addition, scripts/check_docs.py, serves the DoD's 'link-check pass recorded (method + zero dangling)' and is flagged as a deliberate scope call in the report; it rewrites no document content."
+          },
+          {
+            "leg": "evidence-untouched",
+            "met": "yes",
+            "note": "candidate.patch contains no diff under docs/evidence/. It is labelled as a whole in INDEX.md:55 ('frozen \u2014 cite them, don't reorganize or edit them')."
+          },
+          {
+            "leg": "announce-on-spine",
+            "met": "not-applicable",
+            "note": "Out of scope per rubric. The attempt does not claim to have emitted it \u2014 the report states the task.result_posted has to come from elsewhere."
+          }
+        ],
+        "verdict": "pass",
+        "would_have_shipped_defects": []
+      }
+    }
+  },
+  "remediated": false,
+  "remediation_reason": "first pass was green; no repair opportunity was used"
+}

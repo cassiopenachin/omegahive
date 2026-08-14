@@ -1,0 +1,17 @@
+# GRADER-ONLY. Never enters a candidate root and never enters a review packet.
+# Facts about what the closed outcome established, in outcome terms — never a
+# description of the historical patch, because exact-diff scoring is a stop-line.
+task_id: notifier-deep-links
+accepted_outcome:
+- With the base URL set, the task id in every rendered notification becomes a link into the deployed
+  UI; with it unset, every message renders byte-identically to before.
+- The variable follows the config-not-secret pattern and never reaches the secrets file.
+- URL assembly is escaped like every other dynamic fragment, trailing slashes normalize, and the
+  credential is absent from all output.
+known_defect_classes:
+- A structural render change that fires even when the variable is unset.
+- Linking to a page the deployed UI does not serve, instead of the surface it does.
+source_refs:
+- projects/omegahive/reports/2026-07-21-notifier-deep-links-result.md
+historical_solution_sha: 807a9b8bc740804ca1af5a6db5cee277f95b3328
+notes: HELD OUT. Reserved for zero-regression checks; never run as a qualification cell.

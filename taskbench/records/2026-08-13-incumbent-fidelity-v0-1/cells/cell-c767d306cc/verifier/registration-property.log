@@ -1,0 +1,7 @@
+FAIL case 1: a first emit did not register the run
+FAIL case 2: more than one registry row for the run
+FAIL case 3: a REPLAYED emit against a run with events but no registry row did not register it — the open happens after the idempotency early-return
+FAIL case 4: a run whose only emit was rejected carries no generation token
+
+4 property case(s) failed
+warning: `VIRTUAL_ENV=/home/cassio/work/sess-hip1-bench-seed-0812/omegahive/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead

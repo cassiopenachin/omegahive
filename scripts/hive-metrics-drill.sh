@@ -255,6 +255,36 @@ ev(14010, "instrument", "operator", "review.passed", "eta",
    {"ref_result": "projects/drill/decisions.md@abc1234"})
 closed(14020, "eta", "retired per decision")
 
+# iota — the result-revision scenario proper (decisions.md 2026-08-01): ONE
+# accept, TWO result_posted on the SAME cycle (no reopen in between, unlike
+# zeta, and — unlike an earlier draft of this fixture — no task.blocked between
+# them either: task.result_posted's own effect sets the board to in_review
+# (board/legality.py _e_result_posted), and task.blocked's guard is
+# _from_state("in_progress") only, so a block posted after a result could never
+# reach a real gateway without an intervening reopen, which this scenario
+# deliberately has none of. A worker posts a result, then re-fires
+# result_posted with a corrected ref some real time later — nothing else needs
+# to happen on the spine for that, and this fixture now emits only what the
+# live gateway would actually accept; hive-revision-drill.sh proves the same
+# shape end to end against a real spine). accept->first result = 3600s (1.0h)
+# and never moves; accept->last result = 10800s (3.0h) once the revision lands.
+# Predicted effort is 1 worker-hour: under the OLD single-span (last-based)
+# scheme this would have scored 10800/3600 = 3.0h -> "over" the moment the
+# revision fired — exactly the silent-inflation bug decisions.md 2026-08-01
+# names — with no blocked time involved at all. Under the new scheme the
+# production span is untouched by the revision and scores "hit". (The
+# blocked_upto exclusion of a post-first-result block is already covered by
+# epsilon's fixture above, which needs no revision to exercise it.)
+created(30000, "iota")
+ev(30005, "human", "operator", "worker.registered", None, {"worker_id": "w-iota"})
+ev(30100, "coordinator", "operator", "task.assigned", "iota", {"worker": "w-iota"})
+ev(30200, "worker", "w-iota", "task.accepted", "iota", {})
+result(33800, "iota", "w-iota")                         # first result: accept->first = 3600s
+result(41000, "iota", "w-iota")                         # revision: accept->last = 10800s
+ev(41100, "instrument", "operator", "review.passed", "iota",
+   {"ref_result": "projects/drill/reports/iota.md@abc1234"})
+closed(41200, "iota")
+
 json.dump(rows, open(sys.argv[1], "w"), indent=2, sort_keys=True)
 PY
 FIXTURE_SUM="$(sha256_hex < "$FIXTURE")"
@@ -344,6 +374,22 @@ Debris, D1-dialect. Retired by decision, never worked.
 - **Review outcome:** clean.
 EOF
 
+# iota predicts 1 worker-hour — a HIT against the new accept->first-result-net
+# figure (3600s) and an OVER against the old accept->last-result-net figure the
+# revision would have produced (7200s once its 3600s of post-first-result
+# blocked time is netted out of the 10800s gross) — the exact regression this
+# order exists to prevent.
+cat > "$ORDERS/2026-07-20-iota.md" <<'EOF'
+# Order: iota
+
+## Scope
+Do the iota thing, then revise the result once under review.
+
+## Predictions
+
+- Expected effort: 1 worker-hour. Expected questions: 0. Expected review outcome: minor rework.
+EOF
+
 # Seed the workspace and give `main` an upstream, so the tools' plain `git push`
 # has somewhere to go.
 git -C "$WS" add -A
@@ -413,15 +459,19 @@ check "delta listed as open, not measured" "grep -q 'Open at this window' '$MD' 
 
 check "alpha launch latency 60s"        "[ \"\$(col alpha created_to_assigned_s)\" = 60 ]"
 check "alpha pickup 60s"                "[ \"\$(col alpha assigned_to_accepted_s)\" = 60 ]"
-check "alpha accept->result 3600s"      "[ \"\$(col alpha accepted_to_result_s)\" = 3600 ]"
+# alpha has one result_posted, so first == last on both spans.
+check "alpha accept->first result 3600s" "[ \"\$(col alpha accepted_to_first_result_s)\" = 3600 ]"
+check "alpha accept->last result 3600s" "[ \"\$(col alpha accepted_to_last_result_s)\" = 3600 ]"
 check "alpha result->review 180s"       "[ \"\$(col alpha result_to_review_s)\" = 180 ]"
 check "alpha result->close 240s"        "[ \"\$(col alpha result_to_close_s)\" = 240 ]"
 check "alpha 0 questions"               "[ \"\$(col alpha questions)\" = 0 ]"
 check "alpha shape=worked"              "[ \"\$(col alpha shape)\" = worked ]"
 
 check "beta blocked 600s"               "[ \"\$(col beta blocked_s)\" = 600 ]"
-check "beta accept->result 3600s"       "[ \"\$(col beta accepted_to_result_s)\" = 3600 ]"
-check "beta net of blocked 3000s"       "[ \"\$(col beta accepted_to_result_net_s)\" = 3000 ]"
+check "beta accept->last result 3600s"  "[ \"\$(col beta accepted_to_last_result_s)\" = 3600 ]"
+check "beta accept->first result 3600s" "[ \"\$(col beta accepted_to_first_result_s)\" = 3600 ]"
+check "beta blocked before first result 600s" "[ \"\$(col beta blocked_before_first_result_s)\" = 600 ]"
+check "beta net of blocked 3000s"       "[ \"\$(col beta accepted_to_first_result_net_s)\" = 3000 ]"
 check "beta 1 question"                 "[ \"\$(col beta questions)\" = 1 ]"
 # The gateway coalesces a burst into ONE event carrying coalesced_count; counting
 # rows would say 1 where the worker really hit the gate 3 times.
@@ -430,26 +480,65 @@ check "beta 3 worker rejections"        "[ \"\$(col beta rejections_worker)\" = 
 check "beta 1 reassignment"             "[ \"\$(col beta reassignments)\" = 1 ]"
 
 check "gamma shape=retired"             "[ \"\$(col gamma shape)\" = retired ]"
-check "gamma has no accept duration"    "[ -z \"\$(col gamma accepted_to_result_s)\" ]"
+check "gamma has no accept duration"    "[ -z \"\$(col gamma accepted_to_first_result_s)\" ]"
 
 # epsilon: closed by task.failed, not by status_override. Failed work is the
 # outcome the improver most needs counted, so it must be measured, not dropped.
 check "epsilon measured (closed by task.failed)" "[ \"\$(col epsilon shape)\" = worked ]"
 check "epsilon final_status=failed"     "[ \"\$(col epsilon final_status)\" = failed ]"
 check "epsilon not listed as open"      "! grep -q '\`epsilon\`' '$MD'"
-# Its one block opens AFTER the last result and never closes: charging it back to
-# the result would be negative, so it charges forward to the terminal event.
-check "epsilon post-result block = 500s" "[ \"\$(col epsilon blocked_s)\" = 500 ]"
-check "epsilon net <= gross"            "[ \"\$(col epsilon accepted_to_result_net_s)\" -le \"\$(col epsilon accepted_to_result_s)\" ]"
+# Its one block opens AFTER the result and never closes: charging it back to the
+# result would be negative, so blocked_s (the full-task figure) charges it forward
+# to the terminal event — but blocked_before_first_result_s excludes it entirely,
+# since a block that opens after the (only, here also first) result never counts
+# against the production span at all.
+check "epsilon post-result block = 500s (full-task blocked_s)" "[ \"\$(col epsilon blocked_s)\" = 500 ]"
+check "epsilon blocked before first result = 0 (post-result block excluded)" \
+  "[ \"\$(col epsilon blocked_before_first_result_s)\" = 0 ]"
+check "epsilon first-result net == gross (post-result block never subtracted)" \
+  "[ \"\$(col epsilon accepted_to_first_result_net_s)\" = \"\$(col epsilon accepted_to_first_result_s)\" ]"
 
-# zeta: closed, reopened out of review, closed again. Only the final close counts.
+# zeta: closed, reopened out of review, closed again. Only the final close counts,
+# and its single task.accepted (never re-fired after reopen) against TWO
+# result_posted events makes it the fixture's other first/last split case, distinct
+# from a same-cycle revision (iota, below): here accept->first is the pre-reopen
+# result, accept->last is the post-reopen one.
 check "zeta measured once"              "[ \"\$(grep -c '^| zeta |' '$MD')\" = 3 ]"
 check "zeta closed at the second close" "[ \"\$(col zeta closed)\" = 2026-07-21T05:50:00Z ]"
 check "zeta final_status=done"          "[ \"\$(col zeta final_status)\" = done ]"
+check "zeta accept->first result 600s (pre-reopen result)" \
+  "[ \"\$(col zeta accepted_to_first_result_s)\" = 600 ]"
+check "zeta accept->last result 3599s (post-reopen result)" \
+  "[ \"\$(col zeta accepted_to_last_result_s)\" = 3599 ]"
 # zeta's 3599s span sits in the window where an independently-rounded remainder
 # renders an impossible clock. No cell may ever read Xh60m or a bare 60m.
 check "zeta 3599s renders as 1h0m"      "grep -qF '| 1h0m |' '$MD'"
 check "no impossible clock strings"     "! grep -qE '[0-9]+h60m|\\| 60m \\|' '$MD'"
+
+# iota: the same-cycle revision case (decisions.md 2026-08-01), no blocking
+# anywhere — the point is that first/last diverge from the revision ALONE.
+# accept->first is fixed at the first firing; accept->last grows to include the
+# revision. (blocked_upto's post-first-result exclusion is epsilon's job, above —
+# a real block there would require a reopen this scenario deliberately has none of.)
+check "iota accept->first result 3600s (unmoved by the revision)" \
+  "[ \"\$(col iota accepted_to_first_result_s)\" = 3600 ]"
+check "iota accept->last result 10800s (full cycle, incl. revision)" \
+  "[ \"\$(col iota accepted_to_last_result_s)\" = 10800 ]"
+check "iota blocked before first result = 0 (no blocking at all)" \
+  "[ \"\$(col iota blocked_before_first_result_s)\" = 0 ]"
+check "iota first-result net == first-result gross (3600s, nothing to net out)" \
+  "[ \"\$(col iota accepted_to_first_result_net_s)\" = 3600 ]"
+check "iota full-task blocked_s = 0 (no blocking at all)" \
+  "[ \"\$(col iota blocked_s)\" = 0 ]"
+# The worker-clock table's iota row must show the FIRST-result net (1h0m), and
+# the mixed-clock table's iota row the LAST-result gross (3h0m) — extracted by
+# slicing the artifact between its own section headings, since a whole-file grep
+# cannot tell which table a "1h0m" belongs to.
+iota_section() { awk -v h="$1" 'index($0,"## "h)==1{f=1;next} /^## /{f=0} f' "$MD"; }
+check "iota worker-clock table shows the FIRST-result net (1h0m)" \
+  "iota_section 'Worker clock' | grep '^| iota ' | grep -qF '| 1h0m |'"
+check "iota mixed-clock table shows the LAST-result gross (3h0m)" \
+  "iota_section 'Mixed clock' | grep '^| iota ' | grep -qF '| 3h0m |'"
 
 check "unattributed probe surfaced"     "grep -q 'probe' '$MD'"
 # The probe id contains a pipe; unescaped it would open a phantom column.
@@ -575,6 +664,41 @@ check "epsilon scorable (task.failed closed it)" "entry epsilon | grep 'final st
 check "zeta effort verdict = under"      "[ \"\$(verdict zeta effort)\" = under ]"
 check "zeta questions verdict = under"   "[ \"\$(verdict zeta questions)\" = under ]"
 check "zeta predicted range quoted"      "entry zeta | grep '1-2' >/dev/null"
+
+# iota: the retro 3 Verdict 4 case. Predicted 1 worker-hour; accept->FIRST result
+# net is exactly 3600s (1.0h) -> hit. Had hive-score still scored the OLD
+# accept->LAST result net (10800s gross minus its 3600s post-first-result blocked
+# time = 7200s = 2.0h), this would read "over" the moment the revision fired —
+# the silent-inflation bug decisions.md 2026-08-01 exists to kill. This is the one
+# assertion in the corpus that fails if hive-score ever regresses to scoring the
+# full-cycle span as effort.
+"$S" iota >/dev/null
+check "iota effort verdict = hit (scored against FIRST result, not last)" \
+  "[ \"\$(verdict iota effort)\" = hit ]"
+check "iota actual effort quoted as 1.0h (not 2.0h/3.0h)" "entry iota | grep '1.0h' >/dev/null"
+check "iota actual effort names the full-cycle span beside it (revised)" \
+  "entry iota | grep 'full cycle, incl. revision: 3.0h' >/dev/null"
+
+echo
+echo "metrics drill: --effort-uninterpretable (the one narrow, non-numeric effort override)"
+expect_fail_msg "--effort-uninterpretable requires --note" "requires --note" \
+  "$S" iota --effort-uninterpretable scope-amendment --again
+expect_fail_msg "--effort-uninterpretable rejects an undecided cause class" "must be one of" \
+  "$S" iota --effort-uninterpretable weather --note "nope" --again
+IOTA_Q_BEFORE="$(verdict iota questions)"
+"$S" iota --effort-uninterpretable host-incident --note "beastie tmux kill mid-run, 2026-08-13" --again >/dev/null
+check "uninterpretable verdict names the cause class"     "[ \"\$(verdict iota effort)\" = 'uninterpretable (host-incident)' ]"
+check "uninterpretable retains the measured span as context" "entry iota | grep '1.0h' >/dev/null"
+check "uninterpretable cause note recorded verbatim"      "entry iota | grep -F 'beastie tmux kill mid-run' >/dev/null"
+check "uninterpretable never inferred — questions verdict unaffected" \
+  "[ \"\$(verdict iota questions)\" = '$IOTA_Q_BEFORE' ]"
+check "uninterpretable never inferred — review verdict unaffected (still unscored)" \
+  "verdict iota 'review outcome' | grep '^unscored' >/dev/null"
+check "still one row (uninterpretable rides --again, not a second entry)" \
+  "[ \"\$(grep -c '^### iota — ' '$CAL')\" = 1 ]"
+"$S" iota --again >/dev/null   # restore a normal verdict so later corpus-wide checks read cleanly
+check "a plain --again afterward returns to the derived verdict (not sticky)" \
+  "[ \"\$(verdict iota effort)\" = hit ]"
 
 "$S" beta >/dev/null
 check "beta recorded as partial"      "entry beta | grep '^- coverage: partial' >/dev/null"

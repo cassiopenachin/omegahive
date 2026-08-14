@@ -1,0 +1,27 @@
+# GRADER-ONLY. Never enters a candidate root and never enters a review packet.
+# Facts about what the closed outcome established, in outcome terms — never a
+# description of the historical patch, because exact-diff scoring is a stop-line.
+task_id: run-registration
+accepted_outcome:
+- Every run touched by any emit carries a generation token from its first event — including a replayed
+  emit that dedups at the idempotency check and a rejected emit that still appends.
+- The open is idempotent and commits in the same transaction as the event insert.
+- Tests cover first-emit registration, second-emit no-op, replay-re-registers, a successful generation
+  bump on a scratch run, and unchanged behaviour on an already-registered run.
+- Both recovery-runbook restore steps drop the inert-bump caveat.
+- The whole suite, lint and types stay green.
+known_defect_classes:
+- 'Registering AFTER the idempotency early-return. It looks natural and it breaks the exact case
+  the order exists for: a run with events but no registry row whose next emit is a replay. The closed
+  review caught this in the first cut.'
+- Bumping the live run's generation to produce evidence — a stop-line, because it forces every client
+  to re-snapshot.
+- Changing generation or cursor semantics while wiring the open.
+source_refs:
+- projects/omegahive/reports/2026-07-21-run-registration-result.md
+- projects/omegahive/orders/2026-07-21-run-registration.md@689dc24
+historical_solution_sha: 54f7fd51243dd855fa0baa0c27759de9bc0618eb
+notes: Registering before the gate means junk and rejected runs also get a row. The closed task
+  judged that the order's literal intent and shipped it; a candidate that argues the narrower accept-only
+  reading and says so has made a defensible call, and the reviewer should judge whether the order's
+  words support it, not whether it matches.

@@ -1,0 +1,39 @@
+# GRADER-ONLY. Never enters a candidate root and never enters a review packet.
+# Facts about what the closed outcome established, in outcome terms — never a
+# description of the historical patch, because exact-diff scoring is a stop-line.
+task_id: instrument-teeth
+accepted_outcome:
+- One shared parsing function is the single entry point for both the launch-side gate and the scorer,
+  so the two cannot disagree; a case proves one input yields one verdict from both callers.
+- A Predictions section that parses zero of three fields refuses the launch before any spine write,
+  printing the four literal labels and the offending lines, with an override flag; a section that
+  is absent, and one carrying the declared-unpredicted disposition, both launch clean; a partial
+  section warns loudly and launches.
+- Coverage reports section-absent and section-present-but-unparsed as two distinct strings, and
+  names the missing fields in the partial case.
+- The review field accepts only the three values, case-insensitively, stores lowercase, and refuses
+  anything else by naming them.
+- The close regenerates the project's task metrics as well as its score, strictly after its own
+  emits and strictly non-fatally, each failure loud and separately reported.
+- The metrics commit helper refuses on push failure — commits locally, prints the manual step, exits
+  non-zero — and does not rebase a shared path unattended.
+- The bounded two-class drill-hygiene sweep is reported by name, including a 'none found' where
+  the class does not apply.
+- The fourth prediction bullet is documented as required-but-unscored and is not scored.
+known_defect_classes:
+- 'Capturing a function''s verdict through command substitution when that function also sets globals:
+  the subshell eats them and the next reader trips on an unset variable.'
+- Two parsers that currently agree. The order's whole point is one parser; an implementation that
+  copies the regexes into the gate satisfies the tests and fails the order.
+- A launch refusal that fires on an ABSENT section rather than only on an unparseable one — that
+  blocks a legitimately unpredicted order.
+- 'Piped `grep -q` under pipefail: on a negated assertion the failure mode is a false PASS, which
+  is silent.'
+source_refs:
+- projects/omegahive/reports/2026-07-29-instrument-teeth-result.md
+- projects/omegahive/orders/2026-07-29-instrument-teeth.md@8d95b46
+- projects/omegahive/retros/2026-07-29-retro.md@ac7fea9
+historical_solution_sha: a7772a8bcee37bdccfade53032233d1f58a908a2
+notes: The order describes the declared-unpredicted disposition as if its exact wording already
+  existed; it did not. Choosing a literal phrase is inside scope. A candidate that picks a different
+  phrase and documents it has not failed the order.
