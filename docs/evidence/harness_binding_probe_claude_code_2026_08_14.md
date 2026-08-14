@@ -11,10 +11,10 @@ asserts this file exists for exactly that reason.
 | Deployment | beastie (deployment #0) |
 | Harness | Claude Code **2.1.232**, native install |
 | Probe model | `claude-haiku-4-5-20251001` |
-| Materialized config digest | `sha256:96dffe19475307f600087efb81313571e71a63afe4a951d92542c56b2b60c476` — recorded in the descriptor's `verification` block, which refuses if the rules move away from it |
+| Materialized config digest | `sha256:0f5bf6a0afef0eedfc60b57d3ee2fbaeced8e9c2bfee4c276fac819de2736673` — recorded in the descriptor's `verification` block, which refuses if the rules move away from it |
 | Command | `scripts/hive-binding-probe claude-code.v1` |
 | Result | **PASS=6 FAIL=0**, total spend **US$0.084** |
-| Runs | five — the rule set was strengthened after each of two review passes, and the SCORING was strengthened once; the fourth run is the one that failed |
+| Runs | six — the rule set was strengthened after each of three review passes and the SCORING once; the fourth run is the one that failed |
 
 ## What ran
 
@@ -209,10 +209,13 @@ create.
   worker's code clone under `permissions.additionalDirectories`, which changes the file's
   digest and adds no rule. What was probed is the deny/allow set; the additional
   directory is a path grant checked structurally in `tests/test_harness_bindings.py`.
-- **It is a point measurement against 2.1.232.** A harness upgrade can change matcher
-  semantics. The installed version travels on `execution.started` beside this
-  descriptor's recorded probe version, so drift is visible after the fact; re-running
-  this command is what makes it visible before.
+- **It is a point measurement against 2.1.232, and that is now enforced rather than
+  noted.** A cross-vendor review pointed out that `status: proven` outlived the binary it
+  was proven against: nothing compared the recorded version to the installed one. The
+  supervisor now does, immediately before the child exists, and a **major.minor**
+  difference is a terminal failure with no `started` fact. A patch difference is
+  announced and allowed — refusing on every auto-update would brick the hive, which is a
+  worse failure than the one it prevents.
 
 ## Re-running
 

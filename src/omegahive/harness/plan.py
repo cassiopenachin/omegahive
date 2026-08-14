@@ -352,6 +352,14 @@ def to_json(plan: ResolvedPlan, *, kickoff: str) -> dict[str, Any]:
             "harness": plan.harness_binding.harness,
             "status": plan.harness_binding.status,
             "command_mode": plan.harness_binding.command_mode,
+            # The harness build the evidence was taken against. The supervisor probes the
+            # installed one and refuses a different series: a boundary's proof is a point
+            # measurement against one binary, and `proven` must not outlive it silently.
+            "proven_harness_version": (
+                plan.harness_binding.verification.harness_version
+                if plan.harness_binding.verification
+                else None
+            ),
             # Carried so the supervisor can re-check the vector it is about to exec
             # against the descriptor's own requirement, rather than against a second
             # copy of that requirement written in shell.

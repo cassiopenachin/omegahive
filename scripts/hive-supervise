@@ -304,6 +304,31 @@ fi
 HARNESS_VERSION=$(printf '%s\n' "$VERSION_OUT" | harness_version_from)
 [ -n "$HARNESS_VERSION" ] || HARNESS_VERSION="unknown"
 
+# --- 1b. the evidence must be about the binary that is about to run ------------------
+# `status: proven` rests on a probe run against ONE harness build. Nothing in the pure
+# resolver can check that, because it cannot ask the host what is installed — so the
+# comparison happens here, beside the version probe and before the child exists. The rule
+# is major.minor: refusing on a patch bump would brick every launch the moment the harness
+# auto-updates, which is a worse failure than the one it prevents; ignoring a series
+# change would leave a proven record standing over a binary whose matcher semantics may
+# have moved.
+PROVEN_VERSION=$(jq -r '.binding.proven_harness_version // empty' "$PLAN")
+if [ -n "$PROVEN_VERSION" ] && [ "$HARNESS_VERSION" != "unknown" ]; then
+  proven_series=$(printf '%s' "$PROVEN_VERSION" | cut -d. -f1,2)
+  probed_series=$(printf '%s' "$HARNESS_VERSION" | cut -d. -f1,2)
+  if [ "$proven_series" != "$probed_series" ]; then
+    log "BOUNDARY EVIDENCE IS STALE: proven against harness $PROVEN_VERSION, this host runs $HARNESS_VERSION"
+    log "  re-run scripts/hive-binding-probe and update the descriptor's verification block"
+    USAGE_JSON=$(jq -c -n --arg r "harness did not start; the boundary was proven against a different harness series" \
+      '{status:"unavailable", reason:$r}')
+    finish failure certain 126
+    exit 1
+  fi
+  if [ "$PROVEN_VERSION" != "$HARNESS_VERSION" ]; then
+    log "NOTE boundary proven against harness $PROVEN_VERSION, running $HARNESS_VERSION (same series)"
+  fi
+fi
+
 # --- 2. start the child, then say so ------------------------------------------------
 # The child is backgrounded so the supervisor keeps a pid to observe — but a plain `&`
 # in a non-interactive shell redirects the child's stdin from /dev/null (POSIX async

@@ -1074,3 +1074,81 @@ def test_the_report_refuses_a_duplicate_route_name_the_way_a_launch_does():
     )
     assert [r["state"] for r in rows] == ["refused", "refused"]
     assert {r["refusal_code"] for r in rows} == {"ROUTE_AMBIGUOUS"}
+
+
+# --- what the cross-vendor pass found ----------------------------------------------
+
+
+def test_a_descriptor_naming_a_subcommand_puts_it_first_in_the_argv():
+    """A flag can be valid only under a subcommand.
+
+    `--ignore-user-config` exits 2 on bare `codex` and works under `codex exec`, so the
+    first Codex binding described an argv that could not have started the harness at all.
+    The subcommand is part of the descriptor for that reason — one specification for the
+    adapter, the checker, and the probe runner.
+    """
+    from omegahive.harness.adapters import CodexAdapter
+    from omegahive.harness.records import RouteEntry
+
+    raw = shipped("codex.v1")
+    b = load_binding_descriptor(raw)
+    assert b.subcommand == ["exec"]
+    entry = RouteEntry(
+        **route(harness="codex", adapter="codex", binding_id="codex.v1",
+                binding_digest=binding_digest(raw))
+    )
+    ctx = LaunchContext(kickoff=KICKOFF, cwd="/w", execution_id="e",
+                        session_id="0f9c9a6e-0000-4000-8000-000000000001",
+                        parent_env={}, code_root="/c")
+    argv = CodexAdapter().build(entry, ctx, b).argv
+    assert argv[:2] == ["codex", "exec"]
+
+
+def test_an_argv_missing_the_subcommand_refuses():
+    from omegahive.harness.bindings import check_argv
+
+    b = load_binding_descriptor(shipped("codex.v1"))
+    with pytest.raises(RefusalError) as exc:
+        check_argv(b, ["codex", "--sandbox", "workspace-write", "--ignore-user-config"])
+    assert exc.value.code == "HARNESS_FLAG_MISSING"
+    assert "subcommand" in exc.value.message
+
+
+@pytest.mark.parametrize(
+    ("proven", "probed", "stops"),
+    [("2.1.232", "2.1.232", False), ("2.1.232", "2.1.240", False),
+     ("2.1.232", "2.2.0", True), ("2.1.232", "3.0.1", True)],
+)
+def test_a_harness_series_change_invalidates_the_evidence(proven, probed, stops):
+    """`status: proven` rests on a probe against ONE build. Refusing on a patch bump
+    would brick every launch the moment the harness auto-updates — a worse failure than
+    the one it prevents — so the rule is major.minor, and a patch difference is announced
+    rather than fatal."""
+    from omegahive.harness.bindings import check_harness_version
+
+    b = load_binding_descriptor(shipped("claude-code.v1"))
+    b = b.model_copy(
+        update={"verification": b.verification.model_copy(update={"harness_version": proven})}
+    )
+    assert (check_harness_version(b, probed) is not None) is stops
+
+
+def test_the_plan_that_anchors_verification_cannot_be_written_by_the_worker():
+    """The supervisor checks the materialized file against plan.json's own digest and
+    execs plan.json's own argv, so the plan is the root of trust — and it sits in the
+    worker's own tree at the worker's own uid. These rules are an accident guard; the
+    determined case needs a separate unix identity and is reported, not built."""
+    assert bash_denies(SHIPPED_CLAUDE, "vi /home/x/work/w/execution/plan.json")
+    assert tool_denies(SHIPPED_CLAUDE, "Write", "/home/x/work/w/execution/plan.json")
+    assert tool_denies(SHIPPED_CLAUDE, "Edit", "/home/x/work/w/execution/emit.sh")
+
+
+def test_p4_states_the_interpreter_bypass_in_its_own_residual():
+    """P4 is the class whose ALLOW list carries the bypass — python, python3 and uv are
+    explicitly permitted, and `python -c urlopen(...)` is a raw fetch no rule matches. A
+    general statement elsewhere does not discharge that; the class has to say it."""
+    p4 = SHIPPED_CLAUDE.klass("P4")
+    assert p4 is not None and p4.residual
+    lowered = p4.residual.lower()
+    assert "python" in lowered
+    assert "executable-name hygiene" in lowered or "not the network" in lowered

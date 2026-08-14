@@ -127,8 +127,14 @@ class Adapter:
 
     @staticmethod
     def boundary_flags(binding: HarnessBinding) -> list[str]:
-        """The descriptor's required flags, flattened into argv order."""
-        return [token for pair in binding.required_flags for token in pair]
+        """The descriptor's subcommand and required flags, in argv order.
+
+        The subcommand belongs here rather than in adapter code because a flag can be
+        valid only under one — `--ignore-user-config` exits 2 on bare `codex` and works
+        under `codex exec` — so a descriptor that names the flag and not the subcommand
+        describes an argv that cannot start the harness.
+        """
+        return binding.argv_prefix
 
     def version_argv(self) -> list[str]:
         return [self.executable, "--version"]

@@ -5,6 +5,9 @@
   "captured_at": "2026-08-14",
   "config_path": null,
   "config_format": "none",
+  "subcommand": [
+    "exec"
+  ],
   "required_flags": [
     [
       "--sandbox",
@@ -32,7 +35,7 @@
   ],
   "status": "declared",
   "verification": null,
-  "note": "DECLARED, NOT PROVEN - and therefore not launchable; every route naming this descriptor refuses at preflight with HARNESS_BINDING_UNPROVEN. WHAT BLOCKS IT, exactly: `codex-cli 0.147.0` IS installed on deployment #0 as of 2026-08-14 (it was not when worker-harness-core wrote its report on 2026-08-13, and its arrival mid-task is why this file was rewritten), but `codex login status` reports NOT LOGGED IN. No model call is possible, so nothing can be proven through the real agent loop. That is one operator act away, not a redesign. EVERYTHING BELOW IS OBSERVED against the installed binary, not copied from documentation - see docs/evidence/harness_binding_probe_codex_2026_08_14.md, which records ten command evaluations run for zero tokens through Codex's own offline evaluator. An earlier draft named `--ask-for-approval never`, which does not exist on `codex exec` in this build, and asserted that Codex has no per-command allow/deny list at all. BOTH WERE WRONG AND ARE WITHDRAWN, which is exactly the class of error a `declared` status exists to keep suspect. Codex has an execpolicy system: Starlark `.rules` files carrying prefix_rule(pattern, decision) with decision in allow/forbidden/prompt, discovered at $CODEX_HOME/rules/*.rules, and `codex execpolicy check` evaluates them offline with no auth and no model. Measured: a forbidden rule returns `forbidden` for sudo, sudoedit, systemctl, tailscale, podman kill, tmux kill-server, curl and /usr/bin/curl, and `allow` for git status, with `ls` falling through unmatched. That vocabulary is argv-token based rather than string based, so it neither needs the leading-wildcard workaround the Claude Code row needs nor pays that row's over-match cost. WHAT REMAINS UNPROVEN is that the running agent honours any of it.",
+  "note": "DECLARED, NOT PROVEN - and therefore not launchable; every route naming this descriptor refuses at preflight with HARNESS_BINDING_UNPROVEN. WHAT BLOCKS IT, exactly: `codex-cli 0.147.0` IS installed on deployment #0 as of 2026-08-14 (it was not when worker-harness-core wrote its report on 2026-08-13, and its arrival mid-task is why this file was rewritten), but `codex login status` reports NOT LOGGED IN. No model call is possible, so nothing can be proven through the real agent loop. That is one operator act away, not a redesign. The argv begins `codex exec`: `--ignore-user-config` exits 2 on bare `codex` and is valid only under the subcommand, so the first draft of this binding described an argv that could not have started the harness at all - found by a cross-vendor review running inside Codex itself, which is the one place that error was cheap to see. EVERYTHING BELOW IS OBSERVED against the installed binary, not copied from documentation - see docs/evidence/harness_binding_probe_codex_2026_08_14.md, which records ten command evaluations run for zero tokens through Codex's own offline evaluator. An earlier draft named `--ask-for-approval never`, which does not exist on `codex exec` in this build, and asserted that Codex has no per-command allow/deny list at all. BOTH WERE WRONG AND ARE WITHDRAWN, which is exactly the class of error a `declared` status exists to keep suspect. Codex has an execpolicy system: Starlark `.rules` files carrying prefix_rule(pattern, decision) with decision in allow/forbidden/prompt, discovered at $CODEX_HOME/rules/*.rules, and `codex execpolicy check` evaluates them offline with no auth and no model. Measured: a forbidden rule returns `forbidden` for sudo, sudoedit, systemctl, tailscale, podman kill, tmux kill-server, curl and /usr/bin/curl, and `allow` for git status, with `ls` falling through unmatched. That vocabulary is argv-token based rather than string based, so it neither needs the leading-wildcard workaround the Claude Code row needs nor pays that row's over-match cost. WHAT REMAINS UNPROVEN is that the running agent honours any of it.",
   "classes": [
     {
       "policy_class": "P1",
@@ -172,7 +175,7 @@
         {
           "id": "codex-p4-allow-executes",
           "kind": "allow-executes",
-          "command": "git status",
+          "command": "git --version",
           "expect": "executed",
           "note": "the positive control; evaluates to `allow` offline",
           "expect_output": "git version"

@@ -45,7 +45,7 @@
     "ran_at": "2026-08-14",
     "probe_record": "docs/evidence/harness_binding_probe_claude_code_2026_08_14.md",
     "outcome": "pass",
-    "config_digest": "sha256:96dffe19475307f600087efb81313571e71a63afe4a951d92542c56b2b60c476"
+    "config_digest": "sha256:0f5bf6a0afef0eedfc60b57d3ee2fbaeced8e9c2bfee4c276fac819de2736673"
   },
   "note": "Every deny rule is written as a SUBSTRING pattern (Bash(*token*)) rather than the prefix form (Bash(token *)) the workspace settings file uses. Measured on this harness at 2.1.232: a prefix pattern is evaded by an absolute path (/bin/echo) and by an interpreter (sh -c \"...\"), while the substring form catches both. THE COST IS REAL AND WAS PAID IMMEDIATELY, so it is stated here rather than discovered later: a substring rule denies any shell command whose TEXT contains the token, not only one that invokes it. The rule for the multiplexer-destruction command refused the very commit that was introducing it, because the phrase was in the commit message. On a worker boundary that trade is right - a worker that needs to type a denied token into a shell command is nearly always doing something the class exists to stop, the refusal is loud and self-correcting, and the Write tool remains available for prose. On a file that also binds document-writing sessions it is not, which is why the workspace .claude/settings.json keeps the prefix form. Reversing this trade is a one-line edit per rule here, followed by a re-pin of every route that names this descriptor.",
   "classes": [
@@ -258,9 +258,13 @@
             "Bash(*rm *.claude*)",
             "Bash(*rm -rf .claude*)",
             "Bash(*git clean*)",
-            "Bash(*git stash*)"
+            "Bash(*git stash*)",
+            "Edit(**/execution/**)",
+            "Write(**/execution/**)",
+            "Bash(*execution/plan.json*)",
+            "Bash(*execution/emit.sh*)"
           ],
-          "detail": "THE BOUNDARY FILE IS SHARED INFRASTRUCTURE TOO, and protecting it by name was one indirection short. It is materialized into the worker's own writable tree and the supervisor verifies its digest exactly once, immediately before the child forks; nothing after that re-checks it, and a resumed or hand-restarted session never passes through the check at all. Naming the file left three neighbours open, all found by review: removing the DIRECTORY (`rm -rf .claude`), removing it without naming it (`git clean -xfd` and `git stash -u`, both allow-listed under `Bash(git *)` and both effective because the file is gitignored), and rewriting the OTHER half of the loaded union, .claude/settings.json, from the shell - a file that can carry hooks, which execute outside the permission engine entirely. The Edit/Write rules now cover the directory rather than the file"
+          "detail": "THE BOUNDARY FILE IS SHARED INFRASTRUCTURE TOO, and protecting it by name was one indirection short. It is materialized into the worker's own writable tree and the supervisor verifies its digest exactly once, immediately before the child forks; nothing after that re-checks it, and a resumed or hand-restarted session never passes through the check at all. Naming the file left three neighbours open, all found by review: removing the DIRECTORY (`rm -rf .claude`), removing it without naming it (`git clean -xfd` and `git stash -u`, both allow-listed under `Bash(git *)` and both effective because the file is gitignored), and rewriting the OTHER half of the loaded union, .claude/settings.json, from the shell - a file that can carry hooks, which execute outside the permission engine entirely. The Edit/Write rules now cover the directory rather than the file. The same reasoning reaches one directory further, and a cross-vendor review is what pointed at it: the supervisor verifies the materialized file against plan.json's own digest and execs plan.json's own argv, so the PLAN is the root of trust and it sits in the worker's own tree at the worker's own uid. These rules deny writing it. They are an accident guard and nothing more - a determined agent at the same uid can edit a plan CONSISTENTLY (new config, matching digest) and the check passes, because there is no second copy to compare against. The real fix is a separate unix identity for workers, which is the already-parked `hive-user` cutover, and this order names it rather than pretending otherwise"
         }
       ],
       "probes": [
@@ -348,7 +352,7 @@
           "expect_output": "git version"
         }
       ],
-      "residual": "An order needing a documented exception says so in its text and the operator grants it at launch (permissions.md P4). This binding has no per-order exception mechanism; an exception is a different materialized descriptor, deliberately, so that it is visible in the route catalog rather than hidden in a flag."
+      "residual": "THIS CLASS ENFORCES EXECUTABLE-NAME HYGIENE, NOT 'network only through named tools'. The distinction was buried in a general statement elsewhere and belongs here, because P4 is the class whose allow list carries the bypass: `Bash(python *)`, `Bash(python3 *)` and `Bash(uv *)` are explicitly permitted, and `python -c 'import urllib.request; urllib.request.urlopen(...)'` is a raw fetch that no rule in this descriptor matches. So are a package manager's own downloads and anything a script fetches. What is bound is the direct invocation of curl and wget, by any path and through a shell wrapper; what is not bound is the network. Closing that needs egress control at the OS or proxy layer, which is not this order's surface. Separately: an order needing a documented exception says so in its text and the operator grants it at launch (permissions.md P4). There is no per-order exception mechanism here - an exception is a different descriptor, deliberately, so it is visible in the route catalog rather than hidden in a flag."
     }
   ]
 }

@@ -85,7 +85,11 @@ def descriptor(**over: Any) -> dict[str, Any]:
         "status": "proven",
         "verification": {
             "deployment": "test",
-            "harness_version": "0.0.0",
+            # What tests/fixtures/fake_harness.sh actually prints, so the supervisor's
+            # boundary-evidence check compares like with like. A fixture that recorded a
+            # version the fixture harness does not report would make every e2e launch
+            # refuse -- which is the check working, and useless noise here.
+            "harness_version": "fake-harness",
             "ran_at": "2026-08-14",
             "probe_record": "tests/harness_fixtures.py",
             "outcome": "pass",

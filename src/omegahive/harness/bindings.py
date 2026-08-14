@@ -289,6 +289,13 @@ class HarnessBinding(BaseModel):
     # `null` means this harness takes its whole boundary from launch flags.
     config_path: str | None
     config_format: Literal["claude-code-settings", "codex-toml", "none"]
+    # Tokens that come immediately after the executable, before any flag — a harness
+    # subcommand. Declared here rather than spelled in adapter code so that the argv an
+    # adapter builds, the argv `check_argv` verifies, and the argv a probe runner drives
+    # are one specification. Its absence was a real defect: the Codex binding required
+    # `--ignore-user-config`, which exits 2 at the top level and is only valid under
+    # `codex exec`, so the binding as written could not have started the harness at all.
+    subcommand: list[str] = Field(default_factory=list)
     # Flags the child's argv MUST carry, as (flag, value) pairs. The adapter emits
     # these verbatim and `check_argv` verifies the argv it actually built — so the
     # descriptor is the single source and an adapter that drifts from it is caught,
@@ -331,6 +338,11 @@ class HarnessBinding(BaseModel):
             if c.policy_class == policy_class:
                 return c
         return None
+
+    @property
+    def argv_prefix(self) -> list[str]:
+        """Subcommand then required flags — everything the boundary contributes."""
+        return [*self.subcommand, *(t for pair in self.required_flags for t in pair)]
 
     @property
     def command_mode(self) -> str | None:
@@ -504,6 +516,15 @@ def check_argv(binding: HarnessBinding, argv: list[str]) -> None:
     An adapter that forgets a flag, or a future adapter edit that drops one, must be
     caught here — the descriptor is the contract and the argv is the delivery.
     """
+    if binding.subcommand:
+        want = binding.subcommand
+        if argv[1 : 1 + len(want)] != want:
+            raise RefusalError(
+                "HARNESS_FLAG_MISSING",
+                f"{binding.binding_id}: the built argv does not begin with subcommand "
+                f"{want} after the executable. A flag valid only under a subcommand is "
+                "an argv that cannot start the harness",
+            )
     for token in binding.forbidden_argv_tokens:
         if token in argv:
             raise RefusalError(
@@ -538,6 +559,38 @@ def check_argv(binding: HarnessBinding, argv: list[str]) -> None:
                 "This flag is what makes the materialized boundary the one the child "
                 "honors; without it the descriptor describes a file nobody reads",
             )
+
+
+def check_harness_version(binding: HarnessBinding, probed: str) -> str | None:
+    """Compare the installed harness to the one the evidence was taken against.
+
+    Returns None when they agree closely enough, or a refusal message when they do not.
+    Not raised from `resolve`, because `resolve` is a pure function of bytes and cannot
+    ask the host what is installed — the supervisor probes the version and calls this
+    immediately before the child exists, which is the same place the config digest is
+    re-checked.
+
+    The rule is major.minor, deliberately. Refusing on any difference would brick every
+    launch the moment a harness auto-updates a patch release, which is a worse failure
+    than the one it prevents; ignoring the difference entirely would leave a `proven`
+    record standing over a binary whose matcher semantics may have changed. A patch
+    difference is recorded and announced; a minor difference stops.
+    """
+    if binding.verification is None:
+        return None
+    proven = binding.verification.harness_version
+
+    def series(v: str) -> tuple[str, ...]:
+        return tuple(v.split(".")[:2])
+
+    if series(proven) != series(probed):
+        return (
+            f"{binding.binding_id} was proven against harness {proven} and this host has "
+            f"{probed}. A boundary's evidence is a point measurement against one build; a "
+            "different series may match commands differently. Re-run "
+            "scripts/hive-binding-probe and update the verification block"
+        )
+    return None
 
 
 def check_status(binding: HarnessBinding) -> None:

@@ -671,3 +671,21 @@ def test_a_lone_switch_required_flag_verifies_rather_than_failing_every_launch(r
     proc = _run_supervisor(rig, "success")
     assert proc.returncode == 1
     assert "--a-switch-nobody-passes" in proc.stdout + proc.stderr
+
+
+def test_a_harness_series_change_stops_the_launch_with_no_started_fact(rig):
+    """A boundary's proof is a point measurement against one build. Driving it through
+    the real supervisor rather than the pure function, because the comparison can only
+    happen where the version is probed — beside the child, not in the resolver."""
+    _approve_route(rig)
+    plan_path = rig["run_dir"] / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["binding"]["proven_harness_version"] = "1.0.0"   # the fixture reports otherwise
+    plan_path.write_text(json.dumps(plan))
+
+    proc = _run_supervisor(rig, "success")
+    assert proc.returncode == 1
+    assert "BOUNDARY EVIDENCE IS STALE" in proc.stdout + proc.stderr
+    assert "execution.started" not in [e[0] for e in _events(rig)]
+    finished = [e for e in _events(rig) if e[0] == "execution.finished"]
+    assert finished and finished[0][3]["outcome"] == "failure"
