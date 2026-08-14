@@ -199,7 +199,13 @@ def test_a_record_is_invalid_when_the_launch_asked_for_identity_and_got_none(tmp
     root = record.open_record(tmp_path / "records", cfg)
     cell = root / "cells" / "cell-abc123"
     cell.mkdir(parents=True)
-    (cell / "verdict.json").write_text("{}")
+    # A cell that produced a REAL verdict: the exemption below is only for cells the
+    # environment killed, which have no identity to report in the first place.
+    (cell / "verdict.json").write_text(json.dumps({
+        "passed": True,
+        "review": {"passed": True, "ran": True, "probe_ok": True, "defect_count": 0,
+                   "reason": ""},
+    }))
     (cell / "candidate.patch").write_text("")
     (cell / "task.txt").write_text("greeting\ndemo\npython-service\n")
     (cell / "review").mkdir()

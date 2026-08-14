@@ -131,3 +131,38 @@ def test_preflight_catches_a_leg_whose_spend_would_be_dropped():
 
     spec.result_envelope = "claude-code-json"
     assert not any("would be dropped" in p for p in preflight.check_reviewer_sandbox(spec))
+
+
+def test_an_inconclusive_cell_is_not_required_to_be_attributable(tmp_path):
+    """A session killed before any model call succeeded has no resolved identity to report.
+    Demanding one would make an honest record of an interruption permanently invalid — while
+    a cell that DID produce a result must still say what produced it."""
+    rec = tmp_path / "2026-08-13-rec"
+    killed = _cell(
+        rec, "rate-limited",
+        verdict={"passed": False, "review": DEAD_REVIEW},
+        run={"progress": {"terminal_error": "harness reported failure: 429"},
+             "resolved_identity": {"available": True, "resolved_model": None}},
+    )
+    for name in ("candidate.patch",):
+        (killed / name).write_text("")
+    (killed / "review").mkdir()
+    for name in ("packet-manifest.json", "probe.json"):
+        (killed / "review" / name).write_text("{}")
+    (rec / "aggregate.md").write_text("x")
+    (rec / "cells.json").write_text("[]")
+    (rec / "config.json").write_text(json.dumps({
+        "record_id": "r", "date": "2026-08-13", "corpus_version": "v0.1",
+        "corpus_content_hash": "h", "taskbench_code_sha": "s",
+        "agent_labels": {"vendor": "a", "model": "m", "harness": "h"},
+        "reviewer_labels": {"vendor": "a", "model": "m", "harness": "h"},
+        "runner_config_hash": "h", "held_in": ["rate-limited"], "held_out": [], "host": {},
+    }))
+    assert not any("unattributable" in p for p in record.validate_record(rec))
+
+    # ...but a cell that produced a real verdict must still say what produced it.
+    (killed / "run.json").write_text(json.dumps(
+        {"progress": {"terminal_error": None},
+         "resolved_identity": {"available": True, "resolved_model": None}}))
+    (killed / "verdict.json").write_text(json.dumps({"passed": True, "review": REAL_REVIEW}))
+    assert any("unattributable" in p for p in record.validate_record(rec))

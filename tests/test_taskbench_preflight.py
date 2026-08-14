@@ -200,3 +200,27 @@ def test_the_launcher_is_shellcheck_clean():
         ["shellcheck", "-x", str(LAUNCHER)], capture_output=True, text=True, check=False
     )
     assert out.returncode == 0, out.stdout
+
+
+def test_an_unreachable_database_is_caught_before_spending(corpus, monkeypatch):
+    """`OMEGAHIVE_TEST_DATABASE_URL` moved to the owner credential file in the two-role
+    cutover, so a launch shell may no longer carry it. The fallback works until it doesn't,
+    and when it stops the symptom is a red cell that looks like a model failure."""
+    from taskbench import preflight
+
+    manifest = corpus.manifests["greeting"]
+    manifest.environment_needs = ["a reachable Postgres for the test suite"]
+
+    monkeypatch.setenv(preflight.TEST_DSN_ENV, "postgresql://nobody@127.0.0.1:1/none")
+    problems = preflight.check_database_reachable(corpus, ["greeting"])
+    assert problems and "unreachable" in problems[0]
+    assert "indistinguishable from a model failure" in problems[0]
+    assert "nobody" not in problems[0], "a DSN carries a password and is never printed"
+
+
+def test_a_task_that_needs_no_database_is_not_gated_on_one(corpus, monkeypatch):
+    from taskbench import preflight
+
+    corpus.manifests["greeting"].environment_needs = ["nothing"]
+    monkeypatch.setenv(preflight.TEST_DSN_ENV, "postgresql://nobody@127.0.0.1:1/none")
+    assert preflight.check_database_reachable(corpus, ["greeting"]) == []

@@ -195,6 +195,49 @@ def check_sandbox_reachability(spec: ReviewerSpec, *, host: str = "api.anthropic
     return []
 
 
+#: The same resolution the corpus's database-backed verifier uses, so the check cannot
+#: disagree with the thing it is checking.
+TEST_DSN_ENV = "OMEGAHIVE_TEST_DATABASE_URL"
+TEST_DSN_DEFAULT = "postgresql://omegahive:omegahive@localhost:5432/omegahive_test"
+
+
+def _redact(dsn: str) -> str:
+    """Never print a DSN: it carries a password."""
+    tail = dsn.rsplit("@", 1)[-1] if "@" in dsn else dsn
+    return f"…@{tail}"
+
+
+def check_database_reachable(corpus: LoadedCorpus, task_ids: list[str]) -> list[str]:
+    """A task whose verifier needs Postgres must be able to reach one, before we spend.
+
+    `OMEGAHIVE_TEST_DATABASE_URL` moved to the owner credential file in the two-role cutover,
+    so a launch shell may no longer carry it and the verifier falls back to a default. That
+    fallback works until it doesn't, and when it stops working the symptom is a red cell that
+    looks like a model failure.
+    """
+    needs_db = [
+        tid for tid in task_ids
+        if any("postgres" in need.lower() for need in corpus.manifests[tid].environment_needs)
+    ]
+    if not needs_db:
+        return []
+    dsn = os.environ.get(TEST_DSN_ENV) or TEST_DSN_DEFAULT
+    source = TEST_DSN_ENV if os.environ.get(TEST_DSN_ENV) else "the built-in default"
+    admin = dsn.rsplit("/", 1)[0] + "/postgres"
+    try:
+        import psycopg
+
+        psycopg.connect(admin, connect_timeout=15).close()
+    except Exception as exc:  # noqa: BLE001 — any failure to reach it is the same finding
+        return [
+            f"{', '.join(needs_db)} need Postgres and it is unreachable at "
+            f"{_redact(admin)} (from {source}): {type(exc).__name__}. Those cells would go red "
+            "for the environment, which is indistinguishable from a model failure in a "
+            "pass rate."
+        ]
+    return []
+
+
 def check_destinations(*, work_root: Path, out_dir: Path, record_id: str, date: str) -> list[str]:
     problems: list[str] = []
     record = out_dir / f"{date}-{record_id}"
@@ -292,6 +335,7 @@ def run_preflight(
         *check_destinations(
             work_root=work_root, out_dir=out_dir, record_id=record_id, date=date
         ),
+        *check_database_reachable(corpus, task_ids),
         *check_manifest_pins(
             corpus, task_ids, source_repos=source_repos, workspace_repo_path=workspace_repo_path
         ),

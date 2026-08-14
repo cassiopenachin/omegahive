@@ -463,8 +463,12 @@ def validate_record(path: str | Path) -> list[str]:
         for required in ("review/packet-manifest.json", "review/probe.json"):
             if not (cell / required).is_file():
                 problems.append(f"{cell.name}: {required} missing")
+        # An inconclusive cell records an outage, not a result. A session killed before any
+        # model call succeeded has no resolved identity to report, and demanding one would
+        # make an honest record of an interruption permanently invalid.
+        conclusive = cell_is_conclusive(cell)
         run_file = cell / "run.json"
-        if run_file.is_file():
+        if run_file.is_file() and conclusive:
             try:
                 run = json.loads(run_file.read_text())
             except json.JSONDecodeError:
