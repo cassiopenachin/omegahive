@@ -548,3 +548,46 @@ def test_unb64_round_trips_without_a_help_parsing_guard():
     )
     assert "--help" not in code, "unb64 must probe by behaviour, not by parsing --help"
     assert "grep -q" not in code
+
+
+def test_the_launchers_jq_projection_matches_binding_metadata(rig):
+    """One boundary projection, three implementations — held together by a test.
+
+    `hive-launch` builds the `route_approved` payload's `binding` block with jq,
+    `hive-supervise` builds the `started` one the same way, and `binding_metadata` in
+    plan.py is the Python statement of the same rule. Nothing forces them to agree, and
+    a drift would put a differently-shaped boundary on one of the two facts while every
+    Python test stayed green. This extracts the jq expression from the launcher itself
+    rather than restating it, so a change there is caught here.
+    """
+    plan = json.loads((rig["run_dir"] / "plan.json").read_text())
+    launcher = (REPO / "scripts" / "hive-launch").read_text()
+    # The expression as the launcher actually spells it, lifted from the source.
+    marker = "binding: (.binding | {"
+    assert marker in launcher, "hive-launch no longer projects the binding block with jq"
+    start = launcher.index(marker) + len("binding: (")
+    depth, i = 0, start
+    while i < len(launcher):
+        if launcher[i] == "(":
+            depth += 1
+        elif launcher[i] == ")":
+            if depth == 0:
+                break
+            depth -= 1
+        i += 1
+    expr = launcher[start:i]
+
+    proc = subprocess.run(
+        ["jq", "-S", "-c", expr],
+        input=json.dumps(plan), capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    from_jq = json.loads(proc.stdout)
+    from_python = binding_metadata(plan)
+    assert from_jq == from_python, (
+        "hive-launch's jq projection and binding_metadata disagree about the boundary "
+        "block; one of the two facts would carry a different shape"
+    )
+    # And the invariant both must hold: no file contents, no settings values.
+    assert "config_content" not in from_jq
+    assert "permissions" not in json.dumps(from_jq)
