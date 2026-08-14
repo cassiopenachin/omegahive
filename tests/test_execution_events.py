@@ -80,11 +80,28 @@ USAGE_REPORTED = {
 
 # --- payload builders -------------------------------------------------------
 
+# The permission boundary block every route_approved and started fact carries.
+BINDING_BLOCK: dict[str, Any] = {
+    "binding_id": "claude-code.v1",
+    "binding_digest": "sha256:" + "ab" * 32,
+    "config_digest": "sha256:" + "cd" * 32,
+    "command_mode": "auto",
+    "mechanisms": {
+        "P1": ["settings-deny", "setting-source-gating"],
+        "P2": ["env-allowlist", "settings-deny"],
+        "P3": ["settings-deny"],
+        "P4": ["settings-allow", "settings-deny"],
+    },
+    "probes": {"p1-rules-present": "pass", "p1-deny-enforced": "deferred"},
+}
+
+
 def approved(**over: Any) -> dict[str, Any]:
     doc: dict[str, Any] = {
         "execution_id": EXECUTION_ID,
         "purpose": "work",
         "attempt": 1,
+        "binding": dict(BINDING_BLOCK),
         "binding_ref": BINDING_REF,
         "catalog_digest": CATALOG_DIGEST,
         "identity": dict(IDENTITY),
@@ -101,6 +118,7 @@ def started(**over: Any) -> dict[str, Any]:
         "purpose": "work",
         "attempt": 1,
         "identity": dict(IDENTITY),
+        "binding": dict(BINDING_BLOCK),
         "harness_version": "2.1.231",
         "model_requested": "claude-opus-5",
         "started_at": "2026-08-13T12:00:00Z",

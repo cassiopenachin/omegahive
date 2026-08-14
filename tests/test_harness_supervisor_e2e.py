@@ -24,6 +24,8 @@ import psycopg
 import pytest
 
 import scratch_db
+from harness_fixtures import descriptors_map, pins
+from omegahive.harness.plan import binding_metadata
 
 REPO = Path(__file__).resolve().parent.parent
 SUPERVISE = REPO / "scripts" / "hive-supervise"
@@ -42,6 +44,7 @@ CATALOG = {
             "billing_market": "subscription",
             "credential_pool": "fixture-pool",
             "adapter": "fake",
+            **pins(harness="fake"),
             "price_basis": {
                 "currency": "USD",
                 "per_mtok_input": 1.0,
@@ -87,6 +90,12 @@ def rig(tmp_path):
     db = _db_url()
     run_id = "e2e-" + uuid.uuid4().hex[:8]
 
+    # The permission boundary travels the same way a real launch sends it, and the
+    # fixture materializes it into the worker root exactly as `materialize_binding`
+    # does — so this test exercises the launcher-to-supervisor handshake rather than
+    # asserting that two pieces of code agree in a comment.
+    descriptors = descriptors_map(harness="fake")
+
     catalog_file = tmp_path / "routes.json"
     catalog_file.write_bytes(json.dumps(CATALOG).encode())
     binding_file = tmp_path / "binding.json"
@@ -114,6 +123,9 @@ def rig(tmp_path):
         "cwd": str(tmp_path),
         "session_id": str(uuid.uuid4()),
         "env": env,
+        "descriptors_b64": {
+            k: base64.b64encode(v).decode() for k, v in descriptors.items()
+        },
     }
 
     resolved = subprocess.run(
@@ -125,6 +137,14 @@ def rig(tmp_path):
     )
     assert resolved.returncode == 0, resolved.stdout + resolved.stderr
     plan = json.loads(resolved.stdout)
+
+    # Materialize the boundary into the worker root. The supervisor recomputes this
+    # file's digest before the child exists and refuses to start on a mismatch, so a
+    # fixture that skipped this step would be testing a launch that cannot happen.
+    config_rel = plan["binding"]["config_path"]
+    config_file = tmp_path / config_rel
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(plan["binding"]["config_content"])
 
     run_dir = tmp_path / "execution"
     run_dir.mkdir()
@@ -143,6 +163,7 @@ def rig(tmp_path):
     wrapper.chmod(0o755)
 
     return {
+        "config_file": config_file,
         "run_id": run_id,
         "run_dir": run_dir,
         "plan": plan,
@@ -207,6 +228,7 @@ def _approve_route(rig) -> None:
             "identity", "predicted_total_tokens", "price_basis",
         )
     }
+    payload["binding"] = binding_metadata(plan)
     env = dict(os.environ)
     env.update({"OMEGAHIVE_DATABASE_URL": rig["db"], "OMEGAHIVE_GATEWAY_DATABASE_URL": ""})
     proc = subprocess.run(
