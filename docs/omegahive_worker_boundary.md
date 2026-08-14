@@ -290,7 +290,30 @@ A denied command inside a running worker is a different thing: per WORKER.md it 
 the worker's next report, and if it blocks the work, that is a question. Widening the
 boundary is a descriptor change, reviewed and re-pinned — never a flag.
 
-## 8. What this order deliberately does not do
+## 8. The default launch has NO boundary — read this before relying on any of it
+
+`HIVE_ENFORCE_BINDINGS` defaults to **`0`**. With that default, an order that has no
+`projects/<project>/bindings/<task>.json` takes the legacy path: no descriptor is
+resolved, no configuration is materialized, nothing is verified, and no supervisor runs.
+The worker executes `HIVE_WORKER_CMD` (`claude --permission-mode auto`) with no
+`--setting-sources` flag — so it resolves the operator's **user** settings as well as the
+project's, and gets none of the rules in this document.
+
+It is loud: the launcher prints a LEGACY banner naming both consequences, the record one
+and the boundary one. It is not silent, and it is not safe.
+
+Two commands frame the migration:
+
+```bash
+scripts/hive-launch --check-migration     # every order that would refuse under enforcement
+export HIVE_ENFORCE_BINDINGS=1            # make a missing binding a refusal
+```
+
+The flip is a deliberate operator act with a measured blast radius, not a default this
+order chose to change underneath a running hive. Until it happens, **"a launch either
+enforces the boundary or refuses" describes the bound path only.**
+
+## 9. What this order deliberately does not do
 
 - **No routing policy, no capacity UI, no review invocation.** Unchanged from
   `worker-harness-core`.

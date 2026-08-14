@@ -300,9 +300,11 @@ class ExecutionBinding(BaseModel):
     binding_digest: str
     config_digest: str
     command_mode: str | None = None
-    # policy class -> the enforceable mechanism kinds bound for it. A class present with
-    # an empty list would be an unbound class, which cannot reach this point — the
-    # launcher refuses first — so an empty list here reads as a defect, not a state.
+    # policy class -> the enforceable mechanism kinds bound for it. NOT validated here,
+    # and the distinction matters: the launcher refuses an unbound class long before this
+    # fact is authored, so on the launch path an empty list is unreachable. On a
+    # hand-written or recovered emit it is merely unusual. Read a sparse map as a
+    # recovered fact, not as a boundary that was in force.
     mechanisms: dict[str, list[str]] = Field(default_factory=dict)
     # probe id -> pass | fail | deferred. `deferred` is recorded as itself and never
     # folded into a pass: it means the probe needs the installed harness, and its
@@ -323,6 +325,11 @@ class ExecutionBinding(BaseModel):
         The launcher already refuses this case, so reaching it means a hand-written or
         recovered emit. Putting the rule in the payload model means such an emit cannot
         record the lie either — the same posture as `unavailable`-carries-no-tokens.
+
+        Scope, stated so the guarantee is not read wider than it is: only a recorded
+        `fail` is refused. An empty `probes` map and a truncated `mechanisms` map both
+        pass, because neither is a false claim — they are an absent one, and the reader
+        can see the absence.
         """
         failed = sorted(k for k, v in self.probes.items() if v == "fail")
         if failed:
