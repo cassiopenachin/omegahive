@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "binding_id": "codex.v1",
+  "harness": "codex",
+  "captured_at": "2026-08-14",
+  "config_path": null,
+  "config_format": "none",
+  "required_flags": [
+    [
+      "--sandbox",
+      "workspace-write"
+    ],
+    [
+      "--ask-for-approval",
+      "never"
+    ]
+  ],
+  "command_mode_flag": "--sandbox",
+  "forbidden_argv_tokens": [
+    "danger-full-access",
+    "--dangerously-bypass-approvals-and-sandbox"
+  ],
+  "known_command_modes": [
+    "read-only",
+    "workspace-write",
+    "danger-full-access"
+  ],
+  "safe_command_modes": [
+    "read-only",
+    "workspace-write"
+  ],
+  "status": "declared",
+  "verification": null,
+  "note": "DECLARED, NOT PROVEN — and therefore not launchable. The Codex CLI is not installed on deployment #0 (verified 2026-08-13 by worker-harness-core and again 2026-08-14: `command -v codex` finds nothing, no ~/.codex, no ~/.config/codex). Every mechanism below is written from the vendor's documented interface and NONE has been probed against a running binary, so `status` stays `declared` and every route naming this descriptor refuses at preflight with HARNESS_BINDING_UNPROVEN. Two shape differences from the Claude Code binding are structural rather than stylistic and must not be smoothed over: Codex has no per-command allow/deny list at all, so its classes bind through an OS-level sandbox and an approval mode instead — the test is the outcome, not the syntax — and its sandbox does not scope READS, which leaves P2's direct-read half with no native mechanism (see that class's residual). Filling the permissions.md Codex rows with this file is not the same as clearing them: the rows now say what WOULD bind and what would not, which is what an operator needs before installing the harness, and the launch still does not happen.",
+  "classes": [
+    {
+      "policy_class": "P1",
+      "title": "the access layer is never touched from a worker",
+      "mechanisms": [
+        {
+          "kind": "sandbox-flag",
+          "rules": [
+            "--sandbox workspace-write"
+          ],
+          "detail": "DECLARED: the documented sandbox confines writes to the workspace and denies privileged operations at the OS layer (Landlock/seccomp on Linux), which is a stronger mechanism than a command matcher where it applies. UNVERIFIED here: whether it actually refuses `sudo` and `systemctl` invocations, or merely fails them, has not been measured on this deployment"
+        },
+        {
+          "kind": "launch-flag",
+          "rules": [
+            "--ask-for-approval never"
+          ],
+          "detail": "DECLARED: pins the approval mode explicitly so the boundary is not whatever the operator's config.toml happens to say. danger-full-access is refused by forbidden_argv_tokens"
+        }
+      ],
+      "probes": [
+        {
+          "id": "codex-p1-sandbox-argv",
+          "kind": "argv-flag",
+          "argv": [
+            "--sandbox",
+            "workspace-write"
+          ],
+          "expect": "present"
+        },
+        {
+          "id": "codex-p1-deny-enforced",
+          "kind": "deny-enforced",
+          "command": "sudo -n true",
+          "expect": "denied",
+          "note": "cannot be run: the harness is not installed"
+        }
+      ],
+      "residual": "Unmeasured. A sandbox that blocks writes is not automatically one that blocks a privileged read or a network-configuration call, and this row will say which only after the binary exists here."
+    },
+    {
+      "policy_class": "P2",
+      "title": "secrets are never read, never printed, never committed",
+      "mechanisms": [
+        {
+          "kind": "env-allowlist",
+          "rules": [],
+          "detail": "ENFORCEABLE AND NOT VENDOR-DEPENDENT: the child's environment is constructed by the launcher's own adapter from an allowlist, and credential-shaped names are refused there. This half of P2 binds on Codex exactly as it binds on Claude Code, because the launcher owns it"
+        },
+        {
+          "kind": "instruction",
+          "rules": [],
+          "detail": "WORKER.md plus review"
+        }
+      ],
+      "probes": [
+        {
+          "id": "codex-p2-env-absent",
+          "kind": "env-absent",
+          "sentinel_name": "HIVE_PROBE_SENTINEL_TOKEN",
+          "expect": "absent"
+        }
+      ],
+      "residual": "THE NAMED GAP. Codex's documented sandbox scopes WRITES and network, not READS: there is no per-path read denial equivalent to Claude Code's Read(**/*.env). So P2's direct-read half has no native Codex mechanism, and the environment allowlist plus instructions is all this descriptor can honestly claim. Closing it needs either a Codex control this descriptor's author did not find, or an already-approved isolation layer around the worker root — a decision that is the operator's and is not taken here. Until then, this class alone is enough reason for the route to refuse."
+    },
+    {
+      "policy_class": "P3",
+      "title": "the durable stack is never mutated, and shared infrastructure is never destroyed",
+      "mechanisms": [
+        {
+          "kind": "sandbox-flag",
+          "rules": [
+            "--sandbox workspace-write"
+          ],
+          "detail": "DECLARED: writes outside the workspace root are denied at the OS layer, which would cover the container-runtime and multiplexer sockets that P3's incidents ran through — including tmux kill-server, whose effect is a write to the server socket outside the workspace. UNVERIFIED: whether the socket path is in fact outside the sandbox's writable set on this host has not been measured"
+        },
+        {
+          "kind": "launch-flag",
+          "rules": [
+            "--ask-for-approval never"
+          ],
+          "detail": "DECLARED: with approvals off and the sandbox on, an escalation request fails rather than prompting an absent operator"
+        }
+      ],
+      "probes": [
+        {
+          "id": "codex-p3-deny-enforced",
+          "kind": "deny-enforced",
+          "command": "tmux -L codex-probe-socket kill-server",
+          "expect": "denied",
+          "note": "cannot be run: the harness is not installed. Deliberately targets a private socket so that a future run of this probe cannot destroy the real multiplexer even if the binding fails"
+        }
+      ],
+      "residual": "Unmeasured, and the tmux case in particular is a guess about socket paths rather than a reading of behaviour."
+    },
+    {
+      "policy_class": "P4",
+      "title": "the network is reached through named tools, not raw fetches",
+      "mechanisms": [
+        {
+          "kind": "sandbox-flag",
+          "rules": [
+            "--sandbox workspace-write"
+          ],
+          "detail": "DECLARED: network access is documented as disabled by default under this sandbox mode, which would close P4 STRUCTURALLY rather than by naming curl and wget — a materially stronger mechanism than the Claude Code row, and the reason this table compares outcomes rather than syntax. UNVERIFIED here"
+        }
+      ],
+      "probes": [
+        {
+          "id": "codex-p4-deny-enforced",
+          "kind": "deny-enforced",
+          "command": "curl -sS https://example.invalid",
+          "expect": "denied",
+          "note": "cannot be run: the harness is not installed"
+        }
+      ],
+      "residual": "If network is off wholesale, the positive half of P4 also needs measuring: git over https and uv/package installs must still work, or the route is bound and useless. That trade is exactly what a probe run would settle and no document can."
+    }
+  ]
+}

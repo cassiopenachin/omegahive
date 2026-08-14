@@ -205,6 +205,58 @@ finish() {  # finish <outcome> <certainty> <exit-code-or-empty>
   emit_finished "$RUN_DIR" "$payload"
 }
 
+# --- 0. verify the permission boundary the child will actually honor ----------------
+# The launcher materialized this file minutes ago into the worker root. Between then and
+# now a clone step, a git operation, a hook, or a hand edit could have changed it — and
+# an execution that starts under a different boundary than the one approved is precisely
+# the "configuration presence is not enforcement" failure this milestone exists to close.
+# So the digest is recomputed HERE, against the bytes on disk, immediately before the
+# child exists. A mismatch is a terminal failure with NO `started` fact, the same shape
+# the version probe uses: approved, never started, failed.
+#
+# The argv is re-checked too, and against the plan rather than against a second copy of
+# the rules: the plan's argv is what this script is about to exec, so comparing it to
+# itself would prove nothing. What is checked is that the flags the descriptor requires
+# survived into the vector — the resolver already refused if they had not, and this
+# catches a plan.json edited after resolution.
+verify_binding() {  # verify_binding -> prints a reason on failure, empty on success
+  local rel want got flag value i n
+  rel=$(jq -r '.binding.config_path // empty' "$PLAN")
+  if [ -n "$rel" ]; then
+    if [ ! -f "${CWD:-$PWD}/$rel" ]; then
+      printf '%s' "the materialized boundary is missing at ${CWD:-$PWD}/$rel"
+      return
+    fi
+    want=$(jq -r '.binding.config_digest' "$PLAN")
+    got="sha256:$(sha256_hex < "${CWD:-$PWD}/$rel")"
+    if [ "$got" != "$want" ]; then
+      printf '%s' "the materialized boundary at ${CWD:-$PWD}/$rel hashes to $got, but the approved plan pins $want"
+      return
+    fi
+  fi
+  n=${#ARGV[@]}
+  while IFS= read -r flag && IFS= read -r value; do
+    [ -n "$flag" ] || continue
+    for ((i = 0; i < n - 1; i++)); do
+      if [ "${ARGV[i]}" = "$flag" ] && [ "${ARGV[i + 1]}" = "$value" ]; then
+        continue 2
+      fi
+    done
+    printf '%s' "the argv about to be exec'd does not carry the required boundary flag '$flag $value'"
+    return
+  done < <(jq -r '.binding.required_flags[]? | .[0], (.[1] // "")' "$PLAN")
+  printf ''
+}
+
+BINDING_FAILURE=$(verify_binding)
+if [ -n "$BINDING_FAILURE" ]; then
+  log "BOUNDARY VERIFICATION FAILED: $BINDING_FAILURE"
+  USAGE_JSON=$(jq -c -n --arg r "harness did not start; permission boundary verification failed" \
+    '{status:"unavailable", reason:$r}')
+  finish failure certain 126
+  exit 1
+fi
+
 # --- 1. probe the harness version -- no model call, no tokens -----------------------
 # Failing here means the execution never happened. That is recorded as a terminal
 # failure with no `started` fact, which is exactly what the projection should show:
@@ -252,7 +304,11 @@ STARTED_PAYLOAD=$(jq -c -n --slurpfile plan "$PLAN" \
   --arg v "$HARNESS_VERSION" --arg st "$(now)" \
   '$plan[0] as $p |
    {execution_id: $p.execution_id, purpose: $p.purpose, attempt: $p.attempt,
-    identity: $p.identity, harness_version: $v,
+    identity: $p.identity,
+    binding: ($p.binding | {binding_id, binding_digest, config_digest, command_mode,
+                            mechanisms,
+                            probes: ([.probes[] | {(.probe_id): .state}] | add // {})}),
+    harness_version: $v,
     model_requested: $p.model_requested, started_at: $st}')
 printf '%s\n' "$STARTED_PAYLOAD" > "$RUN_DIR/started.json"
 if ! "$RUN_DIR/emit.sh" --type execution.started --task "$TASK" \

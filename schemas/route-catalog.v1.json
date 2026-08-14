@@ -4,14 +4,22 @@
       "additionalProperties": false,
       "description": "The route's list-price basis, copied from the catalog AT APPROVAL TIME.\n\nCarried on the facts, not looked up later, because the catalog is a mutable\ndeployment file: a reader deriving the cost of a 2026-08 execution from the 2027-02\ncatalog would silently compute a number that was never true. Cost is derived from\nthese numbers, never authored \u2014 no payload here holds a currency amount.\n\nAll four rates are optional: a subscription route has no per-token list price, and\nan absent rate must stay absent rather than become a zero that reads as free.",
       "properties": {
-        "captured_at": {
-          "title": "Captured At",
-          "type": "string"
-        },
         "currency": {
           "default": "USD",
           "title": "Currency",
           "type": "string"
+        },
+        "per_mtok_input": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Per Mtok Input"
         },
         "per_mtok_cache_read": {
           "anyOf": [
@@ -37,18 +45,6 @@
           "default": null,
           "title": "Per Mtok Cache Write"
         },
-        "per_mtok_input": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Per Mtok Input"
-        },
         "per_mtok_output": {
           "anyOf": [
             {
@@ -64,6 +60,10 @@
         "source": {
           "title": "Source",
           "type": "string"
+        },
+        "captured_at": {
+          "title": "Captured At",
+          "type": "string"
         }
       },
       "required": [
@@ -77,8 +77,24 @@
       "additionalProperties": false,
       "description": "One thing this deployment can currently run.",
       "properties": {
-        "adapter": {
-          "title": "Adapter",
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "model_vendor": {
+          "title": "Model Vendor",
+          "type": "string"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "harness": {
+          "title": "Harness",
           "type": "string"
         },
         "billing_market": {
@@ -93,38 +109,31 @@
           "title": "Credential Pool",
           "type": "string"
         },
+        "adapter": {
+          "title": "Adapter",
+          "type": "string"
+        },
+        "binding_id": {
+          "title": "Binding Id",
+          "type": "string"
+        },
+        "binding_digest": {
+          "title": "Binding Digest",
+          "type": "string"
+        },
+        "credential_mode": {
+          "default": "harness-native",
+          "enum": [
+            "harness-native",
+            "broker"
+          ],
+          "title": "Credential Mode",
+          "type": "string"
+        },
         "enabled": {
           "default": true,
           "title": "Enabled",
           "type": "boolean"
-        },
-        "harness": {
-          "title": "Harness",
-          "type": "string"
-        },
-        "model": {
-          "title": "Model",
-          "type": "string"
-        },
-        "model_vendor": {
-          "title": "Model Vendor",
-          "type": "string"
-        },
-        "name": {
-          "title": "Name",
-          "type": "string"
-        },
-        "note": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Note"
         },
         "price_basis": {
           "anyOf": [
@@ -137,9 +146,17 @@
           ],
           "default": null
         },
-        "provider": {
-          "title": "Provider",
-          "type": "string"
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
         }
       },
       "required": [
@@ -150,20 +167,31 @@
         "harness",
         "billing_market",
         "credential_pool",
-        "adapter"
+        "adapter",
+        "binding_id",
+        "binding_digest"
       ],
       "title": "RouteEntry",
       "type": "object"
     }
   },
-  "$id": "https://omegahive.invalid/schemas/route-catalog.v1.json",
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "The deployment's route list.\n\n`routes` is a LIST, not a name-keyed object, on purpose: a JSON object with a\nrepeated key is collapsed silently by every parser we use, so a hand-edited catalog\nholding the same route name twice would resolve to whichever copy happened to win.\nA list makes the duplicate visible, and `resolve_route` refuses it as ambiguous.",
   "properties": {
+    "schema_version": {
+      "title": "Schema Version",
+      "type": "integer"
+    },
     "captured_at": {
       "title": "Captured At",
       "type": "string"
+    },
+    "routes": {
+      "items": {
+        "$ref": "#/$defs/RouteEntry"
+      },
+      "title": "Routes",
+      "type": "array"
     },
     "note": {
       "anyOf": [
@@ -176,17 +204,6 @@
       ],
       "default": null,
       "title": "Note"
-    },
-    "routes": {
-      "items": {
-        "$ref": "#/$defs/RouteEntry"
-      },
-      "title": "Routes",
-      "type": "array"
-    },
-    "schema_version": {
-      "title": "Schema Version",
-      "type": "integer"
     }
   },
   "required": [
@@ -194,5 +211,7 @@
     "captured_at"
   ],
   "title": "RouteCatalog",
-  "type": "object"
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omegahive.invalid/schemas/route-catalog.v1.json"
 }

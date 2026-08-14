@@ -216,16 +216,32 @@ else
   SESSION_UUID=$(printf '%s' "$BINDING_REL@$BINDING_SHA" | sha256_hex \
     | sed -E 's/^(.{8})(.{4})(.{3})(.{3})(.{12}).*/\1-\2-4\3-a\4-\5/')
 
+  # The permission-boundary descriptors ship with this launcher. They are collected
+  # HERE, on the host, and travel by exact bytes for the same reason the catalog does:
+  # the digest the operator pinned in the catalog is taken over these bytes, and a
+  # re-encode anywhere in the path would break the pin it exists to check.
+  descriptors_json=$(harness_descriptors_json)
+  # Paths whose mere EXISTENCE would outrank the boundary this launcher materializes —
+  # an admin/managed policy file, typically. The resolver is a pure function of bytes
+  # and cannot stat anything, so the one thing only the host can answer is answered
+  # here and passed in. Absent = fine; present = the launch refuses and an operator
+  # decides, because at that point the child honors something nobody here wrote.
+  present_json=$(harness_present_paths_json "$descriptors_json")
+
   # The two records travel base64-encoded so their exact bytes reach the digest.
   REQ=$(jq -n \
     --arg b "$(b64 "$OPS_WS/$BINDING_REL")" \
     --arg c "$(b64 "$HIVE_ROUTE_CATALOG")" \
     --arg ref "$BINDING_REL@$BINDING_SHA" \
     --arg task "$TASK" --arg order "$REL@$SHA" \
-    --arg kick "$KICKOFF" --arg cwd "$WS_ROOT" --arg sid "$SESSION_UUID" \
+    --arg kick "$KICKOFF" --arg cwd "$WS_ROOT" --arg code "$CODE_ROOT" \
+    --arg sid "$SESSION_UUID" \
     --argjson env "$(jq -n 'env')" \
-    '{binding_b64:$b, catalog_b64:$c, binding_ref:$ref, expected_task:$task,
-      expected_order_ref:$order, kickoff:$kick, cwd:$cwd, session_id:$sid, env:$env}')
+    --argjson desc "$descriptors_json" \
+    --argjson present "$present_json" \
+    '{binding_b64:$b, catalog_b64:$c, descriptors_b64:$desc, binding_ref:$ref,
+      expected_task:$task, expected_order_ref:$order, kickoff:$kick, cwd:$cwd,
+      code_root:$code, session_id:$sid, env:$env, present_paths:$present}')
 
   if [ -n "$CHECK_ONLY" ]; then
     echo "hive-launch --check: task=$TASK worker=$WORKER project=$PROJECT (no side effects)"
@@ -420,6 +436,14 @@ git clone --quiet "$CANON_CODE" "$CODE_ROOT" || die "failed to clone code from $
 git -C "$CODE_ROOT" remote set-url origin "$CODE_REPO"
 echo "  clones: $WS_ROOT  +  $CODE_ROOT (origin -> $CODE_REPO)"
 
+# --- materialize the permission boundary into the worker's own root -------------------
+# Immediately after the clone and before anything else can run in it. The descriptor is
+# the auditable half and this is the enforced half; a worker root that has one without
+# the other is the state this order exists to make unreachable.
+if [ -n "$PLAN_JSON" ]; then
+  materialize_binding "$PLAN_JSON" "$WS_ROOT"
+fi
+
 # Issue the per-seat emit wrapper (proto-credential): one file per identity,
 # issued at launch, revocable by deletion; role and actor baked in, not
 # parameters — swapping this for a real per-seat key later changes nothing
@@ -482,9 +506,15 @@ registered_payload=$(jq -cn --arg w "$WORKER" '{worker_id:$w}')
 # attributable decision about what would work it. It is emitted as `human`, by the
 # operator actor, because the launcher executes a signed intent and never signs one.
 if [ -n "$PLAN_JSON" ]; then
+  # `binding` carries the boundary the operator approved — ids, digests, mechanism per
+  # class, probe verdicts — and deliberately NOT the materialized file's contents. The
+  # spine is a durable record; "which boundary ran" is answerable from an id and two
+  # digests, and a settings file on an event log is a surface nobody asked for.
   route_payload=$(printf '%s' "$PLAN_JSON" | jq -c \
     '{execution_id, purpose, attempt, binding_ref, catalog_digest, identity,
-      predicted_total_tokens, price_basis}')
+      predicted_total_tokens, price_basis,
+      binding: (.binding | {binding_id, binding_digest, config_digest, command_mode,
+                            mechanisms, probes: ([.probes[] | {(.probe_id): .state}] | add // {})})}')
   emit human "$OPERATOR_ACTOR" execution.route_approved --task "$TASK" \
     --payload "$route_payload" >/dev/null
   echo "  route:  $(printf '%s' "$PLAN_JSON" | jq -r '.identity.model + " @ " + .identity.harness + " (" + .identity.billing_market + ", pool " + .identity.credential_pool + ")"')"

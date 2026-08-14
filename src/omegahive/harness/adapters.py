@@ -28,6 +28,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from omegahive.harness.bindings import HarnessBinding
 from omegahive.harness.records import RefusalError, RouteEntry
 
 # The only environment variables a worker process inherits, unless its adapter adds
@@ -56,10 +57,14 @@ class LaunchContext:
     """Everything the adapter needs that is not a property of the route."""
 
     kickoff: str                 # the worker's first message, passed as argv, never shell
-    cwd: str                     # the worker's workspace clone
+    cwd: str                     # the worker's workspace clone — the worker ROOT
     execution_id: str
     session_id: str              # pinned by the supervisor so usage is findable later
     parent_env: Mapping[str, str] = field(default_factory=dict)
+    # The worker's code clone. It is outside the worker root, so a harness that scopes
+    # file access to the cwd needs it named explicitly in the materialized config —
+    # which is why it travels here rather than being discovered.
+    code_root: str = ""
 
 
 @dataclass(frozen=True)
@@ -102,13 +107,28 @@ def _clean_env(
 
 
 class Adapter:
-    """Base contract. Subclasses are data + one `build`; keep them dumb and testable."""
+    """Base contract. Subclasses are data + one `build`; keep them dumb and testable.
+
+    `build` takes the harness BINDING DESCRIPTOR alongside the route, and the boundary
+    flags come out of that descriptor verbatim rather than being spelled a second time
+    in adapter code. Two spellings of one boundary drift; one spelling with a checker
+    over it does not — `check_argv` verifies the argv this method actually produced
+    against the same descriptor, so a future edit that drops a flag is caught at
+    preflight rather than discovered in a worker that was never bound.
+    """
 
     name: str = ""
     executable: str = ""
 
-    def build(self, route: RouteEntry, ctx: LaunchContext) -> LaunchPlan:  # pragma: no cover
+    def build(  # pragma: no cover
+        self, route: RouteEntry, ctx: LaunchContext, binding: HarnessBinding
+    ) -> LaunchPlan:
         raise NotImplementedError
+
+    @staticmethod
+    def boundary_flags(binding: HarnessBinding) -> list[str]:
+        """The descriptor's required flags, flattened into argv order."""
+        return [token for pair in binding.required_flags for token in pair]
 
     def version_argv(self) -> list[str]:
         return [self.executable, "--version"]
@@ -145,10 +165,12 @@ class ClaudeCodeAdapter(Adapter):
     name = "claude-code"
     executable = "claude"
 
-    def build(self, route: RouteEntry, ctx: LaunchContext) -> LaunchPlan:
+    def build(
+        self, route: RouteEntry, ctx: LaunchContext, binding: HarnessBinding
+    ) -> LaunchPlan:
         argv = [
             self.executable,
-            "--permission-mode", "auto",
+            *self.boundary_flags(binding),
             "--model", route.model,
             "--session-id", ctx.session_id,
             ctx.kickoff,
@@ -188,8 +210,15 @@ class CodexAdapter(Adapter):
     name = "codex"
     executable = "codex"
 
-    def build(self, route: RouteEntry, ctx: LaunchContext) -> LaunchPlan:
-        argv = [self.executable, "--model", route.model, ctx.kickoff]
+    def build(
+        self, route: RouteEntry, ctx: LaunchContext, binding: HarnessBinding
+    ) -> LaunchPlan:
+        argv = [
+            self.executable,
+            *self.boundary_flags(binding),
+            "--model", route.model,
+            ctx.kickoff,
+        ]
         env = _clean_env(ctx.parent_env, frozenset({"CODEX_HOME"}), {})
         return LaunchPlan(
             argv=argv,
@@ -219,7 +248,9 @@ class FakeAdapter(Adapter):
     name = "fake"
     executable = "hive-fake-harness"
 
-    def build(self, route: RouteEntry, ctx: LaunchContext) -> LaunchPlan:
+    def build(
+        self, route: RouteEntry, ctx: LaunchContext, binding: HarnessBinding
+    ) -> LaunchPlan:
         # The fixture executable is supplied by the test through the parent env; there
         # is no default, so a fake route can never accidentally resolve to something
         # real on an operator's PATH.
@@ -230,7 +261,13 @@ class FakeAdapter(Adapter):
                 "the fake adapter requires HIVE_FAKE_HARNESS to name a fixture "
                 "executable; it has no default and never resolves from PATH",
             )
-        argv = [exe, "--model", route.model, "--session-id", ctx.session_id, ctx.kickoff]
+        argv = [
+            exe,
+            *self.boundary_flags(binding),
+            "--model", route.model,
+            "--session-id", ctx.session_id,
+            ctx.kickoff,
+        ]
         env = _clean_env(
             ctx.parent_env,
             frozenset({"HIVE_FAKE_HARNESS", "HIVE_FAKE_BEHAVIOUR", "HIVE_FAKE_USAGE_FILE"}),

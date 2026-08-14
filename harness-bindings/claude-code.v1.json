@@ -1,0 +1,284 @@
+{
+  "schema_version": 1,
+  "binding_id": "claude-code.v1",
+  "harness": "claude-code",
+  "captured_at": "2026-08-14",
+  "config_path": ".claude/settings.local.json",
+  "config_format": "claude-code-settings",
+  "required_flags": [
+    [
+      "--setting-sources",
+      "project,local"
+    ],
+    [
+      "--permission-mode",
+      "auto"
+    ]
+  ],
+  "command_mode_flag": "--permission-mode",
+  "forbidden_argv_tokens": [
+    "--dangerously-skip-permissions",
+    "--allow-dangerously-skip-permissions",
+    "bypassPermissions",
+    "--bare",
+    "--safe-mode"
+  ],
+  "known_command_modes": [
+    "auto",
+    "acceptEdits",
+    "manual",
+    "dontAsk",
+    "plan",
+    "bypassPermissions"
+  ],
+  "safe_command_modes": [
+    "auto",
+    "acceptEdits",
+    "manual",
+    "dontAsk",
+    "plan"
+  ],
+  "status": "proven",
+  "verification": {
+    "deployment": "beastie",
+    "harness_version": "2.1.232",
+    "ran_at": "2026-08-14",
+    "probe_record": "docs/evidence/harness_binding_probe_claude_code_2026_08_14.md",
+    "outcome": "pass"
+  },
+  "note": "Every deny rule is written as a SUBSTRING pattern (Bash(*token*)) rather than the prefix form (Bash(token *)) the workspace settings file has used since 2026-08-12. Measured on this harness at 2.1.232: a prefix pattern is evaded by an absolute path (/bin/echo) and by an interpreter (sh -c \"...\"), while the substring form catches both. The cost is deliberate over-match — a command merely MENTIONING a denied token is refused too — which is a loud, self-correcting failure, unlike the silent one it replaces.",
+  "classes": [
+    {
+      "policy_class": "P1",
+      "title": "the access layer is never touched from a worker",
+      "mechanisms": [
+        {
+          "kind": "settings-deny",
+          "rules": [
+            "Bash(*sudo *)",
+            "Bash(*systemctl *)",
+            "Bash(*tailscale *)"
+          ],
+          "detail": "the harness's own permission engine refuses the tool call before the command reaches a shell"
+        },
+        {
+          "kind": "setting-source-gating",
+          "rules": [],
+          "detail": "--setting-sources project,local excludes the operator's user-level settings from the child's resolved configuration, so no pre-existing global config can widen this boundary and none is relied on to hold it"
+        },
+        {
+          "kind": "launch-flag",
+          "rules": [],
+          "detail": "--permission-mode auto: a mode in which deny rules are evaluated first; the unsafe modes are refused by forbidden_argv_tokens"
+        }
+      ],
+      "probes": [
+        {
+          "id": "p1-rules-present",
+          "kind": "rule-present",
+          "rules": [
+            "Bash(*sudo *)",
+            "Bash(*systemctl *)",
+            "Bash(*tailscale *)"
+          ],
+          "expect": "present"
+        },
+        {
+          "id": "p1-source-gating-argv",
+          "kind": "argv-flag",
+          "argv": [
+            "--setting-sources",
+            "project,local"
+          ],
+          "expect": "present"
+        },
+        {
+          "id": "p1-managed-policy-absent",
+          "kind": "config-absent",
+          "path": "/etc/claude-code/managed-settings.json",
+          "expect": "absent",
+          "note": "an admin/managed policy file outranks every source the launcher controls; if one appears, the boundary is no longer the one this descriptor materializes and the launch refuses until an operator approves it"
+        },
+        {
+          "id": "p1-deny-enforced",
+          "kind": "deny-enforced",
+          "command": "echo sudo probe-canary",
+          "expect": "denied",
+          "note": "harmless by construction and denied by the SAME pattern the real command matches. A probe that runs the destructive form proves nothing extra and cannot be re-run; a probe whose command merely LOOKS destructive is refused by the model before the permission engine ever sees it, which scores an absent boundary as a present one."
+        },
+        {
+          "id": "p1-source-gated",
+          "kind": "source-gated",
+          "command": "echo sudo probe-canary",
+          "expect": "executed",
+          "note": "the paired negative: with --setting-sources excluding the materialized file, the same command is NOT denied. This is what proves the materialized file is doing the work rather than something else in the environment."
+        }
+      ],
+      "residual": null
+    },
+    {
+      "policy_class": "P2",
+      "title": "secrets are never read, never printed, never committed",
+      "mechanisms": [
+        {
+          "kind": "settings-deny",
+          "rules": [
+            "Read(./.env)",
+            "Read(**/.env)",
+            "Read(**/*.env)",
+            "Read(~/.ssh/**)",
+            "Bash(*compose config*)"
+          ],
+          "detail": "direct reads of credential files are refused by the engine, and so is the ONE mechanism by which a secret actually reached a worker terminal twice (2026-07-28, 2026-08-01): a compose config that dereferences the secrets file and prints it"
+        },
+        {
+          "kind": "env-allowlist",
+          "rules": [],
+          "detail": "the child's environment is constructed from an allowlist, and any addition whose name contains API_KEY/SECRET/TOKEN/PASSWORD/CREDENTIAL is refused at the adapter boundary — so a secret cannot arrive by inheritance"
+        },
+        {
+          "kind": "setting-source-gating",
+          "rules": [],
+          "detail": "--setting-sources project,local; the boundary does not depend on the operator's user settings"
+        },
+        {
+          "kind": "instruction",
+          "rules": [],
+          "detail": "WORKER.md plus review carry the part no matcher can express: do not PRINT resolved configuration that dereferences a secret, by any route"
+        }
+      ],
+      "probes": [
+        {
+          "id": "p2-rules-present",
+          "kind": "rule-present",
+          "rules": [
+            "Read(**/*.env)",
+            "Read(~/.ssh/**)",
+            "Bash(*compose config*)"
+          ],
+          "expect": "present"
+        },
+        {
+          "id": "p2-env-absent",
+          "kind": "env-absent",
+          "sentinel_name": "HIVE_PROBE_SENTINEL_TOKEN",
+          "expect": "absent"
+        },
+        {
+          "id": "p2-deny-enforced",
+          "kind": "deny-enforced",
+          "command": "echo compose config probe-canary",
+          "expect": "denied"
+        }
+      ],
+      "residual": "A deny list binds the NAMED read paths and the one recorded printing mechanism. It does not and cannot bind 'do not print resolved configuration' in general: a worker that reads a secret through an allowed interpreter (python, uv run, an inline heredoc) or prints it from a command nobody enumerated is outside what this engine evaluates. That surface binds through WORKER.md and review, and this descriptor claims no containment over it. An ordinary harness permission policy is not an adversarial OS sandbox."
+    },
+    {
+      "policy_class": "P3",
+      "title": "the durable stack is never mutated, and shared infrastructure is never destroyed",
+      "mechanisms": [
+        {
+          "kind": "settings-deny",
+          "rules": [
+            "Bash(*podman system *)",
+            "Bash(*podman rm *)",
+            "Bash(*podman volume rm *)",
+            "Bash(*podman network prune*)",
+            "Bash(*podman stop *)",
+            "Bash(*git push --force*)",
+            "Bash(*tmux kill-server*)"
+          ],
+          "detail": "including tmux kill-server, which permissions.md P3 has carried as policy-but-unbound since 2026-08-12 and OPERATIONS.md pain 13 names as the fix; on 2026-07-29 a worker reached it directly and destroyed the operator's multiplexer under two live workers"
+        },
+        {
+          "kind": "setting-source-gating",
+          "rules": [],
+          "detail": "--setting-sources project,local"
+        }
+      ],
+      "probes": [
+        {
+          "id": "p3-rules-present",
+          "kind": "rule-present",
+          "rules": [
+            "Bash(*tmux kill-server*)",
+            "Bash(*git push --force*)",
+            "Bash(*podman stop *)"
+          ],
+          "expect": "present"
+        },
+        {
+          "id": "p3-deny-enforced",
+          "kind": "deny-enforced",
+          "command": "echo tmux kill-server probe-canary",
+          "expect": "denied",
+          "note": "the canary form of the exact command that caused the 2026-07-29 incident: same pattern, same engine, no multiplexer harmed"
+        }
+      ],
+      "residual": "sudo and systemctl are bound under P1. A worker that reaches the same effect through an allowed interpreter is outside a command matcher; the policy's own answer to that is review, not a longer list."
+    },
+    {
+      "policy_class": "P4",
+      "title": "the network is reached through named tools, not raw fetches",
+      "mechanisms": [
+        {
+          "kind": "settings-deny",
+          "rules": [
+            "Bash(*curl *)",
+            "Bash(*wget *)"
+          ],
+          "detail": "raw fetches refused; the harness's own web tooling is unaffected because it is not a Bash tool call"
+        },
+        {
+          "kind": "settings-allow",
+          "rules": [
+            "Bash(git *)",
+            "Bash(gh *)",
+            "Bash(uv *)",
+            "Bash(pytest *)",
+            "Bash(python *)",
+            "Bash(python3 *)",
+            "Bash(shellcheck *)",
+            "Bash(jq *)",
+            "Bash(podman compose *)",
+            "Bash(podman build *)",
+            "Bash(podman images *)",
+            "Bash(podman ps *)",
+            "Bash(podman logs *)"
+          ],
+          "detail": "the positive half of the class: the version-control and package tools an order needs stay usable. Deny is evaluated first, so an allow entry never widens a denied pattern (podman compose is allowed AND *compose config* is denied — the deny wins)"
+        },
+        {
+          "kind": "setting-source-gating",
+          "rules": [],
+          "detail": "--setting-sources project,local"
+        }
+      ],
+      "probes": [
+        {
+          "id": "p4-rules-present",
+          "kind": "rule-present",
+          "rules": [
+            "Bash(*curl *)",
+            "Bash(*wget *)"
+          ],
+          "expect": "present"
+        },
+        {
+          "id": "p4-deny-enforced",
+          "kind": "deny-enforced",
+          "command": "echo curl probe-canary",
+          "expect": "denied"
+        },
+        {
+          "id": "p4-allow-executes",
+          "kind": "allow-executes",
+          "command": "git --version",
+          "expect": "executed",
+          "note": "the positive control. Without it a descriptor that denied everything would score four green classes and be useless."
+        }
+      ],
+      "residual": "An order needing a documented exception says so in its text and the operator grants it at launch (permissions.md P4). This binding has no per-order exception mechanism; an exception is a different materialized descriptor, deliberately, so that it is visible in the route catalog rather than hidden in a flag."
+    }
+  ]
+}

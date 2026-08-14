@@ -278,6 +278,61 @@ class ExecutionIdentity(BaseModel):
     adapter: str             # which adapter builds this route's argv
 
 
+class ExecutionBinding(BaseModel):
+    """WHICH permission boundary this execution ran under, and whether it held.
+
+    Two digests, because they answer two different questions and one cannot stand for
+    the other. `binding_digest` pins the DESCRIPTOR — the policy-to-mechanism mapping
+    the operator approved, source-controlled with the launcher. `config_digest` pins the
+    MATERIALIZED file — the bytes the child actually read in its own worker root. A
+    correct descriptor with a materialization that drifted from it is precisely the
+    failure "configuration presence is not enforcement" names, and only carrying both
+    makes it visible after the fact.
+
+    What is deliberately NOT here: the materialized file's contents, any environment
+    value, any settings value. These facts are a durable record; the answer to "what
+    boundary ran" is an id, two digests, and a verdict per class — never the file.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    binding_id: str
+    binding_digest: str
+    config_digest: str
+    command_mode: str | None = None
+    # policy class -> the enforceable mechanism kinds bound for it. A class present with
+    # an empty list would be an unbound class, which cannot reach this point — the
+    # launcher refuses first — so an empty list here reads as a defect, not a state.
+    mechanisms: dict[str, list[str]] = Field(default_factory=dict)
+    # probe id -> pass | fail | deferred. `deferred` is recorded as itself and never
+    # folded into a pass: it means the probe needs the installed harness, and its
+    # evidence lives in the descriptor's verification record instead.
+    probes: dict[str, Literal["pass", "fail", "deferred"]] = Field(default_factory=dict)
+
+    @field_validator("binding_digest", "config_digest")
+    @classmethod
+    def _binding_digest_shape(cls, v: str) -> str:
+        if not _DIGEST_SHAPE.fullmatch(v):
+            raise ValueError(f"must be 'sha256:<64 hex>', got {v!r}")
+        return v
+
+    @model_validator(mode="after")
+    def _no_failed_probe_on_a_recorded_boundary(self) -> ExecutionBinding:
+        """A boundary that failed its own probe cannot be recorded as the one that ran.
+
+        The launcher already refuses this case, so reaching it means a hand-written or
+        recovered emit. Putting the rule in the payload model means such an emit cannot
+        record the lie either — the same posture as `unavailable`-carries-no-tokens.
+        """
+        failed = sorted(k for k, v in self.probes.items() if v == "fail")
+        if failed:
+            raise ValueError(
+                f"probes {failed} failed; an execution cannot record a boundary that "
+                "did not hold as the boundary it ran under"
+            )
+        return self
+
+
 class ExecutionUsage(BaseModel):
     """Consumption as the provider/harness reported it, or an honest refusal to guess.
 
@@ -352,6 +407,10 @@ class ExecutionRouteApproved(BaseModel):
     binding_ref: str          # the committed binding, pinned: path@<git-sha>
     catalog_digest: str       # sha256 of the exact catalog bytes that resolved the route
     identity: ExecutionIdentity
+    # The approved permission boundary. REQUIRED: the operator's signature on a spend
+    # decision is also a signature on what that spend may reach, and an approval that
+    # cannot say which boundary it approved is the gap this milestone closes.
+    binding: ExecutionBinding
     predicted_total_tokens: int = Field(ge=0)
     price_basis: PriceBasis | None = None
 
@@ -389,6 +448,10 @@ class ExecutionStarted(BaseModel):
     purpose: Literal["work", "review"]
     attempt: int = Field(ge=1)
     identity: ExecutionIdentity
+    # Re-verified by the supervisor against the materialized file on disk immediately
+    # before the child exists — so this is what the child actually ran under, not what
+    # the launcher intended half a minute earlier.
+    binding: ExecutionBinding
     harness_version: str      # probed from the installed harness, not assumed
     model_requested: str      # what the adapter actually put on the command line
     started_at: str
