@@ -59,6 +59,9 @@ class AgentSpec(BaseModel):
     transcript_jsonl: str | None = None
     #: How the kickoff reaches the agent: appended to argv, or written to TASK.md only.
     prompt_mode: str = "argv"
+    #: When the non-interfering diagnostic snapshot is taken, in seconds. The order fixes five
+    #: minutes; it is a field so a test does not have to wait five minutes to exercise it.
+    pulse_at_s: int = 300
     #: Set to `claude-code-json` when the command runs with `--output-format json`. The
     #: harness then reports its own resolved model id and token counts, and the record pins
     #: those rather than the friendly tier name the launch asked for — an alias is a request,
@@ -102,6 +105,136 @@ class ProgressFacts:
             self.missing_surfaces[fact] = missing
 
 
+#: The four things a five-minute snapshot is allowed to say. Deliberately not a verdict
+#: vocabulary: none of these means pass or fail, and `progressing` never authorises a kill.
+PULSE_STATES = ("terminal-red", "progressing", "started", "indeterminate")
+
+
+@dataclass
+class DiagnosticPulse:
+    """A non-interfering snapshot of a run in flight, taken once at a fixed elapsed time.
+
+    Its purpose is escalation value, not accuracy about the outcome: a bundle whose failures
+    are legible at five minutes is cheaper to operate than one that looks fine until minute
+    ninety, *even when both end at the same pass count*. So the pulse reports only facts that
+    are already true — a terminal error the harness itself printed, a write that happened, a
+    verifier that ran — and says `indeterminate` rather than guessing when nothing is visible.
+
+    A wrong-but-still-developing patch is NOT knowable here, and calling one red at minute five
+    is the failure mode this vocabulary is shaped to prevent.
+    """
+
+    at_s: int
+    utc: str
+    state: str
+    observed: str
+
+    def to_json(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def classify_pulse(
+    *,
+    responded: bool,
+    wrote: bool,
+    ran_verifier: bool,
+    terminal_error: str | None,
+    exited: bool,
+) -> tuple[str, str]:
+    """The pulse vocabulary, as a pure function so its rules are testable without a subprocess.
+
+    Ordered most-certain-first. `terminal-red` requires the harness to have *said* something
+    terminal — it is never inferred from silence, because silence is what a thinking model and
+    a hung one have in common.
+    """
+    if terminal_error:
+        return "terminal-red", f"the harness reported a terminal condition: {terminal_error}"
+    if ran_verifier:
+        return "progressing", "the candidate has invoked bin/bench-verify at least once"
+    if wrote:
+        return "progressing", "at least one file under code/ has been created or modified"
+    if responded and exited:
+        return (
+            "indeterminate",
+            "the process has already exited without writing anything or reporting an error",
+        )
+    if responded:
+        return "started", "the harness has produced output but has not yet written or verified"
+    return (
+        "indeterminate",
+        "no output, no write and no verifier invocation are observable yet; a slow first token "
+        "and a stalled harness look identical from here",
+    )
+
+
+def earliest_actionable_red(
+    *,
+    pulse: dict[str, Any] | None,
+    progress: dict[str, Any],
+    finished_utc: str,
+    deterministic_failed: bool,
+    review_failed: bool,
+    review_finished_utc: str | None,
+) -> dict[str, str]:
+    """When the record *first* made a final red objectively actionable — and on what basis.
+
+    This is deliberately conservative and deliberately retrospective. The temptation is to
+    credit a bundle for looking bad early; the discipline is that a failure is only actionable
+    once an immutable receipt shows it, not once a human squinting at a transcript could have
+    guessed. A patch that is heading somewhere wrong at minute five is *not* knowable at minute
+    five, and labelling it so would turn this field into a second, worse pass rate.
+
+    So there are exactly three bases, in order of how early they can fire:
+
+    1. **The harness said so.** A terminal error caught by the five-minute pulse is actionable
+       at the pulse: authentication, credit, rate limit, context overflow, a crash. Nothing
+       about the model's judgment is involved, which is what makes it safe to call early.
+    2. **A deterministic gate failed.** Actionable when the run ended and the gates ran — the
+       first moment a machine, not a reader, could say so.
+    3. **The blinded review found it.** Actionable only when the review returned. A defect that
+       needs a strong model to see is not actionable before that model has spoken.
+    """
+    if pulse and pulse.get("state") == "terminal-red":
+        return {
+            "utc": str(pulse.get("utc")),
+            "basis": f"five-minute pulse: {pulse.get('observed')}",
+            "how_early": f"at the {pulse.get('at_s')}s snapshot",
+        }
+    terminal = progress.get("terminal_error")
+    if terminal:
+        return {
+            "utc": finished_utc,
+            "basis": (
+                f"the harness reported a terminal condition ({terminal}), visible in the run "
+                "record at exit"
+            ),
+            "how_early": "at process exit",
+        }
+    if deterministic_failed:
+        return {
+            "utc": finished_utc,
+            "basis": (
+                "a deterministic verifier failed; actionable as soon as the gates ran on the "
+                "finished tree, with no reader judgment involved"
+            ),
+            "how_early": "at process exit",
+        }
+    if review_failed:
+        return {
+            "utc": review_finished_utc or finished_utc,
+            "basis": (
+                "the blinded review found the defect; a defect that needs a strong model to "
+                "see is not actionable before that model has spoken"
+            ),
+            "how_early": "at review completion",
+        }
+    return {
+        "utc": UNKNOWN,
+        "basis": "no final red on this cell, so there is nothing to date",
+        "how_early": UNKNOWN,
+    }
+
+
 @dataclass
 class CellRun:
     """Everything one candidate execution produced, before grading."""
@@ -135,6 +268,12 @@ class CellRun:
     #: What the harness said it actually ran — resolved model id, provider, token counts.
     #: This, not the launch's alias, is the execution identity the record pins.
     resolved_identity: dict[str, Any] = field(default_factory=dict)
+    #: The five-minute snapshot, when the run lasted that long. Absent on a shorter run, which
+    #: is itself the answer: nothing to escalate about a cell that finished first.
+    pulse: dict[str, Any] | None = None
+    #: What OpenRouter said this cell cost, for the arms that go through the gateway. Filled in
+    #: after the run by reconciling the receipt recorder's JSONL; absent for subscription arms.
+    gateway_receipts: dict[str, Any] | None = None
 
     def to_json(self) -> dict:
         d = asdict(self)
@@ -179,11 +318,20 @@ def _pump(stream, path: Path, first_bytes: dict[str, float], key: str) -> None:
     A file's mtime cannot answer "when did the agent first respond": both log files are
     created at launch, and an mtime is the *last* write to that file. Reading the stream
     ourselves is the only way to get the fact the record claims to carry.
+
+    `read1`, not `read`. `read(4096)` blocks until it has four kilobytes *or the stream
+    closes* — so on a harness running `--print --output-format json`, which emits one envelope
+    at the very end, the "first byte" timestamp was really the exit timestamp, and any
+    mid-flight reader of this dict saw a process that had said nothing. That made the fact
+    silently wrong wherever it was interesting: `first_response` claimed a precision it did
+    not have, and the five-minute pulse would have called every buffered harness
+    `indeterminate` no matter how well it was going. `read1` returns as soon as any bytes are
+    available, which is what both callers already believed they were getting.
     """
     try:
         with open(path, "wb") as fh:
             while True:
-                chunk = stream.read(4096)
+                chunk = stream.read1(4096)
                 if not chunk:
                     break
                 first_bytes.setdefault(key, time.time())
@@ -502,12 +650,40 @@ def run_cell(
         thread.daemon = True
         thread.start()
 
+    # The five-minute snapshot. A daemon timer, so it cannot hold the run open, and it only
+    # *reads* — no signal, no stdin, no file it did not create. A pulse that perturbed the run
+    # would be measuring itself.
+    pulse_holder: dict[str, DiagnosticPulse] = {}
+
+    def take_pulse() -> None:
+        now = time.time()
+        partial = ""
+        with contextlib.suppress(OSError):
+            partial = stdout_path.read_text(errors="replace")[-40000:]
+        with contextlib.suppress(OSError):
+            partial += stderr_path.read_text(errors="replace")[-40000:]
+        state, observed = classify_pulse(
+            responded=bool(first_bytes),
+            wrote=_earliest_write(mtimes_before, _tree_mtimes(mat.code)) is not None,
+            ran_verifier=verify_log.is_file(),
+            terminal_error=_detect_terminal_error(partial),
+            exited=proc.poll() is not None,
+        )
+        pulse_holder["pulse"] = DiagnosticPulse(
+            at_s=spec.pulse_at_s, utc=_utc(now), state=state, observed=observed
+        )
+
+    pulse_timer = threading.Timer(spec.pulse_at_s, take_pulse)
+    pulse_timer.daemon = True
+    pulse_timer.start()
+
     timed_out = False
     try:
         proc.wait(timeout=spec.timeout_s)
     except subprocess.TimeoutExpired:
         timed_out = True
         _kill_tree(proc)
+    pulse_timer.cancel()
     for thread in pumps:
         thread.join(timeout=30)
     end = time.time()
@@ -562,7 +738,9 @@ def run_cell(
 
     diff, changed = _capture_diff(mat.code)
     ws_diff, ws_changed = _capture_diff(mat.workspace)
+    taken = pulse_holder.get("pulse")
     return CellRun(
+        pulse=taken.to_json() if taken else None,
         workspace_diff=ws_diff,
         workspace_changed_files=ws_changed,
         outward_actions=_read_mock_log(logs / "mocks"),
