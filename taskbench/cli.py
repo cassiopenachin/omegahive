@@ -303,6 +303,85 @@ def preflight_cmd(
     console.print("preflight: every precondition agrees")
 
 
+@app.command("qualify-preflight")
+def qualify_preflight_cmd(
+    out: str = typer.Option(..., "--out", help="where the preflight record is written"),
+    skip_gateway: bool = typer.Option(
+        False, "--skip-gateway", help="local checks only; no OpenRouter call, no spend"
+    ),
+    skip_recorder: bool = typer.Option(
+        False,
+        "--skip-recorder",
+        help="check presets and endpoints but do not make the two validation calls",
+    ),
+    only: str | None = typer.Option(
+        None, "--only", help="one preset slug, when re-checking a single arm"
+    ),
+) -> None:
+    """Everything that must hold at the gateway before a candidate batch may spend.
+
+    Local checks are free. The gateway checks make exactly two tiny model calls per pinned
+    preset — one direct, one through the receipt recorder — because the order requires the
+    recorder to be *validated against a direct response plus a `/generation` receipt* before
+    any scored call, and that is not a claim that can be made by reading code.
+    """
+    from . import openrouter as orouter
+    from . import qualify
+    from .receipts import api_key_from_env
+
+    out_dir = Path(out)
+    repo = TASKBENCH_ROOT.parent
+    checks = (
+        qualify.check_pinned_revision(repo)
+        + qualify.check_corpus(repo)
+        + qualify.check_incumbent_record(repo)
+        + qualify.check_harness_builds()
+    )
+
+    if not skip_gateway:
+        pins = tuple(
+            p for p in (orouter.DEEPSEEK_PIN, orouter.MUSE_PIN)
+            if only is None or p.slug == only
+        )
+        if not pins:
+            console.print(f"[bold]✗[/bold] no pinned preset matches --only {only!r}")
+            raise typer.Exit(code=3)
+        checks += qualify.run_gateway_preflight(
+            api_key_from_env(),
+            out_dir=out_dir,
+            pins=pins,
+            validate_recorder=not skip_recorder,
+        )
+
+    for check in checks:
+        mark = "[bold]✓[/bold]" if check.ok else "[bold]✗[/bold]"
+        console.print(f"{mark} {check.name}: {check.detail}")
+    path = qualify.write_report(checks, out_dir)
+    console.print(f"\nrecorded: {path}")
+
+    failed = [c.name for c in checks if not c.ok]
+    if failed:
+        console.print(f"\n[bold]REFUSED[/bold] — {len(failed)} check(s) disagree: {failed}")
+        console.print(
+            "No candidate batch may run against a route that cannot be proved. If the block is "
+            "a missing usage or receipt surface, the order's remedy is to stop and ask — never "
+            "to substitute a measurement proxy after scored calls begin."
+        )
+        raise typer.Exit(code=3)
+    if skip_gateway:
+        console.print(
+            "\nevery LOCAL precondition agrees. The gateway was not contacted, so no preset, "
+            "endpoint or receipt surface is proved — run without --skip-gateway before a batch."
+        )
+    elif skip_recorder:
+        console.print(
+            "\npresets and endpoints agree. The receipt recorder was NOT validated, so no "
+            "gateway-billed arm may run yet."
+        )
+    else:
+        console.print("\nevery precondition agrees; the pinned routes are proved")
+
+
 @app.command("resume-target")
 def resume_target_cmd(
     base: str = typer.Option(..., "--base"),

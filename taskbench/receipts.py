@@ -342,6 +342,12 @@ class ReceiptRecorder:
         self.calls: list[ObservedCall] = []
         self._seq = 0
         self._lock = threading.Lock()
+        # A call is recorded *after* its response has been fully streamed back, because the
+        # usage totals only arrive at the end. So between a harness receiving its last byte and
+        # that call reaching `calls`, there is a window — and a reconciliation that ran inside
+        # it would silently drop the final call from every total. `drain()` closes the window.
+        self._inflight = 0
+        self._idle = threading.Condition(self._lock)
         # No global timeout on the read: an agent turn can think for minutes and a timeout here
         # would truncate a real response into a proxy error.
         self.client = httpx.Client(timeout=httpx.Timeout(30.0, read=None))
@@ -361,22 +367,37 @@ class ReceiptRecorder:
         self._thread.start()
         return self
 
-    def stop(self) -> None:
+    def drain(self, timeout: float = 60.0) -> bool:
+        """Wait until every call the proxy has begun has been written down.
+
+        Returns False on timeout rather than raising, so a caller can record an incomplete
+        capture *as* incomplete — the one thing that must never happen is a total that silently
+        omits a call the proxy was still writing.
+        """
+        with self._idle:
+            return self._idle.wait_for(lambda: self._inflight == 0, timeout=timeout)
+
+    def stop(self, *, drain_timeout: float = 60.0) -> bool:
+        drained = self.drain(drain_timeout)
         self._server.shutdown()
         self._server.server_close()
         self._thread.join(timeout=10)
         self.client.close()
+        return drained
 
     def next_seq(self) -> int:
-        with self._lock:
+        with self._idle:
             self._seq += 1
+            self._inflight += 1
             return self._seq
 
     def record(self, call: ObservedCall) -> None:
-        with self._lock:
+        with self._idle:
             self.calls.append(call)
             with open(self.out_path, "a") as fh:
                 fh.write(json.dumps(call.to_json(), sort_keys=True) + "\n")
+            self._inflight -= 1
+            self._idle.notify_all()
 
 
 def fetch_generation(

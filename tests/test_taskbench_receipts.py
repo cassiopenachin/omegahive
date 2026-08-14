@@ -176,6 +176,7 @@ def test_no_credential_reaches_the_record(recorder, tmp_path):
         },
         timeout=30,
     )
+    assert recorder.drain(timeout=30), "the call was still being written down"
     written = (tmp_path / "receipts.jsonl").read_text()
     assert "SECRET" not in written
     assert "sk-FUTURE" not in written
@@ -267,6 +268,32 @@ def test_a_receipt_that_never_arrives_is_named_not_guessed():
         )
     assert got["available"] is False
     assert "not recoverable from the harness" in got["missing_surface"].lower()
+
+
+def test_drain_waits_for_a_call_that_is_still_being_written(upstream, tmp_path):
+    """A call is recorded only after its response has fully streamed, because the usage totals
+    arrive last. Reconciling inside that window would drop the final call from every total."""
+    base, _ = upstream
+    rec = ReceiptRecorder(tmp_path / "d.jsonl", upstream=base).start()
+    try:
+        for _ in range(5):
+            httpx.post(
+                f"{rec.base_url}/v1/messages", json={"model": "m", "messages": []}, timeout=30
+            )
+        assert rec.drain(timeout=30)
+        assert len(rec.calls) == 5
+        assert len(load_calls(tmp_path / "d.jsonl")) == 5
+    finally:
+        rec.stop()
+
+
+def test_stop_reports_whether_it_managed_to_drain(upstream, tmp_path):
+    """False rather than an exception, so an incomplete capture can be recorded AS incomplete
+    instead of becoming a total that quietly omits a call."""
+    base, _ = upstream
+    rec = ReceiptRecorder(tmp_path / "s.jsonl", upstream=base).start()
+    httpx.post(f"{rec.base_url}/v1/messages", json={"model": "m"}, timeout=30)
+    assert rec.stop(drain_timeout=30) is True
 
 
 def test_reconcile_totals_only_the_calls_that_have_receipts():
