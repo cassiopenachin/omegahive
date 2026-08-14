@@ -585,6 +585,28 @@ def _dedupe(items: list[str]) -> list[str]:
 def materialize(binding: HarnessBinding, *, extra_dirs: list[str]) -> Materialized:
     """Render the harness-native configuration for one isolated worker root."""
     if binding.config_format == "none" or binding.config_path is None:
+        # Rules with no renderer are rules nobody will write. A descriptor may legitimately
+        # take its whole boundary from argv (`config_format: none`), but then it must not
+        # also declare rule-bearing mechanisms — otherwise it materializes an empty
+        # configuration while its own text reads as a bound set of denials, which is the
+        # same lie the empty-rules check refuses one level up. The shipped Codex
+        # descriptor is exactly this shape on purpose: its rules are recorded for the
+        # worker who will build the renderer, and this refusal is what stops them being
+        # mistaken for something in force.
+        orphaned = [
+            m.kind
+            for c in binding.classes
+            for m in c.mechanisms
+            if m.kind in _RULE_BEARING_MECHANISMS
+        ]
+        if orphaned:
+            raise RefusalError(
+                "HARNESS_BINDING_UNRENDERABLE",
+                f"{binding.binding_id}: declares {sorted(set(orphaned))} rules and "
+                f"config_format {binding.config_format!r}, so nothing writes them. Either "
+                "ship a renderer for this format or stop declaring rules this build "
+                "cannot materialize",
+            )
         return Materialized(path=None, content="", digest=binding_digest(b""), rules=[])
     if binding.config_format == "claude-code-settings":
         doc = _claude_code_settings(binding, extra_dirs)

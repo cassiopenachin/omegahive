@@ -887,3 +887,25 @@ def test_a_descriptor_with_no_mode_flag_at_all_is_fine():
     over = {"command_mode_flag": None}
     p = plan(routes=[route(**pins(**over))], descriptors=descriptors_map(**over))
     assert p.launchable is True
+
+
+def test_rules_with_no_renderer_refuse_rather_than_materializing_nothing():
+    """A descriptor may take its whole boundary from argv. It may not then also declare
+    deny rules — that materializes `{}` while reading as a bound set of denials, which is
+    the empty-rules lie one level up."""
+    b = HarnessBinding(**descriptor(config_path=None, config_format="none"))
+    with pytest.raises(RefusalError) as exc:
+        materialize(b, extra_dirs=[])
+    assert exc.value.code == "HARNESS_BINDING_UNRENDERABLE"
+
+
+def test_the_shipped_codex_descriptor_is_this_shape_deliberately():
+    """Its Starlark rules are recorded for whoever builds the renderer, and this refusal
+    is what stops them reading as something in force. It refuses earlier than this in a
+    launch — `check_status` fires first — so both messages are reachable and neither is
+    the only guard."""
+    b = load_binding_descriptor(shipped("codex.v1"))
+    assert b.config_format == "none"
+    with pytest.raises(RefusalError) as exc:
+        materialize(b, extra_dirs=[])
+    assert exc.value.code == "HARNESS_BINDING_UNRENDERABLE"
