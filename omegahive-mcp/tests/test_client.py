@@ -6,6 +6,8 @@ errors (unknown_run/unknown_task/database_unavailable) passing through unchanged
 
 from __future__ import annotations
 
+import ssl
+
 import httpx
 import pytest
 
@@ -170,6 +172,44 @@ def test_timeout_is_reported_distinctly_from_a_bare_unreachable():
         client.health()
 
     assert excinfo.value.code == "timeout"
+
+
+def test_a_tls_certificate_failure_is_reported_as_invalid_tls_not_unreachable():
+    # Reproduces the real installed httpx/httpcore chain for a cert failure: the
+    # ssl.SSLError is NOT httpx.ConnectError.__cause__ (that is an
+    # httpcore.ConnectError whose own __cause__ is None) — it is one of that
+    # httpcore.ConnectError's .args. A classifier that only looks at
+    # exc.__cause__'s module name never finds it.
+    def handler(request: httpx.Request) -> httpx.Response:
+        ssl_error = ssl.SSLCertVerificationError("certificate verify failed: self-signed")
+        httpcore_error = Exception()
+        httpcore_error.args = (ssl_error,)
+        raise httpx.ConnectError("SSL error") from httpcore_error
+
+    with _client(handler) as client, pytest.raises(UpstreamError) as excinfo:
+        client.health()
+
+    assert excinfo.value.code == "invalid_tls"
+
+
+def test_invalid_url_from_httpx_does_not_escape_unhandled():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.InvalidURL("bad url")
+
+    with _client(handler) as client, pytest.raises(UpstreamError) as excinfo:
+        client.health()
+
+    assert excinfo.value.code == "upstream_error"
+
+
+def test_decoding_error_from_httpx_is_reported_as_malformed():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.DecodingError("bad content-encoding")
+
+    with _client(handler) as client, pytest.raises(UpstreamError) as excinfo:
+        client.health()
+
+    assert excinfo.value.code == "malformed_json"
 
 
 def test_a_redirect_is_refused_rather_than_followed():

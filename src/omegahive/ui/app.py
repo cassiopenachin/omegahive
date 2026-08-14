@@ -181,12 +181,16 @@ def create_app(
     """Create an injectable app: local visual work uses `DemoPort`; production uses Port.
 
     `db_check` backs the JSON API's `/api/v1/health` route. It defaults alongside
-    `port_factory`/`runs_factory`: unset in demo mode it is a no-op (`DemoPort` never
-    touches a database), unset otherwise it is the real `database_healthcheck` — but
-    a caller supplying its own `port_factory`/`runs_factory` (as every test does) may
-    also supply its own `db_check`, so a fake-factory test never reaches a real DSN.
+    `port_factory`: real (`database_healthcheck`) only when nothing else was
+    injected — demo mode and demo mode's own `port_factory` never touch a database,
+    and neither may a caller-supplied `port_factory` (every test supplies one).
+    Defaulting `db_check` on `demo_mode` alone, while `port_factory` fell back
+    independently, meant a test that injected only a fake `port_factory` still
+    silently exercised the real `OMEGAHIVE_DATABASE_URL` on `/api/v1/health` — the
+    two defaults must travel together.
     """
     demo_mode = os.environ.get("OMEGAHIVE_UI_DEMO") == "1"
+    real_backend = not demo_mode and port_factory is None
     factory = port_factory or (
         lambda run_id, generation: (
             DemoPort(run_id, generation) if demo_mode else _database_port(run_id, generation)
@@ -195,7 +199,7 @@ def create_app(
     runs = runs_factory or (demo_run_summaries if demo_mode else database_runs)
     now = now_factory or _utcnow
     if db_check is None:
-        db_check = (lambda: None) if demo_mode else database_healthcheck
+        db_check = database_healthcheck if real_backend else (lambda: None)
     # Serve behind the house Caddy at a path prefix (e.g. /omegahive). `root_path` makes
     # Starlette strip the prefix before routing and makes `url_for` re-add it, so the app
     # stays base-aware without any absolute-path assumption. Empty = today's direct serving.

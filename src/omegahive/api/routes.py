@@ -38,6 +38,17 @@ def _error(status_code: int, error: str, detail: str) -> JSONResponse:
     )
 
 
+def _guarded[T](call: Callable[[], T]) -> T | JSONResponse:
+    """Every route's shared fallback: anything not caught more specifically is a
+    DB/connection fault, not a policy refusal, and gets this one 503 shape — the
+    pattern `capacity-view`'s own route reuses (docs/reference/omegahive_hive_mcp.md
+    §8) rather than re-copying this `except`."""
+    try:
+        return call()
+    except Exception as exc:  # noqa: BLE001 - any upstream fault reports the same way
+        return _error(503, "database_unavailable", str(exc))
+
+
 def build_api_router(
     *,
     port_factory: PortFactory,
@@ -57,12 +68,11 @@ def build_api_router(
         responses={503: {"model": ErrorResponse}},
     )
     def health() -> HealthResponse | JSONResponse:
-        now = now_factory()
-        try:
+        def _call() -> HealthResponse:
             db_check()
-        except Exception as exc:  # noqa: BLE001 - any upstream fault reports the same way
-            return _error(503, "database_unavailable", str(exc))
-        return HealthResponse(status="ok", observed_at=now, database="ok")
+            return HealthResponse(status="ok", observed_at=now_factory(), database="ok")
+
+        return _guarded(_call)
 
     @router.get(
         "/portfolio",
@@ -72,19 +82,17 @@ def build_api_router(
     def portfolio(
         show_all: bool = Query(default=False, alias="all"),
     ) -> PortfolioResponse | JSONResponse:
-        now = now_factory()
-        window_days = configured_window_days()
-        try:
+        def _call() -> PortfolioResponse:
             return portfolio_snapshot(
                 port_factory,
                 runs_factory,
                 show_all=show_all,
-                window_days=window_days,
+                window_days=configured_window_days(),
                 exclude=configured_exclude(),
-                now=now,
+                now=now_factory(),
             )
-        except Exception as exc:  # noqa: BLE001 - a DB/connection fault, not a policy refusal
-            return _error(503, "database_unavailable", str(exc))
+
+        return _guarded(_call)
 
     @router.get(
         "/runs/{run_id}/tasks/{task_id}",
@@ -97,16 +105,21 @@ def build_api_router(
         limit: int = Query(default=TASK_EVENTS_MAX, ge=1, le=TASK_EVENTS_MAX),
         before_seq: int | None = Query(default=None, ge=1),
     ) -> TaskDetailResponse | JSONResponse:
-        now = now_factory()
-        try:
-            return task_detail(
-                port_factory, run_id, task_id, now=now, limit=limit, before_seq=before_seq
-            )
-        except UnknownRun:
-            return _error(404, "unknown_run", f"no board state for run_id: {run_id}")
-        except UnknownTask:
-            return _error(404, "unknown_task", f"no task {task_id!r} on run {run_id!r}")
-        except Exception as exc:  # noqa: BLE001 - a DB/connection fault, not a policy refusal
-            return _error(503, "database_unavailable", str(exc))
+        def _call() -> TaskDetailResponse | JSONResponse:
+            try:
+                return task_detail(
+                    port_factory,
+                    run_id,
+                    task_id,
+                    now=now_factory(),
+                    limit=limit,
+                    before_seq=before_seq,
+                )
+            except UnknownRun:
+                return _error(404, "unknown_run", f"no board state for run_id: {run_id}")
+            except UnknownTask:
+                return _error(404, "unknown_task", f"no task {task_id!r} on run {run_id!r}")
+
+        return _guarded(_call)
 
     return router

@@ -194,9 +194,12 @@ def task_detail(
         key=lambda e: e.seq,  # type: ignore[arg-type,return-value]
         reverse=True,
     )
+    # `events_available` is the task's total, untruncated (per TaskDetailResponse's
+    # own field description) — captured BEFORE the before_seq page filter, so paging
+    # backward through older events never makes the reported total shrink.
+    available = len(task_events)
     if before_seq is not None:
         task_events = [e for e in task_events if e.seq is not None and e.seq < before_seq]
-    available = len(task_events)
     capped = max(1, min(limit, TASK_EVENTS_MAX))
     page = task_events[:capped]
 

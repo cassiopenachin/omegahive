@@ -170,6 +170,19 @@ def test_setup_runs_install_or_refresh_when_a_checkout_is_found(tmp_path, monkey
     ]
 
 
+def test_install_or_refresh_reports_a_timeout_instead_of_hanging(tmp_path, monkeypatch):
+    def _fake_run(argv, **kwargs):
+        assert kwargs.get("timeout") == cli.INSTALL_TIMEOUT_SECONDS
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(cli.subprocess, "run", _fake_run)
+
+    ok, detail = cli._install_or_refresh(tmp_path)
+
+    assert ok is False
+    assert "timed out" in detail
+
+
 def test_serve_refuses_cleanly_when_unconfigured(monkeypatch, capsys):
     def _raise(*_a, **_k):
         raise cli.ConfigError("no config")

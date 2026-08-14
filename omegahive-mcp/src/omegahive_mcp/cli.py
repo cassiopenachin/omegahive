@@ -52,14 +52,22 @@ def _discover_checkout(start: Path) -> Path | None:
     return None
 
 
+INSTALL_TIMEOUT_SECONDS = 120.0
+
+
 def _install_or_refresh(checkout: Path) -> tuple[bool, str]:
     """`uv tool install --reinstall --from <checkout> omegahive-mcp` — the one
-    install-mutating step, and only `setup` calls it."""
-    result = subprocess.run(  # noqa: S603 - fixed argv, no shell, no caller-supplied input
-        ["uv", "tool", "install", "--reinstall", "--from", str(checkout), PACKAGE_NAME],
-        capture_output=True,
-        text=True,
-    )
+    install-mutating step, and only `setup` calls it. Bounded: a stalled resolve
+    against a flaky tailnet must fail loudly, not hang `setup` forever."""
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed argv, no shell, no caller-supplied input
+            ["uv", "tool", "install", "--reinstall", "--from", str(checkout), PACKAGE_NAME],
+            capture_output=True,
+            text=True,
+            timeout=INSTALL_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"timed out after {INSTALL_TIMEOUT_SECONDS:.0f}s"
     ok = result.returncode == 0
     output = (result.stdout + result.stderr).strip()
     return ok, output

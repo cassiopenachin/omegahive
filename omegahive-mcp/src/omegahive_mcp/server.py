@@ -14,6 +14,7 @@ client's framing.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -24,6 +25,20 @@ from .client import HiveApiClient, UpstreamError
 from .schemas import PortfolioResponse, TaskDetailResponse
 
 logger = logging.getLogger(__name__)
+
+
+def _tool_call[T](label: str, call: Callable[[], T]) -> T:
+    """Both tools' shared error path: an `UpstreamError` becomes a `ToolError`
+    carrying the same code/message a bridge client can match on, never a raw
+    exception. `label` is what the warning names — the tool for `hive_portfolio`,
+    the (run_id, task_id) pair for `hive_task` — so the two tools stay identical
+    apart from what they call and how they describe themselves in a log line."""
+    try:
+        return call()
+    except UpstreamError as exc:
+        logger.warning("%s: %s", label, exc.code)
+        raise ToolError(f"{exc.code}: {exc.message}") from exc
+
 
 # Every tool this server registers is a GET, has no side effect, and reads a live,
 # operator-owned system it does not control — the honest hint set for all three
@@ -59,11 +74,7 @@ def build_server(client: HiveApiClient) -> MCPServer:
         annotations=_READ_ONLY,
     )
     def hive_portfolio() -> PortfolioResponse:
-        try:
-            return client.portfolio()
-        except UpstreamError as exc:
-            logger.warning("hive_portfolio: %s", exc.code)
-            raise ToolError(f"{exc.code}: {exc.message}") from exc
+        return _tool_call("hive_portfolio", client.portfolio)
 
     @server.tool(
         name="hive_task",
@@ -75,10 +86,6 @@ def build_server(client: HiveApiClient) -> MCPServer:
         annotations=_READ_ONLY,
     )
     def hive_task(run_id: str, task_id: str) -> TaskDetailResponse:
-        try:
-            return client.task(run_id, task_id)
-        except UpstreamError as exc:
-            logger.warning("hive_task(%s, %s): %s", run_id, task_id, exc.code)
-            raise ToolError(f"{exc.code}: {exc.message}") from exc
+        return _tool_call(f"hive_task({run_id}, {task_id})", lambda: client.task(run_id, task_id))
 
     return server

@@ -38,6 +38,22 @@ def test_health_reports_ok_and_schema_version():
     assert body["observed_at"] == "2026-08-14T12:00:00Z"
 
 
+def test_health_never_touches_a_real_database_when_only_a_fake_port_factory_is_given(
+    monkeypatch,
+):
+    # Regression: create_app's db_check default used to key off demo_mode alone,
+    # independent of whether a caller (every test in this suite) had already
+    # injected a fake port_factory — so a test supplying only a fake port_factory
+    # silently exercised the real OMEGAHIVE_DATABASE_URL on this route. Point that
+    # DSN at a closed port and confirm the no-op default is what actually runs.
+    monkeypatch.setenv("OMEGAHIVE_DATABASE_URL", "postgresql://x:x@127.0.0.1:1/x")
+
+    response = _client().get("/api/v1/health")
+
+    assert response.status_code == 200
+    assert response.json()["database"] == "ok"
+
+
 def test_health_reports_a_typed_503_when_the_database_is_unreachable():
     def _broken() -> None:
         raise ConnectionError("could not connect to server")

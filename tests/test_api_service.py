@@ -231,6 +231,19 @@ def test_task_detail_before_seq_pages_further_back():
     assert resp.events_truncated is True
 
 
+def test_task_detail_events_available_is_the_tasks_total_not_the_page_remainder():
+    # Regression: events_available must stay the task's full total across pages —
+    # it previously shrank to "what's left before the cursor" once before_seq was
+    # applied, contradicting the field's own "untruncated" contract.
+    factory = _factory({"r1": _view(_DONE_RUN)})
+
+    first_page = task_detail(factory, "r1", "T2", now=NOW, limit=2)
+    second_page = task_detail(factory, "r1", "T2", now=NOW, limit=2, before_seq=4)
+
+    assert first_page.events_available == 5
+    assert second_page.events_available == 5
+
+
 def test_task_detail_hard_cap_applies_even_when_a_caller_asks_for_more():
     events = [_event(1, "task.created", {"title": "many"}, task_id="T9")]
     events += [
