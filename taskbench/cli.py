@@ -399,6 +399,55 @@ def run_gateway_cmd(
         raise batch_exit
 
 
+@app.command("matrix")
+def matrix_cmd(
+    bundle: list[str] = typer.Option(  # noqa: B008 — typer's option factory
+        ..., "--bundle", help="label=record-dir, repeatable; use label=UNREACHABLE:<reason>"
+    ),
+    out: str | None = typer.Option(None, "--out", help="write the markdown here"),
+) -> None:
+    """Render the candidate matrix across the incumbent and every candidate record.
+
+    Repeat `--bundle` once per arm, e.g.
+
+        --bundle incumbent=taskbench/records/2026-08-13-incumbent-fidelity-v0-1-2
+        --bundle haiku-claude-code=taskbench/records/2026-08-15-wave-1-haiku-claude-code
+        --bundle luna-codex=UNREACHABLE:the harness never authenticated
+
+    An `UNREACHABLE:` bundle is carried into the table with its reason rather than omitted: a
+    bundle that could not run is a result of this study, not an absence from it.
+    """
+    from . import matrix as mx
+
+    bundles = []
+    for spec in bundle:
+        label, _, target = spec.partition("=")
+        if not target:
+            console.print(f"[bold]✗[/bold] --bundle needs label=record-dir, got {spec!r}")
+            raise typer.Exit(code=2)
+        if target.startswith("UNREACHABLE:"):
+            bundles.append(
+                mx.BundleSummary(
+                    label=label, record="", vendor="unknown", model="unknown",
+                    harness="unknown", cells=[],
+                    unreachable_reason=target.split(":", 1)[1].strip(),
+                )
+            )
+            continue
+        root = Path(target)
+        if not root.is_dir():
+            console.print(f"[bold]✗[/bold] {root} is not a record directory")
+            raise typer.Exit(code=1)
+        bundles.append(mx.load_bundle(root, label=label))
+
+    text = mx.render(bundles)
+    if out:
+        Path(out).write_text(text)
+        console.print(f"wrote {out}")
+    else:
+        print(text)
+
+
 @app.command("gateway-totals")
 def gateway_totals_cmd(
     record: str = typer.Argument(..., help="record directory"),

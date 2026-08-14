@@ -134,6 +134,7 @@ SCORING_FROZEN = (
 #: scored path imports any of them.
 QUALIFY_ADDITIVE = (
     "taskbench/openrouter.py",
+    "taskbench/matrix.py",
     "taskbench/qualify.py",
     "taskbench/qualify_batch.py",
     "taskbench/receipts.py",
