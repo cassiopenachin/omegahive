@@ -262,3 +262,13 @@ def test_no_surface_answering_raises_with_everything_it_tried():
             fetch_preset(DEEPSEEK_PIN.slug, "sk-or-x", version=3, client=client)
     assert "403" in str(exc.value)
     assert "/api/v1/presets" in str(exc.value)
+
+
+def test_an_endpoint_advertising_no_parameters_at_all_is_unproven_not_agreed():
+    """Reading an absent `supported_parameters` as 'everything is supported' would let the
+    refusal layer report the route as proved on the strength of a field the API stopped
+    sending — the same drift shape `PRESET_PATHS` already anticipates one endpoint away."""
+    problems = check_endpoint_capability(
+        DEEPSEEK_PIN, [{"provider_name": "GMICloud", "quantization": "fp8"}]
+    )
+    assert any("unproven" in p and "not agreed" in p for p in problems)

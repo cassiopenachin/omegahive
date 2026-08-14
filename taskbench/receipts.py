@@ -65,6 +65,7 @@ SAFE_REQUEST_HEADERS = frozenset(
 #: Response headers OpenRouter uses to describe routing. Same allowlist rule.
 SAFE_RESPONSE_HEADERS = frozenset(
     {
+        "content-encoding",
         "content-type",
         "openrouter-model",
         "openrouter-provider",
@@ -91,6 +92,28 @@ HOP_BY_HOP = frozenset(
         "host",
     }
 )
+
+
+def _decoded(body: bytes, encoding: str | None) -> bytes:
+    """The body as text, whatever the wire did to it. Undecodable stays undecoded.
+
+    The proxy forwards the raw bytes untouched; this copy exists only to be parsed. An encoding
+    we cannot undo returns the original rather than raising, so the call is still recorded — with
+    no generation id, which `reconcile` then reports honestly as a missing receipt.
+    """
+    if not encoding or encoding.lower() in ("identity", ""):
+        return body
+    import gzip
+    import zlib
+
+    try:
+        if encoding.lower() == "gzip":
+            return gzip.decompress(body)
+        if encoding.lower() in ("deflate", "zlib"):
+            return zlib.decompress(body)
+    except (OSError, zlib.error, EOFError):
+        return body
+    return body
 
 
 def _redact(headers: Any, allowed: frozenset[str]) -> dict[str, str]:
@@ -228,6 +251,18 @@ class _Handler(BaseHTTPRequestHandler):
     def _proxy(self, method: str) -> None:
         recorder: ReceiptRecorder = self.server.recorder  # type: ignore[attr-defined]
         seq = recorder.next_seq()
+        try:
+            self._proxy_inner(method, seq)
+        except BaseException:
+            # `next_seq` registered this call as in flight; if we leave without recording it,
+            # `drain()` waits forever and every batch reports a possibly-incomplete capture.
+            # This is reachable in normal operation: `run_cell` SIGKILLs the harness's process
+            # group on timeout, which resets the connection while the body is still being read.
+            recorder.abandon(seq, f"the proxy did not complete this call: {method} {self.path}")
+            raise
+
+    def _proxy_inner(self, method: str, seq: int) -> None:
+        recorder: ReceiptRecorder = self.server.recorder  # type: ignore[attr-defined]
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else b""
 
@@ -243,6 +278,17 @@ class _Handler(BaseHTTPRequestHandler):
         forward_headers = {
             k: v for k, v in self.headers.items() if k.lower() not in HOP_BY_HOP
         }
+        # Ask upstream not to compress. `iter_raw()` yields the body exactly as it arrives, so a
+        # gzipped response parses to nothing: the generation id and usage vanish and every call
+        # is recorded `available: false` with no error anywhere — the whole gateway accounting
+        # silently degrading to "unavailable". Node/undici harnesses send `gzip, deflate` by
+        # default, so this is the normal case, not an edge one. Content encoding is transport,
+        # not semantics: the harness sees the same bytes either way. The decoder below is the
+        # belt to this braces, for an upstream that compresses regardless.
+        forward_headers = {
+            k: v for k, v in forward_headers.items() if k.lower() != "accept-encoding"
+        }
+        forward_headers["Accept-Encoding"] = "identity"
         url = recorder.upstream.rstrip("/") + self.path
         started = time.time()
         captured = bytearray()
@@ -306,7 +352,7 @@ class _Handler(BaseHTTPRequestHandler):
         call.finished_utc = _utc(finished)
         call.duration_ms = int((finished - started) * 1000)
 
-        raw = bytes(captured)
+        raw = _decoded(bytes(captured), call.response_headers.get("content-encoding"))
         extracted = _extract_from_sse(raw) if call.streamed else _extract_from_json_body(raw)
         call.generation_id = extracted.get("generation_id")
         call.response_model = extracted.get("response_model")
@@ -398,6 +444,20 @@ class ReceiptRecorder:
                 fh.write(json.dumps(call.to_json(), sort_keys=True) + "\n")
             self._inflight -= 1
             self._idle.notify_all()
+
+    def abandon(self, seq: int, why: str) -> None:
+        """A call the proxy began and could not finish. Recorded as such, never just dropped.
+
+        Dropping it would leave `drain()` blocked on a call that will never arrive AND leave the
+        record silently one call short — a total that looks complete and is not.
+        """
+        self.record(
+            ObservedCall(
+                seq=seq, started_utc=_utc(time.time()), finished_utc=_utc(time.time()),
+                duration_ms=0, method="?", path="?", status=0, streamed=False,
+                proxy_error=why,
+            )
+        )
 
 
 def fetch_generation(
@@ -494,6 +554,7 @@ def reconcile(
     *,
     upstream: str = OPENROUTER_ORIGIN,
     client: httpx.Client | None = None,
+    budget_s: float = 900.0,
     **fetch_kwargs: Any,
 ) -> dict[str, Any]:
     """Pair every observed call with its gateway receipt and total what is actually known.
@@ -504,6 +565,7 @@ def reconcile(
     """
     owned = client is None
     http = client or httpx.Client(timeout=30.0)
+    deadline = time.monotonic() + budget_s
     try:
         rows: list[dict[str, Any]] = []
         for call in calls:
@@ -526,6 +588,20 @@ def reconcile(
                     "missing_surface": (
                         "the response carried no id, so there is nothing to ask "
                         "/generation about"
+                    ),
+                }
+            elif time.monotonic() > deadline:
+                # The per-call backoff runs to about four minutes, and an agent batch makes
+                # hundreds of calls. A systematic receipt gap would otherwise turn
+                # reconciliation into hours of sleeping. Past the budget we stop waiting and
+                # say so — an unfetched receipt is reported as unfetched, never as absent.
+                row["receipt"] = {
+                    "available": False,
+                    "missing_surface": (
+                        f"the reconciliation budget of {budget_s:.0f}s was exhausted before "
+                        "this call was fetched; the receipt may well exist. Re-run "
+                        "`taskbench gateway-totals` later rather than reading this as a "
+                        "missing receipt."
                     ),
                 }
             else:

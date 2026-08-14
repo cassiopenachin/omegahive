@@ -82,7 +82,9 @@ readonly CONFIG
   # `-s workspace-write` keeps Codex inside the cell it was given. `--ephemeral` is deliberately
   # NOT used: the rollout file it would suppress is the only place Codex records the model
   # string it ran with, and this arm is already short one identity surface.
-  printf '  argv: ["%s", "-m", "%s", "-s", "workspace-write", "-C", "code"]\n' \
+  # No `-C`: the runner already launches the process with cwd=<cell>/code (the `cwd: code`
+  # below), so a `-C code` on top of that resolves to <cell>/code/code, which does not exist.
+  printf '  argv: ["%s", "-m", "%s", "-s", "workspace-write"]\n' \
          "$CELL_WRAPPER" "$MODEL"
   printf '  labels: {vendor: "%s", model: "%s", harness: "%s"}\n' \
          "$VENDOR" "$MODEL" "$HARNESS_VERSION"
@@ -98,6 +100,24 @@ readonly CONFIG
   emit_sources_block "$REPO_ROOT"
 } > "$CONFIG"
 say "config:   $CONFIG"
+
+step "Smoke: one disposable read/edit/test loop on this exact bundle"
+say "Same argv the batch will use, against a three-file fixture. A bundle that cannot read a"
+say "file it was not given, edit a second and run the third has nothing to say about an order."
+set +e
+(
+  cd "$REPO_ROOT" || exit 1
+  uv run --frozen taskbench qualify-smoke \
+    --config "$CONFIG" --bundle "luna-codex" \
+    --root "$WORK_ROOT/smoke" --out "$WORK_ROOT"
+)
+smoke_status=$?
+set -e
+if [ "$smoke_status" -ne 0 ]; then
+  say ""
+  say "The batch does NOT run. Nothing was scored and nothing was spent on the matrix."
+  exit "$smoke_status"
+fi
 
 install_interrupt_trap "$RECORDS_DIR" "$RECORD_ID" "$WORK_ROOT"
 

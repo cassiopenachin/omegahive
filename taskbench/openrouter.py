@@ -429,6 +429,16 @@ def check_endpoint_capability(
         params = endpoint.get("supported_parameters")
         if isinstance(params, list):
             supported.update(str(p) for p in params)
+    if not supported:
+        # An absent surface is not an agreement. Reading "no `supported_parameters` field" as
+        # "everything is supported" would let a refusal layer report the route as proved on the
+        # strength of a field the API stopped sending — the exact shape of drift `PRESET_PATHS`
+        # already anticipates one endpoint away from here.
+        problems.append(
+            f"the {wanted!r} endpoint advertises no supported_parameters at all, so "
+            f"{list(require_parameters)} cannot be confirmed. An absent surface is unproven, "
+            "not agreed."
+        )
     for needed in require_parameters:
         if supported and needed not in supported:
             problems.append(

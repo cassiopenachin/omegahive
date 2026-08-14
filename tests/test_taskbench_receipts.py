@@ -341,3 +341,118 @@ def test_a_field_missing_from_any_receipt_makes_its_total_unknown_not_partial():
     assert out["totals"]["calls_with_receipt"] == 2
     assert out["totals"]["gateway_cost_usd"] is None
     assert out["totals"]["native_tokens_prompt"] == 22
+
+
+# --- regressions from the independent review -----------------------------------------------
+
+
+class _GzipUpstream(BaseHTTPRequestHandler):
+    """A gateway that compresses, which is what Node/undici harnesses ask for by default."""
+
+    protocol_version = "HTTP/1.1"
+    saw_accept_encoding: list[str] = []
+
+    def log_message(self, *a, **k):  # noqa: A003, ANN002, ANN003
+        return
+
+    def do_POST(self):  # noqa: N802
+        import gzip as _gz
+
+        length = int(self.headers.get("Content-Length") or 0)
+        self.rfile.read(length)
+        type(self).saw_accept_encoding.append(self.headers.get("Accept-Encoding", ""))
+        payload = _gz.compress(json.dumps(MESSAGE_BODY).encode())
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Encoding", "gzip")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+def test_the_proxy_asks_upstream_not_to_compress():
+    """`iter_raw()` yields the body as it arrives, so a gzipped response parses to nothing: the
+    generation id and usage vanish and the whole gateway accounting degrades to 'unavailable'
+    with no error anywhere."""
+    _GzipUpstream.saw_accept_encoding = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _GzipUpstream)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        rec = ReceiptRecorder(f"{tmp}/r.jsonl", upstream=f"http://{host}:{port}").start()
+        try:
+            httpx.post(
+                f"{rec.base_url}/v1/messages",
+                json={"model": "m"},
+                headers={"Accept-Encoding": "gzip, deflate"},
+                timeout=30,
+            )
+            assert rec.drain(timeout=30)
+        finally:
+            rec.stop()
+    server.shutdown()
+    server.server_close()
+    assert _GzipUpstream.saw_accept_encoding == ["identity"]
+    # And even when the upstream compresses anyway, the id survives.
+    (call,) = rec.calls
+    assert call.generation_id == "gen-abc123"
+    assert call.usage["input_tokens"] == 11
+
+
+def test_a_gzipped_body_is_still_parsed():
+    """Belt to the braces: an upstream may compress regardless of what we asked for."""
+    import gzip as _gz
+
+    from taskbench.receipts import _decoded, _extract_from_json_body
+
+    raw = _gz.compress(json.dumps(MESSAGE_BODY).encode())
+    assert _extract_from_json_body(raw) == {}, "compressed bodies parse to nothing"
+    assert _extract_from_json_body(_decoded(raw, "gzip"))["generation_id"] == "gen-abc123"
+
+
+def test_an_encoding_we_cannot_undo_returns_the_body_rather_than_raising():
+    from taskbench.receipts import _decoded
+
+    assert _decoded(b"\x00\x01brotli-ish", "br") == b"\x00\x01brotli-ish"
+    assert _decoded(b"not actually gzip", "gzip") == b"not actually gzip"
+
+
+def test_a_call_abandoned_mid_read_does_not_wedge_drain(upstream, tmp_path):
+    """`run_cell` SIGKILLs the harness's process group on timeout, resetting the connection
+    while the proxy is still reading the body. A leaked in-flight counter makes `drain()` block
+    for its full timeout and every such batch report a possibly-incomplete capture."""
+    base, _ = upstream
+    rec = ReceiptRecorder(tmp_path / "a.jsonl", upstream=base).start()
+    try:
+        seq = rec.next_seq()          # a call begins…
+        rec.abandon(seq, "connection reset while reading the request body")
+        assert rec.drain(timeout=5), "drain must not wait on a call that will never arrive"
+    finally:
+        rec.stop()
+    (call,) = rec.calls
+    assert call.proxy_error
+    # Recorded, not dropped: a total that silently omits a call looks complete and is not.
+    assert load_calls(tmp_path / "a.jsonl")[0].proxy_error
+
+
+def test_reconcile_stops_waiting_once_its_budget_is_spent():
+    """Per-call backoff runs to about four minutes and a batch makes hundreds of calls; a
+    systematic receipt gap would otherwise turn reconciliation into hours of sleeping."""
+    calls = [
+        ObservedCall(
+            seq=n, started_utc="t", finished_utc="t", duration_ms=1, method="POST",
+            path="/v1/messages", status=200, streamed=False, generation_id=f"gen-{n}",
+        )
+        for n in range(1, 4)
+    ]
+    with _generation_transport(misses=99) as client:
+        out = reconcile(
+            calls, "sk-or-x", client=client, attempts=2, first_delay_s=0.001, budget_s=0.0
+        )
+    surfaces = [r["receipt"]["missing_surface"] for r in out["calls"]]
+    assert all("budget" in s for s in surfaces)
+    assert all("never as absent" not in s for s in surfaces)
+    assert "may well exist" in surfaces[0], "an unfetched receipt is not a missing one"

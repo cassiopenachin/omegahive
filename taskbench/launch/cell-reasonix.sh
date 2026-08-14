@@ -26,6 +26,14 @@ readonly CELL_HOME="$BENCH_CELL_ROOT/.reasonix-home"
 
 # Removed on EVERY exit path — normal, error, and signal. The .env is the only place this key
 # is ever written to disk by taskbench, and it must not outlive the process that needed it.
+#
+# NOTE THE ABSENCE OF `exec` BELOW, and do not reintroduce it. `exec` replaces this shell's
+# process image, which DISCARDS the EXIT trap — so with `exec reasonix …` the cleanup never ran
+# on the normal path and a mode-0600 file containing the operator's OpenRouter key was left in
+# the cell root, which is retained with the record. Verified: `bash -c 'trap "echo X" EXIT; exec
+# /bin/echo hi'` prints only `hi`. Running the harness as a child costs one shell process and is
+# the only way this guarantee holds.
+# shellcheck disable=SC2329  # invoked by the trap below
 cleanup() { rm -rf "$CELL_HOME"; }
 trap cleanup EXIT INT TERM HUP
 
@@ -62,7 +70,8 @@ chmod 600 "$CELL_HOME/config.toml"
 # `--metrics` is what makes this arm's harness-side token/cache totals a recorded fact rather
 # than a transcript estimate. It is corroboration, not evidence: this arm is SCORED on the
 # gateway receipts, which is why a harness-local cost field appearing here changes nothing.
-REASONIX_HOME="$CELL_HOME" exec reasonix run \
+set +e
+REASONIX_HOME="$CELL_HOME" reasonix run \
   --model omegahive-openrouter \
   --output-format json \
   --permission-mode auto \
@@ -71,3 +80,6 @@ REASONIX_HOME="$CELL_HOME" exec reasonix run \
   --metrics "$BENCH_CELL_ROOT/run/reasonix-metrics.json" \
   ${TASKBENCH_EFFORT:+--effort "$TASKBENCH_EFFORT"} \
   "$@"
+status=$?
+set -e
+exit "$status"

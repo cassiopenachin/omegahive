@@ -138,6 +138,7 @@ QUALIFY_ADDITIVE = (
     "taskbench/qualify.py",
     "taskbench/qualify_batch.py",
     "taskbench/receipts.py",
+    "taskbench/smoke.py",
     "taskbench/launch/",
     "taskbench/configs/",
 )
@@ -150,10 +151,19 @@ DISPOSITIONED = {
         "record fields, and `read1` so the recorded first-response timestamp means what it "
         "already claimed. No change to what a cell is asked, how it is graded, or what passes."
     ),
-    "taskbench/cli.py": "adds the qualify-preflight command; no existing command changed.",
-    "taskbench/preflight.py": "unchanged unless listed by the check below.",
-    "taskbench/record.py": "unchanged unless listed by the check below.",
+    "taskbench/cli.py": (
+        "adds the qualify-preflight, qualify-smoke, run-gateway, gateway-totals and matrix "
+        "commands; no existing command's behaviour is changed."
+    ),
 }
+
+#: `preflight.py` and `record.py` were previously listed as dispositioned with the text
+#: "unchanged unless listed by the check below" — which checked nothing at all, because a
+#: dispositioned path is excluded from the undeclared-change list AND is not in the frozen set.
+#: A real edit to `record.py`, whose `validate_record` is what the incumbent check relies on,
+#: would have been reported as properly declared. They are simply absent from both lists now,
+#: so any change to either shows up as undeclared, which is what a disposition that means
+#: something looks like.
 
 
 def _git(repo: Path, *args: str) -> tuple[int, str]:

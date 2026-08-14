@@ -34,10 +34,15 @@ export ANTHROPIC_API_KEY="$OPENROUTER_API_KEY"
 
 # `--strict-mcp-config` on top of `--bare`: two independent reasons for the same isolation,
 # which is the right number for something that silently changes what the model was asked.
+#
+# `--print --output-format json --permission-mode auto` are deliberately NOT added here. They
+# stay in the launcher's argv, where `preflight.check_agent_command` can see them: it refuses a
+# config that declares the `claude-code-json` envelope while its argv never asks for JSON, and
+# hiding those flags inside this wrapper made that check fire and refuse the whole batch.
+#
+# `exec` is safe in THIS wrapper and only because it installs no cleanup trap — it exports one
+# derived variable and hands over. The other two cell wrappers must not use it.
 exec claude \
   --bare \
   --strict-mcp-config \
-  --print \
-  --output-format json \
-  --permission-mode auto \
   "$@"

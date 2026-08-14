@@ -237,3 +237,25 @@ def test_pulse_states_are_the_only_vocabulary():
         for e in (True, False) for x in (True, False)
     }
     assert seen <= set(PULSE_STATES)
+
+
+def test_a_line_number_that_happens_to_be_529_is_not_a_terminal_error():
+    """`529` was a bare pattern matched against 80KB of harness output. A diff hunk header or a
+    token count was enough to mark a healthy run terminal — and the pulse then promoted that to
+    the EARLIEST actionable basis and stamped a timestamp on it."""
+    from taskbench.runner import _detect_terminal_error
+
+    for innocent in (
+        "@@ -529,7 +529,9 @@ def run_cell(",
+        "  529 passed, 1 warning in 63.21s",
+        "cache_read_input_tokens: 529",
+        "File \"runner.py\", line 529, in run_cell",
+    ):
+        assert _detect_terminal_error(innocent) is None, innocent
+
+
+def test_a_real_overload_is_still_caught():
+    from taskbench.runner import _detect_terminal_error
+
+    for real in ("overloaded_error", "HTTP 529", "status: 529", "API error (code 529)"):
+        assert _detect_terminal_error(real) is not None, real

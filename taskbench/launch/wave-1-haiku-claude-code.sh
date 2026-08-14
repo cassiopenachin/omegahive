@@ -84,6 +84,24 @@ say ""
 say "The kickoff is the SAME fixed minimal kickoff every bundle receives, built by the runner"
 say "from the frozen manifest. No wave adds harness-specific task context."
 
+step "Smoke: one disposable read/edit/test loop on this exact bundle"
+say "Same argv the batch will use, against a three-file fixture. A bundle that cannot read a"
+say "file it was not given, edit a second and run the third has nothing to say about an order."
+set +e
+(
+  cd "$REPO_ROOT" || exit 1
+  uv run --frozen taskbench qualify-smoke \
+    --config "$CONFIG" --bundle "haiku-claude-code" \
+    --root "$WORK_ROOT/smoke" --out "$WORK_ROOT"
+)
+smoke_status=$?
+set -e
+if [ "$smoke_status" -ne 0 ]; then
+  say ""
+  say "The batch does NOT run. Nothing was scored and nothing was spent on the matrix."
+  exit "$smoke_status"
+fi
+
 install_interrupt_trap "$RECORDS_DIR" "$RECORD_ID" "$WORK_ROOT"
 
 step "The pause point: $FIRST_TASK first"

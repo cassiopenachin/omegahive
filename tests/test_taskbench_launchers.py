@@ -19,6 +19,22 @@ from taskbench.openrouter import DEEPSEEK_PIN, MUSE_PIN
 
 LAUNCH = Path(__file__).resolve().parents[1] / "taskbench/launch"
 
+
+def code(name: str) -> str:
+    """The script with its comments stripped.
+
+    These scripts explain themselves at length, and several of the explanations quote the very
+    flags and constructs the checks below forbid. Searching the raw text finds the warning
+    against a thing and calls it the thing.
+    """
+    lines = []
+    for line in (LAUNCH / name).read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
+
 WAVES = {
     "wave-1-haiku-claude-code.sh": "claude-haiku-4-5",
     "wave-2-luna-codex.sh": "gpt-5.6-luna",
@@ -268,3 +284,87 @@ def test_neither_deepseek_arm_overrides_the_output_cap():
         body = (LAUNCH / name).read_text()
         for override in ("--max-tokens", "MAX_OUTPUT_TOKENS", "max_tokens"):
             assert override not in body, f"{name} overrides the output cap on one side only"
+
+
+@pytest.mark.parametrize("name", WAVES)
+def test_every_wave_smokes_the_bundle_before_it_spends(name):
+    """The order requires a tool loop proved before the matrix, using the bundle's real argv."""
+    body = code(name)
+    assert "qualify-smoke" in body
+    assert '--config "$CONFIG"' in body or "smoke-$arm.yaml" in body, (
+        "the smoke must run the config the batch will use, not an approximation of it"
+    )
+    assert "does NOT run" in body or "NEITHER arm runs" in body, (
+        "a failed smoke must stop the batch"
+    )
+
+
+def test_the_paired_wave_smokes_both_arms_before_either_spends():
+    """A pair in which only one arm can reach its model is not a pair."""
+    body = (LAUNCH / "wave-3-deepseek-paired.sh").read_text()
+    assert "for arm in reasonix claude-code" in body
+    assert "NEITHER arm runs" in body
+
+
+# --- regressions from the independent review -------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["cell-reasonix.sh", "cell-codex.sh"])
+def test_a_wrapper_with_a_cleanup_trap_never_execs(name):
+    """`exec` replaces the shell's process image and DISCARDS the EXIT trap. With `exec`, the
+    reasonix wrapper left a 0600 file containing the operator's OpenRouter key in every cell
+    root, and the codex wrapper left a copy of the ChatGPT credential — and cell roots are
+    retained with the record. Verified: `bash -c 'trap "echo X" EXIT; exec /bin/echo hi'` prints
+    only `hi`."""
+    body = code(name)
+    assert "trap cleanup EXIT" in body
+    # The shell builtin, which is `exec` at the start of a command — not `codex exec`, which is
+    # a subcommand of a different program and replaces nothing.
+    for line in body.splitlines():
+        assert not line.strip().startswith("exec "), (
+            f"{name} must not exec: it has a cleanup trap that exec would discard"
+        )
+    assert 'exit "$status"' in body, "the harness's exit code must still reach the runner"
+
+
+def test_the_claude_wrapper_may_exec_because_it_has_no_cleanup_to_lose():
+    body = code("cell-claude-openrouter.sh")
+    assert "trap " not in body, "if this ever grows a cleanup trap, the exec below must go"
+    assert "exec claude" in body
+
+
+@pytest.mark.parametrize("name", ["wave-3-deepseek-paired.sh", "wave-4-muse-claude-code.sh"])
+def test_the_json_flags_stay_where_preflight_can_see_them(name):
+    """`preflight.check_agent_command` refuses a config declaring the claude-code-json envelope
+    whose argv never asks for JSON. Hiding those flags inside the wrapper made preflight refuse
+    the whole batch before a single cell ran."""
+    body = code(name)
+    assert '"--output-format", "json"' in body
+    assert "result_envelope: claude-code-json" in body
+    assert "--output-format" not in code("cell-claude-openrouter.sh"), (
+        "the flags must be in the launcher's argv, not swallowed by the wrapper"
+    )
+
+
+def test_the_openrouter_claude_argv_actually_passes_preflight():
+    """Not asserted from the text but executed: build the spec the launcher writes and run the
+    real check against it."""
+    from taskbench.preflight import check_agent_command
+    from taskbench.runner import AgentSpec
+
+    spec = AgentSpec(
+        argv=[
+            str(LAUNCH / "cell-claude-openrouter.sh"), "--model", "m",
+            "--print", "--output-format", "json", "--permission-mode", "auto",
+        ],
+        labels={"vendor": "v", "model": "m", "harness": "h"},
+        result_envelope="claude-code-json",
+    )
+    assert check_agent_command(spec, label="agent") == []
+
+
+def test_codex_is_not_given_a_working_directory_the_runner_already_set():
+    """`run_cell` launches with cwd=<cell>/code; a `-C code` on top resolves to code/code."""
+    body = code("wave-2-luna-codex.sh")
+    assert '"-C", "code"' not in body
+    assert "cwd: code" in body

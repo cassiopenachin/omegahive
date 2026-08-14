@@ -211,8 +211,12 @@ def record_gateway_totals(record_root: Path) -> dict[str, Any]:
                 value = leg_totals.get(key)
                 if isinstance(value, (int, float)):
                     totals[key] += value
-                elif key in ("gateway_cost_usd",) and leg_totals.get("calls_with_receipt"):
-                    # A leg that had receipts but no priced field makes the sum a floor.
+                elif leg_totals.get("calls_with_receipt"):
+                    # `reconcile` returns None for any field missing from even one receipt, so a
+                    # leg that HAD receipts but no value for this key makes the sum a floor. This
+                    # covers every summed key, not just cost: a token total quietly short is the
+                    # same failure as a cost total quietly short, and the headline question this
+                    # study answers is a token question.
                     complete = False
             upstreams.update(leg_totals.get("resolved_upstreams") or [])
             models.update(leg_totals.get("resolved_models") or [])

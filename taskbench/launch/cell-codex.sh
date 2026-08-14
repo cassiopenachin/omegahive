@@ -28,6 +28,10 @@ set -euo pipefail
 readonly SOURCE_AUTH="$CODEX_AUTH_SOURCE"
 readonly CELL_HOME="$BENCH_CELL_ROOT/.codex-home"
 
+# As in cell-reasonix.sh: NO `exec` below. `exec` replaces this shell's process image and
+# discards the EXIT trap, which left a copy of the operator's ChatGPT subscription credential
+# sitting in every cell root — and cell roots are retained with the record.
+# shellcheck disable=SC2329  # invoked by the trap below
 cleanup() { rm -rf "$CELL_HOME"; }
 trap cleanup EXIT INT TERM
 
@@ -46,8 +50,12 @@ chmod 600 "$CELL_HOME/auth.json"
 # `--ignore-user-config` keeps ~/.codex/config.toml out of the cell even though the home is
 # already fresh: two independent reasons for the same isolation, which is the right number for
 # something that silently changes what the model was asked.
-CODEX_HOME="$CELL_HOME" exec codex exec \
+set +e
+CODEX_HOME="$CELL_HOME" codex exec \
   --json \
   --ignore-user-config \
   --skip-git-repo-check \
   "$@"
+status=$?
+set -e
+exit "$status"

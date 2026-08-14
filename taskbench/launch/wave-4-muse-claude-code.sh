@@ -84,7 +84,9 @@ readonly CONFIG
   # Through the wrapper, not `claude` directly: `--bare` is what keeps this arm from satisfying
   # itself with the operator's Anthropic OAuth subscription and never reaching OpenRouter — a
   # cell that would run a different model from the one it records.
-  printf '  argv: ["%s", "--model", "%s"]\n' "$CELL_CLAUDE" "$MODEL"
+  printf '  argv: ["%s", "--model", "%s", "--print", "--output-format", "json",\n' \
+         "$CELL_CLAUDE" "$MODEL"
+  printf '         "--permission-mode", "auto"]\n' 
   printf '  labels: {vendor: "%s", model: "%s", harness: "%s"}\n' \
          "$VENDOR" "$MODEL" "$HARNESS_VERSION"
   printf '  result_envelope: claude-code-json\n'
@@ -98,6 +100,24 @@ readonly CONFIG
   emit_sources_block "$REPO_ROOT"
 } > "$CONFIG"
 say "config:   $CONFIG"
+
+step "Smoke: one disposable read/edit/test loop on this exact bundle"
+say "Same argv the batch will use, against a three-file fixture. A bundle that cannot read a"
+say "file it was not given, edit a second and run the third has nothing to say about an order."
+set +e
+(
+  cd "$REPO_ROOT" || exit 1
+  uv run --frozen taskbench qualify-smoke \
+    --config "$CONFIG" --bundle "muse-claude-code" \
+    --root "$WORK_ROOT/smoke" --out "$WORK_ROOT"
+)
+smoke_status=$?
+set -e
+if [ "$smoke_status" -ne 0 ]; then
+  say ""
+  say "The batch does NOT run. Nothing was scored and nothing was spent on the matrix."
+  exit "$smoke_status"
+fi
 
 install_interrupt_trap "$RECORDS_DIR" "$RECORD_ID" "$WORK_ROOT"
 

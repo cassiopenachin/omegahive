@@ -161,3 +161,36 @@ def test_the_recorder_env_carries_a_base_url_and_never_a_credential(tmp_path):
     assert list(env) == ["ANTHROPIC_BASE_URL"]
     assert env["ANTHROPIC_BASE_URL"].startswith("http://127.0.0.1:")
     assert "KEY" not in json.dumps(env).upper()
+
+
+def test_a_missing_token_field_makes_the_totals_a_floor_not_just_a_missing_cost(tmp_path):
+    """`reconcile` returns None for any field absent from even one receipt. Only a missing COST
+    used to set `complete = False`, so a short token total printed with no INCOMPLETE banner —
+    and the headline question this study answers is a token question."""
+    from taskbench.qualify_batch import record_gateway_totals
+
+    cell = tmp_path / "cells" / "cell-a"
+    cell.mkdir(parents=True)
+    (cell / "gateway-receipts-attempt.json").write_text(json.dumps({
+        "totals": {
+            "calls_observed": 2, "calls_with_receipt": 2,
+            "gateway_cost_usd": 0.5,
+            "native_tokens_prompt": 100,
+            "native_tokens_completion": None,   # absent from one receipt
+            "native_tokens_cached": 10,
+            "native_tokens_reasoning": 0,
+        }
+    }))
+    got = record_gateway_totals(tmp_path)
+    assert got["complete"] is False
+    assert got["totals"]["native_tokens_prompt"] == 100
+
+
+def test_a_cell_with_no_receipts_is_named_rather_than_counted_as_free(tmp_path):
+    from taskbench.qualify_batch import record_gateway_totals
+
+    (tmp_path / "cells" / "cell-a").mkdir(parents=True)
+    got = record_gateway_totals(tmp_path)
+    assert got["cells_without_receipts"]["cells"] == ["cell-a"]
+    assert "not a cell that cost nothing" in got["cells_without_receipts"]["why_it_matters"]
+    assert got["complete"] is False

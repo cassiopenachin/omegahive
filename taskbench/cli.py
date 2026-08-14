@@ -15,6 +15,7 @@ thing this instrument cannot get back if it is spent.
 from __future__ import annotations
 
 import json
+import os
 from datetime import date as _date
 from pathlib import Path
 
@@ -397,6 +398,50 @@ def run_gateway_cmd(
         )
     if batch_exit is not None:
         raise batch_exit
+
+
+@app.command("qualify-smoke")
+def qualify_smoke_cmd(
+    config_path: str = typer.Option(..., "--config", help="the runner config the batch will use"),
+    bundle: str = typer.Option(..., "--bundle", help="label for the smoke record"),
+    root: str = typer.Option(..., "--root", help="disposable root for the fixture"),
+    out: str = typer.Option(..., "--out", help="where the smoke record is written"),
+    pulse_at_s: int = typer.Option(300, "--pulse-at-s"),
+    timeout_s: int = typer.Option(900, "--timeout-s"),
+) -> None:
+    """Prove one bundle's tool loop against a disposable fixture, before it spends.
+
+    Runs the *same* agent argv the batch will use, so it proves that bundle rather than a
+    reasonable-looking approximation of it. Exits 4 on any non-green outcome: a bundle that
+    cannot read, edit and run a three-file fixture has nothing to say about a real order.
+    """
+    from . import smoke as smoke_mod
+
+    cfg = yaml.safe_load(Path(config_path).read_text())
+    agent = AgentSpec.model_validate(cfg["agent"])
+    env = {k: os.environ[k] for k in agent.env_passthrough if k in os.environ}
+    env.update(agent.env)
+
+    result = smoke_mod.run_smoke(
+        bundle, list(agent.argv), root=Path(root), env=env,
+        timeout_s=timeout_s, pulse_at_s=pulse_at_s,
+    )
+    path = smoke_mod.write_smoke(result, Path(out))
+    mark = "[bold]✓[/bold]" if result.outcome == "green" else "[bold]✗[/bold]"
+    console.print(f"{mark} {bundle}: {result.outcome} — {result.detail}")
+    if result.pulse:
+        console.print(
+            f"  five-minute pulse: {result.pulse['state']} — {result.pulse['observed']}"
+        )
+    console.print(f"  recorded: {path}")
+    if result.outcome != "green":
+        if result.outcome.startswith("unreachable-"):
+            console.print(
+                "\n[bold]UNREACHABLE[/bold] — this is a setup boundary, not a task failure and "
+                "not a broken benchmark. Record it as such; do NOT reroute this bundle through "
+                "another provider or harness."
+            )
+        raise typer.Exit(code=4)
 
 
 @app.command("matrix")

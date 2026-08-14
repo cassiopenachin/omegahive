@@ -128,7 +128,9 @@ write_config() {
       # Through the wrapper, not `claude` directly: `--bare` is what keeps this arm from
       # satisfying itself with the operator's Anthropic OAuth subscription and never reaching
       # OpenRouter at all — a cell that would run a different model from the one it records.
-      printf '  argv: ["%s", "--model", "%s"]\n' "$CELL_CLAUDE" "$MODEL"
+      printf '  argv: ["%s", "--model", "%s", "--print", "--output-format", "json",\n' \
+             "$CELL_CLAUDE" "$MODEL"
+      printf '         "--permission-mode", "auto"]\n' 
       printf '  labels: {vendor: "%s", model: "%s", harness: "%s"}\n' \
              "$VENDOR" "$MODEL" "$CC_HARNESS"
       printf '  result_envelope: claude-code-json\n'
@@ -185,6 +187,30 @@ run_arm_task() {
   ARM_RECORD[$arm]="$RECORDS_DIR/$(date +%F)-$rid"
   return $status
 }
+
+step "Smoke: BOTH arms, before either spends"
+say "One disposable read/edit/test loop per arm, using each arm's real argv. Both must be"
+say "green: a pair in which only one arm can reach its model is not a pair, and running the"
+say "reachable half alone would produce a column with nothing to compare it against."
+for arm in reasonix claude-code; do
+  write_config "$arm" "$WORK_ROOT/smoke-$arm.yaml"
+  set +e
+  (
+    cd "$REPO_ROOT" || exit 1
+    uv run --frozen taskbench qualify-smoke \
+      --config "$WORK_ROOT/smoke-$arm.yaml" --bundle "deepseek-$arm" \
+      --root "$WORK_ROOT/smoke/$arm" --out "$WORK_ROOT"
+  )
+  smoke_status=$?
+  set -e
+  if [ "$smoke_status" -ne 0 ]; then
+    say ""
+    say "NEITHER arm runs. Nothing was scored and nothing was spent on the matrix."
+    say "An unreachable arm is recorded as unreachable, with its failure boundary named — it"
+    say "is never rerouted through another provider, upstream or harness."
+    exit "$smoke_status"
+  fi
+done
 
 install_interrupt_trap "$RECORDS_DIR" "wave-3-deepseek-paired" "$WORK_ROOT"
 

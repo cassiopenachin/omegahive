@@ -74,11 +74,18 @@ class AgentSpec(BaseModel):
 
 #: Objectively terminal errors — the run stopped for a reason that is not the model's
 #: judgment. Kept small and literal on purpose: a fuzzy list would relabel real failures.
+#:
+#: `529` was a bare number here, matched with `re.search` against 80KB of the harness's own
+#: output. A diff hunk header (`@@ -529,7 +529,9 @@`), a line number or a token count was
+#: enough to mark a perfectly healthy run terminal — and once the five-minute pulse started
+#: reading this list, `earliest_actionable_red` would promote that false positive to the
+#: EARLIEST possible basis and stamp a timestamp on it. It now needs an HTTP-ish context, which
+#: is the only form the condition actually appears in.
 TERMINAL_ERROR_PATTERNS: tuple[tuple[str, str], ...] = (
     ("credit_balance", r"credit balance is too low"),
     ("authentication", r"authentication_error|invalid[_ ]api[_ ]key"),
     ("rate_limit", r"rate[_ ]limit[_ ]error|429 Too Many Requests"),
-    ("overloaded", r"overloaded_error|529"),
+    ("overloaded", r"overloaded_error|(?:HTTP|status|code)\D{0,10}\b529\b"),
     ("context_overflow", r"prompt is too long|context[_ ]length[_ ]exceeded"),
     ("harness_crash", r"Traceback \(most recent call last\)"),
 )

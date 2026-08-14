@@ -130,3 +130,20 @@ def test_the_report_records_observations_not_just_verdicts(tmp_path):
     assert doc["expect_corpus_hash"] == qualify.EXPECT_CORPUS_HASH
     assert [c["name"] for c in doc["checks"]] == ["a/thing", "b/thing"]
     assert doc["checks"][1]["observed"] == {"observed": 2, "expected": 1}
+
+
+def test_no_path_is_dispositioned_into_being_unchecked():
+    """`preflight.py` and `record.py` were once listed with the text 'unchanged unless listed by
+    the check below' — which checked nothing: a dispositioned path is excluded from the
+    undeclared-change list AND absent from the frozen set, so a real edit to `record.py` (whose
+    `validate_record` the incumbent check relies on) would have read as properly declared."""
+    for path, text in qualify.DISPOSITIONED.items():
+        assert "unchanged unless" not in text, (
+            f"{path} carries a disposition that asserts nothing"
+        )
+        assert len(text) > 40, f"{path} needs a disposition that says what changed and why"
+    for absent in ("taskbench/preflight.py", "taskbench/record.py"):
+        assert absent not in qualify.DISPOSITIONED, (
+            f"{absent} must be in neither list, so any change to it surfaces as undeclared"
+        )
+        assert absent not in qualify.SCORING_FROZEN
