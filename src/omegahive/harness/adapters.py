@@ -134,17 +134,29 @@ class Adapter:
         return [self.executable, "--version"]
 
     def parse_version(self, output: str) -> str:
-        """First whitespace-delimited token of the first non-empty line.
+        """The first token that looks like a version, else the first token at all.
 
         `claude --version` prints `2.1.231 (Claude Code)`; taking the first token keeps
-        the recorded value a version rather than a product banner. A harness whose
-        output does not fit overrides this.
+        the recorded value a version rather than a product banner.
+
+        The digit preference is not cosmetic. The probe merges stderr so that a harness
+        which fails to start can say why — which means an unrelated warning
+        (`bash: warning: setlocale: ...`) can land on the first line, and the naive rule
+        records that warning's first word as the harness version. Observed 2026-08-14 on
+        a real preflight, which reported `harness: sh:`. A version fact naming a shell is
+        worse than no fact. The shell twin is `harness_version_from` in hive-common.sh.
         """
-        for line in output.splitlines():
-            line = line.strip()
-            if line:
-                return line.split()[0]
-        return ""
+        first = ""
+        for raw in output.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            token = line.split()[0]
+            if token[:1].isdigit():
+                return token
+            if not first:
+                first = token
+        return first
 
 
 class ClaudeCodeAdapter(Adapter):

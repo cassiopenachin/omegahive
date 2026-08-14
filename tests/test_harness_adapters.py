@@ -20,6 +20,7 @@ boundary and never re-enters as a shell command string.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -267,3 +268,51 @@ def test_parse_version_takes_the_first_token_of_the_first_non_empty_line(
     output: str, expected: str
 ):
     assert ClaudeCodeAdapter().parse_version(output) == expected
+
+
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        ("2.1.232 (Claude Code)\n", "2.1.232"),
+        # The case this rule exists for: the probe merges stderr so a harness that
+        # cannot start can say why, and an unrelated warning then lands first.
+        # Observed 2026-08-14 — a real preflight reported `harness: sh:`.
+        ("/bin/sh: warning: setlocale: LC_ALL: cannot change locale\n2.1.232 (Claude Code)\n",
+         "2.1.232"),
+        ("\n\nbash: warning: something\n  3.0.1-beta\n", "3.0.1-beta"),
+        # No line starts with a digit: fall back rather than record nothing.
+        ("fake-harness 9.9.9\n", "fake-harness"),
+        ("", ""),
+    ],
+)
+def test_parse_version_prefers_a_version_shaped_token_over_a_stderr_warning(output, expected):
+    assert ClaudeCodeAdapter().parse_version(output) == expected
+
+
+def test_the_shell_version_parser_agrees_with_the_python_one():
+    """Two implementations of one rule, held together by a test rather than a comment.
+
+    The shell twin is what actually runs (hive-supervise reads the probe), so a drift
+    between them would put a wrong `harness_version` on the spine while the Python tests
+    stayed green.
+    """
+    import shutil
+    import subprocess
+
+    if shutil.which("bash") is None:  # pragma: no cover - bash is present everywhere here
+        pytest.skip("bash not available")
+    repo = Path(__file__).resolve().parents[1]
+    cases = [
+        "2.1.232 (Claude Code)\n",
+        "/bin/sh: warning: setlocale: LC_ALL: cannot change locale\n2.1.232 (Claude Code)\n",
+        "\n\nbash: warning: something\n  3.0.1-beta\n",
+        "fake-harness 9.9.9\n",
+    ]
+    for output in cases:
+        proc = subprocess.run(
+            ["bash", "-c",
+             f'set -euo pipefail; source "{repo}/scripts/hive-common.sh"; harness_version_from'],
+            input=output, capture_output=True, text=True, cwd=str(repo), timeout=60,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.strip() == ClaudeCodeAdapter().parse_version(output), output

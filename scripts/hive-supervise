@@ -270,9 +270,9 @@ if ! VERSION_OUT=$("${VERSION_ARGV[@]}" 2>&1); then
   finish failure certain 127
   exit 1
 fi
-# First token of the first non-empty line: `claude --version` prints
-# `2.1.231 (Claude Code)` and the version is what belongs on the fact, not the banner.
-HARNESS_VERSION=$(printf '%s\n' "$VERSION_OUT" | awk 'NF {print $1; exit}')
+# `claude --version` prints `2.1.231 (Claude Code)` and the version is what belongs on
+# the fact, not the banner — and not a warning that happened to reach stderr first.
+HARNESS_VERSION=$(printf '%s\n' "$VERSION_OUT" | harness_version_from)
 [ -n "$HARNESS_VERSION" ] || HARNESS_VERSION="unknown"
 
 # --- 2. start the child, then say so ------------------------------------------------

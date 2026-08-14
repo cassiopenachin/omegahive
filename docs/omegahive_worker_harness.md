@@ -2,7 +2,10 @@
 
 What this document covers: how a worker launch chooses a model, how that choice is
 recorded, and what the operator has to do to run it. It is the reference for HIP-1
-milestone M2's first order (`worker-harness-core`).
+milestone M2's first order (`worker-harness-core`). Its companion is
+`docs/omegahive_worker_boundary.md`, which covers the second order
+(`worker-harness-bindings`): what a worker may reach once it is running, and the
+credential seam that keeps an api-market route refused.
 
 **The one-sentence shape:** the operator signs a *launch binding* naming a *route*; the
 launcher resolves that route against this host's *route catalog*, hands the resolved
@@ -39,6 +42,13 @@ without the file itself ever entering a project.
 collapsed silently by every parser here, so a hand-edited catalog with one route name
 twice would resolve to whichever copy won. A list makes the duplicate visible and
 `ROUTE_AMBIGUOUS` refuses it.
+
+Since `worker-harness-bindings`, every route additionally names its **permission
+boundary** — `binding_id` plus `binding_digest` — and says how its credential reaches
+the execution (`credential_mode`). Both binding fields are required: a route with no
+named boundary is the empty harness-bindings row `permissions.md` calls a launch that
+does not happen. `docs/omegahive_worker_boundary.md` covers those three fields; run
+`scripts/hive-routes` to print the current digests for pasting.
 
 ## 2. Setting up this host
 
@@ -263,6 +273,7 @@ near-duplicates.
 | `HIVE_ENFORCE_BINDINGS` | `0` | `1` makes a missing binding refuse |
 | `HIVE_WORKER_CMD` | `claude --permission-mode auto` | the legacy path only; never a route source |
 | `HIVE_CLI_CMD` | unset | test seam: run the CLI directly instead of in the container |
+| `HIVE_BINDINGS_REPO_DIR` | unset | test seam: where the permission-boundary descriptors are read from |
 
 ## 10. What this order deliberately does not do
 
@@ -272,8 +283,8 @@ Named here so the next reader does not go looking:
   or dollar budget. This records a human-signed choice.
 - **No review invocation.** `purpose=review` is a forward-compatible identity value, not
   permission to launch a reviewer. `review-orchestration` owns that.
-- **No permission-policy interpretation and no credential delivery.** API-market routes
-  validate and resolve, and `--check` will show them, but launching one refuses until
-  `worker-harness-bindings` supplies the controls. `permissions.md` §Open — which
-  harness config binds the worker boundary — is that order's question, not this one's.
+- **No permission-policy interpretation and no credential delivery.** Both landed in
+  `worker-harness-bindings`; see `docs/omegahive_worker_boundary.md`. An api-market
+  route still refuses, but now for a stated reason with a stable code rather than as a
+  deferral.
 - **No capacity UI.** The query exists; the screen is `capacity-view`'s.

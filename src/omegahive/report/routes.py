@@ -30,7 +30,11 @@ from collections.abc import Mapping
 from typing import Any
 
 from omegahive.harness.adapters import LaunchContext, get_adapter
-from omegahive.harness.bindings import materialize, run_local_probes
+from omegahive.harness.bindings import (
+    load_binding_descriptor,
+    materialize,
+    run_local_probes,
+)
 from omegahive.harness.plan import _credential_gate, resolve_harness_binding
 from omegahive.harness.records import RefusalError, RouteEntry, load_catalog
 
@@ -97,7 +101,29 @@ def evaluate_routes(
         try:
             binding = resolve_harness_binding(route, descriptors_raw)
         except RefusalError as exc:
-            rows.append(_row(route, refusal_code=exc.code, reason=exc.message))
+            # Still show what the descriptor CLAIMS, when there is one to read. An
+            # operator meeting `HARNESS_BINDING_UNPROVEN` needs to know which classes
+            # would bind and which would not — that is the input to deciding whether
+            # installing the harness is worth it — and a row of dashes hides exactly
+            # that. The row stays refused; only the description gets richer.
+            claimed: dict[str, Any] = {}
+            raw = descriptors_raw.get(route.binding_id)
+            if raw is not None:
+                try:
+                    declared = load_binding_descriptor(raw)
+                    claimed = {
+                        "binding_status": declared.status,
+                        "command_mode": declared.command_mode,
+                        "classes": declared.mechanism_summary(),
+                        "residuals": {
+                            c.policy_class: c.residual
+                            for c in declared.classes
+                            if c.residual
+                        },
+                    }
+                except RefusalError:
+                    claimed = {}
+            rows.append(_row(route, refusal_code=exc.code, reason=exc.message, **claimed))
             continue
         try:
             adapter = get_adapter(route.adapter)
@@ -191,10 +217,30 @@ def routes_to_text(rows: list[dict[str, Any]]) -> str:
             if failed:
                 line += f", {len(failed)} FAIL ({', '.join(sorted(failed))})"
             out.append(line)
-        for pc, residual in sorted(r["residuals"].items()):
-            if residual:
-                out.append(f"      {pc} residual: {residual}")
+        residual_classes = sorted(pc for pc, v in r["residuals"].items() if v)
+        if residual_classes:
+            out.append(
+                f"      residuals: {', '.join(residual_classes)} "
+                f"(stated in full under {r['binding_id']} below)"
+            )
         if r["reason"]:
             out.append(f"    reason: {r['reason']}")
         out.append("")
+
+    # Residuals once per BOUNDARY, not once per route. They are the honest half of the
+    # report and they are long; repeating them under every route that shares a
+    # descriptor is how the honest half becomes the part nobody reads.
+    seen: dict[str, dict[str, str]] = {}
+    for r in rows:
+        for pc, residual in r["residuals"].items():
+            if residual:
+                seen.setdefault(r["binding_id"], {})[pc] = residual
+    if seen:
+        out.append("What these boundaries do NOT close:")
+        out.append("")
+        for binding_id, residuals in sorted(seen.items()):
+            out.append(f"  {binding_id}")
+            for pc, residual in sorted(residuals.items()):
+                out.append(f"    {pc}: {residual}")
+            out.append("")
     return "\n".join(out).rstrip() + "\n"

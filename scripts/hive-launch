@@ -253,7 +253,7 @@ else
     VARGV=$(printf '%s' "$REQ" | hive harness-resolve | jq -r '.version_argv | join(" ")')
     printf '  harness: '
     if VOUT=$(sh -c "$VARGV" 2>&1); then
-      printf '%s\n' "$(printf '%s\n' "$VOUT" | awk 'NF {print $1; exit}')  (probe: $VARGV)"
+      printf '%s\n' "$(printf '%s\n' "$VOUT" | harness_version_from)  (probe: $VARGV)"
     else
       printf 'NOT INSTALLED — `%s` failed:\n' "$VARGV"
       printf '%s\n' "$VOUT" | sed 's/^/    /'

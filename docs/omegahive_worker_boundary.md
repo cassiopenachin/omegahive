@@ -1,0 +1,246 @@
+# Worker permission boundary — operator guide
+
+What this document covers: how the four approved worker policy classes (`permissions.md`
+P1–P4) become something a launch can actually enforce and refuse on, and how a provider
+credential reaches — or fails to reach — an execution. Its companion is
+`docs/omegahive_worker_harness.md`, which covers routes, bindings, and what ran.
+
+**The one-sentence shape:** the repository carries an auditable **binding descriptor**
+per launchable harness; the launcher **materializes** the harness-native configuration
+into the isolated worker root and **verifies** what the child will actually honor before
+the execution starts. A route names its descriptor and pins its exact bytes, so a
+boundary change is an approved act rather than a side effect of pulling code.
+
+Configuration presence is not enforcement. Everything below exists to keep those two
+apart.
+
+---
+
+## 1. The descriptor
+
+One file per launchable harness, in `harness-bindings/`, shipped with the launcher and
+validated against `schemas/harness-binding.v1.json`.
+
+| Field | What it does |
+|---|---|
+| `binding_id`, `harness` | which boundary this is, and which harness it is about |
+| `config_path`, `config_format` | where the materialized config goes in the worker root |
+| `required_flags` | the flags the child's argv MUST carry, emitted by the adapter verbatim and re-checked against the vector it actually built |
+| `command_mode_flag` | which of those flags names the harness's command mode |
+| `known_command_modes` / `safe_command_modes` | an unrecognized mode refuses; a recognized-and-unsafe mode refuses |
+| `forbidden_argv_tokens` | tokens that may never appear, at all |
+| `classes` | one entry per policy class: mechanisms, probes, residual |
+| `status` + `verification` | `proven` (probes were run, and where to read the record) or `declared` (written from documentation — **routes refuse**) |
+
+A class binds through **mechanisms**. A mechanism is enforceable or it is not:
+`settings-deny`, `settings-allow`, `setting-source-gating`, `launch-flag`,
+`sandbox-flag`, and `env-allowlist` are; `instruction` is not. An `instruction`
+mechanism is legitimate — P2's "do not print resolved configuration" genuinely binds
+through WORKER.md plus review, because no matcher can express it — and it is never
+sufficient alone. A class that names one must also state its `residual`: what is *not*
+contained. Silence there reads as containment, so it refuses.
+
+### What refuses, and with which code
+
+Each is a distinct remedy, so each has a distinct code.
+
+| Code | Meaning |
+|---|---|
+| `HARNESS_UNBOUND` | the route names a descriptor that does not ship with this launcher |
+| `HARNESS_BINDING_MALFORMED` / `HARNESS_BINDING_VERSION` | unreadable, or a schema version this build does not know |
+| `HARNESS_BINDING_MISMATCH` | the descriptor binds a different harness than the route runs |
+| `BINDING_DIGEST_MISMATCH` | the descriptor moved since the operator pinned it |
+| `POLICY_CLASS_MISSING` / `_DUPLICATED` / `_UNKNOWN` | coverage is not exactly P1–P4 |
+| `POLICY_CLASS_UNBOUND` | a blank class, or one held up only by prose |
+| `POLICY_CLASS_UNPROBED` | a mechanism nobody checks |
+| `POLICY_CLASS_RESIDUAL_UNSTATED` | leaning on instructions without saying what is left open |
+| `HARNESS_MODE_UNKNOWN` / `HARNESS_MODE_UNSAFE` | a mode this descriptor does not recognize, or one that bypasses the engine |
+| `HARNESS_FLAG_MISSING` | the adapter did not put a required flag in the argv |
+| `HARNESS_BINDING_UNPROVEN` | `declared`, or `proven` with no passing verification record |
+| `BINDING_PROBE_FAILED` | a preflight probe failed — including a managed policy file being present |
+| `ROUTE_CREDENTIAL_MODE` | an api route on harness-native credentials, or a subscription route asking for a broker |
+| `BROKER_NOT_IMPLEMENTED` | an api route asking for the one shape that could work, which does not exist |
+
+## 2. What ships today
+
+| | Claude Code (`claude-code.v1`) | Codex (`codex.v1`) |
+|---|---|---|
+| Status | **proven** on beastie, harness 2.1.232, 2026-08-14 | **declared** — routes refuse |
+| Config surface | project-local `.claude/settings.local.json` in the worker root | none authored (`config_path: null`) |
+| Launch flags | `--setting-sources project,local`, `--permission-mode auto` | `--sandbox workspace-write`, `--ask-for-approval never` (declared) |
+| P1 access layer | deny `Bash(*sudo *)`, `Bash(*systemctl *)`, `Bash(*tailscale *)` | OS sandbox (declared, unmeasured) |
+| P2 secrets | deny `Read(**/*.env)`, `Read(~/.ssh/**)`, `Bash(*compose config*)`; env allowlist | env allowlist only — **the read half has no native mechanism** |
+| P3 durable stack | deny podman mutations, `git push --force`, **`tmux kill-server`** | OS sandbox (declared, unmeasured) |
+| P4 raw fetch | deny `Bash(*curl *)`, `Bash(*wget *)`; allow the development tools | sandbox network-off (declared, unmeasured) |
+| Evidence | `docs/evidence/harness_binding_probe_claude_code_2026_08_14.md` | none — the binary is not installed here |
+
+The Codex row is written rather than blank on purpose. `permissions.md` says an empty
+row is a launch that does not happen; a filled-in `declared` row says the same thing and
+additionally tells an operator what *would* bind and what would not, which is the input
+to deciding whether installing the harness is worth it.
+
+### Two things about the Claude Code rules
+
+**They are substring patterns**, `Bash(*token*)`, not the prefix form `Bash(token *)`.
+Measured on 2.1.232: a prefix rule is evaded by an absolute path (`/bin/curl`) and by an
+interpreter (`sh -c "curl ..."`); the substring form catches both. The cost is
+deliberate over-match — a command that merely *mentions* a denied token is refused too —
+which is loud and self-correcting, unlike the silence it replaces.
+
+**`--setting-sources project,local` is load-bearing.** It excludes the operator's
+user-level settings from the child's resolved configuration, so no pre-existing global
+config can widen the boundary and none is relied on to hold it. Measured: with the
+materialized file in the loaded sources a canary command is denied; with it excluded the
+same command runs. It does not disturb subscription authentication — credentials do not
+live in `settings.json`.
+
+### The residual, stated plainly
+
+An ordinary harness permission policy is **not** an adversarial OS sandbox. A model that
+deliberately tunnels a read through an allowed interpreter, or obfuscates a command
+(base64, variable splitting, a Python script calling the syscall directly), is outside
+what a command-string matcher evaluates. What is bound is the direct-read and
+environment surface plus the one recorded printing mechanism; the rest binds through
+WORKER.md and review, and this design claims no containment over it.
+
+## 3. Credentials
+
+Route metadata carries `credential_mode`, and there are exactly two values.
+
+- **`harness-native`** (default): the harness's own already-authenticated account is
+  used and the worker is handed nothing. The child's environment is an allowlist — not
+  the parent shell — and any variable whose name contains `API_KEY`, `SECRET`, `TOKEN`,
+  `PASSWORD`, or `CREDENTIAL` is dropped, and refused outright if an adapter names one.
+- **`broker`**: an operator-owned broker alone reads the long-lived credential and
+  issues an opaque, expiring, execution-scoped capability. **No broker is implemented.**
+
+There is deliberately no third value. A raw provider key in a route, a binding, a worker
+environment, a tmux command line, a generated config, an event, or a result artifact is
+not a mode; it is the thing this field exists to make unrepresentable.
+
+The consequences:
+
+| route | outcome |
+|---|---|
+| subscription + harness-native | launchable (given a proven boundary) |
+| subscription + broker | `ROUTE_CREDENTIAL_MODE` — nothing for a broker to scope |
+| api + harness-native | `ROUTE_CREDENTIAL_MODE` — the credential must stay outside the worker |
+| api + broker | `BROKER_NOT_IMPLEMENTED` |
+
+**Why there is no broker.** Building one was conditional on a committed HIP-1 M1b/M1c
+disposition naming a direct-API bundle as a live qualifier. At 2026-08-14 there was
+none: `hip1-bench-seed` had landed with incumbent fidelity green, `hip1-bench-qualify`
+(the cheap-candidate run) had not been worked, and M1c was sequenced out of wave 4. So
+the honest status is *not implemented*, with no fallback path that puts a key near a
+worker. `BROKER_IMPLEMENTED` in `src/omegahive/harness/plan.py` is the switch, and
+flipping it is not a one-line change — it is the order that builds the broker.
+
+## 4. Commands
+
+### The refusal report — what is launchable at all
+
+```bash
+scripts/hive-routes            # human form
+scripts/hive-routes --json     # machine form
+```
+
+Every catalog route as `launchable` or `refused`, with the boundary id and digest, the
+mechanism per policy class, the probe state, the auth mode, and the exact reason. It
+makes no network or model call, changes nothing, never upgrades a route, and prints no
+environment or settings value — it is never given one. It also prints the current
+descriptor digests, which is what you paste into the catalog.
+
+Exit 0 whether or not routes are refused; exit 2 only if the catalog or the descriptors
+cannot be read.
+
+### The preflight — what THIS launch would do
+
+```bash
+scripts/hive-launch projects/<project>/orders/<file>.md --check
+```
+
+Unchanged in shape and now also prints the boundary: descriptor id, status, mode, both
+digests, the mechanism and probe tally per class, and each class's residual. No clone,
+no spine write, no tokens.
+
+### The probes — prove the boundary against the installed harness
+
+```bash
+export HIVE_CLI_CMD="uv run --project ~/src/SNET/omegahive omegahive"   # or use the container
+scripts/hive-binding-probe claude-code.v1 --record /tmp/probe.json
+```
+
+Six real non-interactive sessions in a disposable `mktemp -d` root, roughly **US$0.08**
+on Haiku. This is what a descriptor's `status: proven` rests on; re-run it after a
+harness upgrade or a rule change and update the descriptor's `verification` block.
+
+It refuses for any harness it has no driver for, rather than guessing an interface it
+has never exercised.
+
+## 5. Adding a route to the catalog
+
+```bash
+scripts/hive-routes            # copy the digest for the descriptor you want
+$EDITOR ~/.config/omegahive/routes.json
+```
+
+Each route needs three fields beyond the identity ones:
+
+```json
+"binding_id": "claude-code.v1",
+"binding_digest": "sha256:<64 hex, from hive-routes>",
+"credential_mode": "harness-native"
+```
+
+When a descriptor changes, every route pinning it refuses with
+`BINDING_DIGEST_MISMATCH` until you re-pin it. That friction is the feature: a boundary
+change is reviewed and approved, not deployed.
+
+## 6. What lands on the spine
+
+`execution.route_approved` and `execution.started` both carry a `binding` block:
+`binding_id`, `binding_digest`, `config_digest`, `command_mode`, the mechanism list per
+class, and the probe verdicts. The approval records what was signed; the started fact
+records what the supervisor re-verified against the bytes on disk immediately before the
+child existed.
+
+The materialized file's **contents** are never on the spine, and neither is any
+environment or settings value. "Which boundary ran" is answerable from an id and two
+digests.
+
+A `binding` whose probes contain a `fail` is refused by the payload model itself, so a
+hand-written or recovered emit cannot record a boundary that did not hold.
+
+A probe recorded as `deferred` means it needs the installed harness and its evidence
+lives in the descriptor's verification record. `deferred` is never folded into a pass
+count, anywhere — that folding is how "we configured it" starts reading as "the boundary
+holds".
+
+## 7. When a launch refuses and you think it should not
+
+1. `scripts/hive-routes` — read the code and the reason.
+2. `BINDING_DIGEST_MISMATCH` → re-pin the catalog against the digest the report prints.
+3. `HARNESS_BINDING_UNPROVEN` → run `scripts/hive-binding-probe <binding-id>` and record
+   the result; if the harness is not installed, that is the answer.
+4. `BINDING_PROBE_FAILED` naming a managed policy file → an admin policy outranks
+   everything the launcher controls. That is an operator decision, not something to
+   launch through.
+5. `ROUTE_CREDENTIAL_MODE` / `BROKER_NOT_IMPLEMENTED` → §3. There is no override.
+
+A denied command inside a running worker is a different thing: per WORKER.md it goes in
+the worker's next report, and if it blocks the work, that is a question. Widening the
+boundary is a descriptor change, reviewed and re-pinned — never a flag.
+
+## 8. What this order deliberately does not do
+
+- **No routing policy, no capacity UI, no review invocation.** Unchanged from
+  `worker-harness-core`.
+- **No new permission-policy class, and no edit to P1–P4.** A native binding that cannot
+  meet the policy is a refused route, not a reason to change the policy.
+- **No credential broker, no secret manager, no rotation, no browser-login automation.**
+  §3.
+- **No podman or native confinement.** Codex's P2 read gap is reported as a gap; closing
+  it with a new sandbox boundary is a separate operator decision.
+- **No per-order permission exception mechanism.** `permissions.md` P4 allows an order to
+  request one; here that would be a different descriptor, so the exception is visible in
+  the route catalog rather than hidden in a flag.

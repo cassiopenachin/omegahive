@@ -190,6 +190,28 @@ materialize_binding() {  # materialize_binding <plan-json> <worker-root>
   printf '%s\n' "  boundary: $rel  $want"
 }
 
+# Read a harness version out of a `--version` probe's combined output.
+#
+# The probe merges stderr, deliberately: a harness that fails to start says so there and
+# an operator needs to see it. But that also means an UNRELATED warning on stderr —
+# `bash: warning: setlocale: ...`, a deprecation notice, a proxy complaint — can arrive
+# on the first line, and "first token of the first non-empty line" then records that
+# warning's first word as the harness version. Observed 2026-08-14: a preflight reported
+# `harness: sh:`. On the spine that would be a `harness_version` fact naming a shell.
+#
+# So: prefer the first line whose first token STARTS WITH A DIGIT, which is what every
+# version string this stack has seen looks like (`2.1.232 (Claude Code)`,
+# `fake-harness 9.9.9` is caught by the fallback). Fall back to the old rule when no line
+# qualifies, because a harness with an unusual banner should still record something
+# rather than nothing — and `unknown` remains the caller's floor.
+harness_version_from() {  # harness_version_from  (reads probe output on stdin)
+  awk '
+    NF && $1 ~ /^[0-9]/ { print $1; found = 1; exit }
+    NF && !first        { first = $1 }
+    END { if (!found && first) print first }
+  '
+}
+
 # Refuse a tmux session name that cannot be targeted safely. Task, worker and run
 # ids are all charset-guarded because they flow into tmux targets and generated
 # shell; HIVE_TMUX_SESSION flows into the very same targets and was not — and a
