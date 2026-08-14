@@ -199,9 +199,17 @@ if [ -z "$BINDING_REL" ]; then
   {
     echo "hive-launch: LEGACY LAUNCH — no binding for '$TASK'."
     echo "  Running the deployment string HIVE_WORKER_CMD='$HIVE_WORKER_CMD' with NO supervisor."
-    echo "  Consequence: this execution records no route, no model identity, and no token"
-    echo "  consumption on the spine. It is invisible to the capacity query by construction."
+    echo "  Consequence 1 (record): no route, no model identity, and no token consumption on the"
+    echo "  spine. This execution is invisible to the capacity query by construction."
+    echo "  Consequence 2 (BOUNDARY): no permission-boundary descriptor is resolved, no config is"
+    echo "  materialized, and nothing is verified before the session starts. The worker runs under"
+    echo "  whatever the workspace's committed .claude/settings.json and the OPERATOR'S OWN user"
+    echo "  settings happen to say - which is the state permissions.md was written to end. Nothing"
+    echo "  refuses here on descriptor drift, a missing policy class, or an unsafe mode, because"
+    echo "  nothing here is checked."
     echo "  Migrate it: write projects/$PROJECT/$HIVE_BINDINGS_DIR/$TASK.json (schemas/launch-binding.example.json)."
+    echo "  Then HIVE_ENFORCE_BINDINGS=1 makes this path refuse; 'hive-launch --check-migration'"
+    echo "  lists everything that would refuse today."
   } >&2
 else
   [ -f "$OPS_WS/$BINDING_REL" ] || die "launch binding not found in $OPS_WS: $BINDING_REL"
@@ -247,15 +255,25 @@ else
     echo "hive-launch --check: task=$TASK worker=$WORKER project=$PROJECT (no side effects)"
     echo "  order:   $REL@$SHA"
     printf '%s' "$REQ" | hive harness-resolve --check | sed 's/^/  /' || exit 1
+    # Resolved once and reused: the second call was a full, unredacted resolve made only
+    # to read one field.
+    RESOLVED=$(printf '%s' "$REQ" | hive harness-resolve) || exit 1
     # The version probe is the one thing the resolver cannot answer: it must ask the
     # installed harness. Doing it here keeps `--check` a complete preflight — an
     # operator learns that a harness is missing from the check, not from a dead pane.
-    VARGV=$(printf '%s' "$REQ" | hive harness-resolve | jq -r '.version_argv | join(" ")')
+    # The version probe is exec'd as a VECTOR, like every other command this launcher
+    # runs. Joining it on spaces and handing it to `sh -c` is the one place the adapter
+    # contract's "no argv element is ever concatenated into a string a shell will parse"
+    # was violated — harmless for the two real adapters, whose vectors are static, and
+    # not harmless for the fake adapter, whose argv[0] comes from the environment.
+    VARGV=()
+    while IFS= read -r -d '' tok; do VARGV+=("$tok"); done \
+      < <(printf '%s' "$RESOLVED" | jq -j '.version_argv[] | . + "\u0000"')
     printf '  harness: '
-    if VOUT=$(sh -c "$VARGV" 2>&1); then
-      printf '%s\n' "$(printf '%s\n' "$VOUT" | harness_version_from)  (probe: $VARGV)"
+    if VOUT=$("${VARGV[@]}" 2>&1); then
+      printf '%s\n' "$(printf '%s\n' "$VOUT" | harness_version_from)  (probe: ${VARGV[*]})"
     else
-      printf 'NOT INSTALLED — `%s` failed:\n' "$VARGV"
+      printf 'NOT INSTALLED — `%s` failed:\n' "${VARGV[*]}"
       printf '%s\n' "$VOUT" | sed 's/^/    /'
     fi
     exit 0

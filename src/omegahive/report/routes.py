@@ -142,6 +142,7 @@ def evaluate_routes(
                 materialized=mat,
                 argv=launch.argv,
                 env=launch.env,
+                parent_env=env,
                 present_paths=present_paths,
             )
         except RefusalError as exc:

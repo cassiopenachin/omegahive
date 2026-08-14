@@ -102,7 +102,11 @@ read_flags() { printf '%s' "$PLAN" | jq -r '.required_flags[] | .[]'; }
 FLAGS=()
 while IFS= read -r tok; do [ -n "$tok" ] && FLAGS+=("$tok"); done < <(read_flags)
 
-HARNESS_VERSION=$(claude --version 2>&1 | awk 'NF {print $1; exit}')
+# The shared parser, not a third copy of the rule: this value goes into --record and
+# into the descriptor's verification.harness_version, which is what `status: proven`
+# rests on. A stderr warning recorded as the harness version would be recorded as
+# evidence.
+HARNESS_VERSION=$(claude --version 2>&1 | harness_version_from)
 
 PASS=0; FAIL=0; SKIP=0
 RESULTS=()

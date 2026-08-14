@@ -243,6 +243,7 @@ def resolve(
         materialized=mat,
         argv=launch.argv,
         env=launch.env,
+        parent_env=parent_env,
         present_paths=present_paths,
     )
     failed = [p for p in probes if p.state == "fail"]

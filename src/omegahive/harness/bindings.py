@@ -6,7 +6,15 @@ worker on a harness the hive does not control. The answer this module implements
 
     the repository carries an auditable binding DESCRIPTOR; the launcher
     MATERIALIZES the harness-native configuration into the isolated worker root
-    and VERIFIES what the child will actually honor before the execution starts.
+    and, before the execution starts, VERIFIES that the bytes on disk and the flags
+    in the argv are the ones that were approved.
+
+Read that verification claim precisely, because the looser reading is the thing this
+module exists to prevent. The launch-time check answers "is the configuration the child
+will read the configuration the operator approved". Whether the harness HONOURS it is a
+different question with a different mechanism — `scripts/hive-binding-probe`, at a
+different time, in a different root, for money — and a probe that needs it is recorded as
+`deferred`, never folded into a pass.
 
 The descriptor is the auditable half. It maps every policy class to one or more
 *enforceable native mechanisms* and to focused probes, and it refuses rather than
@@ -41,9 +49,17 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from omegahive.harness.records import RefusalError, _first_error, _parse_json
 
@@ -68,6 +84,11 @@ ENFORCEABLE_MECHANISMS = frozenset(
     }
 )
 MECHANISM_KINDS = ENFORCEABLE_MECHANISMS | {"instruction"}
+
+# Kinds whose whole content IS their rules. A mechanism of one of these kinds with an
+# empty rule list denies nothing while satisfying every structural check, so it is
+# refused at parse time rather than caught later by something that does not look inside.
+_RULE_BEARING_MECHANISMS = frozenset({"settings-deny", "settings-allow"})
 
 # Probe kinds. `local` probes are deterministic and run at every preflight; `harness`
 # probes need the installed harness and a model call, so they run in the probe runner
@@ -101,6 +122,26 @@ class Mechanism(BaseModel):
         if v not in MECHANISM_KINDS:
             raise ValueError(f"unknown mechanism kind {v!r}; known: {sorted(MECHANISM_KINDS)}")
         return v
+
+    @model_validator(mode="after")
+    def _rule_bearing_kinds_carry_rules(self) -> Mechanism:
+        """A rule-bearing mechanism with no rules is an empty boundary that reads as full.
+
+        Every other check in this module tests the SHAPE of the descriptor — that a class
+        names a mechanism, that the mechanism is enforceable, that a probe exists. None of
+        them looks inside. Without this, a descriptor whose four `settings-deny`
+        mechanisms all carry `rules: []` passes coverage, materializes
+        `{"permissions": {}}`, and reports four green classes with *passing* `rule-present`
+        probes — because "all zero of my rules are present" is vacuously true. The catalog
+        digest pin does not help: it answers "are these the bytes the operator approved",
+        not "do these bytes contain a boundary".
+        """
+        if self.kind in _RULE_BEARING_MECHANISMS and not self.rules:
+            raise ValueError(
+                f"a {self.kind!r} mechanism with no rules denies nothing while reading as "
+                "a bound class; give it rules or remove it"
+            )
+        return self
 
     @property
     def enforceable(self) -> bool:
@@ -146,6 +187,31 @@ class Probe(BaseModel):
         if v not in PROBE_KINDS:
             raise ValueError(f"unknown probe kind {v!r}; known: {sorted(PROBE_KINDS)}")
         return v
+
+    @model_validator(mode="after")
+    def _kind_carries_its_own_subject(self) -> Probe:
+        """A probe with no subject cannot fail, and one of them could not even say so.
+
+        `config-absent` used to reach a bare `assert p.path is not None` in the runner —
+        an AssertionError rather than a named refusal, and under `python -O` no assertion
+        at all, at which point `None in present_paths` is False and the probe reports
+        PASS. Requiring the subject at parse time makes the defect a refusal with a code,
+        which is what every other malformed-descriptor case gets.
+        """
+        required = {
+            "rule-present": ("rules", self.rules),
+            "argv-flag": ("argv", self.argv),
+            "config-absent": ("path", self.path),
+            "deny-enforced": ("command", self.command),
+            "allow-executes": ("command", self.command),
+            "source-gated": ("command", self.command),
+        }.get(self.kind)
+        if required is not None and not required[1]:
+            raise ValueError(
+                f"a {self.kind!r} probe needs a non-empty {required[0]!r}; without it the "
+                "probe cannot fail and reports a pass over nothing"
+            )
+        return self
 
     @property
     def local(self) -> bool:
@@ -559,6 +625,7 @@ def run_local_probes(
     materialized: Materialized,
     argv: list[str],
     env: dict[str, str],
+    parent_env: Mapping[str, str] | None = None,
     present_paths: frozenset[str] = frozenset(),
 ) -> list[ProbeResult]:
     """Run every deterministic probe the descriptor declares.
@@ -583,7 +650,9 @@ def run_local_probes(
                     )
                 )
                 continue
-            state, detail = _run_local_probe(p, file_text, argv, env, present_paths)
+            state, detail = _run_local_probe(
+                p, file_text, argv, env, dict(parent_env or {}), present_paths
+            )
             results.append(
                 ProbeResult(
                     probe_id=p.id,
@@ -601,6 +670,7 @@ def _run_local_probe(
     file_text: str,
     argv: list[str],
     env: dict[str, str],
+    parent_env: dict[str, str],
     present_paths: frozenset[str],
 ) -> tuple[Literal["pass", "fail"], str]:
     if p.kind == "rule-present":
@@ -615,16 +685,35 @@ def _run_local_probe(
             return "fail", f"argv does not carry {p.argv}"
         return "pass", f"argv carries {p.argv}"
     if p.kind == "env-absent":
-        leaked = sorted(
-            k for k in env if any(m in k.upper() for m in CREDENTIAL_MARKERS)
-        )
+        # Measured as a DIFFERENCE, not as an absence. Checking only that the child's
+        # environment is clean makes this probe unfalsifiable in the real pipeline: the
+        # adapter builds that environment from an allowlist and drops credential-shaped
+        # names, so the thing being checked is the thing that just did the checking, and
+        # the declared sentinel (whose name contains TOKEN) is doubly unreachable. What
+        # has content is: the parent HAD such names, and none of them survived.
+        leaked = sorted(k for k in env if any(m in k.upper() for m in CREDENTIAL_MARKERS))
         if p.sentinel_name and p.sentinel_name in env:
             leaked.append(p.sentinel_name)
         if leaked:
             return "fail", f"constructed environment carries {leaked}"
-        return "pass", f"no credential-shaped name among {len(env)} constructed variable(s)"
+        candidates = sorted(
+            k
+            for k in parent_env
+            if any(m in k.upper() for m in CREDENTIAL_MARKERS)
+            or (p.sentinel_name is not None and k == p.sentinel_name)
+        )
+        if candidates:
+            return "pass", (
+                f"{len(candidates)} credential-shaped name(s) in the parent environment, "
+                f"0 in the {len(env)} constructed variable(s)"
+            )
+        return "pass", (
+            f"no credential-shaped name among {len(env)} constructed variable(s); the "
+            "parent carried none either, so nothing was dropped and this run measured a "
+            "clean parent rather than a working filter"
+        )
     if p.kind == "config-absent":
-        assert p.path is not None
+        # `path` is required for this kind by the model, so it is present here.
         if p.path in present_paths:
             return "fail", f"{p.path} exists and would override the materialized boundary"
         return "pass", f"{p.path} absent"

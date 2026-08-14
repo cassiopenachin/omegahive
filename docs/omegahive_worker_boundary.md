@@ -7,9 +7,16 @@ credential reaches — or fails to reach — an execution. Its companion is
 
 **The one-sentence shape:** the repository carries an auditable **binding descriptor**
 per launchable harness; the launcher **materializes** the harness-native configuration
-into the isolated worker root and **verifies** what the child will actually honor before
-the execution starts. A route names its descriptor and pins its exact bytes, so a
-boundary change is an approved act rather than a side effect of pulling code.
+into the isolated worker root and verifies, before the execution starts, that the bytes
+on disk and the flags in the argv are the ones that were approved. A route names its
+descriptor and pins its exact bytes, so a boundary change is an approved act rather than
+a side effect of pulling code.
+
+**Read that verification claim precisely.** The launch-time check answers *"is the
+configuration the child will read the configuration the operator approved"*. It does not
+answer *"does the harness honour it"* — that is what `scripts/hive-binding-probe`
+establishes, at a different time, in a different root, for money. Two facts, two
+mechanisms, and collapsing them would be the exact failure this design is named for.
 
 Configuration presence is not enforcement. Everything below exists to keep those two
 apart.
@@ -69,8 +76,8 @@ Each is a distinct remedy, so each has a distinct code.
 | Config surface | project-local `.claude/settings.local.json` in the worker root | none authored (`config_path: null`) |
 | Launch flags | `--setting-sources project,local`, `--permission-mode auto` | `--sandbox workspace-write`, `--ignore-user-config` (observed on 0.147.0) |
 | P1 access layer | deny `Bash(*sudo *)`, `Bash(*systemctl *)`, `Bash(*tailscale *)` | OS sandbox (declared, unmeasured) |
-| P2 secrets | deny `Read(**/*.env)`, `Read(~/.ssh/**)`, `Bash(*compose config*)`; env allowlist | env allowlist (binds — the launcher owns it); **the read half is unestablished** |
-| P3 durable stack | deny podman mutations, `git push --force`, **`tmux kill-server`** | OS sandbox (declared, unmeasured) |
+| P2 secrets | deny `Read(**/*.env)`, `Read(**/.env.*)`, `Read(~/.ssh/**)`, `Bash(*compose*config*)`; env allowlist. **The `Read(...)` rules are materialized and rule-present but never enforcement-tested** — see the residual | env allowlist (binds — the launcher owns it); **the read half is unestablished** |
+| P3 durable stack | deny podman stop/kill/rm/rmi/restart/prune, the compose destructive verbs, force-push in three spellings, **all `tmux kill-*`**, and writes to the boundary file itself | OS sandbox (declared, unmeasured) |
 | P4 raw fetch | deny `Bash(*curl *)`, `Bash(*wget *)`; allow the development tools | sandbox network-off (declared, unmeasured) |
 | Evidence | `docs/evidence/harness_binding_probe_claude_code_2026_08_14.md` | none — the binary is installed and **not logged in** |
 
@@ -120,21 +127,40 @@ file rather than globally: the worker boundary keeps the substring form, the wor
 own `.claude/settings.json` keeps the prefix form, and
 `docs/evidence/harness_binding_probe_claude_code_2026_08_14.md` records why.
 
-**`--setting-sources project,local` is load-bearing.** It excludes the operator's
-user-level settings from the child's resolved configuration, so no pre-existing global
-config can widen the boundary and none is relied on to hold it. Measured: with the
-materialized file in the loaded sources a canary command is denied; with it excluded the
-same command runs. It does not disturb subscription authentication — credentials do not
-live in `settings.json`.
+**`--setting-sources project,local` is load-bearing, and it is not the whole story.** It
+excludes the operator's **user-level** settings from the child's resolved configuration,
+so no per-user config can widen the boundary and none is relied on to hold it. Measured:
+with the materialized file in the loaded sources a canary command is denied; with it
+excluded the same command runs. It does not disturb subscription authentication —
+credentials do not live in `settings.json`.
+
+Two limits, both real:
+
+- **`project` is still loaded**, and that is the workspace's own committed
+  `.claude/settings.json` in the worker's clone. It is source-controlled and reviewed,
+  and deny beats allow so it cannot cancel a descriptor rule — but it can **admit what
+  nobody denied**. That is not theoretical: its `Bash(podman compose *)` allow is what
+  admitted `podman compose down -v` until P3 grew rules to match.
+- **Admin/managed settings outrank every source**, including this flag. The defence is
+  two `config-absent` probes — the Linux path and the macOS path — that refuse the launch
+  if such a file appears, rather than a claim that the flag would win.
 
 ### The residual, stated plainly
 
-An ordinary harness permission policy is **not** an adversarial OS sandbox. A model that
-deliberately tunnels a read through an allowed interpreter, or obfuscates a command
-(base64, variable splitting, a Python script calling the syscall directly), is outside
-what a command-string matcher evaluates. What is bound is the direct-read and
-environment surface plus the one recorded printing mechanism; the rest binds through
-WORKER.md and review, and this design claims no containment over it.
+An ordinary harness permission policy is **not** an adversarial OS sandbox. Three things
+it does not contain, named because a reader who assumes otherwise will make a bad call:
+
+- **The interpreter route, in every class including P1.** The allow list carries
+  `python`, `python3`, `uv` and `pytest`, and nothing denies the `Write` tool. Writing a
+  script and running it under an allowed interpreter defeats any command matcher in two
+  steps a worker performs a dozen times a day. What is bound is the *direct* invocation.
+- **Copy-then-read, for P2.** `cp .env /tmp/x` followed by reading `/tmp/x` matches no
+  rule at either step. Nor is it established which shell readers the engine classifies as
+  reads — `grep`, `awk`, `base64`, `tar`, `git show HEAD:path` were not tested.
+- **Obfuscation of any kind** — base64, variable splitting, a script calling the syscall.
+
+The rest binds through WORKER.md and review, and this design claims no containment over
+it.
 
 ## 3. Credentials
 

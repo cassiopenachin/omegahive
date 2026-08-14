@@ -220,7 +220,15 @@ finish() {  # finish <outcome> <certainty> <exit-code-or-empty>
 # survived into the vector — the resolver already refused if they had not, and this
 # catches a plan.json edited after resolution.
 verify_binding() {  # verify_binding -> prints a reason on failure, empty on success
-  local rel want got flag value i n
+  local rel want got flag value arity i n
+  # An ABSENT binding block is the failure this whole function exists to prevent, and it
+  # is checked first. Without it the digest branch is skipped, the flag loop reads an
+  # empty list, and the function returns "verified" — a fail-closed path failing open on
+  # the one input that means "there is no boundary here at all".
+  if [ "$(jq -r 'has("binding")' "$PLAN")" != "true" ]; then
+    printf '%s' "the plan carries no binding block, so there is no boundary to verify"
+    return
+  fi
   rel=$(jq -r '.binding.config_path // empty' "$PLAN")
   if [ -n "$rel" ]; then
     if [ ! -f "${CWD:-$PWD}/$rel" ]; then

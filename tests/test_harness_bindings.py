@@ -14,12 +14,14 @@ deferred probe green would be measuring its own configuration.
 from __future__ import annotations
 
 import json
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from harness_fixtures import (
+    SHIPPED_BINDINGS,
     a_class,
     descriptor,
     descriptor_bytes,
@@ -335,7 +337,9 @@ def test_an_adapter_that_drops_a_required_flag_is_caught():
     with pytest.raises(RefusalError) as exc:
         check_argv(b, ["claude", "--setting-sources", "project,local", "prompt"])
     assert exc.value.code == "HARNESS_FLAG_MISSING"
-    assert d  # the descriptor set is well-formed; the argv is what failed
+    # And the descriptor set itself is fine — it is the argv that failed, which is the
+    # distinction this refusal exists to draw.
+    assert set(d) == {"fake.v1"}
 
 
 def test_the_real_claude_adapter_emits_the_shipped_boundary_flags():
@@ -399,46 +403,142 @@ def test_the_config_digest_is_over_the_exact_bytes_written():
     assert mat.digest == "sha256:" + hashlib.sha256(mat.content.encode()).hexdigest()
 
 
-def test_a_rule_removed_from_the_descriptor_changes_the_config_digest():
+def test_a_rule_changed_in_the_descriptor_changes_the_config_digest():
     a = materialize(HarnessBinding(**descriptor()), extra_dirs=[]).digest
     classes = [a_class(pc) for pc in POLICY_CLASSES]
-    classes[0]["mechanisms"][0]["rules"] = []
+    classes[0]["mechanisms"][0]["rules"] = ["Bash(*p1-token-renamed*)"]
     b = materialize(HarnessBinding(**descriptor(classes=classes)), extra_dirs=[]).digest
     assert a != b
+
+
+def test_a_rule_bearing_mechanism_with_no_rules_refuses_at_parse_time():
+    """The empty boundary that reads as a full one.
+
+    Without this, four `settings-deny` mechanisms carrying `rules: []` pass coverage,
+    materialize `{"permissions": {}}`, and report four green classes — because a
+    `rule-present` probe over zero rules is vacuously satisfied. Every other check in
+    the module tests the descriptor's shape; this is the one that looks inside.
+    """
+    classes = [a_class(pc) for pc in POLICY_CLASSES]
+    classes[0]["mechanisms"][0]["rules"] = []
+    with pytest.raises(ValueError, match="denies nothing"):
+        HarnessBinding(**descriptor(classes=classes))
+
+
+@pytest.mark.parametrize(
+    ("kind", "field"),
+    [("rule-present", "rules"), ("argv-flag", "argv"), ("config-absent", "path"),
+     ("deny-enforced", "command"), ("allow-executes", "command"), ("source-gated", "command")],
+)
+def test_a_probe_with_no_subject_refuses_rather_than_passing_over_nothing(kind, field):
+    """A probe with nothing to check cannot fail. `config-absent` was worse than that:
+    it reached a bare assert, which `python -O` removes, after which the probe reports
+    PASS."""
+    classes = [a_class(pc) for pc in POLICY_CLASSES]
+    classes[0]["probes"] = [{"id": "subjectless", "kind": kind, "expect": "present"}]
+    with pytest.raises(ValueError, match="cannot fail"):
+        HarnessBinding(**descriptor(classes=classes))
 
 
 # --- P3: the tmux kill-server denial, bound at last -------------------------------
 
 
-def test_tmux_kill_server_is_bound_in_p3():
-    """permissions.md P3 has carried this as policy-but-unbound since 2026-08-12, and
-    OPERATIONS.md pain 13 names it as the fix. On 2026-07-29 a worker reached the
-    command directly and destroyed the operator's multiplexer under two live workers."""
-    b = load_binding_descriptor(shipped("claude-code.v1"))
-    p3 = b.klass("P3")
-    assert p3 is not None
-    rules = [r for m in p3.mechanisms for r in m.rules]
-    assert any("tmux kill-server" in r for r in rules)
-    doc = json.loads(materialize(b, extra_dirs=[]).content)
-    assert any("tmux kill-server" in r for r in doc["permissions"]["deny"])
+def bash_denies(binding, command: str) -> bool:
+    """Would the shipped rule set refuse this exact command?
+
+    Mirrors the matcher semantics measured on claude-code 2.1.232: a `Bash(...)` rule is
+    a glob over the whole command string. Asserting on COMMANDS rather than on rule
+    spellings is the difference between "a rule mentioning tmux exists" and "this command
+    is refused" — and the second is the only one the policy cares about.
+    """
+    for c in binding.classes:
+        for m in c.mechanisms:
+            if m.kind != "settings-deny":
+                continue
+            for rule in m.rules:
+                if not rule.startswith("Bash(") or not rule.endswith(")"):
+                    continue
+                if fnmatch(command, rule[len("Bash(") : -1]):
+                    return True
+    return False
+
+
+SHIPPED_CLAUDE = load_binding_descriptor(shipped("claude-code.v1"))
 
 
 @pytest.mark.parametrize(
-    ("token", "policy_class"),
+    "command",
     [
-        ("sudo", "P1"), ("systemctl", "P1"), ("tailscale", "P1"),
-        (".env", "P2"), (".ssh", "P2"),
-        ("tmux kill-server", "P3"), ("git push --force", "P3"), ("podman stop", "P3"),
-        ("curl", "P4"), ("wget", "P4"),
+        # P1 — the access layer, and the spellings that walked past the first draft.
+        "sudo rm -rf /", "sudo -n true", "sudoedit /etc/hosts", "pkexec sh",
+        "/usr/bin/sudo -i", "systemctl restart nginx", "tailscale up",
+        "sh -c \"sudo id\"",
+        # P2 — the recorded printing mechanism, including the flag form people use.
+        "podman compose config", "podman compose -f compose.yml config",
+        "podman compose --env-file .env config",
+        # P3 — every effect permissions.md names, by every ordinary spelling.
+        "tmux kill-server", "tmux kill-session -t hive", "tmux kill-window",
+        "podman stop omegahive-pg", "podman kill omegahive-pg", "podman restart x",
+        "podman rm -f x", "podman container rm x", "podman rmi x",
+        "podman volume rm v", "podman network rm n", "podman system prune -a",
+        "podman volume prune", "podman image prune -f",
+        "podman compose down -v", "podman compose stop", "podman compose rm",
+        "git push --force origin main", "git push -f", "git push origin +main",
+        # P3 — the boundary file is shared infrastructure too.
+        "rm .claude/settings.local.json", "cat /dev/null > .claude/settings.local.json",
+        # P4 — raw fetch, direct and path-qualified and interpreter-wrapped.
+        "curl https://example.invalid", "/usr/bin/curl -sS https://x",
+        "sh -c \"curl https://x\"", "wget https://x",
     ],
 )
-def test_every_rule_permissions_md_names_is_bound_in_its_own_class(token, policy_class):
-    """The table in `permissions.md` and the descriptor cannot silently disagree."""
-    b = load_binding_descriptor(shipped("claude-code.v1"))
-    klass = b.klass(policy_class)
-    assert klass is not None
-    rules = [r for m in klass.mechanisms for r in m.rules]
-    assert any(token in r for r in rules), f"{token} unbound in {policy_class}"
+def test_the_shipped_rules_refuse_every_command_the_policy_names(command):
+    """The rule set is read as a set of EFFECTS, not of prefixes.
+
+    Every command here reaches an effect `permissions.md` states, by a spelling an
+    ordinary worker would type — no obfuscation. An independent review found five of
+    them unmatched by the first rule set (`podman kill`, `podman container rm`,
+    `podman compose down -v`, `tmux kill-session`, `git push -f`, and the flag form of
+    `compose config`), which is why this test enumerates commands rather than rules.
+    """
+    assert bash_denies(SHIPPED_CLAUDE, command), f"{command!r} reaches a forbidden effect"
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["git status", "git commit -m x", "uv run pytest -q", "python3 -c 'print(1)'",
+     "podman compose ps", "podman logs omegahive-pg", "ls -la", "gh pr view 1"],
+)
+def test_the_shipped_rules_do_not_refuse_the_tools_an_order_needs(command):
+    """The other half. A boundary that denied everything would pass the test above and
+    be useless; over-match is the substring form's known cost and it has a floor."""
+    assert not bash_denies(SHIPPED_CLAUDE, command), f"{command!r} is ordinary work"
+
+
+def test_the_boundary_file_cannot_be_rewritten_through_a_tool_call():
+    """`Bash(...)` rules do not gate the Write and Edit tools, so the shell rule above is
+    not enough on its own."""
+    rules = [
+        r
+        for c in SHIPPED_CLAUDE.classes
+        for m in c.mechanisms
+        if m.kind == "settings-deny"
+        for r in m.rules
+    ]
+    assert any(r.startswith("Edit(") and "settings.local.json" in r for r in rules)
+    assert any(r.startswith("Write(") and "settings.local.json" in r for r in rules)
+
+
+def test_a_managed_policy_file_is_looked_for_on_both_platforms():
+    """A probe that knows one platform's path is a boundary that holds on one platform,
+    in a stack that is explicitly portable to macOS and BSD."""
+    paths = {
+        p.path
+        for c in SHIPPED_CLAUDE.classes
+        for p in c.probes
+        if p.kind == "config-absent"
+    }
+    assert "/etc/claude-code/managed-settings.json" in paths
+    assert any("Library/Application Support/ClaudeCode" in (p or "") for p in paths)
 
 
 def test_the_deny_rules_use_the_substring_form_not_the_evadable_prefix_form():
@@ -460,6 +560,10 @@ def test_the_deny_rules_use_the_substring_form_not_the_evadable_prefix_form():
         assert rule.startswith("Bash(*"), (
             f"{rule} is a prefix pattern and is evaded by /path/to/cmd and by sh -c"
         )
+        # `Bash(*)` also starts with `Bash(*` and denies everything, which would pass a
+        # startswith check while being a different defect. A rule must carry a token.
+        inner = rule[len("Bash(") : -1].strip("*")
+        assert inner, f"{rule} denies everything rather than a named effect"
 
 
 # --- environment: no credential reaches a worker, by construction ------------------
@@ -508,12 +612,70 @@ def test_the_env_absent_probe_fails_when_a_sentinel_reaches_the_child():
         )
     )
     mat = materialize(b, extra_dirs=[])
+    dirty_parent = {"HOME": "/home/op", "ANTHROPIC_API_KEY": "sk-x",
+                    "HIVE_PROBE_SENTINEL_TOKEN": "x"}
     leaky = run_local_probes(
-        b, materialized=mat, argv=[], env={"HIVE_PROBE_SENTINEL_TOKEN": "x"}
+        b, materialized=mat, argv=[], env=dict(dirty_parent), parent_env=dirty_parent
     )
     assert [r.state for r in leaky if r.probe_id == "env-absent"] == ["fail"]
-    clean = run_local_probes(b, materialized=mat, argv=[], env={"HOME": "/home/op"})
-    assert [r.state for r in clean if r.probe_id == "env-absent"] == ["pass"]
+
+    clean = run_local_probes(
+        b, materialized=mat, argv=[], env={"HOME": "/home/op"}, parent_env=dirty_parent
+    )
+    got = [r for r in clean if r.probe_id == "env-absent"]
+    assert [r.state for r in got] == ["pass"]
+    # The pass must SAY it measured a drop, not merely an absence.
+    assert "in the parent environment" in got[0].detail
+
+
+def test_the_env_absent_probe_says_so_when_the_parent_had_nothing_to_drop():
+    """A clean parent makes this probe vacuous, and the detail line has to admit it —
+    otherwise a green tally reads as a working filter when nothing was filtered."""
+    b = HarnessBinding(
+        **descriptor(
+            classes=[
+                a_class(
+                    "P1",
+                    probes=[{"id": "env-absent", "kind": "env-absent",
+                             "sentinel_name": "HIVE_PROBE_SENTINEL_TOKEN",
+                             "expect": "absent"}],
+                ),
+                *[a_class(pc) for pc in ("P2", "P3", "P4")],
+            ]
+        )
+    )
+    mat = materialize(b, extra_dirs=[])
+    res = run_local_probes(
+        b, materialized=mat, argv=[], env={"HOME": "/x"}, parent_env={"HOME": "/x"}
+    )
+    got = next(r for r in res if r.probe_id == "env-absent")
+    assert got.state == "pass"
+    assert "nothing was dropped" in got.detail
+
+
+def test_the_env_absent_probe_measures_a_real_drop_through_resolve():
+    """Wired end to end: a credential-shaped parent, and the probe reports the drop.
+
+    Previously this probe could only be driven to `fail` by calling it directly, because
+    `resolve` filters the environment before the probe sees it — so the thing being
+    checked was the thing that had just done the checking.
+    """
+    r = route(
+        binding_id="claude-code.v1",
+        binding_digest=binding_digest(shipped("claude-code.v1")),
+    )
+    p = plan(
+        routes=[r],
+        descriptors=shipped_map(),
+        env={**PARENT_ENV, "ANTHROPIC_API_KEY": "sk-x",
+             "HIVE_PROBE_SENTINEL_TOKEN": "planted"},
+    )
+    got = [x for x in p.probes if x.kind == "env-absent"]
+    assert got and all(x.state == "pass" for x in got)
+    assert "in the parent environment" in got[0].detail
+    # The planted sentinel and the API key both existed and neither survived.
+    assert "HIVE_PROBE_SENTINEL_TOKEN" not in p.launch.env
+    assert "ANTHROPIC_API_KEY" not in p.launch.env
 
 
 # --- conflicting configuration outside the launcher's control ----------------------
@@ -534,15 +696,26 @@ def test_a_managed_policy_file_refuses_the_launch():
     assert managed in exc.value.message
 
 
-def test_the_user_level_config_is_excluded_by_the_launch_flags():
-    """The boundary must not depend on the operator's global settings, and their global
-    settings must not be able to widen it. `--setting-sources project,local` is what
-    makes both true, and it is verified in the argv rather than assumed."""
+def test_the_source_gating_flag_reaches_the_argv_and_names_no_user_source():
+    """What this CAN check locally: the flag is in the built argv and its value excludes
+    the `user` source.
+
+    What it cannot check is that Claude Code then honours it — that is the paid
+    `source-gated` probe, and the descriptor's mechanism text states the two limits the
+    flag does not cover (the committed project settings, and admin/managed settings).
+    The test is named for what it measures.
+    """
     b = load_binding_descriptor(shipped("claude-code.v1"))
-    assert ["--setting-sources", "project,local"] in b.required_flags
-    p2 = b.klass("P2")
-    assert p2 is not None
-    assert any(m.kind == "setting-source-gating" for m in p2.mechanisms)
+    r = route(
+        binding_id="claude-code.v1",
+        binding_digest=binding_digest(shipped("claude-code.v1")),
+    )
+    argv = plan(routes=[r], descriptors=shipped_map()).launch.argv
+    i = argv.index("--setting-sources")
+    sources = argv[i + 1].split(",")
+    assert "user" not in sources, "the operator's per-user settings must not be loaded"
+    assert sources == ["project", "local"]
+    assert any(m.kind == "setting-source-gating" for m in b.klass("P2").mechanisms)
 
 
 # --- redaction ---------------------------------------------------------------------
@@ -645,12 +818,20 @@ def test_the_report_reads_only_and_cannot_change_a_routes_state():
     """Property, not inspection: evaluating twice with the same inputs is identical, and
     nothing on disk is touched. A report that could upgrade a route would be run for
     the upgrading."""
-    catalog = (REPO / "schemas" / "route-catalog.example.json").read_bytes()
-    before = catalog
+    path = REPO / "schemas" / "route-catalog.example.json"
+    catalog = path.read_bytes()
+    descriptors = SHIPPED_BINDINGS
+    before = {f: f.read_bytes() for f in sorted(descriptors.glob("*.json"))}
+    before[path] = catalog
+    stat_before = {f: f.stat().st_mtime_ns for f in before}
+
     a = evaluate_routes(catalog_raw=catalog, descriptors_raw=shipped_map())
     b = evaluate_routes(catalog_raw=catalog, descriptors_raw=shipped_map())
-    assert a == b
-    assert catalog == before
+    assert a == b, "two evaluations of the same bytes must agree"
+    # Re-read from disk rather than compare a name to itself: the claim is that
+    # evaluating a route touches nothing, and only the filesystem can answer that.
+    assert {f: f.read_bytes() for f in before} == before
+    assert {f: f.stat().st_mtime_ns for f in before} == stat_before
 
 
 # --- the shipped example catalog pins what actually ships --------------------------
