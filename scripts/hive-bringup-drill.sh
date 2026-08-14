@@ -268,7 +268,17 @@ if [ -z "$DRY" ]; then
 
   # 1. No live port, or the overlay's !override has regressed and the next `up` lands on
   #    a running deployment.
-  if printf '%s' "$cfg" | grep -qE 'published: "?(5432|8811)"?'; then
+  #    Counted, not `-q`-tested, and captured before it is compared — the same shape
+  #    check 2 below already uses. `grep -q` exits at the FIRST match, `printf` then takes
+  #    EPIPE, and `pipefail` makes the pipeline non-zero PRECISELY WHEN THE PATTERN
+  #    MATCHES, so the `if` was false exactly in the case this guard exists to catch: a
+  #    scratch config publishing the live 5432 read as "publishes no live port", one line
+  #    before `dc up -d postgres` lands on the running deployment. `$cfg` is a resolved
+  #    13-service config, routinely past the pipe buffer, so the write really does block
+  #    and really does get signalled. `-c` reads to EOF (nothing to signal) and exits 1 on
+  #    zero matches, which `|| true` absorbs so `set -e` does not eat the clean case.
+  live_hits="$(printf '%s' "$cfg" | grep -cE 'published: "?(5432|8811)"?' || true)"
+  if [ "${live_hits:-0}" -gt 0 ]; then
     abort "scratch config publishes a LIVE port (5432/8811) — refusing to touch a live stack"
   fi
   ok "scratch config publishes no live port (5432/8811 absent)"

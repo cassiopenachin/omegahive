@@ -410,6 +410,17 @@ NON_BOARD_WHITELIST: set[str] = {
     # WORKER_OWNED_EMITS, so deliberately not owner-restricted — a `finding` may target a
     # task the reporter does not own. kind + ref shape are validated at the payload model.
     "task.reported",
+    # Execution lifecycle (HIP-1 M2): what consumed a task, not what happened to it.
+    # Non-board on purpose, and the purpose is load-bearing three ways.
+    #   * `execution.route_approved` PRECEDES `task.assigned` and may precede
+    #     `task.created` — a board-gated rule would demand a task that does not exist yet.
+    #   * The board is the task-state machine; routing facts moving task state would make
+    #     every capacity record a governance act.
+    #   * Existing runs must replay unchanged: the reducer folds nothing from a
+    #     whitelisted type, so a log with these events yields a bit-identical board.
+    # Not in WORKER_OWNED_EMITS: the signer is a human and the observer is an instrument,
+    # so neither is ever the task's owning worker. Ownership would refuse both.
+    "execution.route_approved", "execution.started", "execution.finished",
 }
 
 # Worker emits whose legality additionally requires the worker to currently own the

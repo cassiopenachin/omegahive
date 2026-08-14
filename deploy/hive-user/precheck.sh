@@ -51,10 +51,37 @@ note() { printf '      %s\n' "$*"; }
 
 am_target() { [ "$(id -un)" = "${TARGET_USER}" ]; }
 
+# file_mode <path> -> octal bits, or nothing. `stat -c` is GNU; macOS ships BSD stat,
+# which rejects `-c` and spells this `-f %Lp`. A bare `stat -c` here produced an EMPTY
+# ${dperms} on BSD and then a confident `FAIL .ssh mode is , must be 700` — this script
+# accusing a correctly-prepared account of a defect it does not have. Callers must keep
+# "could not read the mode" separate from "read it, it is wrong"; the empty return is the
+# first of those. Same form as scripts/hive-bringup-drill.sh's file_mode/check_mode.
+file_mode() {
+    stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null || true
+}
+
 # --- port checks (meaningful as any user; ports are one host-wide namespace) ----------
+#
+# `ss` is iproute2, i.e. Linux only. With `-e` deliberately off (L23), a missing `ss`
+# leaves the pipeline empty and exits non-zero, which is INDISTINGUISHABLE here from "the
+# port is not bound" — so on a host without iproute2 every scratch port was reported
+# `PASS scratch port N is free` about a port nobody had looked at, and every live port was
+# reported FAIL. An unobserved port is a SKIP: the whole reason this script separates SKIP
+# from PASS is that "not checked here" must never read as "checked and fine".
+HAVE_SS=1
+command -v ss >/dev/null 2>&1 || HAVE_SS=""
+
 check_ports() {
     echo "== host ports =="
     local p
+    if [ -z "${HAVE_SS}" ]; then
+        for p in ${LIVE_PORTS} ${SCRATCH_PORTS}; do
+            skip "port ${p} — no 'ss' on PATH (iproute2 is Linux-only), so nothing was observed"
+        done
+        note "on this host, check by hand:  lsof -nP -iTCP -sTCP:LISTEN | grep -E '5432|8811|5433|8812'"
+        return 0
+    fi
     for p in ${LIVE_PORTS}; do
         if ss -ltnH "sport = :${p}" 2>/dev/null | grep -q .; then
             pass "live stack still listening on 127.0.0.1:${p}"
@@ -138,10 +165,21 @@ if am_target; then
     ak="${home:-$HOME}/.ssh/authorized_keys"
     if [ -s "${ak}" ]; then
         pass "authorized_keys present ($(grep -cvE '^[[:space:]]*(#|$)' "${ak}") key line(s))"
-        perms=$(stat -c '%a' "${ak}")
-        [ "${perms}" = "600" ] || note "authorized_keys mode is ${perms}; 600 is conventional"
-        dperms=$(stat -c '%a' "$(dirname "${ak}")")
-        [ "${dperms}" = "700" ] || fail ".ssh mode is ${dperms}, must be 700 or sshd refuses the key"
+        perms=$(file_mode "${ak}")
+        if [ -z "${perms}" ]; then
+            note "could not read authorized_keys' mode on this host (neither 'stat -c' nor 'stat -f' worked) — not checked"
+        elif [ "${perms}" != "600" ]; then
+            note "authorized_keys mode is ${perms}; 600 is conventional"
+        fi
+        dperms=$(file_mode "$(dirname "${ak}")")
+        if [ -z "${dperms}" ]; then
+            skip ".ssh mode — could not read it on this host (neither 'stat -c' (GNU) nor 'stat -f' (BSD) worked)"
+            note "this is a PRECHECK limitation, not a finding about '${TARGET_USER}'; check by hand: ls -ld $(dirname "${ak}")"
+        elif [ "${dperms}" = "700" ]; then
+            pass ".ssh mode is 700"
+        else
+            fail ".ssh mode is ${dperms}, must be 700 or sshd refuses the key"
+        fi
     else
         fail "no authorized_keys for '${TARGET_USER}' — run step A4"
     fi

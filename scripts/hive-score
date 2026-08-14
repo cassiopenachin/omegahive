@@ -51,6 +51,15 @@
 # invisible to the only reader it has. `--no-commit` restores the old
 # write-and-stop behaviour for a dry run or a hand-curated commit.
 
+# Deliberate redundancy with hive-common.sh:26, which sets exactly the same three
+# options during the `source` below. Five production scripts inherited -e, -u and
+# pipefail from that ONE line and stated none of them; a refactor that guards it, moves
+# it, or wraps the source in a conditional would have quietly stripped error-exit,
+# nounset and pipefail from all five at once, and nothing would have failed loudly
+# enough to notice. Setting them here is a no-op at runtime and makes each script's own
+# contract readable without opening another file.
+set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/hive-common.sh
 source "$SCRIPT_DIR/hive-common.sh"
@@ -499,6 +508,15 @@ EOF
 fi
 
 ENTRY_TMP=$(mktemp)
+CAL_TMP=""
+# Installed the moment the first temp file exists, because every path out of here between
+# now and the `mv` below is a `die` — and a die that leaks `calibration.md.XXXXXX` beside
+# the real file leaves the operator staring at a directory that looks half-rewritten.
+# `${CAL_TMP:+...}` rather than a bare "$CAL_TMP": it is unset until the replace branch
+# creates it, and this script runs under `set -u`. The trap can never clobber an intended
+# file — CAL_TMP is cleared immediately after a successful `mv`, so the only paths it ever
+# names are temp files this script created and does not intend to keep.
+trap 'rm -f "$ENTRY_TMP" ${CAL_TMP:+"$CAL_TMP"}' EXIT
 {
   echo "### $TASK — closed $CLOSED_DAY"
   echo
@@ -526,7 +544,13 @@ if [ "$PRIOR_ENTRIES" -eq 1 ]; then
   # two hive-score invocations racing on the same project's calibration.md cannot
   # corrupt each other's temp file before either `mv` lands.
   CAL_TMP=$(mktemp "${CAL}.XXXXXX")
-  awk -v t="### $TASK — " -v total="$PRIOR_COUNT" -v newfile="$ENTRY_TMP" '
+  # `if ! awk ...` rather than `awk ... && mv ...`. A command that is not FINAL in an `&&`
+  # list is exempt from `set -e`, so a failed awk merely short-circuited the `mv`: the
+  # calibration file stayed as it was, the temp file was left behind, and the script fell
+  # straight through to the success print below and exited 0. hive-close then reported the
+  # task `scored` when nothing had been written. A rewrite that does not happen has to say
+  # so, and has to be non-zero.
+  if ! awk -v t="### $TASK — " -v total="$PRIOR_COUNT" -v newfile="$ENTRY_TMP" '
     BEGIN { while ((getline l < newfile) > 0) nl[n++] = l }
     /^### / {
       if (index($0, t) == 1) {
@@ -537,7 +561,12 @@ if [ "$PRIOR_ENTRIES" -eq 1 ]; then
       } else { intgt = 0 }
     }
     { if (!intgt) print }
-  ' "$CAL" > "$CAL_TMP" && mv "$CAL_TMP" "$CAL"
+  ' "$CAL" > "$CAL_TMP"; then
+    die "could not rewrite $CAL (awk failed). The calibration file is UNCHANGED — this
+  score was not recorded. Nothing was lost; re-run once the cause is understood."
+  fi
+  mv "$CAL_TMP" "$CAL" || die "could not move the rewritten calibration into place ($CAL_TMP -> $CAL). The calibration file is UNCHANGED."
+  CAL_TMP=""   # moved, not leaked — leave the EXIT trap nothing to remove
   WRITE_VERB="replaced in place (older duplicates dropped)"
 else
   cat "$ENTRY_TMP" >> "$CAL"

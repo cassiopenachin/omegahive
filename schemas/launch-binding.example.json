@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "task": "example-task",
+  "order_ref": "projects/omegahive/orders/2026-08-13-example-task.md@0123456789abcdef0123456789abcdef01234567",
+  "route": "claude-opus-subscription",
+  "predicted_total_tokens": 900000,
+  "purpose": "work",
+  "attempt": 1,
+  "note": "A launch binding is the SIGNED DECISION and lives in the workspace, committed and pushed, at projects/<project>/bindings/<task>.json. It selects a route by NAME and may not describe one: `model`, `harness`, `argv`, `env`, `adapter`, `price_basis` and friends are refused by name with BINDING_OVERRIDES_IDENTITY, because execution identity comes from the deployment catalog or it does not come at all. The router predicts tokens; cost is derived from the route's price basis, never authored here."
+}

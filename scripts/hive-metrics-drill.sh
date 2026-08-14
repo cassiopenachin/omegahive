@@ -51,6 +51,23 @@ log_has() {
   git -C "$repo" log --all --format=%s -- "$@" | grep -F -- "$needle" >/dev/null
 }
 
+# sha256_hex — reads stdin, prints the hex digest. A local copy of hive-common.sh's
+# helper of the same name, because this drill deliberately sources nothing: it must be
+# runnable against a checkout whose hive-common.sh is the thing under suspicion. Bare
+# `sha256sum` was GNU-only, and on a BSD/macOS host it aborted the drill at the fixture
+# checksum below — before a single check had run — which reads as "the drill is broken"
+# rather than "this host spells the digest tool differently". Keep the two in step.
+sha256_hex() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | cut -d' ' -f1
+  else
+    echo "metrics drill: no sha256 tool found (looked for sha256sum, shasum)" >&2
+    exit 1
+  fi
+}
+
 cleanup() {
   rm -rf "$SANDBOX"
   echo
@@ -270,7 +287,7 @@ closed(41200, "iota")
 
 json.dump(rows, open(sys.argv[1], "w"), indent=2, sort_keys=True)
 PY
-FIXTURE_SUM="$(sha256sum "$FIXTURE" | cut -d' ' -f1)"
+FIXTURE_SUM="$(sha256_hex < "$FIXTURE")"
 
 # --- 2. the order files -------------------------------------------------------
 # Between them these exercise every verdict branch, so a broken comparison cannot
@@ -816,10 +833,27 @@ check "the divergent file made it into the workspace too" "[ -f '$WS/DIVERGENT.t
 echo
 echo "metrics drill: stop-lines"
 
-check "fixture untouched" "[ \"\$(sha256sum '$FIXTURE' | cut -d' ' -f1)\" = '$FIXTURE_SUM' ]"
+check "fixture untouched" "[ \"\$(sha256_hex < '$FIXTURE')\" = '$FIXTURE_SUM' ]"
 # Strip comments and blanks first: these greps look for *code* that writes, and a
 # prose mention of committing in a comment is not a write path.
 code() { grep -vE '^[[:space:]]*(#|$)' "$1"; }
 check "hive-metrics contains no emit" "! code '$M' | grep -E '(^|[^-[:alnum:]_])emit[[:space:]]' >/dev/null"
 check "hive-score contains no emit"   "! code '$S' | grep -E '(^|[^-[:alnum:]_])emit[[:space:]]' >/dev/null"
-check "neither tool commits to git"   "! { code '$M'; code '$S'; } | grep -E 'git .*(commit|push)' >/dev/null"
+# There is deliberately NO "neither tool commits to git" check here. The property is
+# false as stated — both tools commit AND push, through commit_metrics
+# (hive-common.sh:495), called from hive-metrics:536 and hive-score:512 — and the drill
+# asserts that real behaviour, positively and end to end, at L370-372 (hive-metrics)
+# and L540-544 (hive-score), plus the whole push-refusal section at L659-706. The
+# deleted check only ever "passed" because it grepped the two script files, which do
+# not contain the git commands their sourced helper runs; a negated grep over a file
+# that does not even mention the behaviour asserts nothing about it. The stop-line
+# these lines DO enforce is the read-only-over-the-spine one: no `emit`, and a
+# byte-identical fixture. Writing a git commit is not a spine write.
+
+# The terminal verdict. Without it every one of the checks above could FAIL and the
+# script would still exit 0, because `check`/`bad` both return 0 and the EXIT trap's
+# "FAILURES PRESENT" line is only a print — it does not change the status. Any caller
+# doing `hive-metrics-drill.sh && record_green` would then record a passing drill over
+# failing checks, which is the one output a harness must never produce. Same form as
+# hive-tooling-drill.sh:1339, deploy_checks.sh:281, hive-bringup-drill.sh:155.
+[ "$FAIL" -eq 0 ]

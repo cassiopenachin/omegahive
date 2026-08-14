@@ -40,6 +40,11 @@ EMIT_AUTHORITY: dict[str, set[str]] = {
     "instrument": {
         "promotion.created", "promotion.suppressed", "metric.threshold_crossed",
         "review.passed", "review.failed",
+        # The launcher-owned supervisor observing a harness process. Deliberately NOT
+        # the worker role: the supervisor watches the session, it does not speak for it,
+        # and a worker that could author its own consumption facts is exactly the
+        # self-reporting this instrument replaces.
+        "execution.started", "execution.finished",
     },
     # the human tier (operator + design partner): reporting, plus the lifecycle ops it
     # conceptually owns (create/escalate/override reuse the existing legality rows —
@@ -47,6 +52,11 @@ EMIT_AUTHORITY: dict[str, set[str]] = {
     "human": {
         "task.reported", "task.created", "task.escalated", "task.status_override",
         "worker.registered",
+        # Approving a route is signing for spend, and signing is the human's act alone
+        # (decisions.md 2026-07-21: automate the execution of signed intents, never the
+        # signing). The launcher materializes this event from a binding the operator
+        # invoked; no coordinator or instrument role may author it.
+        "execution.route_approved",
     },
     # the gateway records its own refusals (§5); never emitted by an agent.
     "gateway": {"gateway.rejected"},

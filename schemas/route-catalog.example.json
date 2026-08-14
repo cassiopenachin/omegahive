@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-08-13",
+  "note": "REDACTED EXAMPLE — not a live catalog. The live file is a DEPLOYMENT fact and is never committed: see docs/omegahive_worker_harness.md. Credential pools are opaque labels here and must stay that way; a pool name is a pointer for whoever holds the credentials, never the credential, an account id, or a host path.",
+  "routes": [
+    {
+      "name": "claude-opus-subscription",
+      "model_vendor": "anthropic",
+      "provider": "anthropic",
+      "model": "claude-opus-5",
+      "harness": "claude-code",
+      "billing_market": "subscription",
+      "credential_pool": "pool-a",
+      "adapter": "claude-code",
+      "enabled": true,
+      "note": "the incumbent worker tier; no per-token list price applies to a subscription route, so price_basis is absent rather than zero"
+    },
+    {
+      "name": "claude-haiku-subscription",
+      "model_vendor": "anthropic",
+      "provider": "anthropic",
+      "model": "claude-haiku-4-5-20251001",
+      "harness": "claude-code",
+      "billing_market": "subscription",
+      "credential_pool": "pool-a",
+      "adapter": "claude-code",
+      "enabled": true,
+      "note": "HIP-1 W2 cheap-tier candidate, subscription-billed"
+    },
+    {
+      "name": "codex-terra-subscription",
+      "model_vendor": "openai",
+      "provider": "openai",
+      "model": "gpt-5.6-terra",
+      "harness": "codex",
+      "billing_market": "subscription",
+      "credential_pool": "pool-b",
+      "adapter": "codex",
+      "enabled": false,
+      "note": "disabled rather than deleted: the Codex harness is not installed on deployment #0, so a launch must refuse loudly instead of finding no such route. Its usage and resolved-model surfaces are UNVERIFIED — see the adapter docstring."
+    },
+    {
+      "name": "example-api-route",
+      "model_vendor": "example-vendor",
+      "provider": "example-provider",
+      "model": "example-model-0731",
+      "harness": "codex",
+      "billing_market": "api",
+      "credential_pool": "pool-c",
+      "adapter": "codex",
+      "enabled": true,
+      "price_basis": {
+        "currency": "USD",
+        "per_mtok_input": 0.14,
+        "per_mtok_cache_read": 0.014,
+        "per_mtok_cache_write": 0.14,
+        "per_mtok_output": 0.28,
+        "source": "example vendor list prices, first-party pricing page",
+        "captured_at": "2026-08-13"
+      },
+      "note": "STRUCTURAL EXAMPLE ONLY. An api-market route validates and resolves, and `hive-launch --check` will show it, but launching one refuses: credential delivery and permission controls belong to `worker-harness-bindings`. The price_basis is what makes a historical cost derivable later without consulting a catalog that has since changed."
+    }
+  ]
+}
