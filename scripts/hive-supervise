@@ -1,0 +1,359 @@
+#!/usr/bin/env bash
+# hive-supervise <run-dir>            — run one approved execution and record what it did
+# hive-supervise --reconcile <root>   — emit terminal facts for executions that died unrecorded
+#
+# The launcher-owned supervisor. It is the pane's command: `hive-launch` writes an
+# execution run-dir and opens a tmux window running THIS script, which probes the
+# harness, starts it, and emits the two instrument facts around it.
+#
+# Why a supervisor at all, rather than asking the session to report on itself: a worker
+# reporting its own model and token spend is a self-measurement, and the corpus already
+# says self-assessment is unreliable (retro 2026-07-29 D3 — workers reported effort two
+# to six times their measured span). The supervisor never impersonates the worker: it
+# emits `execution.*` as `instrument` and has no authority to emit any `task.*` event.
+#
+# THE TERMINAL FACT IS THE POINT. `execution.finished` is written to disk BEFORE it is
+# emitted and re-emitted verbatim on any later attempt, so a spine outage, a killed
+# emit, or a `--reconcile` sweep all converge on one identical event rather than a
+# family of near-duplicates. The spine deduplicates identical payloads, so re-running is
+# safe by construction.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/hive-common.sh
+source "$SCRIPT_DIR/hive-common.sh"
+
+log() { echo "hive-supervise: $*" >&2; }
+
+# jq is a hard dependency and is checked HERE rather than assumed. `hive-launch` not
+# checking for it is one of the defects this order's drill audit found: a missing jq
+# there collapses a board read to the empty string and re-creates a live task.
+command -v jq >/dev/null 2>&1 || die "jq is required by hive-supervise"
+
+# The stack CLI. `hive()` (hive-common.sh) is the containerized path every operator tool
+# uses; HIVE_CLI_CMD overrides it with a direct invocation, which is what lets the
+# fixture-driven end-to-end test drive this exact script with no container and no
+# network. The override is a test seam, not a second code path — both land on the same
+# `omegahive` command.
+hive_cli() {
+  if [ -n "${HIVE_CLI_CMD:-}" ]; then
+    # shellcheck disable=SC2086  # HIVE_CLI_CMD is legitimately several words
+    $HIVE_CLI_CMD "$@"
+  else
+    hive "$@"
+  fi
+}
+
+# --- run-dir layout -----------------------------------------------------------------
+#   plan.json      the resolved plan (from `omegahive harness-resolve`)
+#   emit.sh        the supervisor's instrument emit wrapper, issued by hive-launch
+#   started.json   the started payload, once emitted
+#   finished.json  the terminal payload — written before emitting, replayed on retry
+#   usage.json     the raw usage evidence rows (audit trail; no message content)
+#   harness.log    the harness's own stderr
+
+usage() { echo "usage: hive-supervise <run-dir> | hive-supervise --reconcile <root>" >&2; exit 2; }
+
+# `now` is ISO-8601 UTC to the second. `date -u +%FT%TZ` is POSIX and portable to BSD;
+# `date -d`/`date -v` are the non-portable forms and appear nowhere here.
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# Read a JSON string array into a bash array, NUL-separated so no element can be split
+# or globbed whatever it contains. `while read -d ''` rather than `mapfile -d ''`:
+# mapfile's -d needs bash 4.4, and the wrapper this repo issues must run on the oldest
+# bash a supported host ships (macOS still ships 3.2).
+read_json_array() {  # read_json_array <target-array-name> <jq-filter> <json-file>
+  local __name="$1" __filter="$2" __file="$3" __item
+  eval "$__name=()"
+  while IFS= read -r -d '' __item; do
+    eval "$__name+=(\"\$__item\")"
+  done < <(jq -j "$__filter"' | . + "\u0000"' "$__file")
+}
+
+# ---------------------------------------------------------------------------------
+# emit_finished — write the terminal payload once, then emit it (idempotently).
+#
+# The write comes first and the file is never rewritten. A second call — a retry after a
+# rejected emit, a --reconcile pass over a supervisor that was killed between the write
+# and the emit — re-sends the SAME bytes, which the spine's content-derived idempotency
+# key collapses onto the original event. Rewriting the payload with a fresh timestamp
+# would defeat that and leave two contradictory terminal facts for one execution.
+# ---------------------------------------------------------------------------------
+emit_finished() {  # emit_finished <run-dir> <payload-json-or-empty>
+  local rd="$1" payload="${2:-}"
+  if [ ! -f "$rd/finished.json" ]; then
+    [ -n "$payload" ] || die "emit_finished called with no payload and no finished.json"
+    printf '%s\n' "$payload" > "$rd/finished.json"
+  fi
+  local task; task=$(jq -r '.task' "$rd/plan.json")
+  # The emit's own failure is surfaced, never swallowed: an unrecorded terminal fact is
+  # the one outcome this whole script exists to prevent, so the operator is told the
+  # payload is on disk and how to replay it.
+  if ! "$rd/emit.sh" --type execution.finished --task "$task" \
+        --payload "$(cat "$rd/finished.json")" >/dev/null; then
+    log "FAILED to emit execution.finished — the payload is preserved at $rd/finished.json"
+    log "  replay it with:  hive-supervise --reconcile $(dirname "$rd")"
+    return 1
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------------
+# reconcile — sweep run-dirs whose execution started but never recorded a terminal fact.
+#
+# This is the honest answer to "tmux died and took the supervisor with it". Such an
+# execution's outcome is genuinely unknown to us, so it is recorded as `interrupted`
+# with `outcome_certainty: uncertain` and `unavailable` usage naming the reason. Writing
+# a confident `failure` there would be a guess wearing a fact's clothes.
+# ---------------------------------------------------------------------------------
+reconcile() {  # reconcile <root>
+  local root="$1" rd rc=0
+  [ -d "$root" ] || die "reconcile root does not exist: $root"
+  for rd in "$root"/*/; do
+    rd="${rd%/}"
+    [ -f "$rd/plan.json" ] || continue
+    if [ -f "$rd/finished.json" ]; then
+      # Written but possibly never accepted — re-emitting is free and idempotent.
+      emit_finished "$rd" || rc=1
+      continue
+    fi
+    [ -f "$rd/started.json" ] || continue    # never started: nothing terminal to say
+    log "reconciling $rd (started, no terminal fact)"
+    local payload
+    payload=$(jq -c \
+      --arg fin "$(now)" \
+      --arg reason "supervisor did not observe this execution end (tmux or host died); usage surface was never read" \
+      '{execution_id: .execution_id, purpose: .purpose, attempt: .attempt,
+        identity: .identity, outcome: "interrupted", outcome_certainty: "uncertain",
+        exit_code: null, finished_at: $fin, model_evidence: "none",
+        usage: {status: "unavailable", reason: $reason},
+        price_basis: .price_basis}' "$rd/plan.json")
+    emit_finished "$rd" "$payload" || rc=1
+  done
+  return $rc
+}
+
+case "${1:-}" in
+  -h|--help) usage ;;
+  --reconcile) [ $# -eq 2 ] || usage; reconcile "$2"; exit $? ;;
+  "") usage ;;
+  -*) usage ;;
+esac
+
+RUN_DIR="${1%/}"
+[ -d "$RUN_DIR" ] || die "run dir does not exist: $RUN_DIR"
+PLAN="$RUN_DIR/plan.json"
+[ -f "$PLAN" ] || die "no plan.json in $RUN_DIR"
+[ -x "$RUN_DIR/emit.sh" ] || die "no executable emit.sh in $RUN_DIR — the supervisor has no write path"
+
+# Already terminal? Replay the recorded fact and stop. This makes a re-run of the pane
+# command safe instead of a second execution of the same approved launch.
+if [ -f "$RUN_DIR/finished.json" ]; then
+  log "this execution already recorded a terminal fact; re-emitting it and exiting"
+  emit_finished "$RUN_DIR"
+  exit 0
+fi
+
+EXEC_ID=$(jq -r '.execution_id' "$PLAN")
+TASK=$(jq -r '.task' "$PLAN")
+CWD=$(jq -r '.cwd // empty' "$PLAN")
+PINNED_MODEL=$(jq -r '.identity.model' "$PLAN")
+USAGE_EXTRACTOR=$(jq -r '.usage_extractor' "$PLAN")
+PROVES_USAGE=$(jq -r '.proves_usage' "$PLAN")
+UNPROVEN_REASON=$(jq -r '.unproven_reason // empty' "$PLAN")
+
+read_json_array ARGV '.argv[]' "$PLAN"
+read_json_array VERSION_ARGV '.version_argv[]' "$PLAN"
+read_json_array ENV_PAIRS '(.env | to_entries[] | "\(.key)=\(.value)")' "$PLAN"
+
+[ "${#ARGV[@]}" -gt 0 ] || die "plan carries an empty argv"
+[ "${#VERSION_ARGV[@]}" -gt 0 ] || die "plan carries an empty version_argv"
+# `env -i` builds the child's environment from nothing, so PATH must be among the pairs
+# or `env` cannot resolve the harness at all. The adapter allowlists PATH; this is the
+# assertion that a future allowlist edit cannot quietly break.
+case " ${ENV_PAIRS[*]} " in
+  *" PATH="*) : ;;
+  *) die "the resolved environment carries no PATH; env -i could not resolve the harness" ;;
+esac
+
+# ---------------------------------------------------------------------------------
+# Terminal-fact assembly. Kept in one place so every exit path — probe failure, clean
+# exit, non-zero exit, signal — produces the same shape and none can forget a field.
+# ---------------------------------------------------------------------------------
+USAGE_JSON='{"status":"unavailable","reason":"usage was never extracted"}'
+MODEL_RESOLVED=""
+MODEL_EVIDENCE="none"
+MODEL_MISMATCH="false"
+
+finish() {  # finish <outcome> <certainty> <exit-code-or-empty>
+  local outcome="$1" certainty="$2" code="${3:-}"
+  local payload
+  payload=$(jq -c -n \
+    --slurpfile plan "$PLAN" \
+    --arg outcome "$outcome" --arg certainty "$certainty" \
+    --arg fin "$(now)" \
+    --arg resolved "$MODEL_RESOLVED" --arg evidence "$MODEL_EVIDENCE" \
+    --argjson usage "$USAGE_JSON" \
+    --argjson code "${code:-null}" \
+    '$plan[0] as $p |
+     {execution_id: $p.execution_id, purpose: $p.purpose, attempt: $p.attempt,
+      identity: $p.identity, outcome: $outcome, outcome_certainty: $certainty,
+      exit_code: $code, finished_at: $fin,
+      model_resolved: (if $evidence == "harness-reported" then $resolved else null end),
+      model_evidence: $evidence, usage: $usage, price_basis: $p.price_basis}')
+  emit_finished "$RUN_DIR" "$payload"
+}
+
+# --- 1. probe the harness version -- no model call, no tokens -----------------------
+# Failing here means the execution never happened. That is recorded as a terminal
+# failure with no `started` fact, which is exactly what the projection should show:
+# approved, never started, failed.
+HARNESS_VERSION=""
+if ! VERSION_OUT=$("${VERSION_ARGV[@]}" 2>&1); then
+  log "harness version probe failed: ${VERSION_ARGV[*]}"
+  printf '%s\n' "$VERSION_OUT" >&2
+  USAGE_JSON=$(jq -c -n --arg r "harness did not start; version probe failed" \
+    '{status:"unavailable", reason:$r}')
+  finish failure certain 127
+  exit 1
+fi
+# First token of the first non-empty line: `claude --version` prints
+# `2.1.231 (Claude Code)` and the version is what belongs on the fact, not the banner.
+HARNESS_VERSION=$(printf '%s\n' "$VERSION_OUT" | awk 'NF {print $1; exit}')
+[ -n "$HARNESS_VERSION" ] || HARNESS_VERSION="unknown"
+
+# --- 2. start the child, then say so ------------------------------------------------
+# The child is backgrounded so the supervisor keeps a pid to observe — but a plain `&`
+# in a non-interactive shell redirects the child's stdin from /dev/null (POSIX async
+# behaviour), which would leave an interactive harness with no terminal to read. Two
+# facts, both verified on this host under a real pty on 2026-08-13, make this work:
+#   * `< /dev/tty` restores a real terminal on stdin;
+#   * with job control off (every script), `&` does NOT create a new process group, so
+#     the child stays in the foreground group and never takes SIGTTIN/SIGTTOU.
+# Without a controlling terminal (the fixture-driven tests) /dev/tty cannot be opened,
+# so the plain form is used — a fixture needs no terminal.
+cd "${CWD:-$PWD}" || die "cannot enter the worker's cwd: $CWD"
+if [ -t 0 ] && [ -e /dev/tty ]; then
+  env -i "${ENV_PAIRS[@]}" "${ARGV[@]}" < /dev/tty 2>>"$RUN_DIR/harness.log" &
+else
+  env -i "${ENV_PAIRS[@]}" "${ARGV[@]}" 2>>"$RUN_DIR/harness.log" &
+fi
+CHILD=$!
+
+# "Started" means the child process exists. `kill -0` is the check, and it is made
+# AFTER the fork rather than before it — the whole reason this fact is separate from
+# `route_approved` is that it is observed rather than intended.
+if ! kill -0 "$CHILD" 2>/dev/null; then
+  # It forked and was already gone: still a start, and `wait` below tells us how it went.
+  log "child $CHILD exited immediately after fork"
+fi
+STARTED_PAYLOAD=$(jq -c -n --slurpfile plan "$PLAN" \
+  --arg v "$HARNESS_VERSION" --arg st "$(now)" \
+  '$plan[0] as $p |
+   {execution_id: $p.execution_id, purpose: $p.purpose, attempt: $p.attempt,
+    identity: $p.identity, harness_version: $v,
+    model_requested: $p.model_requested, started_at: $st}')
+printf '%s\n' "$STARTED_PAYLOAD" > "$RUN_DIR/started.json"
+if ! "$RUN_DIR/emit.sh" --type execution.started --task "$TASK" \
+      --payload "$STARTED_PAYLOAD" >/dev/null; then
+  # A missing `started` is a gap in the record but not a reason to abandon a running
+  # worker. Say so loudly and carry on to the terminal fact, which matters more.
+  log "WARNING could not emit execution.started (payload kept at $RUN_DIR/started.json)"
+fi
+log "execution $EXEC_ID started: pid $CHILD, harness $HARNESS_VERSION, model $PINNED_MODEL"
+
+# --- 3. supervise ------------------------------------------------------------------
+INTERRUPTED=""
+on_signal() { INTERRUPTED=1; log "signal received — forwarding to child $CHILD"; kill -TERM "$CHILD" 2>/dev/null || true; }
+trap on_signal INT TERM HUP
+
+CHILD_RC=0
+# `wait` returns >128 when interrupted by a trapped signal; the second wait reaps the
+# child's real status after the forwarded TERM.
+wait "$CHILD" || CHILD_RC=$?
+if [ -n "$INTERRUPTED" ]; then
+  wait "$CHILD" 2>/dev/null || true
+fi
+trap - INT TERM HUP
+
+# --- 4. read the consumption surface ------------------------------------------------
+# Never fatal. An unreadable surface is `unavailable` with a named reason, which is a
+# legitimate record; losing the terminal fact over a parser problem would not be.
+extract_usage() {
+  local src="" reason=""
+  case "$USAGE_EXTRACTOR" in
+    claude-code-transcript)
+      local sid cfg
+      sid=$(jq -r '.usage_hint.session_id // empty' "$PLAN")
+      cfg=$(jq -r '.usage_hint.config_dir // empty' "$PLAN")
+      [ -n "$cfg" ] || cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+      if [ -z "$sid" ]; then
+        reason="no session id was pinned, so the transcript cannot be located"
+      else
+        # Search rather than recompute the project-slug directory: the slug rule is the
+        # harness's, not ours, and a wrong guess would silently read nothing.
+        src=$(find "$cfg/projects" -maxdepth 2 -type f -name "$sid.jsonl" 2>/dev/null | head -1)
+        [ -n "$src" ] || reason="no transcript named $sid.jsonl under $cfg/projects"
+      fi
+      ;;
+    fake-usage-file)
+      src=$(jq -r '.usage_hint.usage_file // empty' "$PLAN")
+      [ -n "$src" ] && [ -f "$src" ] || { reason="fake usage file not present"; src=""; }
+      ;;
+    none)
+      reason="${UNPROVEN_REASON:-harness has no usage surface established on this deployment}"
+      ;;
+    *)
+      reason="no usage extractor named '$USAGE_EXTRACTOR' on this deployment"
+      ;;
+  esac
+
+  if [ -z "$src" ]; then
+    USAGE_JSON=$(jq -c -n --arg r "$reason" '{status:"unavailable", reason:$r}')
+    return 0
+  fi
+
+  local out
+  if ! out=$( hive_cli harness-usage --extractor "$USAGE_EXTRACTOR" \
+                --pinned-model "$PINNED_MODEL" < "$src" ); then
+    USAGE_JSON=$(jq -c -n --arg r "the usage extractor failed to run" \
+      '{status:"unavailable", reason:$r}')
+    return 0
+  fi
+  USAGE_JSON=$(printf '%s' "$out" | jq -c '.usage')
+  MODEL_RESOLVED=$(printf '%s' "$out" | jq -r '.model_resolved // empty')
+  MODEL_EVIDENCE=$(printf '%s' "$out" | jq -r '.model_evidence')
+  MODEL_MISMATCH=$(printf '%s' "$out" | jq -r '.model_mismatch')
+  # The audit trail: the per-message rows behind the totals, and nothing else. No
+  # message content ever reaches this file.
+  printf '%s' "$out" | jq '{rows, notes, main_chain_models}' > "$RUN_DIR/usage.json"
+  USAGE_JSON=$(printf '%s' "$USAGE_JSON" | jq -c --arg ref "$RUN_DIR/usage.json" '. + {evidence_ref: $ref}')
+}
+
+if [ "$PROVES_USAGE" = "true" ] || [ "$USAGE_EXTRACTOR" != "none" ]; then
+  extract_usage
+else
+  USAGE_JSON=$(jq -c -n --arg r "${UNPROVEN_REASON:-harness has no usage surface established on this deployment}" \
+    '{status:"unavailable", reason:$r}')
+fi
+
+# --- 5. the terminal fact -----------------------------------------------------------
+# The model check is a stop-line, not a warning: "a mismatch refuses or records terminal
+# failure; it never falls back". A run whose harness reports a model other than the one
+# the operator signed for did not execute the approved route, whatever its exit code.
+OUTCOME="success"
+CERTAINTY="certain"
+if [ -n "$INTERRUPTED" ]; then
+  OUTCOME="interrupted"
+elif [ "$CHILD_RC" -ne 0 ]; then
+  OUTCOME="failure"
+fi
+if [ "$MODEL_MISMATCH" = "true" ]; then
+  log "MODEL MISMATCH: pinned '$PINNED_MODEL', harness reported '$MODEL_RESOLVED' — recording terminal failure"
+  OUTCOME="failure"
+fi
+
+finish "$OUTCOME" "$CERTAINTY" "$CHILD_RC"
+log "execution $EXEC_ID finished: $OUTCOME (exit $CHILD_RC)"
+exit "$CHILD_RC"

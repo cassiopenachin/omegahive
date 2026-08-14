@@ -31,8 +31,40 @@ if [ ! -s "$refs" ]; then
     exit 2
 fi
 
+# Captured into a variable and CHECKED, before anything iterates it. A command
+# substitution in a `for` word-list is not subject to `set -e`, so when both git forms
+# failed the list was simply empty, no commit could match, and this script went on to
+# print "the ENTIRE HEAD history is phantom-ahead" — a dramatic, specific-looking verdict
+# derived from a git command that never ran — and exited 0. In a post-restore data-safety
+# tool that is the worst possible failure mode: it tells a human that everything is
+# suspect at the exact moment they are deciding what to keep.
+#
+# The two forms are the two shapes the workspace arrives in: a normal clone (`<ws>/.git`)
+# and the bare hub (`git -C` finds a bare repo at its own root). "git cannot read this at
+# all" and "this is a real repository whose HEAD names no commit" are separated below
+# with rev-parse, because they send the operator to completely different places.
+if shas="$(git --git-dir="${ws}/.git" rev-list HEAD 2>/dev/null)"; then
+    :
+elif shas="$(git -C "$ws" rev-list HEAD 2>/dev/null)"; then
+    :
+elif git -C "$ws" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "$ws is a git repository, but HEAD names no commit (unborn branch, or a bare" >&2
+    echo "repo whose HEAD symref points at a branch that does not exist). There is no" >&2
+    echo "history to compare against the restored log — nothing was analysed." >&2
+    exit 2
+else
+    echo "cannot read a git repository at $ws (tried --git-dir=$ws/.git and -C $ws)." >&2
+    echo "Nothing was analysed — this is NOT a finding about phantom-ahead commits." >&2
+    exit 2
+fi
+if [ -z "$shas" ]; then
+    echo "git listed no commits on HEAD at $ws — nothing was analysed." >&2
+    exit 2
+fi
+
 frontier=""
-for sha in $(git --git-dir="${ws}/.git" rev-list HEAD 2>/dev/null || git -C "$ws" rev-list HEAD); do
+# shellcheck disable=SC2086  # deliberate word split: rev-list prints one sha per line
+for sha in $shas; do
     if grep -qix "$sha" "$refs"; then
         frontier="$sha"
         break

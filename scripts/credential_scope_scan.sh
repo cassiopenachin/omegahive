@@ -20,7 +20,8 @@
 #   OMEGAHIVE_COMPOSE="docker compose" scripts/credential_scope_scan.sh
 #
 # Exit: 0 clean · 1 findings (over-scope, or a service with no row) · 2 the scan COULD NOT
-# RUN (no jq, no engine, no containers, an unreadable container). Two codes, because a
+# RUN (no jq, no engine, no containers, an unreadable container, an unbuildable payload,
+# or a scan process that exited without ever rendering a verdict). Two codes, because a
 # caller that cannot tell them apart reports a scan that never executed as a scan that
 # found nothing — which is the one claim this check exists to stop anyone making.
 set -euo pipefail
@@ -71,11 +72,20 @@ DC=($HIVE_COMPOSE)
 # `ps -q` is project-scoped and running-only, so a neighbouring deployment on the same
 # host (Beastie runs several) is never in scope and a one-shot `run` container is not
 # either. Empty output is NOT success: it means nothing was scanned.
-IDS="$("${DC[@]}" ps -q)"
+#
+# `|| cannot_run`, not a bare assignment: under `set -e` a bare assignment aborts the
+# script with COMPOSE's status, which is 1 — the code this script reserves for FINDINGS.
+# A dead engine or a renamed manifest therefore arrived at deploy_checks.sh:265 looking
+# exactly like an over-scope finding, and the (default) non-fatal findings policy printed
+# `[WARN] ... not failing this run` over a scan that never started. The two codes exist
+# precisely so that cannot happen, so the setup failure has to route through cannot_run.
+IDS="$("${DC[@]}" ps -q)" || cannot_run "'$HIVE_COMPOSE ps -q' failed for project '${PROJECT:-omegahive}' — the engine is not answering, so nothing was scanned"
 [ -n "$IDS" ] || cannot_run "no running containers in project '${PROJECT:-omegahive}' — nothing was scanned, which is not the same as nothing being wrong"
 
 OBS="$(mktemp -t omegahive-credscan-XXXXXX.json)"
-trap 'rm -f "$OBS"' EXIT
+PAYLOAD="$(mktemp "${TMPDIR:-/tmp}/omegahive-credscan-payload.XXXXXX.json")"
+SCAN_OUT="$(mktemp "${TMPDIR:-/tmp}/omegahive-credscan-report.XXXXXX")"
+trap 'rm -f "$OBS" "$PAYLOAD" "$SCAN_OUT"' EXIT
 
 while IFS= read -r id; do
   [ -n "$id" ] || continue
@@ -105,7 +115,33 @@ done <<<"$IDS" > "$OBS"
 # The manifest travels with the observations (see the module docstring): what is scanned
 # against is this checkout's file, never whatever was baked into the image.
 # --slurpfile reads the NDJSON above into one array, so nothing has to re-serialize it.
+#
+# BUILT here and RUN below, as two statements rather than one pipeline. A pipeline
+# collapses both halves onto a single status, and this script's whole contract is that
+# "the scan judged and found something" (1) and "the scan never ran" (2) are told apart.
+# jq failing here — an unreadable secrets-manifest.yaml, an $OBS the slurp cannot parse —
+# is unambiguously the harness: nothing was scanned, so it is a 2.
 jq -n --rawfile manifest secrets-manifest.yaml --slurpfile obs "$OBS" \
-  '{manifest: $manifest, observations: $obs}' \
-| "${DC[@]}" run --rm -T --no-deps --entrypoint python cli \
-    -m omegahive.deploy.credential_scan
+  '{manifest: $manifest, observations: $obs}' > "$PAYLOAD" \
+  || cannot_run "could not build the scan payload from secrets-manifest.yaml and the collected observations — nothing was scanned"
+
+# The scan process itself answers 0 (clean) or 1 (findings), and whenever it REACHED a
+# verdict it renders its report, whose first line is the `== credential scope: N running
+# container(s) ...` header. That header is therefore the evidence that the judgement
+# happened, and it is what separates a finding from a harness failure: `compose run`
+# returning non-zero because the image is stale, the entrypoint is wrong, or the engine
+# died is also a 1, and without this test it was reported as findings and downgraded to a
+# warning. No report, non-zero status => the scan could not run => 2.
+#
+# stdout is captured (the report is key NAMES only and explicitly safe to share — see the
+# module docstring — so unlike the `inspect` output above there is nothing here to keep
+# out of a variable or a file) and echoed back verbatim; stderr is left alone so the
+# engine's own diagnosis still streams to the operator as it happens.
+SCAN_RC=0
+"${DC[@]}" run --rm -T --no-deps --entrypoint python cli \
+    -m omegahive.deploy.credential_scan < "$PAYLOAD" > "$SCAN_OUT" || SCAN_RC=$?
+cat "$SCAN_OUT"
+if [ "$SCAN_RC" -ne 0 ] && ! grep -q '^== credential scope:' "$SCAN_OUT"; then
+  cannot_run "the scan process exited $SCAN_RC without ever rendering a verdict — that is this harness failing, not a finding, and a caller must not read it as one"
+fi
+exit "$SCAN_RC"

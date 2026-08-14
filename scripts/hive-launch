@@ -18,18 +18,48 @@
 # clean; a partial section (1-2 of 3) warns and launches. `--anyway` overrides
 # the refusal (same spelling as the review-WIP throttle override below).
 
+# Deliberate redundancy with hive-common.sh:26, which sets exactly the same three
+# options during the `source` below. Five production scripts inherited -e, -u and
+# pipefail from that ONE line and stated none of them; a refactor that guards it, moves
+# it, or wraps the source in a conditional would have quietly stripped error-exit,
+# nounset and pipefail from all five at once, and nothing would have failed loudly
+# enough to notice. Setting them here is a no-op at runtime and makes each script's own
+# contract readable without opening another file.
+set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/hive-common.sh
 source "$SCRIPT_DIR/hive-common.sh"
 
-usage() { echo "usage: hive-launch <order-file> [--worker <id>] [--anyway]" >&2; exit 2; }
+usage() {
+  cat >&2 <<'USAGE'
+usage: hive-launch <order-file> [--worker <id>] [--anyway]
+                                [--binding <path>] [--check]
+       hive-launch --check-migration
+
+  --binding <path>   the committed launch binding (workspace-relative, or a bare name
+                     resolved to projects/<project>/bindings/<task>.json). It carries the
+                     operator-signed route; the launcher executes it and never signs one.
+  --check            no-model preflight: resolve the binding, adapter, harness version,
+                     model pin and redacted environment, print them, and STOP. No clone,
+                     no spine write, no token spent.
+  --check-migration  enumerate which orders would refuse once HIVE_ENFORCE_BINDINGS=1.
+USAGE
+  exit 2
+}
 
 ORDER_ARG=""
 WORKER=""
 ANYWAY=""
+BINDING_ARG=""
+CHECK_ONLY=""
+CHECK_MIGRATION=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --worker) shift; [ $# -gt 0 ] || usage; WORKER="$1" ;;
+    --binding) shift; [ $# -gt 0 ] || usage; BINDING_ARG="$1" ;;
+    --check) CHECK_ONLY=1 ;;
+    --check-migration) CHECK_MIGRATION=1 ;;
     --anyway) ANYWAY=1 ;;
     -h|--help) usage ;;
     -*) usage ;;
@@ -37,6 +67,34 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+# --- --check-migration: what would refuse if enforcement were on ---------------------
+# Record before enforce, applied to the migration itself. This reads the workspace and
+# emits nothing, so the operator can see the whole blast radius before flipping the
+# switch rather than discovering it one refused launch at a time.
+if [ -n "$CHECK_MIGRATION" ]; then
+  [ -z "$ORDER_ARG" ] || usage
+  missing=0; present=0
+  echo "hive-launch --check-migration: HIVE_ENFORCE_BINDINGS is currently '$HIVE_ENFORCE_BINDINGS'"
+  echo "  catalog: $HIVE_ROUTE_CATALOG$([ -f "$HIVE_ROUTE_CATALOG" ] && echo '' || echo '   (ABSENT — every binding launch would refuse)')"
+  while IFS= read -r f; do
+    rel="${f#"$OPS_WS"/}"
+    case "$rel" in projects/*/orders/*.md) ;; *) continue ;; esac
+    proj=$(project_from_order "$rel")
+    tsk=$(task_from_order "$rel")
+    b="projects/$proj/$HIVE_BINDINGS_DIR/$tsk.json"
+    if [ -f "$OPS_WS/$b" ]; then
+      present=$((present + 1))
+      echo "  ok      $tsk  ($b)"
+    else
+      missing=$((missing + 1))
+      echo "  REFUSE  $tsk  (no $b)"
+    fi
+  done < <(find "$OPS_WS/projects" -mindepth 3 -maxdepth 3 -type f -path '*/orders/*' -name '*.md' | sort)
+  echo "hive-launch: $present order(s) have a binding, $missing would refuse under enforcement."
+  exit 0
+fi
+
 [ -n "$ORDER_ARG" ] || usage
 
 # --- resolve the order file to a workspace-relative path -----------------------
@@ -80,6 +138,124 @@ require_safe_tmux_session
 WS_ROOT="$WORK_ROOT/$WORKER/hive"
 CODE_ROOT="$WORK_ROOT/$WORKER/$PROJECT"   # code clone named after the project (omegahive keeps its historical dir)
 WRAPPER="$WRAPPER_DIR/$WORKER.sh"
+EXEC_DIR="$WORK_ROOT/$WORKER/execution"   # one run-dir per execution; the supervisor's state
+SUP_WRAPPER="$EXEC_DIR/emit.sh"           # the supervisor's instrument write path
+
+# --- the order pin, the kickoff, and the route ---------------------------------------
+# All three are resolved HERE, before any decision that mutates something, because
+# `--check` must be able to answer "what would this launch do" using the very same code
+# the launch uses. A preflight computed from a second, simpler path would eventually
+# disagree with the real one, and a gate that can disagree with what it gates is the
+# defect retro 2026-07-29 D1 already charged this tooling once.
+SHA=$(order_pin "$REL")
+resolve_compose
+
+# The kickoff is built before the route so the preflight can show the ACTUAL argv the
+# harness would receive, kickoff included (elided in the display, counted in the shape).
+read -r -d '' KICKOFF <<KICK || true
+You are hive worker $WORKER on task $TASK (run: $RUN).
+Your clones: workspace $WS_ROOT · code $CODE_ROOT.
+First: git -C $WS_ROOT pull
+Your order: $REL in your workspace clone.
+Protocol: read projects/omegahive/WORKER.md there first and follow it exactly.
+Your emit command is your wrapper: $WRAPPER
+It bakes in --run-id/--role worker/--actor $WORKER. Everywhere WORKER.md writes
+'hive emit --run-id \$RUN --role worker --actor \$WORKER ...', run '$WRAPPER ...'
+with only the remaining flags (--type/--task/--payload). Never use raw hive emit.
+Container tooling on this host is '$HIVE_COMPOSE' (resolved at launch; WORKER.md's
+setup block writes it as 'podman compose' because deployment #0 runs podman —
+use the command named here). Begin by reading both files, then emit
+task.accepted and start.
+KICK
+
+# --- resolve the signed binding ------------------------------------------------------
+# A binding is a committed decision, so it is pinned exactly like an order is: dirty,
+# uncommitted, or unpushed all refuse here, BEFORE a clone exists or the spine moves.
+# `order_pin` is the shared implementation of "is this really landed" and is reused
+# verbatim rather than reimplemented, so the two can never drift apart.
+PLAN_JSON=""
+BINDING_REL=""
+BINDING_SHA=""
+if [ -n "$BINDING_ARG" ]; then
+  case "$BINDING_ARG" in
+    */*) BINDING_REL="$BINDING_ARG" ;;
+    *)   BINDING_REL="projects/$PROJECT/$HIVE_BINDINGS_DIR/${BINDING_ARG%.json}.json" ;;
+  esac
+elif [ -f "$OPS_WS/projects/$PROJECT/$HIVE_BINDINGS_DIR/$TASK.json" ]; then
+  BINDING_REL="projects/$PROJECT/$HIVE_BINDINGS_DIR/$TASK.json"
+fi
+
+if [ -z "$BINDING_REL" ]; then
+  if [ "$HIVE_ENFORCE_BINDINGS" = "1" ]; then
+    die "no launch binding for task '$TASK' (looked for projects/$PROJECT/$HIVE_BINDINGS_DIR/$TASK.json) and HIVE_ENFORCE_BINDINGS=1.
+  Write and push the binding, or pass --binding <path>. See schemas/launch-binding.example.json.
+  'hive-launch --check-migration' lists every order in this state."
+  fi
+  # The compatibility path, and it is deliberately LOUD. A route is never manufactured
+  # from HIVE_WORKER_CMD: that string names an executable, not a model, a vendor, a
+  # billing market or a credential pool, and inventing those from it is exactly the
+  # collapse this order exists to undo. So a legacy launch records NO execution facts
+  # rather than fabricated ones.
+  {
+    echo "hive-launch: LEGACY LAUNCH — no binding for '$TASK'."
+    echo "  Running the deployment string HIVE_WORKER_CMD='$HIVE_WORKER_CMD' with NO supervisor."
+    echo "  Consequence: this execution records no route, no model identity, and no token"
+    echo "  consumption on the spine. It is invisible to the capacity query by construction."
+    echo "  Migrate it: write projects/$PROJECT/$HIVE_BINDINGS_DIR/$TASK.json (schemas/launch-binding.example.json)."
+  } >&2
+else
+  [ -f "$OPS_WS/$BINDING_REL" ] || die "launch binding not found in $OPS_WS: $BINDING_REL"
+  BINDING_SHA=$(order_pin "$BINDING_REL")
+  [ -f "$HIVE_ROUTE_CATALOG" ] || die "route catalog not found: $HIVE_ROUTE_CATALOG
+  This is a DEPLOYMENT fact and is never committed to a project. Create it from
+  schemas/route-catalog.example.json, or point HIVE_ROUTE_CATALOG at this host's copy."
+
+  # A pinned session id, derived from the pinned binding, so the supervisor knows where
+  # the harness will write its own transcript. Derived rather than random: re-checking
+  # the same approved launch must describe the same execution, not a new one.
+  SESSION_UUID=$(printf '%s' "$BINDING_REL@$BINDING_SHA" | sha256_hex \
+    | sed -E 's/^(.{8})(.{4})(.{3})(.{3})(.{12}).*/\1-\2-4\3-a\4-\5/')
+
+  # The two records travel base64-encoded so their exact bytes reach the digest.
+  REQ=$(jq -n \
+    --arg b "$(b64 "$OPS_WS/$BINDING_REL")" \
+    --arg c "$(b64 "$HIVE_ROUTE_CATALOG")" \
+    --arg ref "$BINDING_REL@$BINDING_SHA" \
+    --arg task "$TASK" --arg order "$REL@$SHA" \
+    --arg kick "$KICKOFF" --arg cwd "$WS_ROOT" --arg sid "$SESSION_UUID" \
+    --argjson env "$(jq -n 'env')" \
+    '{binding_b64:$b, catalog_b64:$c, binding_ref:$ref, expected_task:$task,
+      expected_order_ref:$order, kickoff:$kick, cwd:$cwd, session_id:$sid, env:$env}')
+
+  if [ -n "$CHECK_ONLY" ]; then
+    echo "hive-launch --check: task=$TASK worker=$WORKER project=$PROJECT (no side effects)"
+    echo "  order:   $REL@$SHA"
+    printf '%s' "$REQ" | hive harness-resolve --check | sed 's/^/  /' || exit 1
+    # The version probe is the one thing the resolver cannot answer: it must ask the
+    # installed harness. Doing it here keeps `--check` a complete preflight — an
+    # operator learns that a harness is missing from the check, not from a dead pane.
+    VARGV=$(printf '%s' "$REQ" | hive harness-resolve | jq -r '.version_argv | join(" ")')
+    printf '  harness: '
+    if VOUT=$(sh -c "$VARGV" 2>&1); then
+      printf '%s\n' "$(printf '%s\n' "$VOUT" | awk 'NF {print $1; exit}')  (probe: $VARGV)"
+    else
+      printf 'NOT INSTALLED — `%s` failed:\n' "$VARGV"
+      printf '%s\n' "$VOUT" | sed 's/^/    /'
+    fi
+    exit 0
+  fi
+
+  PLAN_JSON=$(printf '%s' "$REQ" | hive harness-resolve) || die "the launch binding was refused; nothing was created or emitted (see the code above)"
+  LAUNCHABLE=$(printf '%s' "$PLAN_JSON" | jq -r '.launchable')
+  if [ "$LAUNCHABLE" != "true" ]; then
+    die "$(printf '%s' "$PLAN_JSON" | jq -r '.unlaunchable_reason')"
+  fi
+  EXEC_ID=$(printf '%s' "$PLAN_JSON" | jq -r '.execution_id')
+fi
+
+if [ -n "$CHECK_ONLY" ]; then
+  die "--check needs a binding: there is nothing to preflight on the legacy HIVE_WORKER_CMD path"
+fi
 
 # --- review WIP throttle: pace launches to the operator's review debt ---------
 # Review is the quality gate; launching faster than results are reviewed just
@@ -122,12 +298,18 @@ fi
 # proceeds, and only from exactly (ready, unowned): it reuses the seeded
 # task.created instead of re-emitting one. Recovery of an owned/dead task stays
 # the manual task.reassigned path (RUNBOOK) — never a relaunch.
+#
+# The read below is STRICT (board_json_strict): an unreadable board dies here rather
+# than collapsing to the empty string and taking the "absent -> create" branch. That
+# collapse was real — `hive-launch` never checked for `jq`, and a missing one turned an
+# in_review task into a fresh `task.created` with every guard below bypassed.
 ADOPT=""
-EXISTING=""; EXISTING=$(board_status "$TASK") || EXISTING=""
+BOARD_NOW=$(board_json_strict "$RUN")
+EXISTING=$(printf '%s' "$BOARD_NOW" | jq -r --arg t "$TASK" '.[] | select(.task == $t) | .status')
 if [ -n "$EXISTING" ]; then
   case "$EXISTING" in
     ready)
-      OWNER=""; OWNER=$(board_owner "$TASK") || OWNER=""
+      OWNER=$(printf '%s' "$BOARD_NOW" | jq -r --arg t "$TASK" '.[] | select(.task == $t) | .owner // empty')
       [ -z "$OWNER" ] || die "task '$TASK' is 'ready' but owned by '$OWNER' on run '$RUN' — not adoptable; recover via task.reassigned (RUNBOOK)"
       ADOPT=1 ;;
     assigned|blocked|in_progress)
@@ -167,12 +349,13 @@ if tmux has-session -t "$SESSION_T" 2>/dev/null \
   Never a second window for one task."
 fi
 
-# --- pin the order and build the seed payloads --------------------------------
-# The pin is required in BOTH modes: the worker's fresh clone comes from the hub,
-# so the order must be committed+pushed there for it to be readable — create and
-# adopt alike. In adopt mode SHA is the order at HEAD, not the acceptance ref: the
+# --- build the seed payloads ----------------------------------------------------
+# SHA was pinned above, before the route was resolved, because the binding is verified
+# AGAINST it: a binding signed for an older pin must refuse rather than launch against
+# an order that has since changed. The pin is required in BOTH modes — the worker's
+# fresh clone comes from the hub, so the order must be committed+pushed there for it to
+# be readable. In adopt mode SHA is the order at HEAD, not the acceptance ref: the
 # adopted task keeps its original (seeded) task.created acceptance pin.
-SHA=$(order_pin "$REL")
 ACCEPTANCE="per $REL@$SHA"
 # A heading-less order file is a titling problem, not a launch failure. Without
 # the `|| true` the no-match `grep` fails the whole pipeline under `set -o
@@ -254,15 +437,58 @@ cat > "$WRAPPER" <<WRAP
 # in; pass only --type/--task/--payload. Never emit as another actor.
 set -euo pipefail
 COMPOSE="\${OMEGAHIVE_COMPOSE:-$HIVE_COMPOSE}"
+# \`cd\` rather than \`env -C\`: -C is GNU coreutils >= 8.28 and does not exist on
+# macOS or the BSDs, so every wrapper issued to a non-GNU host failed at first use.
+# A subshell-free cd is exactly equivalent and portable everywhere.
+cd "${OMEGA_DIR}" || { echo "wrapper: cannot enter ${OMEGA_DIR}" >&2; exit 1; }
 # shellcheck disable=SC2086  # COMPOSE is legitimately two words ("podman compose")
-exec env -C "${OMEGA_DIR}" \$COMPOSE run --rm -T cli \\
+exec \$COMPOSE run --rm -T cli \\
   emit --run-id "$RUN" --role worker --actor "$WORKER" "\$@"
 WRAP
 chmod +x "$WRAPPER"
 echo "  wrapper: $WRAPPER"
 
+# The supervisor's OWN write path, issued the same way and deliberately NOT the
+# worker's. It is baked with `--role instrument`, so the process that watches a session
+# is structurally incapable of speaking for it: the gateway authorizes `instrument` for
+# `execution.*` and for no `task.*` event at all. A worker cannot author its own
+# consumption facts, and the supervisor cannot author the worker's results.
+if [ -n "$PLAN_JSON" ]; then
+  mkdir -p "$EXEC_DIR"
+  cat > "$SUP_WRAPPER" <<SUPWRAP
+#!/usr/bin/env bash
+# Instrument emit wrapper for the supervisor of worker $WORKER on run $RUN.
+# --run-id/--role/--actor are baked in; pass only --type/--task/--payload.
+# role=instrument: this identity may emit execution.* and NOTHING task-shaped.
+set -euo pipefail
+COMPOSE="\${OMEGAHIVE_COMPOSE:-$HIVE_COMPOSE}"
+cd "${OMEGA_DIR}" || { echo "supervisor wrapper: cannot enter ${OMEGA_DIR}" >&2; exit 1; }
+# shellcheck disable=SC2086  # COMPOSE is legitimately two words ("podman compose")
+exec \$COMPOSE run --rm -T cli \\
+  emit --run-id "$RUN" --role instrument --actor "supervisor-$WORKER" "\$@"
+SUPWRAP
+  chmod +x "$SUP_WRAPPER"
+  printf '%s\n' "$PLAN_JSON" | jq --arg cwd "$WS_ROOT" '. + {cwd: $cwd}' > "$EXEC_DIR/plan.json"
+  echo "  execution: $EXEC_ID  (run-dir $EXEC_DIR)"
+fi
+
 assigned_payload=$(jq -cn --arg w "$WORKER" '{worker:$w}')
 registered_payload=$(jq -cn --arg w "$WORKER" '{worker_id:$w}')
+
+# --- the route fact, BEFORE task.assigned -------------------------------------
+# Ordering is the point, not a detail. `execution.route_approved` is the operator's
+# signature on a spend decision, and it must be on the spine before the task is handed
+# to anyone — so that a task can never be found to have been worked without a recorded,
+# attributable decision about what would work it. It is emitted as `human`, by the
+# operator actor, because the launcher executes a signed intent and never signs one.
+if [ -n "$PLAN_JSON" ]; then
+  route_payload=$(printf '%s' "$PLAN_JSON" | jq -c \
+    '{execution_id, purpose, attempt, binding_ref, catalog_digest, identity,
+      predicted_total_tokens, price_basis}')
+  emit human "$OPERATOR_ACTOR" execution.route_approved --task "$TASK" \
+    --payload "$route_payload" >/dev/null
+  echo "  route:  $(printf '%s' "$PLAN_JSON" | jq -r '.identity.model + " @ " + .identity.harness + " (" + .identity.billing_market + ", pool " + .identity.credential_pool + ")"')"
+fi
 
 # Two seeding modes. Create: task.created -> ready, then register + assign.
 # Adopt: the task is ALREADY `ready` (unowned) from its seeded task.created —
@@ -284,26 +510,6 @@ else
   echo "  seeded: task.created + worker.registered + task.assigned"
 fi
 
-# --- kickoff --------------------------------------------------------------------
-# The WORKER.md launch template with clone paths filled, plus the one line that
-# points the worker at its wrapper: everywhere WORKER.md shows
-# `hive emit --run-id $RUN --role worker --actor $WORKER ...`, the worker calls
-# its wrapper with just the remaining flags.
-read -r -d '' KICKOFF <<KICK || true
-You are hive worker $WORKER on task $TASK (run: $RUN).
-Your clones: workspace $WS_ROOT · code $CODE_ROOT.
-First: git -C $WS_ROOT pull
-Your order: $REL in your workspace clone.
-Protocol: read projects/omegahive/WORKER.md there first and follow it exactly.
-Your emit command is your wrapper: $WRAPPER
-It bakes in --run-id/--role worker/--actor $WORKER. Everywhere WORKER.md writes
-'hive emit --run-id \$RUN --role worker --actor \$WORKER ...', run '$WRAPPER ...'
-with only the remaining flags (--type/--task/--payload). Never use raw hive emit.
-Container tooling on this host is '$HIVE_COMPOSE' (resolved at launch; WORKER.md's
-setup block writes it as 'podman compose' because deployment #0 runs podman —
-use the command named here). Begin by reading both files, then emit
-task.accepted and start.
-KICK
 
 # The spine is seeded above and the pane is opened below, and that order is
 # deliberate: the worker's very first act is `task.accepted`, which the board
@@ -380,7 +586,21 @@ half_launch_recovery() {  # half_launch_recovery <what-failed>
 #     current window) never renumbers an existing window. Verified on tmux 3.5a
 #     under the operator config (base-index 1, renumber-windows on) and under
 #     stock defaults (base-index 0, renumber off) — the result holds either way.
-launch_cmd="$HIVE_WORKER_CMD \"\$HIVE_KICKOFF\""
+# The pane runs the SUPERVISOR, not the harness directly — that is what makes the
+# execution facts instrument observations rather than self-report. The supervisor reads
+# the run-dir, execs the adapter's argv VECTOR, and emits started/finished around it.
+# Note what is no longer on this command line in the bound case: no kickoff env var and
+# no interpolated worker command. The kickoff is one argv element inside plan.json, so
+# no prompt, path, or model id is ever quoted onto a line a shell will parse.
+#
+# The legacy branch keeps the old string form verbatim. It stays reachable, and it stays
+# LOUD: a launch with no binding announced itself as LEGACY above and records no
+# execution facts rather than facts invented from HIVE_WORKER_CMD.
+if [ -n "$PLAN_JSON" ]; then
+  launch_cmd="$SCRIPT_DIR/hive-supervise '$EXEC_DIR'"
+else
+  launch_cmd="$HIVE_WORKER_CMD \"\$HIVE_KICKOFF\""
+fi
 if tmux has-session -t "$SESSION_T" 2>/dev/null; then
   PANE=$(tmux new-window -a -t "$SESSION_T:{end}" -n "$TASK" -c "$WS_ROOT" \
     -e HIVE_KICKOFF="$KICKOFF" -P -F '#{session_name}:#{window_index}' "$launch_cmd") \

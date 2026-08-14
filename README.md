@@ -292,8 +292,11 @@ taskbench/       task-replay benchmark: frozen corpus, materializer, runner, bli
 ladder/          archived stage-2 experiment harness + its frozen run records
 experiments/     earlier coordination experiments and their reproduction records
 scenarios/       scripted simulation scenarios (deterministic, CI-run)
+schemas/         versioned JSON Schemas + redacted examples for the two worker-execution
+                 records (route catalog, launch binding) — docs/omegahive_worker_harness.md
 scripts/         bootstraps (hive-init-secrets/workspace), operator tooling
-                 (hive-launch/answer/close, hive-metrics/score), drills, deploy checks
+                 (hive-launch/answer/close, hive-metrics/score, hive-supervise),
+                 drills, deploy checks
 deploy/          scheduling units (systemd, cron), workspace templates, backup/restore
                  helpers, and the scratch compose overlay
 tests/           full suite; DB-dependent tests need a live Postgres

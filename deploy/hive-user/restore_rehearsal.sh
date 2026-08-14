@@ -143,9 +143,24 @@ if [ -z "${SOURCE}" ]; then
 fi
 [ -d "${SOURCE}" ] || die "backup source is not a directory: ${SOURCE}"
 
-newest() {  # newest <dir> <glob>
-    # shellcheck disable=SC2012,SC2086  # names are our own ASCII UTC timestamps; $2 is a glob on purpose
-    ls -1 "$1"/$2 2>/dev/null | sort -r | head -1
+newest() {  # newest <dir> <glob>  -> the newest matching path, or nothing
+    # A glob loop, not `ls | sort -r | head -1`. NO MATCH MUST BE A CLEAN EMPTY RESULT,
+    # not a failure: `ls` exits 2 on an empty glob, `pipefail` (L42) propagated that
+    # through the pipeline, and `DUMP=$(newest ...)` is the FINAL command of its `||`
+    # list, so `set -e` killed the whole script with status 2 and no message at all —
+    # making the "no omegahive-*.sql in ..." refusal below unreachable dead code. The
+    # operator saw a silent exit where they should have seen which directory was empty
+    # and which flag to pass.
+    #
+    # Pathname expansion is already sorted, so the LAST surviving match is the newest
+    # name (the names are our own ASCII UTC timestamps, so lexical order IS time order).
+    # The `-e` test is what discards the unexpanded pattern an empty glob leaves behind.
+    local f last=""
+    # shellcheck disable=SC2086  # $2 is a glob on purpose
+    for f in "$1"/$2; do
+        if [ -e "${f}" ]; then last="${f}"; fi
+    done
+    printf '%s\n' "${last}"
 }
 [ -n "${DUMP}" ]   || DUMP=$(newest "${SOURCE}" 'omegahive-*.sql')
 [ -n "${BUNDLE}" ] || BUNDLE=$(newest "${SOURCE}" 'hive-workspace-*.bundle')
@@ -218,7 +233,21 @@ if [ -n "${DRY}" ]; then
 else
     cfg=$(compose config) || die "compose config failed — the overlay does not merge"
     for p in 5432 8811; do
-        if printf '%s' "${cfg}" | grep -q "published: \"${p}\""; then
+        # Two fixes in one line, both of which made this guard silently useless:
+        #
+        #   * `grep -c`, captured first, instead of `grep -q` in an `if`. `-q` exits at the
+        #     FIRST match, `printf` then takes EPIPE, and `set -o pipefail` (L42) makes the
+        #     pipeline non-zero PRECISELY WHEN THE PATTERN MATCHES — so the test was false
+        #     exactly when the config DID publish the live port. `${cfg}` is a resolved
+        #     13-service config, well past the pipe buffer, so the write genuinely blocks
+        #     and genuinely gets signalled. `-c` reads to EOF, and returns 1 on zero
+        #     matches, which `|| true` absorbs so `set -e` does not eat the clean case.
+        #   * `"?` around the port. Compose renders `published:` quoted or bare depending
+        #     on version and on how the value was written; matching only the double-quoted
+        #     form missed an unquoted `published: 5432` entirely. Same pattern
+        #     scripts/hive-bringup-drill.sh already uses for the same assertion.
+        hits=$(printf '%s' "${cfg}" | grep -cE "published: \"?${p}\"?" || true)
+        if [ "${hits:-0}" -gt 0 ]; then
             die "the merged scratch config publishes LIVE port ${p}. Refusing to start.
     Check the '!override' tags on ports: in deploy/hive-user/compose.scratch.yml — without
     them compose appends to the base list instead of replacing it."
