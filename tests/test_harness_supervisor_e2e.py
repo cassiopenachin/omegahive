@@ -14,6 +14,7 @@ money.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import subprocess
@@ -516,3 +517,34 @@ def test_materialize_binding_refuses_a_path_outside_the_worker_root(rig, tmp_pat
         )
         assert proc.returncode != 0, evil
         assert "outside the worker root" in proc.stderr
+
+
+def test_unb64_round_trips_without_a_help_parsing_guard():
+    """The portability probe must not be a `--help | grep -q` under pipefail.
+
+    That shape is the SIGPIPE class this repository's own drill audit classified as a
+    defect: `grep -q` exits at the first match, the writer takes EPIPE, and the guard
+    fails exactly when the pattern matches — here selecting the BSD flag on a GNU host,
+    which would break every descriptor read. Asserted behaviourally (a round trip) and
+    structurally (the source carries no such guard), because the behavioural half passes
+    by luck on a host whose --help output is small enough to finish first.
+    """
+    payload = b'{"deny": ["Bash(*sudo *)"], "nested": {"n": 1}}'
+    encoded = base64.b64encode(payload).decode()
+    proc = subprocess.run(
+        ["bash", "-c",
+         f'set -euo pipefail; source "{REPO}/scripts/hive-common.sh"; unb64'],
+        input=encoded, capture_output=True, text=True, cwd=str(REPO), timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == payload.decode()
+
+    source = (REPO / "scripts" / "hive-common.sh").read_text()
+    body = source.split("unb64() {", 1)[1].split("\n}", 1)[0]
+    # Comments in this function NAME the hazard on purpose; the assertion is about the
+    # code, so strip them rather than have the explanation trip the check.
+    code = "\n".join(
+        line for line in body.splitlines() if not line.strip().startswith("#")
+    )
+    assert "--help" not in code, "unb64 must probe by behaviour, not by parsing --help"
+    assert "grep -q" not in code

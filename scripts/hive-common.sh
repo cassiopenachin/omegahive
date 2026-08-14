@@ -98,7 +98,14 @@ b64() {  # b64 <file>
 # rejects `-d`. Callers that decode must go through here or they break on the same hosts
 # `env -C` broke on (drill audit C5, 2026-08-13).
 unb64() {  # unb64  (reads base64 on stdin, writes bytes on stdout)
-  if base64 --help 2>&1 | grep -q -- '-d,'; then base64 -d; else base64 -D; fi
+  # Probed by TRYING it, never by parsing --help. Two reasons, both already recorded in
+  # this repository. `--help | grep -q` is the SIGPIPE-under-pipefail shape the
+  # 2026-08-13 drill audit classified as a defect class — `grep -q` exits at the first
+  # match, the writer takes EPIPE, and the guard then fails precisely when the pattern
+  # DOES match, which here would silently select the BSD flag on a GNU host. And probing
+  # by behaviour rather than by presence is what `resolve_compose` below learned the hard
+  # way, after a presence check came back green over a dead runtime.
+  if printf 'aGk=' | base64 -d >/dev/null 2>&1; then base64 -d; else base64 -D; fi
 }
 
 # --- harness permission-boundary descriptors ------------------------------------------
