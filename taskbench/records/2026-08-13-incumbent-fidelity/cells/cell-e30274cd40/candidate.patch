@@ -1,0 +1,1204 @@
+diff --git a/README.md b/README.md
+index 1075fc0..0a37a59 100644
+--- a/README.md
++++ b/README.md
+@@ -128,9 +128,9 @@ The worked example below spells out the raw emits per hat. Day to day the operat
+ 
+ | Command | The one judgment | What it does |
+ |---|---|---|
+-| `hive-launch <order-file> [--worker <id>] [--anyway]` | *the order is ready* | **infers the project** from the order path (`projects/<name>/orders/...`) and sources its `project.conf` for the run id + code repo, pins the order (refuses dirty/unpushed), seeds `task.created` + `worker.registered` + `task.assigned` on that run, issues the worker a per-seat **emit wrapper** (that run baked in), provisions its isolated clones (`~/work/<worker>/{hive,<project>}` — code cloned from the project's canonical checkout, origin re-pointed to its `CODE_REPO`), and opens a tmux pane named after the task running the worker session with the kickoff pre-filled. The pane is **autonomous by default** — the session command is `HIVE_WORKER_CMD`, whose default carries the worker CLI's autonomy flag (`claude --permission-mode auto`), because a pane that stops on an interactive permission prompt has not started the task, only the ceremony; override the whole string via `project.conf` / env if the CLI's flag drifts. **Adopt:** if the task already exists on the board as `ready` and unowned (e.g. a backlog task seeded by a raw `task.created`), it skips `task.created` and emits only `worker.registered` + `task.assigned` — the task keeps its **original acceptance pin**, which may be stale against the order at HEAD (fine: the worker reads the order at HEAD per WORKER.md). Any other existing state is refused: `assigned`/`blocked`/`in_progress` → recover via `task.reassigned` (RUNBOOK); `in_review`/`done` → already awaiting close / closed, not launchable. **Review WIP throttle (global):** refuses to launch once `HIVE_WIP_REVIEW_MAX` (default 3) tasks sit `in_review` **summed across every project with a conf** — the limit is the operator's review bandwidth, not any one project's — listing the tasks awaiting review; `blocked` tasks are answer debt, not review debt, so they never count; `--anyway` overrides for the deliberate exception |
++| `hive-launch <order-file> [--worker <id>] [--anyway]` | *the order is ready* | **infers the project** from the order path (`projects/<name>/orders/...`) and sources its `project.conf` for the run id + code repo, pins the order (refuses dirty/unpushed), seeds `task.created` + `worker.registered` + `task.assigned` on that run, issues the worker a per-seat **emit wrapper** (that run baked in), provisions its isolated clones (`~/work/<worker>/{hive,<project>}` — code cloned from the project's canonical checkout, origin re-pointed to its `CODE_REPO`), and opens a tmux pane named after the task running the worker session with the kickoff pre-filled. The pane is **autonomous by default** — the session command is `HIVE_WORKER_CMD`, whose default carries the worker CLI's autonomy flag (`claude --permission-mode auto`), because a pane that stops on an interactive permission prompt has not started the task, only the ceremony; override the whole string via `project.conf` / env if the CLI's flag drifts. **Adopt:** if the task already exists on the board as `ready` and unowned (e.g. a backlog task seeded by a raw `task.created`), it skips `task.created` and emits only `worker.registered` + `task.assigned` — the task keeps its **original acceptance pin**, which may be stale against the order at HEAD (fine: the worker reads the order at HEAD per WORKER.md). Any other existing state is refused: `assigned`/`blocked`/`in_progress` → recover via `task.reassigned` (RUNBOOK); `in_review`/`done` → already awaiting close / closed, not launchable. **Review WIP throttle (global):** refuses to launch once `HIVE_WIP_REVIEW_MAX` (default 3) tasks sit `in_review` **summed across every project with a conf** — the limit is the operator's review bandwidth, not any one project's — listing the tasks awaiting review; `blocked` tasks are answer debt, not review debt, so they never count. **Predictions gate:** refuses an order whose `## Predictions` section is present but in which **none** of the three scored labels parses — printing the four literal labels and the offending lines — because launching it would record the order as `unpredicted`, indistinguishable from one that predicted nothing, and lose the prediction the author actually wrote. It calls `hive-score`'s own parser, never a second copy: a gate that can disagree with the scorer is the defect it exists to repair. The refusal is on **unparseable**, never on **absent** — an order with no section at all, one carrying the protocol's one-line declared-unpredicted disposition, and a partial section (which warns loudly) all launch. `--anyway` overrides both refusals for the deliberate exception |
+ | `hive-answer <task> <text…>` | *here is the answer* | resolves the task across **every** `projects/*/orders` (refusing a cross-project ambiguity, listing the candidates), appends `- <date> — <text>` to the order's `## Answers` section (append-only; body untouched), commits + pushes to the hub, and nudges the worker's pane to re-read at HEAD. SSH-friendly: `ssh beastie 'hive-answer port-sha "use event time"'` |
+-| `hive-close <task> [--reason <text>] [--no-score]` | *the result holds* | resolves the task across every project (same ambiguity refusal) and acts on **its** run, verifies the board is `in_review` (refuses otherwise), reads the newest `task.result_posted`'s first ref off the spine, and emits `review.passed` + `status_override(done)`, then runs `hive-score` so calibration is a by-product of closing rather than a separate errand. The ordering is absolute and the coupling one-way: the close emits first, and a scoring failure afterwards is loud but never fatal — it can neither block a close nor make a completed one look failed. `--no-score` skips it. Never merges — merging is a separate act in the GitHub app |
++| `hive-close <task> [--reason <text>] [--no-score]` | *the result holds* | resolves the task across every project (same ambiguity refusal) and acts on **its** run, verifies the board is `in_review` (refuses otherwise), reads the newest `task.result_posted`'s first ref off the spine, and emits `review.passed` + `status_override(done)`, then refreshes this project's instruments — `hive-score` for the task's calibration entry and `hive-metrics` for its `tasks.{md,csv}` — so both are by-products of closing rather than separate errands. The ordering is absolute and the coupling one-way: the close emits first, and either refresh failing afterwards is loud but never fatal — neither can block a close, make a completed one look failed, or suppress the other. `--no-score` skips both. Never merges — merging is a separate act in the GitHub app |
+ 
+ The **emit wrapper** (`~/work/hive-wrappers/<worker>.sh`) is the worker's whole write path: `--run-id`/`--role worker`/`--actor <id>` are baked in, so a worker cannot emit as anyone else. It is shaped as a proto-credential — one file per identity, issued at launch, revocable by deletion — so swapping the assertion for a real per-seat key later changes nothing worker-facing.
+ 
+@@ -150,7 +150,7 @@ CODE_REPO=git@github.com:<owner>/<repo>.git     # origin the worker's code clone
+ 
+ **Precedence** (highest first): an **env override** → `project.conf` → the deployment-layer default. `HIVE_RUN_ID` is the run escape hatch — when set it wins over a conf's `RUN_ID` (single-run ops; the drill points it at a scratch run). Adding a project is one file: create `projects/<name>/project.conf`, ensure its checkout exists at `CANON_ROOT/<repo of CODE_REPO>`, and `hive-launch projects/<name>/orders/<first>.md`.
+ 
+-`scripts/hive-tooling-drill.sh` exercises the full lifecycle and every refusal path (including a second project's end-to-end lifecycle, a third whose directory name differs from its repo, cross-project ambiguity refusal, the global review-WIP throttle summed across projects, a wrapping long id, a heading-less order, an unsafe session name, the close→score→commit coupling and an injected scoring failure, the autonomy default of the issued worker command, and the `HIVE_RUN_ID` override) against a throwaway sandbox and scratch run ids — run it after changing any of these scripts; never point a drill run id at the durable `omegahive` run.
++`scripts/hive-tooling-drill.sh` exercises the full lifecycle and every refusal path (including a second project's end-to-end lifecycle, a third whose directory name differs from its repo, cross-project ambiguity refusal, the global review-WIP throttle summed across projects, a wrapping long id, a heading-less order, an unsafe session name, the close→score→metrics→commit coupling with an injected failure in each of its two by-products, the predictions gate end to end (the one shape it refuses and the three it must not), `commit_metrics` refusing rather than rebasing on a failed push, the autonomy default of the issued worker command, and the `HIVE_RUN_ID` override) against a throwaway sandbox and scratch run ids — run it after changing any of these scripts; never point a drill run id at the durable `omegahive` run.
+ 
+ ### Instruments: metrics and prediction scoring
+ 
+@@ -159,7 +159,7 @@ Two more `scripts/` commands, read-only over the spine. They exist because "the
+ | Command | What it produces |
+ |---|---|
+ | `hive-metrics <project> [--run <id>] [--upto <seq>] [--no-commit]` | `projects/<project>/metrics/tasks.{md,csv}` — one row per **closed** task: create→launch, launch→accept, accept→result, answer wait, result→review, review→close, plus question / rejection / reassignment counts, and position statistics over the set |
+-| `hive-score <task> [--project <name>] [--review <verdict>] [--note <text>] [--again] [--no-commit]` | one entry appended to `projects/<project>/metrics/calibration.md` — the order's `## Predictions` quoted verbatim beside the spine's outcome, with a verdict |
++| `hive-score <task> [--project <name>] [--review <verdict>] [--note <text>] [--again] [--no-commit]` | one entry appended to `projects/<project>/metrics/calibration.md` — the order's `## Predictions` quoted verbatim beside the spine's outcome, with a verdict. `--review` takes exactly `clean` \| `minor rework` \| `rework`, case-insensitive in and lowercase stored; anything else is refused by name, up front, because the file is committed and a typo in it is permanent |
+ 
+ **Clock ownership is the whole design.** A task's elapsed time is split between two owners whose numbers mean opposite things, and averaging them produces a figure that means nothing. How long an order waited to be launched, a question waited for an answer, a result waited for review — that is **operator clock**: portfolio reality for the automation lane, and *never* worker-performance signal. The session's own span is **worker clock**. Spans with two owners are labeled *mixed*. `tasks.md` reports the three in separate tables and every summary row carries its label.
+ 
+@@ -171,9 +171,13 @@ Two more `scripts/` commands, read-only over the spine. They exist because "the
+ 
+ **Durations come from `logical_ts`**, which under server time is epoch seconds assigned DB-side under the emit's advisory lock (`events/log.py` §6) — monotonic per run and immune to client clock skew. Events landing in the same wall second are pushed forward one second each, so a burst can inflate a span by up to that many seconds; sub-minute figures should be read as "about a minute", never as precision. `tasks.md` carries this and the rest of the caveats in its own Method section, so the artifact travels with them.
+ 
+-`hive-score` records the *absence* of a prediction as loudly as a wrong one: no `## Predictions` section is an entry marked **unpredicted**, a section missing fields is **partial**. The gap is itself the metric — predictions are honest guesses, never commitments, and calibration is the product rather than any single verdict. Review outcome is never inferred: the spine records `review.failed`, not whether a PR needed another round of comments, so that verdict stays `unscored` until a human passes `--review`.
++`hive-score` records the *absence* of a prediction as loudly as a wrong one, and — since the two are not the same failure — it records **which** absence. A missing section, a section the order deliberately declares unpredicted, and a section that is present and parses nothing are three distinct coverage strings; a section missing some fields is **partial** and names the fields it missed. The distinction is not pedantry: the first says nobody predicted, the third says the author predicted and this instrument lost it, and for two waves both printed the same sentence while an entire tenant project's first wave went uncalibrated in plain sight. The gap is itself the metric — predictions are honest guesses, never commitments, and calibration is the product rather than any single verdict.
+ 
+-Neither tool emits. Both **commit and push** what they regenerate, scoped by pathspec to `projects/<project>/metrics/`: the improver seat reads committed instruments, so an artifact left in a working tree is invisible to its only reader, and stopping at "written" handed the operator back the clerical steps the loop exists to collapse. Deterministic regeneration means an unchanged spine prefix simply has nothing to commit — a success, not a failure. `--no-commit` opts out on either; a `hive-metrics --upto` rebuild never commits, since a historical artifact is an inspection and committing one would rewind the record. Both accept `HIVE_SPINE_JSON=<dump>` in place of the live read, which is how `scripts/hive-metrics-drill.sh` drives them: a frozen fixture covering a clean cycle, a messy one (question, block/unblock, a coalesced rejection burst, reassignment), a task retired without ever being worked, one closed by `task.failed`, one closed-reopened-reclosed, one still in flight, and a report filed against a task id that never existed. Its scratch project deliberately carries a `RUN_ID` that differs from the project name, so a tool that guessed the run would find nothing. The drill needs neither the stack nor the database and issues no events at all — run it after changing either script.
++**Three fields are scored, not four.** The authoring protocol pins four literal bullet labels — `- Expected effort:`, `- Expected questions:`, `- Expected review outcome:`, `- Named risks:` — and every author writes all four, but `- Named risks:` is read by **no instrument**: it is not parsed, not counted in coverage, and its absence never refuses a launch. Coverage is always out of three, and `calibration.md` says so in its own header. Changing what the gate scores is the operator's call, not the tooling's. Review outcome is never *inferred*: the spine records `review.failed`, not whether a PR needed another round of comments, so that verdict stays `unscored` until a human passes `--review`.
++
++**One parser, two callers.** The `## Predictions` parse lives in `scripts/hive-common.sh` (`predictions_parse`), and `hive-launch`'s gate calls that same function rather than its own copy of the regexes. Two readers of one file with two ideas of what it says is exactly the defect being repaired, so agreement here is structural rather than maintained.
++
++Neither tool emits. Both **commit and push** what they regenerate, scoped by pathspec to `projects/<project>/metrics/`: the improver seat reads committed instruments, so an artifact left in a working tree is invisible to its only reader, and stopping at "written" handed the operator back the clerical steps the loop exists to collapse. Deterministic regeneration means an unchanged spine prefix simply has nothing to commit — a success, not a failure. **On a failed push they refuse rather than rebase:** the commit stays in the local clone, the one manual resolution step is printed, and the command exits non-zero. This path is now reached automatically on every close, twice, so an unattended `pull --rebase` over a shared workspace path would be routine rather than rare. `--no-commit` opts out on either; a `hive-metrics --upto` rebuild never commits, since a historical artifact is an inspection and committing one would rewind the record. Both accept `HIVE_SPINE_JSON=<dump>` in place of the live read, which is how `scripts/hive-metrics-drill.sh` drives them: a frozen fixture covering a clean cycle, a messy one (question, block/unblock, a coalesced rejection burst, reassignment), a task retired without ever being worked, one closed by `task.failed`, one closed-reopened-reclosed, one still in flight, one whose order is written in the unparseable dialect, one whose order declares itself deliberately unpredicted, and a report filed against a task id that never existed. It also covers what of `hive-launch` and `hive-common.sh` is reachable on the same terms — the shared predictions parser from both its callers, the launch gate's refusal path (which by design runs upstream of every board read, pin, clone and emit), and `commit_metrics` on a failed push. Its scratch project deliberately carries a `RUN_ID` that differs from the project name, so a tool that guessed the run would find nothing. The drill needs neither the stack nor the database and issues no events at all — run it after changing either script.
+ 
+ ## A worked example: one tiny project, end to end
+ 
+diff --git a/scripts/hive-close b/scripts/hive-close
+index 10e72a6..fa0c309 100755
+--- a/scripts/hive-close
++++ b/scripts/hive-close
+@@ -4,9 +4,11 @@
+ # The close bookend of the Phase 1 loop (OPERATIONS.md): one judgment — the
+ # result holds — after the PR is merged in the GitHub app. Verifies the board is
+ # in_review, pulls the result ref from the spine's own task.result_posted, then
+-# emits review.passed + status_override(done), and finally scores the task's
+-# predictions (hive-score) so calibration is a by-product of closing rather than a
+-# separate errand the operator has to remember. `--no-score` skips that step.
++# emits review.passed + status_override(done), and finally refreshes this
++# project's instruments — the task's prediction score (hive-score) and the
++# project's tasks.md / tasks.csv (hive-metrics) — so calibration and metrics are
++# by-products of closing rather than separate errands the operator has to
++# remember. `--no-score` skips both refreshes.
+ #
+ # review.passed here certifies exactly what OPERATIONS.md pain 6 says it does:
+ # the operator read the result report and saw no red flags — not artifact
+@@ -17,7 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ # shellcheck source=scripts/hive-common.sh
+ source "$SCRIPT_DIR/hive-common.sh"
+ 
+-usage() { echo "usage: hive-close <task> [--reason <text>] [--no-score]" >&2; exit 2; }
++usage() { echo "usage: hive-close <task> [--reason <text>] [--no-score]   (--no-score skips both instrument refreshes: hive-score and hive-metrics)" >&2; exit 2; }
+ 
+ TASK=""
+ REASON="operator read the result report; no red flags (hive-close)"
+@@ -93,7 +95,7 @@ echo "  NOTE review.passed = the operator read the result report (not artifact c
+ #    `unscored` until a human supplies it — `hive-score <task> --review "<verdict>"
+ #    --again` after the fact.
+ if [ "$SCORE" -eq 0 ]; then
+-  echo "hive-close: --no-score — calibration not recorded; run 'hive-score $TASK' when you want it."
++  echo "hive-close: --no-score — instruments not refreshed; run 'hive-score $TASK' and 'hive-metrics $PROJECT' when you want them."
+ elif "$SCRIPT_DIR/hive-score" "$TASK" --project "$PROJECT" </dev/null; then
+   echo "hive-close: scored (add the human review verdict with: hive-score $TASK --review \"<clean|minor rework|rework>\" --again)"
+ else
+@@ -106,3 +108,33 @@ else
+     echo "  (already-scored is a normal reason for this to fail — add --again to record a second entry.)"
+   } >&2
+ fi
++
++# 6. Regenerate this project's tasks.md / tasks.csv — the other half of the
++#    wave-close instrument ritual, and until now the half the operator had to
++#    remember. It did not get remembered: a whole wave ran with tasks.md frozen at
++#    the previous wave's artifact while every close scored faithfully, because one
++#    half was code and the other was a sentence in the RUNBOOK (retro 2026-07-29
++#    D6). So it becomes code, here, next to the score.
++#
++#    The ordering discipline is the same one and is not weakened: this runs
++#    strictly after the close emits, which are already durable, and a failure is
++#    LOUD and non-fatal. A regeneration that fails can never block a close, can
++#    never make a completed close look failed, and can never suppress the scoring
++#    step above — the two by-products fail independently and complain separately.
++#
++#    hive-metrics is deterministic, so on a run whose closed set has not changed
++#    this legitimately produces no diff and commits nothing. That is a success.
++if [ "$SCORE" -eq 0 ]; then
++  :
++elif "$SCRIPT_DIR/hive-metrics" "$PROJECT" </dev/null; then
++  echo "hive-close: metrics refreshed for project $PROJECT"
++else
++  {
++    echo
++    echo "hive-close: WARNING the close SUCCEEDED and is durable on the spine — regenerating metrics afterwards did not."
++    echo "  Nothing about task '$TASK' is in doubt: review.passed and status_override(done) are emitted,"
++    echo "  and the calibration entry above is unaffected. Only projects/$PROJECT/metrics/tasks.{md,csv}"
++    echo "  are stale. Recover with one command:"
++    echo "      hive-metrics $PROJECT"
++  } >&2
++fi
+diff --git a/scripts/hive-common.sh b/scripts/hive-common.sh
+index f71c43c..8e13c0a 100755
+--- a/scripts/hive-common.sh
++++ b/scripts/hive-common.sh
+@@ -204,6 +204,136 @@ order_pin() {  # order_pin <workspace-relative-path>  -> prints sha
+   printf '%s\n' "$sha"
+ }
+ 
++# --- the predictions parser: ONE implementation, TWO callers -------------------
++#
++# `hive-score` reads an order's `## Predictions` section to score it; `hive-launch`
++# reads the SAME function to decide whether the section it is about to launch can
++# be parsed at all. That sharing is the point, not an economy: for two waves the
++# launch gate was a human reading a *heading* while the scorer parsed *labels*, so
++# an order written in a re-worded dialect launched clean and scored `unpredicted`
++# with no error printed anywhere — the entire tenant project's first wave was lost
++# that way (retro 2026-07-29 D1). A gate that can disagree with the scorer IS that
++# defect; a gate that calls the scorer's own parser cannot.
++#
++# THREE FIELDS ARE SCORED, NOT FOUR. The authoring protocol
++# (seats/design-partner/PROTOCOL.md) pins four literal bullet labels and every
++# author writes all four, but `- Named risks:` is read by no instrument: it is not
++# parsed, not counted, and its absence never refuses a launch. Said plainly here
++# and in every operator-facing message, because the alternative — quietly starting
++# to score it — would be a change to the contents of a launch gate, which is the
++# operator's call and not the tooling's.
++
++# The four labels, verbatim, as an operator-facing block. Printed by the launch
++# refusal so the fix is copy-pasteable rather than a doc lookup.
++predictions_labels() {  # predictions_labels  -> the four literal labels, indented
++  cat <<'LABELS'
++    - Expected effort: <range> — <this project's median × a justified multiplier>
++    - Expected questions: <count or range> — <named seams, or a designed round-trip>
++    - Expected review outcome: <clean | minor rework | rework> — <why>
++    - Named risks: <what could turn the shape of the work>
++LABELS
++}
++
++# Parse an order file's `## Predictions` section. Sets, in the caller's shell:
++#
++#   PRED_SECTION       "present" | "absent"   — the heading, not its contents
++#   PRED_BLOCK         the section's raw text (heading exclusive; may be empty)
++#   PRED_DECLARED      1 iff the block carries the protocol's declared-unpredicted
++#                      one-liner, else 0
++#   PRED_EFFORT_TXT    verbatim prediction slice, EMPTY when that label did not
++#   PRED_QUESTIONS_TXT parse. A no-match is the expected partial-prediction case,
++#   PRED_REVIEW_TXT    never an error.
++#   PRED_FIELDS        how many of the three scored labels parsed (0..3)
++#   PRED_MISSED        the names of those that did not, comma-separated (may be empty)
++#
++# Always returns 0: "did not parse" is data. What to DO about it is the caller's
++# (hive-score records it; hive-launch refuses on one specific shape of it).
++predictions_parse() {  # predictions_parse <order-file-path>   (a missing path parses as absent)
++  local file="${1:-}"
++  PRED_SECTION="absent"; PRED_BLOCK=""; PRED_DECLARED=0
++  PRED_EFFORT_TXT=""; PRED_QUESTIONS_TXT=""; PRED_REVIEW_TXT=""
++  PRED_FIELDS=0; PRED_MISSED=""
++  [ -n "$file" ] && [ -f "$file" ] || return 0
++
++  # One awk pass, from the `## Predictions` heading to the next heading of any
++  # level, exclusive. The presence flag is printed as the FIRST line rather than
++  # inferred from an empty body, because "no section" and "a section we could not
++  # read" are exactly the two cases this whole function exists to tell apart — and
++  # an empty string cannot express the difference.
++  local raw
++  raw=$(awk '
++    /^##[ \t]*Predictions[ \t]*$/ { seen = 1; inblock = 1; next }
++    inblock && /^#/                { inblock = 0 }
++    inblock                        { body = body $0 "\n" }
++    END { print (seen ? "present" : "absent"); printf "%s", body }
++  ' "$file")
++  PRED_SECTION=${raw%%$'\n'*}
++  case "$raw" in *$'\n'*) PRED_BLOCK=${raw#*$'\n'} ;; *) PRED_BLOCK="" ;; esac
++  [ "$PRED_SECTION" = "present" ] || return 0
++
++  # The three scored labels. These regexes are the parser — hive-launch must never
++  # carry a second copy, which is the whole of scope item 2. The `|| true` guards
++  # are load-bearing under `set -o pipefail`: a no-match grep is the expected
++  # partial-prediction case, and without them it would abort the caller.
++  PRED_EFFORT_TXT=$( { printf '%s' "$PRED_BLOCK" \
++    | grep -oiE 'Expected effort:[[:space:]]*[0-9][0-9.–—-]*[[:space:]]*worker-hours?' \
++    | head -1 | sed -E 's/^[Ee]xpected effort:[[:space:]]*//'; } || true )
++  PRED_QUESTIONS_TXT=$( { printf '%s' "$PRED_BLOCK" \
++    | grep -oiE 'Expected questions:[[:space:]]*[0-9][0-9–—-]*' \
++    | head -1 | sed -E 's/^[Ee]xpected questions:[[:space:]]*//'; } || true )
++  PRED_REVIEW_TXT=$( { printf '%s' "$PRED_BLOCK" \
++    | grep -oiE 'Expected review outcome:[[:space:]]*[^.]+' \
++    | head -1 | sed -E 's/^[Ee]xpected review outcome:[[:space:]]*//'; } || true )
++
++  local -a missed=()
++  if [ -n "$PRED_EFFORT_TXT" ];    then PRED_FIELDS=$((PRED_FIELDS + 1)); else missed+=("effort"); fi
++  if [ -n "$PRED_QUESTIONS_TXT" ]; then PRED_FIELDS=$((PRED_FIELDS + 1)); else missed+=("questions"); fi
++  if [ -n "$PRED_REVIEW_TXT" ];    then PRED_FIELDS=$((PRED_FIELDS + 1)); else missed+=("review outcome"); fi
++  if [ "${#missed[@]}" -gt 0 ]; then
++    PRED_MISSED=$(printf '%s, ' "${missed[@]}"); PRED_MISSED=${PRED_MISSED%, }
++  fi
++
++  # The protocol's escape hatch is prose, not a label — "one line declaring the
++  # task deliberately unpredicted and why" — so it is recognised on the word
++  # itself, and deliberately GENEROUSLY. The stop-line is that the launch refusal
++  # fires on *unparseable*, never on a gap the operator chose: a false positive
++  # here costs one unpredicted order that the scorer records honestly anyway, and
++  # a false negative blocks a legitimate launch. Those costs are not symmetric.
++  if grep -qi 'unpredicted' <<<"$PRED_BLOCK"; then PRED_DECLARED=1; fi
++}
++
++# One word for what predictions_parse found. Both callers branch on THIS, so the
++# launch gate and the scorer cannot drift into two opinions of the same file.
++#
++#   absent       no `## Predictions` heading at all — a recorded metric, not an error
++#   declared     present, and the order declares itself deliberately unpredicted
++#   unparseable  present, not declared, and NONE of the three scored labels parsed
++#   partial      1 or 2 of 3 parsed
++#   full         3 of 3 parsed
++predictions_verdict() {  # predictions_verdict  (reads what predictions_parse set)
++  if [ "$PRED_SECTION" = "absent" ]; then printf 'absent\n'
++  elif [ "$PRED_FIELDS" -eq 3 ];    then printf 'full\n'
++  elif [ "$PRED_FIELDS" -gt 0 ];    then printf 'partial\n'
++  elif [ "$PRED_DECLARED" -eq 1 ];  then printf 'declared\n'
++  else                                   printf 'unparseable\n'
++  fi
++}
++
++# The coverage line calibration.md records. `absent` and `unparseable` are
++# DIFFERENT STRINGS on purpose: one says nobody predicted, the other says the
++# author predicted and the instrument lost it. Reading the second as the first is
++# what made D1 invisible for a whole wave.
++predictions_coverage() {  # predictions_coverage  (reads what predictions_parse set)
++  # shellcheck disable=SC2016  # the backticks below are markdown for calibration.md, not a subshell
++  case "$(predictions_verdict)" in
++    absent)      printf 'unpredicted (no `## Predictions` section)\n' ;;
++    declared)    printf 'unpredicted (section present, declared deliberately unpredicted)\n' ;;
++    unparseable) printf 'unpredicted (section present, 0 of 3 fields parsed)\n' ;;
++    partial)     printf 'partial (%s of 3 fields predicted; not parsed: %s)\n' "$PRED_FIELDS" "$PRED_MISSED" ;;
++    *)           printf 'full\n' ;;
++  esac
++}
++
+ # Commit + push a project's regenerated metrics artifacts. Shared by hive-metrics
+ # and hive-score, which write only under projects/<project>/metrics/.
+ #
+@@ -217,9 +347,18 @@ order_pin() {  # order_pin <workspace-relative-path>  -> prints sha
+ # Scoped by pathspec to the project's metrics dir, so unrelated work in the
+ # operator's clone is never swept into the commit. Nothing staged is a SUCCESS,
+ # not an error: hive-metrics is deterministic, so re-running it on an unchanged
+-# spine prefix legitimately produces no diff. Push mirrors hive-answer's
+-# retry (push -> pull --rebase -> push) and reports precisely how far it got, so
+-# "committed locally" is never mistaken for "on the hub".
++# spine prefix legitimately produces no diff.
++#
++# ON PUSH FAILURE THIS REFUSES; IT DOES NOT REBASE. This path inherited
++# hive-answer's `push -> pull --rebase -> push` retry, which was defensible while
++# a human typed each metrics regeneration. It is not defensible now: the close
++# runs it automatically for every closed task, twice (the score, then the metrics
++# refresh), so an unattended `pull --rebase` over a shared workspace path is
++# reached routinely and would replay whatever else happened to be unpushed in the
++# operator's clone. The successor was pre-decided when the exposure was first
++# noticed and is what ships here: commit locally, print the one manual step, exit
++# non-zero (retro 2026-07-29 reflection ledger item 13). "Committed locally" is
++# therefore never mistaken for "on the hub", and nothing rewrites history alone.
+ commit_metrics() {  # commit_metrics <project> <commit-message>  -> 0 committed/nothing-to-do, non-zero otherwise
+   local msg="$2" spec="projects/$1/metrics"
+   git -C "$OPS_WS" add -- "$spec" || { echo "hive: git add failed for $spec in $OPS_WS" >&2; return 1; }
+@@ -230,12 +369,14 @@ commit_metrics() {  # commit_metrics <project> <commit-message>  -> 0 committed/
+   git -C "$OPS_WS" commit --quiet -m "$msg" -- "$spec" \
+     || { echo "hive: git commit failed for $spec in $OPS_WS (git identity unset, a commit hook, or an index lock?)" >&2; return 1; }
+   if ! git -C "$OPS_WS" push --quiet 2>/dev/null; then
+-    if ! git -C "$OPS_WS" pull --rebase --quiet; then
+-      echo "hive: push failed and rebase failed — committed locally in $OPS_WS, NOT on the hub; resolve by hand" >&2
+-      return 1
+-    fi
+-    git -C "$OPS_WS" push --quiet \
+-      || { echo "hive: push failed for $OPS_WS — committed locally, NOT on the hub" >&2; return 1; }
++    {
++      echo "hive: push failed for $OPS_WS — '$msg' is committed LOCALLY, NOT on the hub."
++      echo "  Refusing to rebase a shared metrics path unattended. Resolve by hand:"
++      echo "      git -C $OPS_WS pull --rebase && git -C $OPS_WS push"
++      echo "  Nothing is lost: the commit is in the local clone. Until it is pushed, the"
++      echo "  improver seat cannot see it — it reads committed instruments on the hub."
++    } >&2
++    return 1
+   fi
+   echo "  committed + pushed: $spec ($msg)"
+ }
+diff --git a/scripts/hive-launch b/scripts/hive-launch
+index 6de9fd9..6bd8f6e 100755
+--- a/scripts/hive-launch
++++ b/scripts/hive-launch
+@@ -10,6 +10,9 @@
+ # <order-file> may be a bare filename, a path relative to the workspace root, or
+ # a path under the orders dir. The task id is derived from the filename; the
+ # worker id defaults to sess-<task>-<MMDD>.
++#
++# `--anyway` is the single deliberate-exception escape hatch, and it now overrides
++# two refusals: the review-WIP throttle, and the predictions gate below.
+ 
+ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ # shellcheck source=scripts/hive-common.sh
+@@ -74,6 +77,74 @@ WS_ROOT="$WORK_ROOT/$WORKER/hive"
+ CODE_ROOT="$WORK_ROOT/$WORKER/$PROJECT"   # code clone named after the project (omegahive keeps its historical dir)
+ WRAPPER="$WRAPPER_DIR/$WORKER.sh"
+ 
++# --- the predictions gate: refuse a section this hive cannot read --------------
++# The gate used to be a human reading a `## Predictions` heading while hive-score
++# parsed bullet LABELS. Two faithful readings of one protocol produced two
++# dialects, the scorer understood one of them, and an entire tenant project's
++# first wave scored `unpredicted` with no error printed anywhere — the brief
++# recorded 6/6 against an actual 4 of 6 (retro 2026-07-29 D1). The prose half of
++# that repair then failed again within a day, in an order written by an author
++# reading the corrected protocol. So the check moves here, into the tool that
++# already opens the file, and it calls hive-score's OWN parser (predictions_parse,
++# hive-common.sh) rather than a second copy of the regexes — a gate that can
++# disagree with the scorer is precisely the defect being repaired.
++#
++# It runs BEFORE the throttle's board reads, before the pin, before the clones and
++# the wrapper, and long before any emit: a refusal here has changed nothing.
++#
++# What refuses is narrow, and the boundary matters more than the check:
++#   absent       -> LAUNCH. No section at all is a gap hive-score already records
++#                   as a metric. An order the operator deliberately launches
++#                   unpredicted must never need --anyway.
++#   declared     -> LAUNCH. The protocol's one-line deliberately-unpredicted
++#                   disposition is a legitimate answer, not a missing one.
++#   partial      -> LAUNCH, loudly. Partial coverage is a number the instrument
++#                   already reports; refusing it would be a new gate, not a repair.
++#   full         -> LAUNCH, silently.
++#   unparseable  -> REFUSE. A section is there, the author meant it, and nothing
++#                   downstream can read it. This is the only shape that is
++#                   information already lost at launch time.
++predictions_parse "$OPS_WS/$REL"
++PRED_VERDICT=$(predictions_verdict)
++case "$PRED_VERDICT" in
++  full) ;;
++  absent)
++    echo "hive-launch: note — $REL carries no \`## Predictions\` section; launching. hive-score records that gap as unpredicted, which is a metric, not an error." ;;
++  declared)
++    echo "hive-launch: note — $REL declares itself deliberately unpredicted; launching. hive-score records it as such." ;;
++  partial)
++    {
++      echo "hive-launch: WARNING $REL predicts only $PRED_FIELDS of 3 scored fields — not parsed: $PRED_MISSED."
++      echo "  Launching anyway: partial coverage is a number hive-score already reports, not a refusal."
++      echo "  If that is not what the order meant, the labels are literal:"
++      predictions_labels
++    } >&2 ;;
++  unparseable)
++    {
++      echo "hive-launch: $REL has a \`## Predictions\` section in which NONE of the three scored fields parses."
++      echo "  This is not a formatting nit. hive-score parses labels, not prose, so launching now"
++      echo "  would record this order as \`unpredicted\` — indistinguishable from an order that"
++      echo "  predicted nothing at all — and the prediction the author actually wrote is lost."
++      echo
++      echo "  The four labels are literal. Copy them exactly:"
++      predictions_labels
++      echo "  Three of the four are scored: effort, questions, review outcome."
++      echo "  \`- Named risks:\` is required by the authoring protocol and read by no instrument —"
++      echo "  it is not parsed, not counted, and its absence is not what refused this launch."
++      echo
++      echo "  What this order's section says now:"
++      # `|| true`: a section that is present but entirely blank parses as
++      # unparseable and has no non-blank lines to show, and a no-match grep under
++      # `set -o pipefail` would abort the refusal one line before it printed.
++      { printf '%s\n' "$PRED_BLOCK" | grep -v '^[[:space:]]*$' | sed 's/^/    | /'; } || true
++      echo
++      echo "  Fix the order (it is the design partner's to edit before launch — never after"
++      echo "  seeding), or launch as-is with --anyway if losing the prediction is deliberate."
++    } >&2
++    [ -n "$ANYWAY" ] || exit 1
++    echo "hive-launch: --anyway — launching an order whose predictions cannot be parsed; hive-score will record it as unpredicted." >&2 ;;
++esac
++
+ # --- review WIP throttle: pace launches to the operator's review debt ---------
+ # Review is the quality gate; launching faster than results are reviewed just
+ # grows an unreviewed backlog that no one is reading. Refuse once HIVE_WIP_REVIEW_MAX
+diff --git a/scripts/hive-metrics-drill.sh b/scripts/hive-metrics-drill.sh
+index 9fea6ee..187e94d 100755
+--- a/scripts/hive-metrics-drill.sh
++++ b/scripts/hive-metrics-drill.sh
+@@ -1,6 +1,7 @@
+ #!/usr/bin/env bash
+ # hive-metrics-drill.sh — exercises hive-metrics / hive-score against a frozen
+-# spine fixture and a throwaway workspace.
++# spine fixture and a throwaway workspace, plus the parts of hive-launch and
++# hive-common.sh that are reachable without one.
+ #
+ # Hermetic by construction: the fixture is a JSON file in the shape
+ # `omegahive report <run> --json` returns, fed in via HIVE_SPINE_JSON, so the
+@@ -10,6 +11,16 @@
+ # pointed at an empty dir so any stray CLI call would fail loudly) as well as
+ # behaviourally (the fixture is byte-identical afterwards).
+ #
++# It also covers three things that are not spine reads but are reachable on the
++# same terms, i.e. without a stack, without tmux and without writing anywhere but
++# the sandbox:
++#   * the shared predictions parser (hive-common.sh), asserted from both of its
++#     callers so the launch gate and the scorer cannot drift into two opinions;
++#   * hive-launch's predictions gate, which by design refuses upstream of every
++#     board read, pin, clone and emit — so the refusal path runs here in full, and
++#     the non-refusing paths are pinned by the launcher's NEXT refusal downstream;
++#   * commit_metrics' behaviour on a failed push (refuse, do not rebase).
++#
+ # Usage: scripts/hive-metrics-drill.sh   (run from anywhere; needs jq)
+ 
+ set -euo pipefail
+@@ -45,6 +56,30 @@ log_has() {
+   git -C "$repo" log --all --format=%s -- "$@" | grep -F -- "$needle" >/dev/null
+ }
+ 
++# code <script> — a script's executable lines, comments and blanks stripped. Used
++# by the structural checks (one-parser, no-emit, no-rebase): those look for *code*
++# that does a thing, and a prose mention of it in a comment is not that thing.
++#
++# EVERY caller must spell the downstream match as `grep … >/dev/null`, NEVER
++# `grep -q`. Same SIGPIPE trap `log_has` above documents, and it bites harder
++# here: `code` writes a whole script through the pipe in several chunks, so a
++# `-q` reader that exits at the first match signals it mid-write and `pipefail`
++# fails the pipeline. Measured, not theorised — it made these checks flip between
++# PASS and FAIL run to run on one unchanged tree. In the NEGATED form (`! code X
++# | grep -q Y`, which is how the stop-lines are written) it is worse than flaky:
++# a real violation makes grep match early, the pipeline dies 141, and the `!`
++# turns that into a PASS — the check stops catching the one thing it exists for.
++# Plain `grep` reads to EOF, so the writer is never signalled.
++code() { grep -vE '^[[:space:]]*(#|$)' "$1"; }
++
++# cleanup touches ONE thing: the sandbox, which is created above this trap, so the
++# EXIT-trap-before-isolation ordering hazard that bit the tooling drill (a trap
++# installed ~100 lines above the tmux isolation, calling `tmux kill-server`, which
++# on any early failure would have destroyed the operator's live session and every
++# worker pane) has no instance here. Keep it that way: this drill deliberately
++# kills no server and removes nothing outside "$SANDBOX". If a future edit gives
++# cleanup anything host-reaching to do, that isolation MUST move above this trap —
++# order is the guard, and a guard inside cleanup is only the backstop.
+ cleanup() {
+   rm -rf "$SANDBOX"
+   echo
+@@ -217,6 +252,32 @@ ev(12900, "instrument", "operator", "review.passed", "zeta",
+    {"ref_result": "projects/drill/reports/zeta.md@abc1234"})
+ closed(13000, "zeta")
+ 
++# eta — an ordinary clean cycle whose ORDER is written in the `- **Effort:**`
++#       dialect: the section is there, fully populated, and none of the three
++#       scored labels parses. This is D1's exact shape, and it must be recorded as
++#       its own coverage string — never as "no section".
++created(21000, "eta")
++ev(21005, "human", "operator", "worker.registered", None, {"worker_id": "w-eta"})
++ev(21060, "coordinator", "operator", "task.assigned", "eta", {"worker": "w-eta"})
++ev(21120, "worker", "w-eta", "task.accepted", "eta", {})
++result(22920, "eta", "w-eta")              # accept->result 1800s = 30m
++ev(23000, "instrument", "operator", "review.passed", "eta",
++   {"ref_result": "projects/drill/reports/eta.md@abc1234"})
++closed(23060, "eta")
++
++# theta — the third 0-of-3 case, and the one that is NOT a defect: its order
++#         carries the protocol's one-line deliberately-unpredicted disposition.
++#         Recorded distinctly from both the absent case and the lost-prediction
++#         case, because "the operator chose not to predict" is not "we lost it".
++created(25000, "theta")
++ev(25005, "human", "operator", "worker.registered", None, {"worker_id": "w-theta"})
++ev(25060, "coordinator", "operator", "task.assigned", "theta", {"worker": "w-theta"})
++ev(25120, "worker", "w-theta", "task.accepted", "theta", {})
++result(26920, "theta", "w-theta")          # accept->result 1800s = 30m
++ev(27000, "instrument", "operator", "review.passed", "theta",
++   {"ref_result": "projects/drill/reports/theta.md@abc1234"})
++closed(27060, "theta")
++
+ # probe — a question report against a task id that has no task.created. The id
+ # also carries a pipe, which must not open a phantom markdown column.
+ ev(1600, "worker", "w-beta1", "task.reported", "probe|x",
+@@ -295,6 +356,56 @@ Still in flight.
+ - Expected effort: 1 worker-hour. Expected questions: 0. Expected review outcome: clean.
+ EOF
+ 
++# eta's order is the defect the whole predictions repair exists for, reproduced
++# verbatim: `## Predictions` present, all four fields written by a careful author,
++# and the labels re-worded, so `hive-score` parses 0 of 3 and the prediction is
++# lost with no error printed anywhere (retro 2026-07-29 D1). Do NOT "fix" this
++# fixture — it is the negative control.
++cat > "$ORDERS/2026-07-20-eta.md" <<'EOF'
++# Order: eta
++
++## Scope
++Do the eta thing.
++
++## Predictions
++
++- **Effort:** 2-3 hours
++- **Questions:** 0
++- **Review outcome:** clean
++- **Named risks:** none worth naming
++EOF
++
++# theta's order declines to predict, in the one line the authoring protocol allows.
++# 0 of 3 parse here too — and that is a legitimate answer, not a lost one.
++cat > "$ORDERS/2026-07-20-theta.md" <<'EOF'
++# Order: theta
++
++## Scope
++Do the theta thing.
++
++## Predictions
++
++- Deliberately unpredicted: adopted from the pre-tooling backlog, and the corpus
++  holds no comparable neighbour to anchor an honest range against.
++EOF
++
++# iota is an ORDER ONLY — it has no task on the fixture's board and is never
++# scored. It exists for the launch gate's 2-of-3 case: enough parses that refusing
++# would be a new gate rather than a repair, so it must launch, loudly.
++cat > "$ORDERS/2026-07-20-iota.md" <<'EOF'
++# Order: iota
++
++## Scope
++Do the iota thing.
++
++## Predictions
++
++- Expected effort: 1-2 worker-hours — 31m median × 2-4.
++- Expected questions: 0 — no named seams.
++- Review outcome: clean.
++- Named risks: none worth naming.
++EOF
++
+ # Seed the workspace and give `main` an upstream, so the tools' plain `git push`
+ # has somewhere to go.
+ git -C "$WS" add -A
+@@ -520,11 +631,236 @@ check "beta recorded as partial"      "entry beta | grep -q '^- coverage: partia
+ check "beta effort prediction quoted" "entry beta | grep -q '4 worker-hours'"
+ check "beta absent fields marked"     "entry beta | grep -q 'not predicted'"
+ check "beta absent field unpredicted" "[ \"\$(verdict beta questions)\" = unpredicted ]"
++# A coverage count the reader cannot act on is half a metric: the partial case
++# names the fields it missed, so "1 of 3" is a to-do rather than a shrug.
++check "beta's partial coverage names the fields it missed" \
++  "entry beta | grep -qF -- '- coverage: partial (1 of 3 fields predicted; not parsed: questions, review outcome)'"
+ 
+ "$S" gamma >/dev/null
+ check "gamma recorded as unpredicted" "entry gamma | grep -q '^- coverage: unpredicted'"
+ check "gamma effort unpredicted"      "[ \"\$(verdict gamma effort)\" = unpredicted ]"
+ 
++# --- 4a. absent vs. unparsed vs. declared: three coverage strings, not one -----
++# DoD (d). "No usable `## Predictions` section" used to be printed for all three,
++# which is how the whole tenant project's first wave was lost in plain sight: the
++# instrument said "nobody predicted" about orders that predicted in full. The
++# distinction is the repair, so the drill asserts the strings themselves.
++echo
++echo "metrics drill: coverage tells absent from unparsed from declared"
++"$S" eta >/dev/null
++"$S" theta >/dev/null
++check "gamma (no section) says exactly that" \
++  "entry gamma | grep -qF -- '- coverage: unpredicted (no \`## Predictions\` section)'"
++check "eta (section present, 0 of 3 parsed) says exactly that" \
++  "entry eta | grep -qF -- '- coverage: unpredicted (section present, 0 of 3 fields parsed)'"
++check "theta (declared unpredicted) says exactly that" \
++  "entry theta | grep -qF -- '- coverage: unpredicted (section present, declared deliberately unpredicted)'"
++# The point of the distinction, asserted as a distinction: the three must not
++# collapse back into one string on the next refactor.
++check "the three 0-field coverages are three different strings" \
++  "[ \"\$(entry gamma | grep '^- coverage:')\" != \"\$(entry eta | grep '^- coverage:')\" ] &&
++   [ \"\$(entry eta | grep '^- coverage:')\" != \"\$(entry theta | grep '^- coverage:')\" ]"
++# eta's order really does carry a full, careful prediction — that is what makes
++# losing it a defect rather than a gap. Prove the fixture, not just the verdict.
++check "eta's order really does predict (in the unparseable dialect)" \
++  "grep -qF '**Effort:** 2-3 hours' '$ORDERS/2026-07-20-eta.md'"
++check "eta's fields are still recorded as not predicted" \
++  "[ \"\$(verdict eta effort)\" = unpredicted ]"
++# The calibration file explains its own arithmetic: three scored fields, and the
++# fourth label the authoring protocol requires is read by nothing here.
++check "the calibration header says three fields are scored, not four" \
++  "grep -qF 'Three fields are scored, not four' '$CAL'"
++check "the calibration header names Named risks as unscored" \
++  "grep -qF 'Named risks' '$CAL' && grep -qF 'no instrument' '$CAL'"
++
++# --- 4b. the --review vocabulary ----------------------------------------------
++# DoD (e). Wave 2 put `Rework`, `rework`, `Clean`, `clean` and `minor rework` into
++# one column of one append-only committed file. Three values, case-insensitive in,
++# lowercase stored, everything else refused by name.
++echo
++echo "metrics drill: --review vocabulary"
++"$S" alpha --again --review "Rework" >/dev/null
++check "--review Rework stores lowercase rework" "[ \"\$(verdict alpha 'review outcome')\" = rework ]"
++"$S" alpha --again --review "Minor Rework" >/dev/null
++check "--review 'Minor Rework' stores 'minor rework'" \
++  "[ \"\$(verdict alpha 'review outcome')\" = 'minor rework' ]"
++"$S" alpha --again --review "clean" >/dev/null
++check "--review clean stores clean"             "[ \"\$(verdict alpha 'review outcome')\" = clean ]"
++expect_fail_msg "--review bogus is refused, naming the three values" \
++  "clean | minor rework | rework" "$S" alpha --again --review bogus
++expect_fail_msg "a near-miss verdict is refused too, not silently coerced" \
++  "unknown --review verdict" "$S" alpha --again --review "needs rework"
++# Refused BEFORE the append, because calibration.md is committed and permanent.
++check "a refused verdict wrote no entry" "! grep -qF 'needs rework' '$CAL'"
++
++# --- 5. one parser, two callers -----------------------------------------------
++# DoD (c). Scope item 2 is the load-bearing one: the launch gate must not merely
++# agree with the scorer today, it must be unable to disagree tomorrow. Two
++# complementary assertions —
++#   * behavioural: the shared function's verdict for an order file matches the
++#     coverage string hive-score independently committed for that same order;
++#   * structural: hive-launch carries no prediction regex of its own, so there is
++#     no second copy that could drift. Agreement by construction, not by luck.
++echo
++echo "metrics drill: one parser, two callers"
++L="$SCRIPT_DIR/hive-launch"
++pverdict() {  # pverdict <order-file> -> the shared parser's one-word verdict
++  bash -euo pipefail -c \
++    "source '$SCRIPT_DIR/hive-common.sh'; predictions_parse '$1'; predictions_verdict"
++}
++check "parser: alpha reads full"          "[ \"\$(pverdict '$ORDERS/2026-07-20-alpha.md')\" = full ]"
++check "parser: beta reads partial"        "[ \"\$(pverdict '$ORDERS/2026-07-20-beta.md')\" = partial ]"
++check "parser: gamma reads absent"        "[ \"\$(pverdict '$ORDERS/2026-07-20-gamma.md')\" = absent ]"
++check "parser: eta reads unparseable"     "[ \"\$(pverdict '$ORDERS/2026-07-20-eta.md')\" = unparseable ]"
++check "parser: theta reads declared"      "[ \"\$(pverdict '$ORDERS/2026-07-20-theta.md')\" = declared ]"
++check "parser: iota reads partial (2 of 3)" "[ \"\$(pverdict '$ORDERS/2026-07-20-iota.md')\" = partial ]"
++check "parser: a missing file reads absent, it does not error" \
++  "[ \"\$(pverdict '$SANDBOX/no-such-order.md')\" = absent ]"
++# The behavioural link: same input, same conclusion, from the two callers.
++check "the gate's verdict and the scorer's record agree on eta" \
++  "[ \"\$(pverdict '$ORDERS/2026-07-20-eta.md')\" = unparseable ] && entry eta | grep -qF '0 of 3 fields parsed'"
++check "the gate's verdict and the scorer's record agree on gamma" \
++  "[ \"\$(pverdict '$ORDERS/2026-07-20-gamma.md')\" = absent ] && entry gamma | grep -qF 'no \`## Predictions\` section'"
++# The structural link: one implementation, in the shared file, called by both.
++check "the parser lives in hive-common.sh"        "code '$SCRIPT_DIR/hive-common.sh' | grep -F 'predictions_parse()' >/dev/null"
++check "hive-launch calls the shared parser"       "code '$L' | grep -F 'predictions_parse' >/dev/null"
++check "hive-score calls the shared parser"        "code '$S' | grep -F 'predictions_parse' >/dev/null"
++check "hive-launch carries NO prediction regex of its own" \
++  "! code '$L' | grep -iE 'Expected (effort|questions|review outcome):' >/dev/null"
++check "hive-score carries NO prediction regex of its own" \
++  "! code '$S' | grep -iE 'Expected (effort|questions|review outcome):' >/dev/null"
++
++# --- 6. the launch predictions gate -------------------------------------------
++# DoD (a) and (b). The refusal fires before the throttle's board reads, before the
++# order pin, before the clones and the wrapper, and long before any emit — which
++# is exactly what makes it reachable from a hermetic drill: the run stops inside
++# the gate, having changed nothing.
++#
++# Isolation here is belt and braces rather than trust, because this section drives
++# the real launcher:
++#   * OMEGA_DIR already points at an empty dir, so no stack is reachable and no
++#     event can be issued;
++#   * TMUX_TMPDIR points at an empty sandbox dir, so hive-launch's `tmux
++#     has-session` probe lands on a server that does not exist and starts none —
++#     the operator's live server is not touched, not even by a read;
++#   * WORK_ROOT / WRAPPER_DIR point into the sandbox;
++#   * CANON_ROOT deliberately holds NO checkout for this project, so a launch that
++#     got past the gate dies at the canonical-checkout check — still upstream of
++#     every clone, every write and every emit. That refusal is the "launched past
++#     the gate" assertion, and it is why these cases can assert anything at all
++#     without a stack.
++echo
++echo "metrics drill: the launch predictions gate"
++export TMUX_TMPDIR="$SANDBOX/tmux"
++mkdir -p "$TMUX_TMPDIR"
++unset TMUX TMUX_PANE 2>/dev/null || true
++export WORK_ROOT="$SANDBOX/work" WRAPPER_DIR="$SANDBOX/wrappers" \
++       CANON_ROOT="$SANDBOX/canon-empty" WS_HUB="$HUB"
++mkdir -p "$CANON_ROOT"
++PAST_GATE="canonical code checkout"     # the refusal every non-refused order reaches next
++REFUSAL="NONE of the three scored fields parses"
++ETA_ORDER="projects/$PROJECT/orders/2026-07-20-eta.md"
++
++# (a) the D1 dialect refuses, before anything, saying what to do about it.
++expect_fail_msg "launch REFUSES an order whose predictions parse 0 of 3" \
++  "$REFUSAL" "$L" "$ETA_ORDER"
++expect_fail_msg "the refusal prints the effort label, literally"  "- Expected effort:" "$L" "$ETA_ORDER"
++expect_fail_msg "the refusal prints the questions label"          "- Expected questions:" "$L" "$ETA_ORDER"
++expect_fail_msg "the refusal prints the review-outcome label"     "- Expected review outcome:" "$L" "$ETA_ORDER"
++expect_fail_msg "the refusal prints the fourth label too"         "- Named risks:" "$L" "$ETA_ORDER"
++# ...and says plainly that the fourth is not scored, so nobody reads the refusal
++# as this tool having quietly started to score it.
++expect_fail_msg "the refusal says Named risks is read by no instrument" \
++  "read by no instrument" "$L" "$ETA_ORDER"
++expect_fail_msg "the refusal quotes the offending lines" "**Effort:** 2-3 hours" "$L" "$ETA_ORDER"
++expect_fail_msg "the refusal names the escape hatch"     "--anyway" "$L" "$ETA_ORDER"
++check "the refused launch provisioned nothing" "[ ! -e '$WORK_ROOT' ]"
++check "the refused launch issued no wrapper"   "[ ! -e '$WRAPPER_DIR' ]"
++check "the refused launch left the fixture untouched" \
++  "[ \"\$(sha256sum '$FIXTURE' | cut -d' ' -f1)\" = '$FIXTURE_SUM' ]"
++# Tooling never edits the file it read (order stop-line).
++check "the refused launch wrote nothing back into the order" \
++  "[ -z \"\$(git -C '$WS' status --porcelain -- '$ETA_ORDER')\" ]"
++
++# --anyway is the same deliberate-exception hatch the throttle uses. It must get
++# past the gate — and announce that it did, rather than passing silently.
++expect_fail_msg "--anyway launches the same order past the gate" \
++  "$PAST_GATE" "$L" "$ETA_ORDER" --anyway
++expect_fail_msg "--anyway announces the override instead of passing silently" \
++  "launching an order whose predictions cannot be parsed" "$L" "$ETA_ORDER" --anyway
++
++# (b) the three shapes that must NOT refuse. The refusal is on unparseable, never
++# on absent: an order the operator deliberately launches unpredicted must never
++# need --anyway, and that is two cases, not one.
++# shellcheck disable=SC2034  # consumed by `check`, which evals its condition string
++NOSEC_OUT="$("$L" "projects/$PROJECT/orders/2026-07-20-gamma.md" 2>&1 || true)"
++check "an order with NO Predictions section launches past the gate" \
++  "printf '%s' \"\$NOSEC_OUT\" | grep -qF '$PAST_GATE'"
++check "...and is not refused"          "! printf '%s' \"\$NOSEC_OUT\" | grep -qF '$REFUSAL'"
++check "...and did not need --anyway"   "! printf '%s' \"\$NOSEC_OUT\" | grep -qF 'launching an order whose predictions cannot be parsed'"
++check "...and says the gap is a metric, not an error" \
++  "printf '%s' \"\$NOSEC_OUT\" | grep -qF 'records that gap as unpredicted'"
++
++# shellcheck disable=SC2034  # consumed by `check`, which evals its condition string
++DECL_OUT="$("$L" "projects/$PROJECT/orders/2026-07-20-theta.md" 2>&1 || true)"
++check "a declared-unpredicted order launches past the gate" \
++  "printf '%s' \"\$DECL_OUT\" | grep -qF '$PAST_GATE'"
++check "...and is not refused"        "! printf '%s' \"\$DECL_OUT\" | grep -qF '$REFUSAL'"
++check "...and did not need --anyway" "! printf '%s' \"\$DECL_OUT\" | grep -qF 'launching an order whose predictions cannot be parsed'"
++check "...and is recognised as declared, not merely absent" \
++  "printf '%s' \"\$DECL_OUT\" | grep -qF 'declares itself deliberately unpredicted'"
++
++# shellcheck disable=SC2034  # consumed by `check`, which evals its condition string
++PART_OUT="$("$L" "projects/$PROJECT/orders/2026-07-20-iota.md" 2>&1 || true)"
++check "a 2-of-3 partial order launches past the gate" \
++  "printf '%s' \"\$PART_OUT\" | grep -qF '$PAST_GATE'"
++check "...and is not refused"  "! printf '%s' \"\$PART_OUT\" | grep -qF '$REFUSAL'"
++check "...but warns loudly, naming what did not parse" \
++  "printf '%s' \"\$PART_OUT\" | grep -qF 'predicts only 2 of 3 scored fields — not parsed: review outcome'"
++check "...and the warning shows the literal labels" \
++  "printf '%s' \"\$PART_OUT\" | grep -qF -- '- Expected review outcome:'"
++
++# The gate is not a heading check. gamma has no heading and passes; eta has the
++# heading, fully populated, and refuses. A heading-reader would score these the
++# other way round, which is precisely the wave-2 failure.
++check "the gate reads labels, not the heading" \
++  "grep -qF '## Predictions' '$ORDERS/2026-07-20-eta.md' && ! grep -qF '## Predictions' '$ORDERS/2026-07-20-gamma.md'"
++check "no launch in this section provisioned anything" "[ ! -e '$WORK_ROOT' ]"
++
++# --- 7. commit_metrics refuses rather than rebases -----------------------------
++# Scope 6 / DoD (g). This path is now reached automatically on every close, twice
++# (the score, then the metrics refresh), so an unattended `pull --rebase` over a
++# shared workspace path went from rare to routine. On a failed push it commits
++# locally, prints the one manual step, and stops.
++echo
++echo "metrics drill: commit_metrics refuses rather than rebases"
++git -C "$WS" remote set-url origin "$SANDBOX/nonexistent.git"
++CM_HEAD_BEFORE=$(git -C "$WS" rev-parse HEAD)
++CM_RC=0
++# shellcheck disable=SC2034  # consumed by `check`, which evals its condition string
++CM_OUT="$("$S" alpha --again 2>&1)" || CM_RC=$?
++git -C "$WS" remote set-url origin "$HUB"
++check "a failed push exits non-zero"            "[ '$CM_RC' -ne 0 ]"
++check "it says committed locally, NOT on the hub" \
++  "printf '%s' \"\$CM_OUT\" | grep -qF 'committed LOCALLY, NOT on the hub'"
++check "it refuses to rebase, and says so"       "printf '%s' \"\$CM_OUT\" | grep -qF 'Refusing to rebase'"
++check "it prints the one manual resolution step" \
++  "printf '%s' \"\$CM_OUT\" | grep -qF 'pull --rebase && git -C'"
++check "the entry really is committed locally"   "[ \"\$(git -C '$WS' rev-parse HEAD)\" != '$CM_HEAD_BEFORE' ]"
++# ...and nothing was rebased. Three independent ways of saying it, because a
++# half-finished rebase is the failure mode that is invisible until the next pull.
++check "no rebase was left in progress" \
++  "[ ! -e '$WS/.git/rebase-merge' ] && [ ! -e '$WS/.git/rebase-apply' ]"
++check "no rebase appears in the reflog" \
++  "! git -C '$WS' reflog --format=%gs | grep -i rebase >/dev/null"
++check "the prior history was not rewritten" \
++  "git -C '$WS' merge-base --is-ancestor '$CM_HEAD_BEFORE' HEAD"
++# Structural: the rebase is gone from the helper, not merely unreached. The
++# resolution step the refusal PRINTS mentions `pull --rebase`, so this looks for a
++# `git` command that runs one, not for the words.
++check "hive-common.sh runs no pull --rebase anywhere" \
++  "! code '$SCRIPT_DIR/hive-common.sh' | grep -E '^[[:space:]]*git .*pull --rebase' >/dev/null"
++
+ expect_fail_msg "scoring an open task refused" "not closed" "$S" delta
+ # A task with no order file cannot name its project, and guessing one is exactly
+ # what project_from_order refuses to do — so this asks for --project by name.
+@@ -562,14 +898,13 @@ mkdir -p "$WS/projects/confless/orders"
+ expect_fail_msg "project without a conf refused" "no project.conf for project 'confless'" \
+   "$M" confless
+ 
+-# --- 5. the stop-line: read-only, no emits ------------------------------------
++# --- 8. the stop-line: read-only, no emits ------------------------------------
+ echo
+ echo "metrics drill: stop-lines"
+ 
+ check "fixture untouched" "[ \"\$(sha256sum '$FIXTURE' | cut -d' ' -f1)\" = '$FIXTURE_SUM' ]"
+-# Strip comments and blanks first: these greps look for *code* that writes, and a
+-# prose mention of committing in a comment is not a write path.
+-code() { grep -vE '^[[:space:]]*(#|$)' "$1"; }
+-check "hive-metrics contains no emit" "! code '$M' | grep -Eq '(^|[^-[:alnum:]_])emit[[:space:]]'"
+-check "hive-score contains no emit"   "! code '$S' | grep -Eq '(^|[^-[:alnum:]_])emit[[:space:]]'"
+-check "neither tool commits to git"   "! { code '$M'; code '$S'; } | grep -Eq 'git .*(commit|push)'"
++# These greps look for *code* that writes; a prose mention of committing in a
++# comment is not a write path, so `code` (defined with the helpers) strips them.
++check "hive-metrics contains no emit" "! code '$M' | grep -E '(^|[^-[:alnum:]_])emit[[:space:]]' >/dev/null"
++check "hive-score contains no emit"   "! code '$S' | grep -E '(^|[^-[:alnum:]_])emit[[:space:]]' >/dev/null"
++check "neither tool commits to git"   "! { code '$M'; code '$S'; } | grep -E 'git .*(commit|push)' >/dev/null"
+diff --git a/scripts/hive-score b/scripts/hive-score
+index dc208db..b476fdf 100755
+--- a/scripts/hive-score
++++ b/scripts/hive-score
+@@ -11,10 +11,19 @@
+ #   * a task whose order has no `## Predictions` section is recorded anyway, as
+ #     **unpredicted** — the gap is itself the metric;
+ #   * a section that predicts some fields and not others is recorded as
+-#     **partial**, with the missing fields marked *not predicted*;
++#     **partial**, naming which fields were missed, with them marked *not predicted*;
++#   * a section that is PRESENT and parses NOTHING is recorded as its own distinct
++#     string, never as the absent case: one says nobody predicted, the other says
++#     the author predicted and this instrument lost it, and reading the second as
++#     the first hid a whole project's first wave for two waves (retro D1);
+ #   * predictions are quoted verbatim next to the outcome, so a reader can
+ #     disagree with the verdict without re-deriving anything.
+ #
++# The parse itself is `predictions_parse` in hive-common.sh, shared with
++# hive-launch's gate — one parser, so the gate cannot pass what the scorer drops.
++# It reads THREE fields (effort, questions, review outcome). `- Named risks:` is
++# required by the authoring protocol and read by nothing here.
++#
+ # Intended call time is at or after close, and it works retroactively: every
+ # outcome comes from the spine, so scoring a task closed weeks ago gives the same
+ # answer it would have given on the day.
+@@ -58,6 +67,21 @@ while [ $# -gt 0 ]; do
+ done
+ [ -n "$TASK" ] || usage
+ 
++# --- the review vocabulary, validated before anything else ---------------------
++# The review outcome is the one field the spine cannot know, so a human supplies
++# it — and wave 2 put `Rework`, `rework`, `Clean`, `clean` and `minor rework` into
++# the same column of the same append-only file. Three values, case-insensitive in,
++# lowercase stored. Refused up front, before the spine read and long before the
++# append, because calibration.md is committed and a typo in it is permanent.
++if [ -n "$REVIEW_VERDICT" ]; then
++  REVIEW_INPUT="$REVIEW_VERDICT"
++  REVIEW_VERDICT=$(printf '%s' "$REVIEW_VERDICT" | tr '[:upper:]' '[:lower:]')
++  case "$REVIEW_VERDICT" in
++    clean|'minor rework'|rework) ;;
++    *) die "unknown --review verdict '$REVIEW_INPUT' — the vocabulary is exactly three values: clean | minor rework | rework (case-insensitive; stored lowercase). \`rework\` and \`minor rework\` are distinct severities, so neither is a synonym for the other." ;;
++  esac
++fi
++
+ command -v jq >/dev/null 2>&1 || die "jq is required"
+ 
+ # --- resolve the order, then the project, then the run -------------------------
+@@ -206,15 +230,16 @@ fi
+ # --- the order's Predictions section -------------------------------------------
+ # The order was resolved up front (it names the project). A closed task with no
+ # order file at all is a real, and interesting, case: it scores as unpredicted.
+-PRED_BLOCK=""
++#
++# The parse itself lives in hive-common.sh, and hive-launch calls the SAME
++# function to decide whether to let an order launch at all. That is deliberate:
++# for two waves the gate and the scorer were two readers of one file with two
++# different ideas of what it said, and the disagreement cost a whole project's
++# first wave, silently (retro 2026-07-29 D1).
+ if [ -n "$ORDER_REL" ]; then
+-  # From the `## Predictions` heading to the next heading of any level, exclusive.
+-  PRED_BLOCK=$(awk '
+-    /^##[ \t]*Predictions[ \t]*$/ { inblock = 1; next }
+-    inblock && /^#/                { inblock = 0 }
+-    inblock                        { print }
+-  ' "$OPS_WS/$ORDER_REL")
++  predictions_parse "$OPS_WS/$ORDER_REL"
+ else
++  predictions_parse ""            # no order file: parses as absent, scores unpredicted
+   ORDER_REL="(no order file found)"
+ fi
+ 
+@@ -224,19 +249,6 @@ parse_range() {
+     { lo = $1 + 0; hi = (NF > 1 ? $2 + 0 : lo); printf "%s %s", lo, hi }'
+ }
+ 
+-# Verbatim slices of the prediction text; empty when the field was not predicted
+-# (a no-match grep is the *expected* partial-prediction case, not an error — hence
+-# the `|| true` guards under `set -o pipefail`).
+-PRED_EFFORT_TXT=$( { printf '%s' "$PRED_BLOCK" \
+-  | grep -oiE 'Expected effort:[[:space:]]*[0-9][0-9.–—-]*[[:space:]]*worker-hours?' \
+-  | head -1 | sed -E 's/^[Ee]xpected effort:[[:space:]]*//'; } || true )
+-PRED_QUESTIONS_TXT=$( { printf '%s' "$PRED_BLOCK" \
+-  | grep -oiE 'Expected questions:[[:space:]]*[0-9][0-9–—-]*' \
+-  | head -1 | sed -E 's/^[Ee]xpected questions:[[:space:]]*//'; } || true )
+-PRED_REVIEW_TXT=$( { printf '%s' "$PRED_BLOCK" \
+-  | grep -oiE 'Expected review outcome:[[:space:]]*[^.]+' \
+-  | head -1 | sed -E 's/^[Ee]xpected review outcome:[[:space:]]*//'; } || true )
+-
+ NOT_PREDICTED='*not predicted*'
+ 
+ # --- verdicts -----------------------------------------------------------------
+@@ -283,16 +295,19 @@ else
+   V_REVIEW="${REVIEW_VERDICT:-unpredicted}"
+ fi
+ 
+-# Coverage: how much of the section was there at all — the calibration-gap metric.
+-FIELDS=0
+-for t in "$PRED_EFFORT_TXT" "$PRED_QUESTIONS_TXT" "$PRED_REVIEW_TXT"; do
+-  if [ -n "$t" ]; then FIELDS=$((FIELDS + 1)); fi
+-done
+-case "$FIELDS" in
+-  0) COVERAGE="unpredicted (no usable \`## Predictions\` section)" ;;
+-  3) COVERAGE="full" ;;
+-  *) COVERAGE="partial ($FIELDS of 3 fields predicted)" ;;
+-esac
++# Coverage: how much of the section was there at all — the calibration-gap metric,
++# and now a metric that says WHICH gap. "No usable `## Predictions` section" used
++# to be printed whether the section was missing or merely unreadable, so the two
++# most different failures the instrument can have looked identical: nobody
++# predicted, versus the author predicted and the instrument lost it. D1 was the
++# second and read as the first for a whole wave. The partial case names the fields
++# it missed for the same reason — a coverage number the reader cannot act on is
++# only half a metric.
++#
++# Three fields, not four. `- Named risks:` is required of every author by the
++# authoring protocol and read by no instrument; it is not counted here, and the
++# calibration header says so rather than leaving the arithmetic to be guessed at.
++COVERAGE=$(predictions_coverage)
+ 
+ # --- append --------------------------------------------------------------------
+ OUT_DIR="$OPS_WS/projects/$PROJECT/metrics"
+@@ -317,7 +332,26 @@ answer wait) falls within the predicted range widened by the greater of 0.5h and
+ 25% of its low bound; otherwise \`under\`/\`over\`. *questions* — \`hit\` when the
+ count falls inside the predicted range, exactly. *review outcome* — never inferred:
+ the spine records \`review.failed\`, not whether a PR needed another round, so the
+-verdict stays \`unscored\` until a human supplies one with \`--review\`.
++verdict stays \`unscored\` until a human supplies one with \`--review\`, whose
++vocabulary is exactly \`clean | minor rework | rework\` (stored lowercase).
++
++**Three fields are scored, not four.** The authoring protocol pins four literal
++bullet labels and every author writes all four, but \`- Named risks:\` is read by
++**no instrument** — it is not parsed, not counted here, and its absence never
++refuses a launch. Coverage below is therefore always out of three.
++
++**Coverage vocabulary**, and the distinctions are the point:
++
++| string | what it means |
++|---|---|
++| \`full\` | all three scored labels parsed |
++| \`partial (N of 3 …)\` | some parsed; the ones that did not are named |
++| \`unpredicted (no \\\`## Predictions\\\` section)\` | nobody predicted — a real gap, honestly recorded |
++| \`unpredicted (section present, declared deliberately unpredicted)\` | the operator chose to launch unpredicted and said so |
++| \`unpredicted (section present, 0 of 3 fields parsed)\` | **the author predicted and the instrument lost it** — a defect, not a gap |
++
++The last two rows used to be one string, which is how an entire project's first
++wave of predictions was lost without anything printing an error.
+ 
+ Actual effort is elapsed wall-clock between \`task.accepted\` and \`task.result_posted\`
+ minus recorded blocked time. A session that idles looks like a session that works;
+diff --git a/scripts/hive-tooling-drill.sh b/scripts/hive-tooling-drill.sh
+index 9bfbebd..0202454 100755
+--- a/scripts/hive-tooling-drill.sh
++++ b/scripts/hive-tooling-drill.sh
+@@ -12,8 +12,10 @@
+ # a THIRD project whose directory name differs from its repo (proving CANON_CODE
+ # derives from the repo, not the directory), cross-project task-id ambiguity
+ # refusal, the review-WIP throttle summed ACROSS projects, the HIVE_RUN_ID
+-# override, the close->score->commit coupling and its failure mode, the autonomy
+-# default of the issued worker command, and every legacy refusal path.
++# override, the close->score->metrics->commit coupling and both of its failure
++# modes, the predictions launch gate (the one shape it refuses and the three it
++# must not), commit_metrics' refusal to rebase, the autonomy default of the issued
++# worker command, and every legacy refusal path.
+ #
+ # It never touches the durable `omegahive` run: all three projects carry scratch run
+ # ids (tooling-drill-<proj>-<stamp>) in their confs, and OPS_WS points at the
+@@ -183,6 +185,10 @@ git -C "$WS" push --quiet origin HEAD:main
+ git -C "$WS" branch --quiet --set-upstream-to=origin/main main 2>/dev/null || true
+ 
+ # Helper: author an order in a project, commit + push. Prints the workspace-rel path.
++# NOTE the fixture carries NO `## Predictions` section, deliberately: every launch
++# in this drill therefore also stands as evidence that the predictions gate does
++# not refuse an order that simply has no section (the stop-line — the refusal is
++# on unparseable, never on absent).
+ add_order() {  # add_order <project> <basename-no-ext> <title> -> prints REL path
+   local proj="$1" base="$2" title="$3"
+   local rel="projects/$proj/orders/$base.md"
+@@ -192,6 +198,19 @@ add_order() {  # add_order <project> <basename-no-ext> <title> -> prints REL pat
+   printf '%s\n' "$rel"
+ }
+ 
++# Same, plus a `## Predictions` section with the body given verbatim — which is
++# the whole point: the gate's business is the literal bullet labels, so a fixture
++# that let this helper normalise them would test nothing.
++add_order_pred() {  # add_order_pred <project> <basename-no-ext> <title> <predictions-body> -> prints REL path
++  local proj="$1" base="$2" title="$3" body="$4"
++  local rel="projects/$proj/orders/$base.md"
++  printf '# Order: %s\n\n## Scope\nDrill fixture. Not a real task.\n\n## Predictions\n\n%s\n' \
++    "$title" "$body" > "$WS/$rel"
++  git -C "$WS" add -A && git -C "$WS" commit --quiet -m "drill: order $base"
++  git -C "$WS" push --quiet origin HEAD:main
++  printf '%s\n' "$rel"
++}
++
+ # no-op worker command: records the kickoff it was handed, then idles so the pane
+ # persists for the nudge. Stands in for `claude`.
+ WORKER_CMD="$SANDBOX/worker-cmd.sh"
+@@ -282,6 +301,20 @@ check "close reported the scoring"           "printf '%s' \"\$ACLOSE\" | grep -q
+ check "the score commit touched only the metrics dir" \
+   "[ -z \"\$(git -C '$WS' show --name-only --format= HEAD | grep -v '^projects/$APROJ/metrics/')\" ]"
+ 
++# ...and the OTHER half of the wave-close instrument ritual, which until now was a
++# sentence in the RUNBOOK and did not get run: a whole wave once passed with
++# tasks.md frozen at the previous wave's artifact while every close scored
++# faithfully, because one half was code and the other was prose (retro D6). Same
++# by-product discipline, same absolute ordering.
++check "close regenerated tasks.md"           "[ -s '$WS/projects/$APROJ/metrics/tasks.md' ]"
++check "close regenerated tasks.csv"          "[ -s '$WS/projects/$APROJ/metrics/tasks.csv' ]"
++check "the regenerated artifact carries the task just closed" \
++  "grep -qF 'alpha-demo' '$WS/projects/$APROJ/metrics/tasks.md'"
++check "the metrics refresh is COMMITTED in the workspace clone" \
++  "log_has '$WS' 'metrics: refresh $APROJ on run $ARUN' 'projects/$APROJ/metrics'"
++check "the metrics refresh reached the hub"  "log_has '$HUB' 'metrics: refresh $APROJ on run $ARUN'"
++check "close reported the metrics refresh"   "printf '%s' \"\$ACLOSE\" | grep -qF 'metrics refreshed'"
++
+ # ==============================================================================
+ echo
+ echo "== SECOND project '$BPROJ': full lifecycle on its own run =="
+@@ -496,6 +529,106 @@ check "the fallback title IS the task id"       "[ \"\$(btitle '$ARUN' '$NHTASK'
+ # Control: a titled order still takes its heading, minus the `Order: ` prefix.
+ check "a titled order still uses its heading"   "[ \"\$(btitle '$ARUN' alpha-demo)\" = 'alpha demo' ]"
+ 
++echo
++echo "== the predictions gate: an order the scorer cannot read REFUSES at launch =="
++# The gate used to be a human reading a `## Predictions` heading while hive-score
++# parsed bullet LABELS. Two faithful readings of one protocol produced two
++# dialects, the scorer understood one, and an entire tenant project's first wave
++# scored `unpredicted` with no error printed anywhere — the wave brief recorded
++# 6/6 against an actual 4 of 6 (retro 2026-07-29 D1). The prose repair then failed
++# again within a day, in an order written by an author reading the corrected
++# protocol. So the check lives in the tool that already opens the file, and it
++# calls hive-score's own parser rather than a second copy of the regexes.
++PGTASK="drill-predlost"
++PGORDER=$(add_order_pred "$APROJ" "2026-07-13-$PGTASK" "predictions lost" \
++'- **Effort:** 2-3 hours
++- **Questions:** 0
++- **Review outcome:** clean
++- **Named risks:** none worth naming')
++PGW="sess-predlost-${STAMP}"
++expect_fail_msg "launch REFUSES an order whose predictions parse 0 of 3" \
++  "NONE of the three scored fields parses" "$SCRIPT_DIR/hive-launch" "$PGORDER" --worker "$PGW"
++expect_fail_msg "the refusal prints the literal effort label" \
++  "- Expected effort:" "$SCRIPT_DIR/hive-launch" "$PGORDER" --worker "$PGW"
++expect_fail_msg "the refusal prints the literal questions label" \
++  "- Expected questions:" "$SCRIPT_DIR/hive-launch" "$PGORDER" --worker "$PGW"
++expect_fail_msg "the refusal prints the literal review-outcome label" \
++  "- Expected review outcome:" "$SCRIPT_DIR/hive-launch" "$PGORDER" --worker "$PGW"
++expect_fail_msg "the refusal prints the fourth label too" \
++  "- Named risks:" "$SCRIPT_DIR/hive-launch" "$PGORDER" --worker "$PGW"
++# ...and says plainly that the fourth is scored by nothing, so no reader concludes
++# this tool has quietly started scoring it (that would be a gate-content change).
++expect_fail_msg "the refusal says Named risks is read by no instrument" \
++  "read by no instrument" "$SCRIPT_DIR/hive-launch" "$PGORDER" --worker "$PGW"
++expect_fail_msg "the refusal quotes the offending lines back" \
++  '**Effort:** 2-3 hours' "$SCRIPT_DIR/hive-launch" "$PGORDER" --worker "$PGW"
++expect_fail_msg "the refusal names the escape hatch" \
++  "--anyway" "$SCRIPT_DIR/hive-launch" "$PGORDER" --worker "$PGW"
++# BEFORE any spine write is the whole of it: a refusal here has changed nothing.
++check "the refusal seeded no board state" "[ -z \"\$(bstatus '$ARUN' '$PGTASK')\" ]"
++check "the refusal provisioned nothing"   "[ ! -e '$WORK/$PGW' ]"
++check "the refusal issued no wrapper"     "[ ! -e '$WRAPPERS/$PGW.sh' ]"
++check "the refusal opened no window" \
++  "! tmux list-windows -t '=$TMUX_SESSION' -F '#{window_name}' | grep -xF '$PGTASK' >/dev/null"
++# Tooling never edits an order body: the gate reads and refuses, and writes nothing
++# back into the file it read (order stop-line).
++check "the refusal wrote nothing back into the order" \
++  "[ -z \"\$(git -C '$WS' status --porcelain -- '$PGORDER')\" ]"
++check "the order still carries its original dialect, unedited" \
++  "grep -qF '**Effort:** 2-3 hours' '$WS/$PGORDER'"
++# --anyway is the same deliberate-exception hatch the throttle uses, and it must
++# announce the override rather than passing silently.
++# shellcheck disable=SC2034  # consumed by `check`, which evals its condition string
++PGOUT="$("$SCRIPT_DIR/hive-launch" "$PGORDER" --worker "sess-predlost-ok-${STAMP}" --anyway 2>&1)"
++check "--anyway launches the refused order -> assigned" "[ \"\$(bstatus '$ARUN' '$PGTASK')\" = assigned ]"
++check "--anyway says out loud what it overrode" \
++  "printf '%s' \"\$PGOUT\" | grep -F 'launching an order whose predictions cannot be parsed' >/dev/null"
++
++echo
++echo "== ...and ONLY that shape: absent, declared and partial all launch clean =="
++# The stop-line: the refusal is on UNPARSEABLE, never on ABSENT. An order the
++# operator deliberately launches unpredicted must not need --anyway, and that is
++# TWO cases, not one — no section at all, and the protocol's one-line declared-
++# unpredicted disposition. A partial section is a third: partial coverage is a
++# number hive-score already reports, so refusing it would be a new gate rather
++# than a repair.
++NPTASK="drill-nopredictions"
++NPORDER=$(add_order "$APROJ" "2026-07-13-$NPTASK" "no predictions")
++check "the fixture really has no Predictions section" "! grep -qF '## Predictions' '$WS/$NPORDER'"
++# shellcheck disable=SC2034  # consumed by `check`, which evals its condition string
++NPOUT="$("$SCRIPT_DIR/hive-launch" "$NPORDER" --worker "sess-nopred-${STAMP}" 2>&1)"
++check "an order with NO Predictions section launches"  "[ \"\$(bstatus '$ARUN' '$NPTASK')\" = assigned ]"
++check "...with no refusal, and no --anyway needed" \
++  "! printf '%s' \"\$NPOUT\" | grep -F 'NONE of the three scored fields parses' >/dev/null"
++check "...and says the gap is a recorded metric, not an error" \
++  "printf '%s' \"\$NPOUT\" | grep -F 'records that gap as unpredicted' >/dev/null"
++
++DPTASK="drill-declaredunpred"
++DPORDER=$(add_order_pred "$APROJ" "2026-07-13-$DPTASK" "declared unpredicted" \
++'- Deliberately unpredicted: adopted from the pre-tooling backlog, and the corpus
++  holds no comparable neighbour to anchor an honest range against.')
++# shellcheck disable=SC2034  # consumed by `check`, which evals its condition string
++DPOUT="$("$SCRIPT_DIR/hive-launch" "$DPORDER" --worker "sess-declared-${STAMP}" 2>&1)"
++check "a declared-unpredicted order launches"          "[ \"\$(bstatus '$ARUN' '$DPTASK')\" = assigned ]"
++check "...recognised as declared, not merely unreadable" \
++  "printf '%s' \"\$DPOUT\" | grep -F 'declares itself deliberately unpredicted' >/dev/null"
++check "...and did not need --anyway" \
++  "! printf '%s' \"\$DPOUT\" | grep -F 'NONE of the three scored fields parses' >/dev/null"
++
++PPTASK="drill-partialpred"
++PPORDER=$(add_order_pred "$APROJ" "2026-07-13-$PPTASK" "partial predictions" \
++'- Expected effort: 1-2 worker-hours — 31m median × 2-4.
++- Expected questions: 0 — no named seams.
++- Review outcome: clean.
++- Named risks: none worth naming.')
++# shellcheck disable=SC2034  # consumed by `check`, which evals its condition string
++PPOUT="$("$SCRIPT_DIR/hive-launch" "$PPORDER" --worker "sess-partialpred-${STAMP}" 2>&1)"
++check "a 2-of-3 partial order launches"                "[ \"\$(bstatus '$ARUN' '$PPTASK')\" = assigned ]"
++check "...loudly, naming the field that did not parse" \
++  "printf '%s' \"\$PPOUT\" | grep -F 'predicts only 2 of 3 scored fields — not parsed: review outcome' >/dev/null"
++check "...and that is a warning, not a refusal" \
++  "! printf '%s' \"\$PPOUT\" | grep -F 'NONE of the three scored fields parses' >/dev/null"
++
+ echo
+ echo "== adopt a pre-seeded ready task (register + assign only, no task.created) =="
+ # The pre-tooling backlog was seeded as unowned `ready` tasks via raw task.created.
+@@ -714,6 +847,75 @@ check "--no-commit leaves the entry uncommitted" \
+   "[ -n \"\$(git -C '$WS' status --porcelain -- 'projects/$APROJ/metrics')\" ]"
+ git -C "$WS" checkout --quiet -- "projects/$APROJ/metrics"
+ 
++echo
++echo "== a metrics-regeneration failure is LOUD, and equally cannot fail a close =="
++# Scope 5 raised the close's by-product count from one to two, so the ordering
++# discipline cli-qol established has to hold for both — and this asserts it for
++# the new one rather than reasoning by analogy from the old one.
++#
++# The injection is targeted at hive-metrics and nothing else: `tasks.md` is made a
++# DIRECTORY, so the artifact write fails while everything hive-score touches
++# (calibration.md, in the same dir) still works. That is the point of the case —
++# the two by-products must fail independently, and a regeneration failure must not
++# suppress or discredit a score that succeeded.
++MFTASK="drill-metricsfail"
++MFORDER=$(add_order "$APROJ" "2026-07-13-$MFTASK" "metrics failure")
++MFWORKER="sess-metricsfail-${STAMP}"
++"$SCRIPT_DIR/hive-launch" "$MFORDER" --worker "$MFWORKER" >/dev/null
++MFWRAP="$WRAPPERS/$MFWORKER.sh"
++"$MFWRAP" --type task.accepted --task "$MFTASK" >/dev/null
++"$MFWRAP" --type task.result_posted --task "$MFTASK" \
++  --payload "$(jq -cn --arg r "projects/$APROJ/reports/2026-07-13-$MFTASK-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
++rm -f "$WS/projects/$APROJ/metrics/tasks.md"
++mkdir -p "$WS/projects/$APROJ/metrics/tasks.md"     # the injection
++MFRC=0
++MFOUT="$("$SCRIPT_DIR/hive-close" "$MFTASK" --reason "metrics-failure drill" 2>&1)" || MFRC=$?
++rmdir "$WS/projects/$APROJ/metrics/tasks.md"
++printf '%s\n' "$MFOUT"
++check "the close still exits 0 despite the regeneration failure" "[ '$MFRC' -eq 0 ]"
++check "the close really did land on the board"        "[ \"\$(bstatus '$ARUN' '$MFTASK')\" = done ]"
++check "the regeneration failure is loud, not swallowed" \
++  "printf '%s' \"\$MFOUT\" | grep -qF 'regenerating metrics afterwards did not'"
++check "the complaint says the close is not in doubt"  "printf '%s' \"\$MFOUT\" | grep -qF 'is durable on the spine'"
++check "the complaint names the one recovery command"  "printf '%s' \"\$MFOUT\" | grep -qF 'hive-metrics $APROJ'"
++# The score is the other by-product and it succeeded; a failure in one must not be
++# reported as, or suppress, the other.
++check "the score still ran and recorded its entry" \
++  "grep -q '^### $MFTASK — closed' '$WS/projects/$APROJ/metrics/calibration.md'"
++check "the complaint says the calibration entry is unaffected" \
++  "printf '%s' \"\$MFOUT\" | grep -qF 'calibration entry above is unaffected'"
++# ...and a plain regeneration afterwards restores the artifact, which is what makes
++# the recovery one command rather than an investigation.
++"$SCRIPT_DIR/hive-metrics" "$APROJ" >/dev/null
++check "the named recovery command restores the artifact" \
++  "grep -qF '$MFTASK' '$WS/projects/$APROJ/metrics/tasks.md'"
++check "recovery left the workspace clean" "[ -z \"\$(git -C '$WS' status --porcelain -- 'projects/$APROJ/metrics')\" ]"
++
++echo
++echo "== commit_metrics refuses rather than rebasing a shared metrics path =="
++# The close now reaches this path automatically for every closed task, twice (the
++# score, then the metrics refresh), so the inherited `push -> pull --rebase ->
++# push` retry went from rare to routine. On a failed push it commits locally,
++# prints the one manual step, and stops — it does not rebase unattended.
++git -C "$WS" remote set-url origin "$SANDBOX/nonexistent.git"
++CMHEAD="$(git -C "$WS" rev-parse HEAD)"
++CMRC=0
++# shellcheck disable=SC2034  # consumed by `check`, which evals its condition string
++CMOUT="$("$SCRIPT_DIR/hive-score" "$MFTASK" --again </dev/null 2>&1)" || CMRC=$?
++git -C "$WS" remote set-url origin "$HUB"
++check "a failed metrics push exits non-zero"        "[ '$CMRC' -ne 0 ]"
++check "it says committed LOCALLY, not on the hub"   "printf '%s' \"\$CMOUT\" | grep -qF 'committed LOCALLY, NOT on the hub'"
++check "it refuses to rebase, and says so"           "printf '%s' \"\$CMOUT\" | grep -qF 'Refusing to rebase'"
++check "it prints the one manual resolution step"    "printf '%s' \"\$CMOUT\" | grep -qF 'pull --rebase && git -C'"
++check "the entry really is committed locally"       "[ \"\$(git -C '$WS' rev-parse HEAD)\" != '$CMHEAD' ]"
++check "no rebase was left in progress" \
++  "[ ! -e '$WS/.git/rebase-merge' ] && [ ! -e '$WS/.git/rebase-apply' ]"
++check "no rebase appears in the reflog" \
++  "! git -C '$WS' reflog --format=%gs | grep -i rebase >/dev/null"
++check "the prior history was not rewritten"         "git -C '$WS' merge-base --is-ancestor '$CMHEAD' HEAD"
++git -C "$WS" push --quiet origin HEAD:main
++check "and it pushes cleanly once the remote is back" "log_has '$HUB' 'score: $MFTASK on run $ARUN'"
++
+ echo
+ echo "== refusal paths =="
+ # (a) dirty order — an uncommitted new order refuses at pin time.

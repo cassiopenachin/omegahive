@@ -1,0 +1,278 @@
+diff --git a/docs/deployments/deployment-0-beastie.md b/docs/deployments/deployment-0-beastie.md
+index bb7ffeb..e79d8dc 100644
+--- a/docs/deployments/deployment-0-beastie.md
++++ b/docs/deployments/deployment-0-beastie.md
+@@ -84,12 +84,17 @@ signals `GENERATION_MISMATCH` to a stale-cursor port client, which re-snapshots
+ generation; and `deploy/phantom_ahead.sh` detected a deliberately-created phantom-ahead
+ workspace commit. Transcript: `hive-workspace: projects/omegahive/reports/2026-07-13-backups-restore-drill-evidence.md`.
+ 
+-**Open item — generation token not wired to the live run.** The `omegahive` run is not in
+-the `runs` registry (the `hive emit` write path never calls `open_run`), so a real restore's
+-generation bump is inert and the **interim floor governs: restore ⇒ restart every client, no
+-exceptions.** Registering the run (`omegahive.port.open_run`) activates the durable path; the
+-deeper fix is to open the run at project seed / in the emit path. Full restore + phantom-ahead
+-procedure: ops RUNBOOK (`hive-workspace: projects/omegahive/RUNBOOK.md`).
++**Generation token, live run.** The write path opens a run on its first emit, so the
++`omegahive` run is in the `runs` registry and a real restore's generation bump lands.
++Confirm it before relying on it:
++
++```sh
++psql "$OMEGAHIVE_DATABASE_URL" -c "SELECT * FROM runs WHERE run_id='omegahive'"
++```
++
++Restarting every client stays mandatory on a restore regardless — both halves of the
++invalidation step, every time. Full restore + phantom-ahead procedure: ops RUNBOOK
++(`hive-workspace: projects/omegahive/RUNBOOK.md`).
+ 
+ ## Forward notes (arrive with later stages, not #0)
+ 
+diff --git a/docs/omegahive_recovery_runbook.md b/docs/omegahive_recovery_runbook.md
+index 51ff606..a503302 100644
+--- a/docs/omegahive_recovery_runbook.md
++++ b/docs/omegahive_recovery_runbook.md
+@@ -87,12 +87,13 @@ silently skip events. Follow the ordering exactly.
+      ```sh
+      docker compose run --rm cli bump-generation --run-id <run>
+      ```
+-     The bump only works on a *registered* run; it refuses one that was never opened
+-     (`run not registered`). The durable `omegahive` project run is currently unregistered
+-     — the `hive emit` write path never opens runs — so the bump is inert until the run is
+-     registered out of band (`omegahive.port.open_run`). See the ops RUNBOOK for the
+-     one-liner; until then the restart floor below is the operative path.
+-   - **Restart *every* client** — the always-safe interim floor, independent of the token.
++     The bump needs a *registered* run and refuses one that was never opened
++     (`run not registered`). The write path opens a run on its first emit, so every run
++     that has events — the durable `omegahive` project run included — takes the bump.
++   - **Restart *every* client** — the always-safe floor, independent of the token, and
++     not made redundant by the bump: the restore rewinds the `runs` row too, so the
++     post-restore bump can land on a generation a client has already seen (restoring a
++     dump older than a previous restore's bump). Do both, every time.
+ 4. **Restart** coordinators/workers; each re-snapshots through the port.
+ 
+ Verify a restore reproduces the board: deployment check 3 (`scripts/deploy_checks.sh`)
+diff --git a/src/omegahive/gateway/gateway.py b/src/omegahive/gateway/gateway.py
+index 9b81ce6..fa52fc8 100644
+--- a/src/omegahive/gateway/gateway.py
++++ b/src/omegahive/gateway/gateway.py
+@@ -1,7 +1,8 @@
+ """The gateway — enforces policy on the way in, projects on the way out.
+ 
+ emit(): authority + worker-ownership + transition gate (all from the one legality
+-spec, board/legality.py) -> dumb store append. It returns an EmitResult
++spec, board/legality.py) -> dumb store append, with an idempotent open_run first so
++every run is registered by its own first write. It returns an EmitResult
+ (Accepted | Rejected) and NEVER raises for a policy/legality refusal: a refusal is a
+ recorded value — a persisted gateway.rejected event (§5) plus a Rejected(code, reason,
+ rejection_event_id) return. Identical (actor, op, code) refusals within a short window
+@@ -94,22 +95,35 @@ class Gateway:
+         conn = self._store.conn
+         try:
+             with conn.transaction():
+-                # 1. idempotency lookup FIRST — a replay returns the existing event
++                # 1. register the run if it is not yet in the registry — idempotent
++                # (ON CONFLICT DO NOTHING), in THIS transaction, so a run carries a
++                # generation token (§2) from its first event and never from a later
++                # remembered-caveat step. It runs before EVERY other step, and in
++                # particular before the idempotency early-return and the gate, because
++                # each of those exits leaves an event standing in the run: a replay
++                # returns an event already committed here, and a refusal appends a
++                # gateway.rejected. A run with events but no token is exactly the hole
++                # this closes (a restore's bump-generation would be inert for it), and a
++                # replayed emit is how an at-least-once caller most often touches a run.
++                # No advisory lock needed: ON CONFLICT DO NOTHING is its own serialization,
++                # so replays keep taking the fast path (no lock, no fold, no gate).
++                self._store.open_run()
++                # 2. idempotency lookup EARLY — a replay returns the existing event
+                 # before any fold or gate, so a committed op is never re-gated.
+                 if idempotency_key is not None:
+                     existing = self._store.find_by_key(actor.id, idempotency_key)
+                     if existing is not None:
+                         return Accepted(existing)
+-                # 2. serialize per run: advisory lock keyed in Postgres (never Python hash()).
++                # 3. serialize per run: advisory lock keyed in Postgres (never Python hash()).
+                 conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (self._store.run_id,))
+-                # 3. fold + gate against the run prefix under the lock.
++                # 4. fold + gate against the run prefix under the lock.
+                 board = fold(self._store.read_run())
+                 rej = self._gate(board, actor, event_type, payload, task_id)
+                 if rej is not None:
+                     rid = self._record_rejection(actor, event_type, task_id, payload, rej,
+                                                  logical_ts)
+                     return Rejected(rej.code, rej.reason, rid)
+-                # 4. accept: append the op (with its key).
++                # 5. accept: append the op (with its key).
+                 ev = self._store.append(
+                     actor=actor, event_type=event_type, payload=payload, task_id=task_id,
+                     causation_id=causation_id, recipient=recipient, logical_ts=logical_ts,
+diff --git a/tests/test_bump_generation_cli.py b/tests/test_bump_generation_cli.py
+index bbf7373..b4d5ff5 100644
+--- a/tests/test_bump_generation_cli.py
++++ b/tests/test_bump_generation_cli.py
+@@ -27,12 +27,14 @@ RUN = "cli-bumpgen-test"
+ 
+ @pytest.fixture
+ def cli_db(monkeypatch):
+-    """Point the CLI's connection at the test DB; delete this run's registry row on teardown."""
++    """Point the CLI's connection at the test DB; delete this run's rows on teardown
++    (events as well as the registry row — an emit now writes both)."""
+     monkeypatch.setattr(cli, "connect", lambda *a, **k: connect(TEST_DATABASE_URL))
+     yield
+     c = connect(TEST_DATABASE_URL)
+     try:
+         with c.transaction():
++            c.execute("DELETE FROM events WHERE run_id = %s", (RUN,))
+             c.execute("DELETE FROM runs WHERE run_id = %s", (RUN,))
+     finally:
+         c.close()
+@@ -70,6 +72,24 @@ def test_bump_increments_and_reports_old_new(cli_db):
+     assert _generation() == 3
+ 
+ 
++def test_bump_succeeds_on_a_run_registered_by_its_first_emit(cli_db):
++    """End-to-end, the whole point of the run-registration change: a scratch run that has
++    only ever been written through `emit` (the durable run's one write path) is registered
++    by that emit, so the restore procedure's bump lands instead of refusing."""
++    assert _generation() is None
++    e = runner.invoke(cli.app, [
++        "emit", "--run-id", RUN, "--role", "planner", "--actor", "planner",
++        "--type", "goal.received", "--payload", '{"text": "scratch run"}',
++    ])
++    assert e.exit_code == 0, e.output
++    assert _generation() == 1                              # registered as a side effect
++
++    b = runner.invoke(cli.app, ["bump-generation", "--run-id", RUN])
++    assert b.exit_code == 0, b.output
++    assert "not registered" not in b.output.lower()
++    assert _generation() == 2
++
++
+ def test_unregistered_run_exits_nonzero_without_creating(cli_db):
+     assert _generation() is None
+     r = runner.invoke(cli.app, ["bump-generation", "--run-id", RUN])
+diff --git a/tests/test_emit_cli.py b/tests/test_emit_cli.py
+index daa5698..586f06a 100644
+--- a/tests/test_emit_cli.py
++++ b/tests/test_emit_cli.py
+@@ -28,13 +28,15 @@ REF = "docs/omegahive_ui_spec.md@" + "abcdef12" * 5  # a well-formed path@<40-he
+ 
+ @pytest.fixture
+ def cli_db(monkeypatch):
+-    """Point the CLI's connection at the test DB; delete this run's events on teardown."""
++    """Point the CLI's connection at the test DB; delete this run's rows on teardown
++    (its registry row as well as its events — an emit now opens the run)."""
+     monkeypatch.setattr(cli, "connect", lambda *a, **k: connect(TEST_DATABASE_URL))
+     yield
+     c = connect(TEST_DATABASE_URL)
+     try:
+         with c.transaction():
+             c.execute("DELETE FROM events WHERE run_id = %s", (RUN,))
++            c.execute("DELETE FROM runs WHERE run_id = %s", (RUN,))
+     finally:
+         c.close()
+ 
+diff --git a/tests/test_write_path.py b/tests/test_write_path.py
+index 917578d..082255b 100644
+--- a/tests/test_write_path.py
++++ b/tests/test_write_path.py
+@@ -9,6 +9,7 @@ from __future__ import annotations
+ import inspect
+ 
+ import pytest
++from pydantic import ValidationError
+ 
+ from omegahive.clock import LogicalClock
+ from omegahive.events.envelope import Actor
+@@ -17,6 +18,7 @@ from omegahive.gateway import Accepted, Gateway, GatewayHandle, Rejected, unwrap
+ 
+ PLANNER = Actor(role="planner", id="planner")
+ COORD = Actor(role="coordinator", id="coordinator")
++WORKER = Actor(role="worker", id="w1")
+ 
+ 
+ def _ready_t1(gateway):
+@@ -79,6 +81,85 @@ def test_rejection_does_not_cache_key(make_gateway):
+     assert not [e for e in store.read_run() if e.event_type == "task.status_override"]
+ 
+ 
++# --- run registry (§2 generation token) -------------------------------------
++
++def _registry_rows(store: EventLog, run_id: str) -> int:
++    with store.conn.cursor() as cur:
++        cur.execute("SELECT count(*) FROM runs WHERE run_id = %s", (run_id,))
++        return cur.fetchone()[0]
++
++
++def test_first_emit_registers_the_run(make_gateway):
++    """A run carries a generation token from its first event: the write path opens the
++    run when absent, so no run that has ever been emitted into is missing from `runs`
++    (and its restore-time `bump-generation` is therefore never inert)."""
++    gateway, store = make_gateway(run_id="reg-fresh")
++    assert store.generation() is None                         # fresh id: no token yet
++    unwrap(gateway.emit(actor=PLANNER, event_type="goal.received", payload={"text": "g"}))
++    assert store.generation() == 1
++
++
++def test_second_emit_leaves_the_registry_untouched(make_gateway):
++    """Opening is a no-op when present — one row, and no churn on every later emit."""
++    gateway, store = make_gateway(run_id="reg-twice")
++    gateway.emit(actor=PLANNER, event_type="goal.received", payload={"text": "a"})
++    gateway.emit(actor=PLANNER, event_type="goal.received", payload={"text": "b"})
++    assert store.generation() == 1
++    assert _registry_rows(store, "reg-twice") == 1
++
++
++def test_replayed_emit_registers_a_run_that_has_events_but_no_row(make_gateway):
++    """The state the durable run is actually in — events written before the write path
++    opened runs, so no registry row — closes on the NEXT emit whatever kind it is. A
++    replay (the common shape for an at-least-once caller) returns early without folding
++    or gating, so the open has to sit ahead of that early return or the one run this
++    order exists for stays tokenless and its restore-time bump stays inert."""
++    gateway, store = make_gateway(run_id="reg-replay")
++    kw = dict(actor=PLANNER, event_type="goal.received", payload={"text": "g"},
++              idempotency_key="k1")
++    first = unwrap(gateway.emit(**kw))
++    store.conn.execute("DELETE FROM runs WHERE run_id = %s", ("reg-replay",))
++    assert store.generation() is None                          # events, but no token
++    replay = gateway.emit(**kw)
++    assert isinstance(replay, Accepted)
++    assert replay.event.event_id == first.event_id             # still a replay, not a re-append
++    assert store.generation() == 1                             # ...and now registered
++    assert _registry_rows(store, "reg-replay") == 1
++
++
++def test_emit_into_a_registered_run_preserves_its_generation(make_gateway):
++    """Already-registered runs are unchanged — in particular an emit never resets the
++    generation a restore bumped, which would un-invalidate every stale cursor."""
++    gateway, store = make_gateway(run_id="reg-bumped")
++    store.open_run()
++    store.bump_generation()
++    assert store.generation() == 2
++    gateway.emit(actor=PLANNER, event_type="goal.received", payload={"text": "a"})
++    assert store.generation() == 2
++    assert _registry_rows(store, "reg-bumped") == 1
++
++
++def test_refused_emit_registers_the_run_too(make_gateway):
++    """A refusal still lands an event — the gateway.rejected feedback record (§5) — so
++    the run it landed in must carry a token as well."""
++    gateway, store = make_gateway(run_id="reg-refused")
++    res = gateway.emit(actor=COORD, event_type="task.assigned", task_id="t1",
++                       payload={"worker": "w1"})
++    assert isinstance(res, Rejected)
++    assert store.generation() == 1
++
++
++def test_registration_rolls_back_with_a_failed_append(make_gateway):
++    """Opening shares the event insert's transaction: a payload that fails structural
++    validation leaves no event AND no registry row (never a phantom generation)."""
++    gateway, store = make_gateway(run_id="reg-atomic")
++    with pytest.raises(ValidationError):
++        gateway.emit(actor=WORKER, event_type="task.reported", task_id="t1",
++                     payload={"ref": "not-a-ref", "kind": "finding"})
++    assert store.generation() is None
++    assert store.read_run() == []
++
++
+ # --- DB-side time (§6) ------------------------------------------------------
+ 
+ def test_server_time_is_monotonic_and_sets_wall(conn):

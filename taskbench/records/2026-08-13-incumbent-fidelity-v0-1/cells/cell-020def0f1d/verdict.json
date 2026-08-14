@@ -1,0 +1,50 @@
+{
+  "because": "review leg: reviewer produced no verdict.json",
+  "cell_id": "cell-020def0f1d",
+  "deterministic": {
+    "checks": [
+      {
+        "detail": "ok",
+        "exit_code": 0,
+        "id": "docs-index-complete",
+        "output_tail": "ok \u2014 57 file(s) under docs/, each accounted for exactly once\n",
+        "passed": true
+      },
+      {
+        "detail": "ok",
+        "exit_code": 0,
+        "id": "link-integrity",
+        "output_tail": "ok \u2014 72 relative link(s) in 51 file(s), none dangling\n",
+        "passed": true
+      },
+      {
+        "detail": "ok",
+        "exit_code": 0,
+        "id": "nothing-deleted",
+        "output_tail": "ok \u2014 all 55 baseline document(s) still present somewhere under docs/\n",
+        "passed": true
+      }
+    ],
+    "excluded_legs": [
+      {
+        "executed_by": "not-executed",
+        "leg": "Announce the result on the spine per WORKER.md.",
+        "reason": "A spine emit, which this instrument's own scope forbids. The report the order asks for IS written and graded \u2014 only the announcement is out of reach."
+      }
+    ],
+    "missing_artefacts": [],
+    "passed": true,
+    "stop_line_violations": [],
+    "untouched_required_changes": []
+  },
+  "passed": false,
+  "review": {
+    "defect_count": 0,
+    "passed": false,
+    "probe_ok": true,
+    "ran": true,
+    "reason": "reviewer produced no verdict.json",
+    "verdict": null
+  },
+  "task_id": "docs-triage"
+}

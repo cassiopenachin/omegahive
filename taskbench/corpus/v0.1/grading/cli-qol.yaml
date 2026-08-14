@@ -1,0 +1,21 @@
+# GRADER-ONLY. Never enters a candidate root and never enters a review packet.
+# Facts about what the closed outcome established, in outcome terms — never a
+# description of the historical patch, because exact-diff scoring is a stop-line.
+task_id: cli-qol
+accepted_outcome:
+- The canonical checkout path derives from the repository name rather than the project directory
+  name, with precedence unchanged and an unusable value refused rather than silently resolved.
+- A heading-less order launches, titled by task id; an unsafe multiplexer session name is refused
+  before any spine write.
+- 'Scoring is one act: the generators commit and push what they regenerate, scoped by pathspec,
+  and the close invokes scoring after its own emits — never able to make a completed close look
+  failed.'
+- The issued worker invocation is autonomous by default, with the override untouched.
+known_defect_classes:
+- Coupling the close to scoring in a way that lets a scoring failure fail the close.
+- A generator that writes outside the project's metrics directory, or commits a historical rebuild,
+  which rewinds the record.
+source_refs:
+- projects/omegahive/reports/2026-07-28-cli-qol-result.md
+historical_solution_sha: d50f7960744979816f9bdec91e793788fdf4c92a
+notes: HELD OUT. Reserved for zero-regression checks; never run as a qualification cell.

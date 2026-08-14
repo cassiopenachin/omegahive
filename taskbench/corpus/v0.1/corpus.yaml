@@ -1,0 +1,37 @@
+# taskbench corpus v0 — the frozen seed for HIP-1 M1b.
+#
+# Eight closed, bounded-class orders drawn from both the hive and its tenant project. Five
+# qualify models; three are RESERVED and may never be executed, entered into a
+# qualification launch packet, used to pick a canary, or used to tune a prompt or a rubric.
+# A task once used to tune can never be held out again, which is why the split is fixed
+# here, before the first cell, and why every qualification path refuses a reserved id.
+#
+# Composition, stated so no reader has to infer it: seven of the eight are hive
+# infrastructure and one is tenant work. The single tenant task is a cross-project
+# sentinel — it proves the instrument reaches a second repository, a second language
+# ecosystem and a different work shape. It is not evidence that this corpus represents
+# applied PLN research, and no aggregate over these tasks may be read that way.
+#
+# Changing anything under this directory after a cell has run against it increments
+# `corpus_version` and invalidates every earlier cell. `taskbench freeze` refuses to
+# re-freeze a version that a record already pins.
+
+corpus_version: v0.1
+frozen_on: '2026-08-13'
+description: Task-replay corpus v0.1. Same eight frozen tasks as v0; two method repairs after the
+  v0 incumbent run. Workspace documents an order names as deliverables are now the candidate's to
+  write and enter the diff and the review packet — v0 exported them read-only and captured none of
+  them, so a candidate that did that work was graded as not having attempted it. And a cell is now
+  one bounded pipeline (attempt, blinded review, at most one repair, all gates again, blinded confirmation)
+  rather than a single shot, because the accepted historical outcomes were themselves produced by
+  a worker plus review and repair.
+held_in:
+- launch-pane-fix
+- instrument-teeth
+- docs-triage
+- run-registration
+- ptc-revalidate
+held_out:
+- cli-qol
+- notifier-deep-links
+- port-sha-pin-fallback

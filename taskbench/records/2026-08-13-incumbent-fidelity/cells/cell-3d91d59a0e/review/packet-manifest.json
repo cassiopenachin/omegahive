@@ -1,0 +1,15 @@
+{
+  "cell_id": "cell-3d91d59a0e",
+  "inputs": [
+    "README.md",
+    "artefacts/scripts/hive-launch",
+    "artefacts/scripts/hive-tooling-drill.sh",
+    "candidate.patch",
+    "cell.json",
+    "order.md",
+    "packet-manifest.json",
+    "rubric.md",
+    "verifier/bash-syntax.log",
+    "verifier/shellcheck.log"
+  ]
+}

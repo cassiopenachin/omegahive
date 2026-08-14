@@ -1,0 +1,32 @@
+# GRADER-ONLY. Never enters a candidate root and never enters a review packet.
+# Facts about what the closed outcome established, in outcome terms — never a
+# description of the historical patch, because exact-diff scoring is a stop-line.
+task_id: launch-pane-fix
+accepted_outcome:
+- Window allocation can no longer land on an occupied index, under any tmux config, because the
+  target is resolved to a session explicitly and the slot is chosen by append rather than predicted.
+- A window already named for the task is refused, and the refusal names the recovery path; a second
+  window is never opened.
+- A pane failure that happens after the board is seeded prints the complete manual finish — including
+  the filled kickoff — and externalizes it to a file, so a half-launch is a documented recovery
+  rather than archaeology.
+- The operator-loop drill covers the occupied-index, pane-name-collision and half-launch cases and
+  stays green on every pre-existing lifecycle and refusal case.
+- The dead-worker recovery documentation carries the half-launched-task case.
+known_defect_classes:
+- A cleanup handler that can destroy shared state (a multiplexer server, a live session) installed
+  before the isolation it depends on — the closed review caught exactly this, introduced by the
+  change itself, while the drill was green.
+- Treating index omission as the fix. Targeting the session without an index is not sufficient;
+  append semantics are what make the slot free by construction.
+- Unquoted paths inside a printed recovery command, which makes the printed recovery un-runnable
+  on a path containing a space.
+source_refs:
+- projects/omegahive/reports/2026-07-28-launch-pane-fix-result.md
+- projects/omegahive/orders/2026-07-27-launch-pane-fix.md@a3d2740
+historical_solution_sha: d103048c5b78eebefff7c3f8d4b2f40d1f697baa
+notes: The historical solution sha is the second of two merges (the fix, then its review dispositions).
+  It exists here only to write the read-denial canary and to help an operator diagnose a red cell.
+  Nothing compares a candidate patch to it. Note that the order's own stated mechanism was wrong
+  — it blamed an explicit derived index, and no version of the launcher ever passed one — so a candidate
+  that re-derives the real mechanism is doing the task well, not going off-scope.

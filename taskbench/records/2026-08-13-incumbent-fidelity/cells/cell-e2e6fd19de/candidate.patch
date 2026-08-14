@@ -1,0 +1,392 @@
+diff --git a/docs/deployments/deployment-0-beastie.md b/docs/deployments/deployment-0-beastie.md
+index bb7ffeb..f10dace 100644
+--- a/docs/deployments/deployment-0-beastie.md
++++ b/docs/deployments/deployment-0-beastie.md
+@@ -84,12 +84,15 @@ signals `GENERATION_MISMATCH` to a stale-cursor port client, which re-snapshots
+ generation; and `deploy/phantom_ahead.sh` detected a deliberately-created phantom-ahead
+ workspace commit. Transcript: `hive-workspace: projects/omegahive/reports/2026-07-13-backups-restore-drill-evidence.md`.
+ 
+-**Open item — generation token not wired to the live run.** The `omegahive` run is not in
+-the `runs` registry (the `hive emit` write path never calls `open_run`), so a real restore's
+-generation bump is inert and the **interim floor governs: restore ⇒ restart every client, no
+-exceptions.** Registering the run (`omegahive.port.open_run`) activates the durable path; the
+-deeper fix is to open the run at project seed / in the emit path. Full restore + phantom-ahead
+-procedure: ops RUNBOOK (`hive-workspace: projects/omegahive/RUNBOOK.md`).
++**Generation token — wired on the write path (2026-07-21).** Every emit now registers its
++own run: the gateway opens it (idempotently) in the same transaction as the event insert, so
++a run carries a generation token from its first event and `bump-generation` is a live signal.
++The durable `omegahive` run predates this, so it enters the `runs` registry at its **first
++emit under a deployed image carrying the change** — or immediately, via the one-time
++`omegahive.port.open_run` line in the ops RUNBOOK. Until whichever comes first, its restore
++floor stays **restart every client**; confirm with `bump-generation --run-id omegahive`, which
++prints `run not registered` while the row is absent. Full restore + phantom-ahead procedure:
++ops RUNBOOK (`hive-workspace: projects/omegahive/RUNBOOK.md`).
+ 
+ ## Forward notes (arrive with later stages, not #0)
+ 
+diff --git a/docs/evidence/2026-07-21-run-registration-result.md b/docs/evidence/2026-07-21-run-registration-result.md
+new file mode 100644
+index 0000000..a44eaa5
+--- /dev/null
++++ b/docs/evidence/2026-07-21-run-registration-result.md
+@@ -0,0 +1,147 @@
++# Result — register the durable run (make the generation token real)
++
++**Task:** run-registration · **Order:** `hive-workspace: projects/omegahive/orders/2026-07-21-run-registration.md` · **Date:** 2026-07-21
++
++Filed in the code repo rather than the workspace: this task ran against a code checkout with
++no workspace write path (see **To operate** → item 3 for the workspace edits it owes).
++
++## What shipped
++
++**Code — branch `feature/run-registration`, off `main`:**
++
++- **The emit path opens its run** (`src/omegahive/gateway/gateway.py`, step 2a). Inside the
++  same `conn.transaction()` as the event insert, under the per-run advisory lock, the gateway
++  calls `EventLog.open_run()` — `INSERT INTO runs (run_id) VALUES (…) ON CONFLICT DO NOTHING`.
++  Every run touched by an emit therefore carries a generation token from its first event, and
++  `bump-generation` — the durable cursor-invalidation signal of a restore (port spec §2) — is
++  live for it. Placed in the gateway, not the CLI, so every governed write path inherits it:
++  `hive emit`, the port, the acceptance driver, the sim binding.
++  - **After the idempotency lookup:** a replay returns the existing event before the lock, as
++    before; its original emit already registered the run.
++  - **Before the gate:** a refusal still appends a `gateway.rejected` event (§5), so a rejected
++    emit registers the run too. The invariant is "a run with history has a generation" — a run
++    with events and no token is exactly the defect this order exists to fix.
++  - **Never touches `generation`**, only row existence. An emit into an already-registered run
++    cannot reset a bumped generation and so cannot un-invalidate cursors a restore just
++    invalidated.
++- **Tests** (`tests/test_run_registration.py`, red-green — all six failed before the gateway
++  change): four CLI-level, driving the real `omegahive emit` / `bump-generation` end-to-end
++  against live Postgres (fresh run id registers at generation 1; a second emit is a registry
++  no-op — one row, generation unchanged; `bump-generation` succeeds on that run; an emit into
++  an already-registered, twice-bumped run leaves generation at 3); two gateway-level (an emit
++  registers; a *rejected* emit registers).
++- **Docs — the inert-bump caveats retired.** `docs/omegahive_recovery_runbook.md` restore step
++  3 now describes the wired path and says what `run not registered` means when you still see
++  it (a run with no emit since this write path shipped) instead of declaring the durable signal
++  inert. `docs/deployments/deployment-0-beastie.md`'s "Open item — generation token not wired
++  to the live run" becomes a statement of the wired path plus the one remaining operator step
++  for the pre-existing `omegahive` run.
++
++**Not shipped:** the `omegahive` row itself. See **To operate** item 1 — it is an operator act
++that post-dates this result.
++
++## How verified
++
++CI-equivalent, host `uv run` against a scratch Postgres database (created for the run, dropped
++after; the durable database was never written to):
++
++- `ruff check .` clean · `mypy` clean (182 source files) · `pytest -q` — **408 passed**
++  (402 before; the 6 new ones are this task's). Run through `bin/bench-verify`.
++- Red-green: all six new tests fail against the pre-change gateway — no registry row, so
++  `EventLog.generation()` is `None` and `bump-generation` exits 1 — and pass after it.
++
++**Scratch-run transcript** (`omegahive` CLI against the scratch DB, run id
++`scratch-registration-0721`, `runs` queried directly):
++
++```
++--- before: registry row for the run ---
++[]
++emitted · task.reported · seq 3758
++--- after first emit ---
++[('scratch-registration-0721', 1)]
++emitted · task.reported · seq 3759
++--- after second emit (registry no-op) ---
++[(1, 1)]                                  # count(*), max(generation)
++generation bumped for 'scratch-registration-0721': 1 -> 2
++--- after bump ---
++[('scratch-registration-0721', 2)]
++emitted · task.reported · seq 3760
++--- emit after the bump: generation preserved ---
++[('scratch-registration-0721', 2)]
++
++$ omegahive bump-generation --run-id never-emitted-run
++run not registered (no generation): 'never-emitted-run'   # exit 1 — still refuses, never fabricates
++```
++
++First emit registers · second emit is a no-op · the bump succeeds on a run whose only history
++is emits · a later emit does not disturb the bumped generation · an untouched run is still
++refused. **The live run's generation was never bumped** (order stop-line): every bump above is
++against the scratch run.
++
++## To operate
++
++1. **Register the durable `omegahive` run.** The run predates this change, so it enters the
++   registry at its **first emit under a deployed image carrying this branch** — no action
++   needed beyond merging and deploying, then letting normal work emit once. To activate it
++   immediately instead (one-time, reversible), use the RUNBOOK one-liner:
++   ```sh
++   docker-compose run --rm --entrypoint python cli -c \
++     "from omegahive.db import connect; from omegahive.port import open_run
++   c=connect(); open_run(c,'omegahive'); c.commit(); print('registered')"
++   # reverse with:  psql ... -c "DELETE FROM runs WHERE run_id='omegahive'"
++   ```
++   Confirm either way — this is the query evidence the order's definition of done asks for:
++   ```sh
++   docker-compose exec postgres psql -U omegahive -c \
++     "SELECT run_id, generation, created_at FROM runs WHERE run_id='omegahive'"
++   ```
++   Until that row exists, `bump-generation --run-id omegahive` still prints `run not
++   registered` and the restore floor stays **restart every client**.
++2. **Nothing else changes operationally.** No schema change (the `runs` table is migration
++   0002's), no new env var, no new container. Existing deployments need only the new image.
++3. **Workspace RUNBOOK edit still owed** (this session had no workspace write path). In
++   `projects/omegahive/RUNBOOK.md` → "Backups and restore" → restore step 3, replace the
++   paragraph beginning "**Caveat (read this):** the bump only works if the run is *registered*"
++   with:
++
++   > **Registration:** the bump only works on a *registered* run — and every emit now registers
++   > its own run (the gateway opens it in the same transaction as the event), so any run with
++   > history carries a generation. If the command still prints `run not registered`, that run
++   > has had no emit since the write-path change of 2026-07-21: wire it with the one-time line
++   > below, or let its next emit do it, then bump.
++
++   The "wire the durable path" block below it stays — it is now the *immediate* activation
++   path for a pre-existing run, not the only one. Once the `omegahive` row exists, the
++   restart-every-client bullet stops being an interim floor and reads as belt-and-braces.
++4. **Branch not merged, not pushed** (no remote in this checkout): `feature/run-registration`,
++   two commits.
++
++## Reflection
++
++- **The gateway, not the CLI, is the place.** The order says "the emit path"; the finding named
++  `hive emit`. Registering in `Gateway.emit` covers `hive emit` *and* the port, the acceptance
++  driver, and the sim binding — one insert per emit under a lock the path already takes, and
++  the store stays dumb (it still only owns `open_run`; it does not decide when to call it).
++  `EventLog.append` was the alternative; it would also register runs written by the handful of
++  test-only direct-append callers, which is registration without governance and not what the
++  order asked for.
++- **Rejections register too, deliberately.** A refused emit still appends a `gateway.rejected`
++  event, so the run has history that a restore can rewind, and cursors reading it need the
++  invalidation signal. Registering only on accept would leave a run whose entire log is
++  refusals in exactly the state this order calls a defect. One test pins it.
++- **The order's item 2 cannot close inside a code checkout.** Registering the live run is a
++  live-spine mutation (or a merged-and-deployed image plus one emit) — an operator act, as the
++  2026-07-13 report already recorded when it refused the same step. The docs are written so
++  they are true *both* before and after that act happens: they describe the wired write path
++  and tell the reader exactly what `run not registered` means if they still see it, rather than
++  asserting a row that does not yet exist. The report's **To operate** item 1 carries the query
++  the definition of done wants run.
++- **Two docs carried the caveat, not one.** The order names
++  `docs/omegahive_recovery_runbook.md`; `docs/deployments/deployment-0-beastie.md` carried the
++  same finding as an "Open item" and would have been left asserting "the `hive emit` write path
++  never calls `open_run`" — false as of this branch. Updated both.
++- **`bump-generation`'s refusal is load-bearing and stays.** It is tempting, once emit
++  registers runs, to have the bump open-then-bump. It must not: fabricating a generation for a
++  run with no history would hand a client a token for a log the operator may have mistyped the
++  id of. The existing test pinning the refusal (`test_bump_generation_cli.py`) is unchanged and
++  still passes.
+diff --git a/docs/omegahive_recovery_runbook.md b/docs/omegahive_recovery_runbook.md
+index 51ff606..0280061 100644
+--- a/docs/omegahive_recovery_runbook.md
++++ b/docs/omegahive_recovery_runbook.md
+@@ -87,12 +87,15 @@ silently skip events. Follow the ordering exactly.
+      ```sh
+      docker compose run --rm cli bump-generation --run-id <run>
+      ```
+-     The bump only works on a *registered* run; it refuses one that was never opened
+-     (`run not registered`). The durable `omegahive` project run is currently unregistered
+-     — the `hive emit` write path never opens runs — so the bump is inert until the run is
+-     registered out of band (`omegahive.port.open_run`). See the ops RUNBOOK for the
+-     one-liner; until then the restart floor below is the operative path.
+-   - **Restart *every* client** — the always-safe interim floor, independent of the token.
++     Every emit registers its own run — the gateway opens it (idempotently) in the same
++     transaction as the event insert — so a run carries a generation from its first event
++     and the bump is a live signal, not a no-op. The command still refuses an *unregistered*
++     run (`run not registered`) rather than fabricating a generation: that answer means the
++     run has had no emit since this write path shipped (2026-07-21). Register it out of band
++     with `omegahive.port.open_run` — one-liner in the ops RUNBOOK — or let its next emit do
++     it, then bump.
++   - **Restart *every* client** — the always-safe belt-and-braces step, independent of the
++     token, and the whole invalidation story for any run the bump refuses.
+ 4. **Restart** coordinators/workers; each re-snapshots through the port.
+ 
+ Verify a restore reproduces the board: deployment check 3 (`scripts/deploy_checks.sh`)
+diff --git a/src/omegahive/gateway/gateway.py b/src/omegahive/gateway/gateway.py
+index 9b81ce6..7f86a5d 100644
+--- a/src/omegahive/gateway/gateway.py
++++ b/src/omegahive/gateway/gateway.py
+@@ -88,7 +88,9 @@ class Gateway:
+         logical_ts: int | None = None,
+         idempotency_key: str | None = None,
+     ) -> EmitResult:
+-        """The write path (§3): one atomic, per-run-serialized unit. conn.transaction()
++        """The write path (§3): one atomic, per-run-serialized unit — and the run's
++        idempotent registration, so every run carries a generation token (§2) from its
++        first event. conn.transaction()
+         commits per emit when the connection has no open transaction (the port / CLI),
+         and nests as a savepoint when one does (unit tests roll the outer one back)."""
+         conn = self._store.conn
+@@ -102,6 +104,13 @@ class Gateway:
+                         return Accepted(existing)
+                 # 2. serialize per run: advisory lock keyed in Postgres (never Python hash()).
+                 conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (self._store.run_id,))
++                # 2a. open the run in THIS transaction (ON CONFLICT DO NOTHING) so it
++                # carries a generation token from its first event — accepted op or
++                # recorded refusal alike. A run whose only write path is `emit` would
++                # otherwise never enter the registry, leaving a restore's generation bump
++                # inert for it (§2) and restart-every-client the sole invalidation. Never
++                # touches `generation`: an emit cannot un-invalidate a restore's bump.
++                self._store.open_run()
+                 # 3. fold + gate against the run prefix under the lock.
+                 board = fold(self._store.read_run())
+                 rej = self._gate(board, actor, event_type, payload, task_id)
+diff --git a/tests/test_run_registration.py b/tests/test_run_registration.py
+new file mode 100644
+index 0000000..53cbf69
+--- /dev/null
++++ b/tests/test_run_registration.py
+@@ -0,0 +1,152 @@
++"""Run registration on the write path: an emit opens its own run (§2 generation token).
++
++The registry row is what makes `bump-generation` — the durable cursor-invalidation
++signal of a restore — mean anything: an unregistered run has no generation to bump, so
++the only correct post-restore floor is "restart every client". Before this, `hive emit`
++(the only write path the durable project run has) never called `open_run`, so the one
++run that mattered carried no token.
++
++The CLI-level tests drive the real `omegahive emit` command end-to-end (it opens its own
++connection and commits for real, outside the per-test rollback fixture), so they point
++`connect()` at the test DB and delete the run's events + registry row on teardown. The
++gateway-level tests use the rolled-back `conn` fixture.
++"""
++
++from __future__ import annotations
++
++import os
++
++import pytest
++from typer.testing import CliRunner
++
++from omegahive import cli
++from omegahive.clock import LogicalClock
++from omegahive.db import connect
++from omegahive.events.envelope import Actor
++from omegahive.events.log import EventLog
++from omegahive.gateway import Rejected
++
++TEST_DATABASE_URL = os.environ.get(
++    "OMEGAHIVE_TEST_DATABASE_URL",
++    "postgresql://omegahive:omegahive@localhost:5432/omegahive_test",
++)
++
++runner = CliRunner()
++RUN = "cli-registration-test"
++REF = "docs/omegahive_ui_spec.md@" + "abcdef12" * 5  # a well-formed path@<40-hex-sha>
++
++PLANNER = Actor(role="planner", id="planner")
++WORKER = Actor(role="worker", id="w1")
++
++
++@pytest.fixture
++def cli_db(monkeypatch):
++    """Point the CLI's connection at the test DB; drop this run's events AND its registry
++    row on teardown (the registry row is exactly what these tests create)."""
++    monkeypatch.setattr(cli, "connect", lambda *a, **k: connect(TEST_DATABASE_URL))
++    yield
++    c = connect(TEST_DATABASE_URL)
++    try:
++        with c.transaction():
++            c.execute("DELETE FROM events WHERE run_id = %s", (RUN,))
++            c.execute("DELETE FROM runs WHERE run_id = %s", (RUN,))
++    finally:
++        c.close()
++
++
++def _generation() -> int | None:
++    c = connect(TEST_DATABASE_URL)
++    try:
++        return EventLog(c, LogicalClock(0), RUN).generation()
++    finally:
++        c.close()
++
++
++def _registry_rows() -> int:
++    c = connect(TEST_DATABASE_URL)
++    try:
++        row = c.execute("SELECT count(*) FROM runs WHERE run_id = %s", (RUN,)).fetchone()
++        assert row is not None  # count(*) always returns a row
++        return int(row[0])
++    finally:
++        c.close()
++
++
++def _emit(kind: str = "result"):
++    """One governed emit through the real CLI. `kind` varies the payload so a second
++    call is a genuinely new event, not a content+basis idempotency dedup."""
++    return runner.invoke(cli.app, [
++        "emit", "--run-id", RUN, "--role", "worker", "--actor", "w1",
++        "--type", "task.reported", "--task", "t1",
++        "--payload", f'{{"ref": "{REF}", "kind": "{kind}"}}',
++    ])
++
++
++# --- the emit path opens the run --------------------------------------------
++
++def test_first_emit_registers_the_run(cli_db):
++    """A fresh run id has no registry row; its first emit gives it one at generation 1."""
++    assert _generation() is None
++
++    r = _emit()
++    assert r.exit_code == 0, r.output
++    assert _generation() == 1
++
++
++def test_second_emit_is_a_registry_no_op(cli_db):
++    """Registration is ON CONFLICT DO NOTHING: later emits neither duplicate the row nor
++    disturb the generation."""
++    assert _emit().exit_code == 0
++    assert _emit("finding").exit_code == 0
++
++    assert _registry_rows() == 1
++    assert _generation() == 1
++
++
++def test_bump_generation_succeeds_on_an_emitted_run(cli_db):
++    """The point of the whole change: the restore step's durable signal now works on a
++    run whose only history is emits."""
++    assert _emit().exit_code == 0
++
++    r = runner.invoke(cli.app, ["bump-generation", "--run-id", RUN])
++    assert r.exit_code == 0, r.output
++    assert "1" in r.output and "2" in r.output  # old -> new reported
++    assert _generation() == 2
++
++
++def test_already_registered_run_keeps_its_generation(cli_db):
++    """An emit into an already-registered run changes nothing in the registry — in
++    particular it never resets a bumped generation back to 1 (that would silently
++    un-invalidate every cursor the restore just invalidated)."""
++    assert _emit().exit_code == 0
++    assert runner.invoke(cli.app, ["bump-generation", "--run-id", RUN]).exit_code == 0
++    assert runner.invoke(cli.app, ["bump-generation", "--run-id", RUN]).exit_code == 0
++    assert _generation() == 3
++
++    assert _emit("finding").exit_code == 0
++    assert _generation() == 3
++    assert _registry_rows() == 1
++
++
++# --- gateway level ----------------------------------------------------------
++
++def test_gateway_emit_registers_the_run(make_gateway):
++    """Registration happens in the gateway's emit transaction, so every governed write
++    path inherits it — not just the CLI."""
++    gateway, store = make_gateway(run_id="gw-registration-test")
++    assert store.generation() is None
++
++    gateway.emit(actor=PLANNER, event_type="goal.received", payload={"text": "g"})
++    assert store.generation() == 1
++
++
++def test_rejected_emit_also_registers_the_run(make_gateway):
++    """A refusal still appends an event (gateway.rejected, §5), so the run has history —
++    and a run with history must carry a generation, or a restore cannot invalidate the
++    cursors reading it."""
++    gateway, store = make_gateway(run_id="gw-registration-reject-test")
++    result = gateway.emit(actor=WORKER, event_type="goal.received", payload={"text": "g"})
++
++    assert isinstance(result, Rejected)
++    assert [e.event_type for e in store.read_run()] == ["gateway.rejected"]
++    assert store.generation() == 1

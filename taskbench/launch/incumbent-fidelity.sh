@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+# incumbent-fidelity.sh — the whole HIP-1 M1b incumbent fidelity batch, one command, no arguments.
+#
+#   taskbench/launch/incumbent-fidelity.sh
+#
+# Running this IS the approval. It never asks again, never edits anything you would have to
+# review first, and never lets you pick a record id — picking one is an opportunity to
+# overwrite history. It generates the runner config, resolves a fresh record id, and hands
+# both to `taskbench run`, which refuses loudly before the first model call unless every
+# locally checkable precondition agrees.
+#
+# It deliberately does NOT live in production `scripts/`: that surface is refused for this
+# task, and this is evaluation machinery, not operator loop tooling.
+#
+# Never: touches or switches the canonical checkout, overwrites an earlier record, prints a
+# credential, or runs a held-out task. An interruption keeps every completed cell and every
+# raw log, and says so.
+
+set -euo pipefail
+
+# --- what this batch is ------------------------------------------------------------------
+# Corpus v0.1: the same eight frozen tasks as v0, with the workspace-capture repair and the
+# one review-and-repair cycle. The hash is a literal on purpose — if the corpus moves, this
+# refuses rather than quietly measuring something else.
+readonly EXPECT_CORPUS_HASH="sha256:6bdbb73352bcf61bddef97ddd50c51d3dc1cdf283a42648ceb1086bab0a23085"
+readonly RECORD_BASE="incumbent-fidelity-v0-1"
+readonly MODEL_ALIAS="opus"          # a request; the resolved id is read back from the harness
+readonly VENDOR="anthropic"
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+readonly REPO_ROOT
+readonly RECORDS_DIR="$REPO_ROOT/taskbench/records"
+readonly WORK_BASE="${TASKBENCH_WORK_BASE:-$HOME/work/taskbench}"
+
+say()  { printf '%s\n' "$*"; }
+step() { printf '\n== %s\n' "$*"; }
+die()  { printf '\nREFUSED: %s\n' "$*" >&2; exit 1; }
+
+need() { command -v "$1" >/dev/null 2>&1 || die "\`$1\` is not on PATH; $2"; }
+
+# --- the few things that must hold before we can even build the config --------------------
+step "Checking the launch surface"
+
+need claude "the candidate and the reviewer are both Claude Code sessions"
+need uv     "taskbench runs under uv"
+need bwrap  "the reviewer's cold-reader sandbox needs it"
+need git    "the materializer exports pre-task trees with it"
+
+HARNESS_VERSION_RAW="$(claude --version 2>/dev/null | head -1)" || true
+[ -n "$HARNESS_VERSION_RAW" ] || die "\`claude --version\` printed nothing; cannot pin the harness"
+# "2.1.231 (Claude Code)" -> "claude-code-2.1.231". Read at launch, never remembered: the
+# binary is a symlink that moves under you.
+HARNESS_VERSION="claude-code-$(printf '%s' "$HARNESS_VERSION_RAW" | awk '{print $1}')"
+readonly HARNESS_VERSION
+say "harness:  $HARNESS_VERSION  (from \`claude --version\`: $HARNESS_VERSION_RAW)"
+say "repo:     $REPO_ROOT"
+
+# The resolver's runtime directory, when /etc/resolv.conf points into it. Without this the
+# reviewer's sandbox resolves nothing and every review leg hangs until its timeout; the
+# preflight proves reachability either way, this is what makes it pass.
+RESOLVER_BIND=""
+if [ -L /etc/resolv.conf ]; then
+  resolv_target="$(readlink -f /etc/resolv.conf || true)"
+  case "$resolv_target" in
+    /run/*) RESOLVER_BIND="$(dirname "$resolv_target")" ;;
+  esac
+fi
+readonly RESOLVER_BIND
+
+CLAUDE_BIN="$(command -v claude)"
+CLAUDE_HOME="$(dirname "$(readlink -f "$CLAUDE_BIN")")"
+readonly CLAUDE_BIN CLAUDE_HOME
+
+# --- a fresh record id, chosen here so nobody has to ---------------------------------------
+step "Reserving a record"
+
+read -r RECORD_ID SUPERSEDES <<<"$(cd "$REPO_ROOT" && uv run --frozen taskbench next-record-id \
+  --base "$RECORD_BASE" --out "$RECORDS_DIR")"
+readonly RECORD_ID SUPERSEDES
+WORK_ROOT="$WORK_BASE/$RECORD_ID"
+readonly WORK_ROOT
+
+say "record:   $RECORD_ID"
+if [ "$SUPERSEDES" != "-" ]; then
+  say "NOTE:     this supersedes $SUPERSEDES, which is kept unmodified."
+  say "          A rerun must be able to name the package defect that made it necessary;"
+  say "          a rerun that cannot is a model result being re-rolled."
+fi
+say "work:     $WORK_ROOT"
+
+# Finishing an interrupted batch stays a no-argument command: any cell of an earlier record
+# that produced a REAL verdict — green or red — is carried forward, and only the ones the
+# environment killed are run again. Re-running a genuine red would be re-rolling for a better
+# number; re-running a rate-limited cell is just finishing the work.
+read -r RESUME_FROM RESUME_COUNT <<<"$(cd "$REPO_ROOT" && uv run --frozen taskbench resume-target \
+  --base "$RECORD_BASE" --out "$RECORDS_DIR")"
+readonly RESUME_FROM RESUME_COUNT
+if [ "$RESUME_FROM" != "-" ]; then
+  say "resume:   carrying $RESUME_COUNT conclusive cell(s) forward from $(basename "$RESUME_FROM")"
+  say "          only the cells the environment killed are run again"
+fi
+
+mkdir -p "$WORK_ROOT" "$RECORDS_DIR"
+
+# --- the config: every argument for all five cells and all five reviews --------------------
+step "Generating the runner config"
+
+CONFIG="$WORK_ROOT/runner-config.yaml"
+readonly CONFIG
+
+{
+  printf '# Generated by taskbench/launch/incumbent-fidelity.sh — do not hand-edit.\n'
+  printf '# Regenerate by re-running the launcher; it picks a new record id each time.\n'
+  printf 'agent:\n'
+  printf '  argv: ["%s", "--model", "%s", "--print", "--output-format", "json",\n' \
+         "$CLAUDE_BIN" "$MODEL_ALIAS"
+  printf '         "--permission-mode", "auto"]\n'
+  printf '  labels: {vendor: "%s", model: "%s", harness: "%s"}\n' \
+         "$VENDOR" "$MODEL_ALIAS" "$HARNESS_VERSION"
+  printf '  result_envelope: claude-code-json\n'
+  printf '  env_passthrough: ["HOME", "PATH", "LANG", "TERM", "XDG_RUNTIME_DIR"]\n'
+  printf '  cwd: code\n'
+  printf '  timeout_s: 7200\n'
+  printf '  prompt_mode: argv\n'
+  printf 'reviewer:\n'
+  printf '  argv: ["%s", "--model", "%s", "--print", "--output-format", "json",\n' \
+         "$CLAUDE_BIN" "$MODEL_ALIAS"
+  printf '         "--permission-mode", "auto"]\n'
+  printf '  labels: {vendor: "%s", model: "%s", harness: "%s"}\n' \
+         "$VENDOR" "$MODEL_ALIAS" "$HARNESS_VERSION"
+  printf '  result_envelope: claude-code-json\n'
+  printf '  env_passthrough: ["LANG", "TERM"]\n'
+  printf '  timeout_s: 3600\n'
+  printf '  prompt_mode: argv\n'
+  printf '  sandbox_home: "%s"\n' "$HOME"
+  printf '  sandbox_ro_binds:\n'
+  printf '    - "%s"\n' "$CLAUDE_HOME"
+  printf '    - "%s"\n' "$(dirname "$CLAUDE_BIN")"
+  [ -n "$RESOLVER_BIND" ] && printf '    - "%s"\n' "$RESOLVER_BIND"
+  printf '  sandbox_rw_binds:\n'
+  printf '    - "%s/.claude"\n' "$HOME"
+  printf '    - "%s/.claude.json"\n' "$HOME"
+  printf 'workspace_repo_path: "%s"\n' "${TASKBENCH_WORKSPACE:-$REPO_ROOT/../hive}"
+  printf 'source_repos:\n'
+  printf '  cassiopenachin/omegahive: "%s"\n' "$REPO_ROOT"
+  printf '  cassiopenachin/plnbench: "%s"\n' "${TASKBENCH_PLNBENCH:-$HOME/src/SNET/plnbench}"
+  printf '  rTreutlein/PeTTaChainer: "%s"\n' "${TASKBENCH_PETTACHAINER:-$HOME/src/SNET/PeTTaChainer}"
+  printf '  trueagi-io/PeTTa: "%s"\n' "${TASKBENCH_PETTA:-$HOME/src/SNET/PeTTa}"
+} > "$CONFIG"
+
+say "config:   $CONFIG"
+say "candidate and reviewer are separate fresh sessions on \`--model $MODEL_ALIAS\`;"
+say "the resolved model id is read back from each run's own report, never inferred."
+
+# --- run ------------------------------------------------------------------------------------
+# shellcheck disable=SC2329  # invoked by the trap below
+on_interrupt() {
+  printf '\n\nINTERRUPTED.\n' >&2
+  printf 'Every completed cell and every raw log are kept:\n' >&2
+  printf '  record %s/%s-%s\n' "$RECORDS_DIR" "$(date +%F)" "$RECORD_ID" >&2
+  printf '  cells  %s\n' "$WORK_ROOT" >&2
+  printf 'Nothing is restarted or overwritten. Re-running the launcher opens a NEW record\n' >&2
+  printf 'that supersedes this one; the partial record stays exactly as it is.\n' >&2
+  exit 130
+}
+trap on_interrupt INT TERM
+
+step "Preflight, then five cells and five blinded reviews"
+say "Nothing has called a model yet. Preflight runs first and refuses if anything disagrees."
+
+set +e
+(
+  cd "$REPO_ROOT" || exit 1
+  args=(
+    --config "$CONFIG"
+    --record-id "$RECORD_ID"
+    --work-root "$WORK_ROOT"
+    --out "$RECORDS_DIR"
+    --expect-corpus-hash "$EXPECT_CORPUS_HASH"
+  )
+  [ "$SUPERSEDES" != "-" ] && args+=(--supersedes "$SUPERSEDES")
+  [ "$RESUME_FROM" != "-" ] && args+=(--resume-from "$RESUME_FROM")
+  uv run --frozen taskbench run "${args[@]}"
+)
+status=$?
+set -e
+
+RECORD_DIR="$RECORDS_DIR/$(date +%F)-$RECORD_ID"
+
+step "Status"
+case "$status" in
+  0)
+    say "EVERY CELL HAS A VERDICT AND THE RECORD VALIDATES."
+    say ""
+    say "Read the headline in:  $RECORD_DIR/aggregate.md"
+    say "Fidelity is green only at 5/5 CONCLUSIVE cells. A cell the environment killed"
+    say "(a rate limit, an auth failure, a reviewer that never answered) is reported"
+    say "INCONCLUSIVE, not red: it is not a model result. Re-run this same command to finish"
+    say "those — the conclusive cells are carried forward, not repeated."
+    say ""
+    say "Anything less than 5/5 for a real reason stops HIP-1 M1b at diagnosis: repair the"
+    say "package, the verifier or the grader and re-run — never the task or the pass rule."
+    ;;
+  3)
+    say "PREFLIGHT REFUSED. No model was called, nothing was written, nothing to clean up."
+    say "Fix what it listed above and run this same command again."
+    ;;
+  *)
+    say "THE BATCH STOPPED (exit $status)."
+    say ""
+    say "Everything that completed is kept and nothing was overwritten:"
+    say "  record $RECORD_DIR"
+    say "  cells  $WORK_ROOT"
+    say "Check the record with:"
+    say "  cd $REPO_ROOT && uv run --frozen taskbench validate-record $RECORD_DIR"
+    say "Re-running the launcher opens a NEW record superseding this one."
+    ;;
+esac
+
+exit "$status"

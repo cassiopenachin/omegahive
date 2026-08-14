@@ -1,0 +1,173 @@
+diff --git a/projects/omegahive/reports/2026-08-13-docs-triage-result.md b/projects/omegahive/reports/2026-08-13-docs-triage-result.md
+new file mode 100644
+index 0000000..23bfbe1
+--- /dev/null
++++ b/projects/omegahive/reports/2026-08-13-docs-triage-result.md
+@@ -0,0 +1,167 @@
++# docs-triage — result
++
++Order: `projects/omegahive/orders/2026-07-28-docs-triage.md`. Repo: `omegahive`, branch
++`docs-triage` (6 commits, `823f019..5d0d733`). **Not merged and not pushed** — merging is the
++operator's act, and this clone has no remote.
++
++## What shipped
++
++**1. The triage, applied.** Fourteen surveyed docs; thirteen moved or labelled as the order
++directs, one kept in place on the order's own conservative-on-doubt rule.
++
++| Verdict | Doc | Where it is now |
++|---|---|---|
++| Reference | `omegahive_spec_1_1.md` | `docs/reference/` — labelled *reference source* |
++| Reference | `omegahive_port_spec.md` | `docs/reference/` — *shipped build spec; semantics normative, framing historical* |
++| Reference | `omegahive_stage2_verdict.md` | `docs/reference/` — *decision record; it governs, and it describes the past* |
++| Deployment record | `omegahive_remote_access_spec.md` | `docs/deployments/` — *deployment-#0 practice* |
++| Archive | `omegahive_omegaclaw_binding.md` | `docs/archive/` — *decided deliberation*, D2 adopted, decision now in design §3.4 + the port spec |
++| Archive | `omegahive_stage2_spec.md` | `docs/archive/` — *closed ladder*, companion to `ladder/records/` |
++| **Archive → kept in place** | `omegahive_hive_user_migration.md` | `docs/` — see the deviation below |
++| Keep-current | `design_1_1`, `deployment_spec`, `test_plan`, `hive_native_ops`, `session_agents`, `ui_spec`, `recovery_runbook`, both `deployments/` records | unchanged in place; stale headers refreshed |
++
++Status headers touched on the keep-current side: `ui_spec` said **"v0.1 DRAFT — for discussion"**
++while the UI has been serving since Jul 8 and gained the portfolio entry point on Jul 28 — now
++"v0.1 — current, and shipped", with the write path marked as the part that is designed and not
++built. `recovery_runbook` had **no Status header at all** — it has one. `deployment_spec` §7
++carries a completed-milestone note (Beastie: acceptance and checks 1–5 green, Jul 7), pointing at
++the deployment record for what Beastie actually is. The other five keep-current headers were
++accurate and were left alone.
++
++**2. The deviation — `omegahive_hive_user_migration.md` is not archived.** The verdict reads
++"executed procedure"; the document says otherwise. Its own revision record states that Parts A–C
++(the additive prep) ran live on Beastie and that **Part D, the cutover, is written and
++deliberately unexecuted**; its opening says OS separation is item 2 of the still-open Phase 2
++identity gate; and two live callers route the operator into it — `docs/omegahive_recovery_runbook.md`
++§6 ("a change of account… has its own procedure") and the `deploy/hive-user/` scripts, whose
++header comments cite it as the document they implement. Archiving a half-run migration would bury
++the half that has not happened. Per the order's stop-line the doc stays in place and gained a
++Status header saying exactly that: current, partially executed, Part D outstanding. **If the
++intent was that Part D has since run, this is a one-line correction and the move is trivial.**
++
++**3. `docs/INDEX.md`** — one line per doc: what it is, what it has authority over, where it
++stands. Workspace-INDEX format. Every file under `docs/` appears exactly once; `archive/`,
++`evidence/` and `whitepaper/` are indexed as wholes, as the order permits. Sections: start-here,
++the current operating set, deployment records, reference, work orders, directories-as-wholes.
++
++**4. Convention notes** — two-line READMEs in `docs/archive/` ("superseded and closed docs land
++here") and `docs/reference/` ("normative-or-historical sources; consult, don't start here"), each
++deferring to the doc's own Status header and pointing at the INDEX.
++
++**5. Link integrity** — every markdown link and every `docs/…` path in the tree resolves. This
++also repaired **14 pre-existing dangling links inside `docs/archive/`** that the previous archive
++pass left behind (archived docs still linking `omegahive_design_1_1.md` as a sibling, and one
++pointing at a doc that has since moved to `evidence/`). Three references outside `docs/` also
++moved with the files: `README.md`, `ladder/README.md`, `ladder/report.py`.
++
++**6. Eight docs the survey never covered.** `docs/` holds 22 top-level `omegahive_*.md` files, not
++the ~14 the order describes; the eight self-contained work orders and post-audit fix lists
++(`o2_fork_patches`, `port_fixes_D1-D5`, `stage2_fixes_A1-A4`, `v3_fixes_B1-B6`,
++`v3_kb_persona_brief`, `c2_v0a_v2_order`, `v0b_order`, plus `c2_battery_spec`, which the survey
++did cover) carry no triage verdict. They are indexed and each got one Status line — *executed*,
++with what proves it in the code, or *OPEN*, with what it waits on — and none was moved. Verified
++against the tree rather than asserted: D1's fresh-transaction recovery is in `gateway.py`, A1's
++k-of-n prune guard in `legality.py`, the `UNKNOWN_WORKER` roster in the substrate, the
++`coordinator-v2` persona and KB in `qual/`, and no `qual/records/*-v0a-r2` exists, which is why
++v0a-v2 and the v0b gate it blocks are both marked open.
++
++**7. `scripts/check_docs.py`** — the link-and-index check, so "zero dangling" is re-runnable
++rather than a claim in this report. No dependencies, no database, no network.
++
++**8. README** — the repo-map block now shows the `docs/` layout (`INDEX.md`, `reference/`,
++`deployments/`, `evidence/`, `archive/`, `whitepaper/`), the paragraph under it points at the
++INDEX first and names the Status-header convention and the checker.
++
++## How verified
++
++**Link check — method and result.** `python3 scripts/check_docs.py`, run through `bench-verify`:
++**127 references checked, 0 dangling; 58 files under `docs/`, 27 index entries, 0 problems.** The
++checker enforces two properties: (a) every markdown link in every tracked `.md`, and every
++`docs/…` path written anywhere in the tree (README, shell scripts, module docstrings), resolves
++to a file that exists; (b) every file under `docs/` is named exactly once by an index entry — a
++bullet opening with its path in backticks — or by a directory entry covering it. Fenced code
++blocks are skipped (a `PAYLOADS[event_type](**payload)` line parses as a markdown link
++otherwise), and pinned `path@sha` refs are excluded, since those name a path at a commit, not at
++HEAD. Deliberately outside the enforced set: shorthand module names (`board/legality.py`),
++container paths, and paths into other repos — enforcing those buys noise, not integrity. They are
++reported by `--advisory`, which also lists the 62 places a doc is named without a path; all of
++them are unambiguous, and the INDEX is the redirect.
++
++**Manual verification of the triage itself.** Each verdict was read against the document before
++acting: the `hive_user_migration` verdict was contradicted by its own revision record (above); the
++other thirteen held. Status claims in the INDEX were checked against the tree, not inferred from
++the docs (see item 6).
++
++**Review.** One bounded `/code-review` pass at low effort against the code clone — matched to a
++diff that is moves, headers and one 164-line script. One finding, accepted and fixed in
++`5d0d733`: `check_docs.py` read `git ls-files` split on whitespace, which would shred any tracked
++path containing a space; it now reads NUL-separated. Latent today (no such path exists), real on
++the first one. No other findings.
++
++**Not run: the repo test suite.** `pytest` needs live Postgres and this task's environment has
++none; `uv sync` needs the network. Nothing in the diff touches importable code — the only
++non-documentation change is a new standalone script, and the two `ladder/` edits are a README line
++and a docstring path. `ruff check scripts/check_docs.py` passes against the repo's config; `mypy`
++does not cover `scripts/`.
++
++## To operate
++
++- **The branch is `docs-triage` in the code clone, unmerged.** Review and merge it as the usual
++  PR; nothing in it needs a deploy, a restart, or a migration.
++- **Re-run the check any time:** `python3 scripts/check_docs.py` from the repo root (add
++  `--advisory` for the name-mention list). Exit 0 means zero dangling references and a complete,
++  non-duplicating index. **It is not wired into CI** — one step in `.github/workflows/ci.yml`
++  beside ruff would make link integrity standing rather than per-pass, but adding a CI gate was
++  outside a moves-and-labels order, so it is yours to decide.
++- **Two decisions are yours, both cheap:**
++  1. `omegahive_hive_user_migration.md` stayed in `docs/`. If Part D has run since the survey,
++     say so and it moves to `docs/archive/` with a one-line header correction.
++  2. The eight unsurveyed work orders stayed in `docs/` with honest Status lines. The five
++     executed ones are archive candidates on the same convention that archived `stage2_spec`; the
++     two open ones are not, and `c2_battery_spec` is current. That is a survey verdict, not
++     mine to invent.
++- **Coordination with readme-restructure:** this touched exactly two places in `README.md` — the
++  fenced repo-map block and the paragraph immediately after it — plus three inline doc links
++  (lines 5, 35, 280) whose targets moved. Whichever lands second reconciles those; the INDEX is
++  the redirect for any pointer that goes stale.
++- **The result announcement is not emitted.** This instrument's scope forbids spine emits, so the
++  `task.result_posted` for this report has to come from elsewhere.
++
++## Reflection
++
++**The order's own numbers were the most useful input and the least reliable one.** "~14 top-level
++`omegahive_*.md` files" is what the survey saw; the directory holds 22. The eight it missed are a
++coherent class — self-contained work orders and post-audit fix lists — which is probably why they
++fell out of a survey framed around "three eras" of specs. They are exactly the docs an outsider
++most misreads, because a file called `omegahive_v0b_order.md` looks identical whether it shipped
++last month or is still waiting on a gate. The cheap fix (one Status line each, verified against
++the code) is in; the disposition question is left open rather than answered by a worker who did
++not run the survey.
++
++**The named seam fired, and the doc's own revision record is what caught it.** The triage called
++`hive_user_migration` an executed procedure; its last paragraph says Part D is deliberately
++unexecuted. Reading the *end* of a long document is what distinguished a closed procedure from a
++half-run one — the head of the file reads entirely like a finished migration. Worth generalizing:
++a survey verdict of "executed" should be checked against the doc's revision record and its
++callers, not its opening.
++
++**The spend the prediction did not name was validation, not moves.** The order priced this as
++"mechanical moves, one index, link verification," with link-chasing as the thing keeping it off
++the median floor. The moves were six `git mv`s. What actually consumed the work was checking each
++verdict against its document and each status claim against the code — is the UI really shipped, is
++D1 really in `gateway.py`, does a `v0a-r2` record exist — because the INDEX's whole value is that
++its status column is true. Link-chasing was cheap once written as a script; the script also found
++14 dangling links the order did not know about, all of them created by the *previous* archive
++pass, which is the strongest argument for wiring the check into CI.
++
++**A deliberate scope call.** The order says moves and labels only. A committed checker is neither,
++but the definition of done asks for a recorded link-check method, and "I ran a grep" is not a
++method the next docs pass can re-run. One script with no dependencies seemed a better answer than
++a paragraph of instructions; the CI step that would make it binding is left as a proposal above,
++not taken.
++
++**Effort:** first to last commit on the branch spans **18:12 to 18:21** (`git log` committer
++timestamps, `823f019..5d0d733`), which measures the commit window, not the reading that preceded
++it — the survey validation above happened before the first commit and is not in that span. Six
++commits at real boundaries: moves, labels+links, INDEX+checker, README, the unsurveyed eight, the
++review fix.

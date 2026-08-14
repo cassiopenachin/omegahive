@@ -1,0 +1,74 @@
+# taskbench corpus v0 — manifest for docs-triage. Frozen; edits increment the corpus version.
+id: docs-triage
+project: omegahive
+run: omegahive
+title: docs triage — current, labeled, or archived; nothing ambiguous
+task_class: bounded
+work_shape: docs-reorg
+bounded_because: 'The order supplies the verdict for every surveyed document, the four destination categories
+  with worked examples, and a conservative-on-doubt rule for anything the doc''s own content contradicts.
+  Done is checkable by counting: every file in the docs tree appears exactly once in the index, and
+  every cross-reference resolves. No content is rewritten, so there is no authoring judgment in scope.'
+workspace_repo: hive-workspace
+workspace_inputs:
+- path: projects/omegahive/orders/2026-07-28-docs-triage.md
+  sha: 8d95b46edacc4e7283737377a54af9e311a52600
+  role: order
+- path: projects/omegahive/WORKER.md
+  sha: 0f1170faf446d6318a1044ddd0a6982074b9b533
+  role: context
+- path: projects/omegahive/INDEX.md
+  sha: f01070ea94d02e62117948a27caf849229ffa762
+  role: context
+code:
+  repo: cassiopenachin/omegahive
+  pre_task_base_sha: 058be94a30340e176a20ef5df048a43943e7506d
+  local_path: ~/src/SNET/omegahive
+expected_output_kinds:
+- doc_update
+required_artefacts:
+- docs/INDEX.md
+- docs/archive/README.md
+- docs/reference/README.md
+environment_needs:
+- python3 only; this task needs no stack, no database and no network.
+verifiers:
+- id: docs-index-complete
+  argv:
+  - python3
+  - '{corpus}/verifiers/docs_index_complete.py'
+  - .
+  description: docs/INDEX.md exists and no document has two entries; every file it does not account
+    for is listed as a NOTE in the log, for you to weigh against the order
+- id: link-integrity
+  argv:
+  - python3
+  - '{corpus}/verifiers/link_integrity.py'
+  - .
+  description: every relative markdown link in docs/ and README.md resolves
+- id: nothing-deleted
+  argv:
+  - python3
+  - '{corpus}/verifiers/docs_nothing_deleted.py'
+  - .
+  description: archive means archive — no doc that existed at the baseline is gone
+checklist:
+- id: status-headers
+  text: Moved documents carry a prominent Status line naming their new home and why; kept-current documents
+    have stale Status headers refreshed.
+- id: conservative-on-doubt
+  text: A triage verdict the document's own content contradicts was left in place and the reason stated,
+    rather than applied.
+- id: convention-readmes
+  text: Two-line READMEs exist in the archive and reference directories explaining what lands in each.
+stop_lines:
+- id: moves-and-labels-only
+  text: Moves and labels only — no content rewrites beyond Status headers and link fixes.
+- id: nothing-deleted
+  text: 'Nothing is deleted: archive means archive.'
+- id: evidence-untouched
+  text: docs/evidence/ stays where it is; label it in the index, do not reorganize it.
+rubric: rubrics/docs-triage.md
+grading: grading/docs-triage.yaml
+required_changes:
+- docs/INDEX.md

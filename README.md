@@ -102,6 +102,8 @@ For hacking on the code itself there's a host path too: `uv sync`, then `uv run 
 
 Two sibling CLIs ship in the repo: `qual` (the model-qualification battery — can a given LLM drive an agent loop and board ops with discipline; [docs/reference/omegahive_c2_battery_spec.md](docs/reference/omegahive_c2_battery_spec.md)) and `ladder` (the archived stage-2 experiment harness, kept for record reproducibility — see [What we learned](#what-we-learned-before-building-this-way)).
 
+Three sibling CLIs ship in the repo. `qual` is the model-qualification battery — can a given LLM drive an agent loop and board ops with discipline ([docs/reference/omegahive_c2_battery_spec.md](docs/reference/omegahive_c2_battery_spec.md)). `taskbench` is the task-replay benchmark — can a given model *close a written order*, replayed from a closed one against a fresh world that does not contain the answer, graded on a deterministic leg and a blinded review leg ([docs/reference/omegahive_taskbench_guide.md](docs/reference/omegahive_taskbench_guide.md)). The two measure different things and neither is a relabelling of the other. `ladder` is the archived stage-2 experiment harness, kept for record reproducibility — see [What we learned](#what-we-learned-before-building-this-way).
+
 ### The web UI
 
 There is a read-only operator web UI (FastAPI, `src/omegahive/ui/`) — the portfolio (every live run on one page, and the UI's entry point), per-run board lanes, filtered log, and metrics; see [docs/omegahive_ui_spec.md](docs/omegahive_ui_spec.md). The default access path on any host is the loopback publish:
@@ -286,6 +288,7 @@ docs/            the documentation set — specs are authoritative; code follows
                  (docs/INDEX.md maps every file: current specs, docs/reference/,
                  docs/deployments/, docs/archive/, docs/evidence/, docs/whitepaper/)
 qual/            model-qualification battery: catalogs, scenarios, personas, records
+taskbench/       task-replay benchmark: frozen corpus, materializer, runner, blinded grader, records
 ladder/          archived stage-2 experiment harness + its frozen run records
 experiments/     earlier coordination experiments and their reproduction records
 scenarios/       scripted simulation scenarios (deterministic, CI-run)

@@ -21,6 +21,7 @@ dependencies = [
 omegahive = "omegahive.cli:app"
 qual = "qual.cli:app"
 ladder = "ladder.cli:app"
+taskbench = "taskbench.cli:app"
 
 [dependency-groups]
 dev = [
@@ -35,7 +36,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/omegahive", "qual", "ladder"]
+packages = ["src/omegahive", "qual", "ladder", "taskbench"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -43,13 +44,17 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["src", "tests", "qual", "ladder"]
+src = ["src", "tests", "qual", "ladder", "taskbench"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.mypy]
 python_version = "3.12"
-files = ["src", "tests", "qual", "ladder"]
+files = ["src", "tests", "qual", "ladder", "taskbench"]
+# Corpus verifier scripts execute inside a CANDIDATE repo at that task's historical
+# baseline, against that tree's interfaces — not this one's. Type-checking them here would
+# check them against the wrong code and would rot as the repo moves.
+exclude = ["taskbench/corpus/.*/verifiers/.*"]
 plugins = ["pydantic.mypy"]
 ignore_missing_imports = true

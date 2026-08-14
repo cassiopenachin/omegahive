@@ -1,0 +1,135 @@
+diff --git a/projects/omegahive/reports/2026-07-28-docs-triage-result.md b/projects/omegahive/reports/2026-07-28-docs-triage-result.md
+new file mode 100644
+index 0000000..6fd0f4e
+--- /dev/null
++++ b/projects/omegahive/reports/2026-07-28-docs-triage-result.md
+@@ -0,0 +1,129 @@
++# Result — docs triage: current, labeled, or archived; nothing ambiguous
++
++**Task:** `docs-triage` · **Order:** `projects/omegahive/orders/2026-07-28-docs-triage.md` · **Repo:** omegahive, branch `docs-triage` merged to `main` (4 commits, `3ff8418`…`6186a46`).
++
++## What shipped
++
++**One shelf structure, applied.** `docs/` now has three shelves plus the two record directories, and every file in it is labelled with what it is, what it has authority over, and its status.
++
++**Moves** (all `git mv`, history preserved; 13 of the 14 survey verdicts applied as written):
++
++| Doc | To | Label carried |
++|---|---|---|
++| `omegahive_spec_1_1.md` | `docs/reference/` | REFERENCE SOURCE — upstream text, never amended here; design doc's divergences win |
++| `omegahive_port_spec.md` | `docs/reference/` | REFERENCE — shipped build spec; semantics normative, framing historical |
++| `omegahive_stage2_verdict.md` | `docs/reference/` | REFERENCE — decision record; describes the past, binds the present |
++| `omegahive_remote_access_spec.md` | `docs/deployments/` | DEPLOYMENT RECORD — deployment-#0 practice, not a generic spec |
++| `omegahive_omegaclaw_binding.md` | `docs/archive/` | ARCHIVED — decided (D2 adopted; rules live in design §3.4 / port spec §2) |
++| `omegahive_stage2_spec.md` | `docs/archive/` | ARCHIVED — closed by the verdict; companion to the frozen `ladder/` records |
++
++**One verdict not applied** — see *Deviation* below: `omegahive_hive_user_migration.md` stays on the front path.
++
++**Status headers.** Refreshed where stale: `omegahive_ui_spec.md` (read "v0.1 DRAFT — for discussion" while the UI is serving out of `src/omegahive/ui/`; now "CURRENT — v0.1 shipped", with §4 write path and §6 growth seams named as still design-ahead) and `omegahive_deployment_spec.md` (§7 Beastie bring-up labelled a completed milestone, both in the header and at the §7 heading, pointing at `docs/deployments/deployment-0-beastie.md` as authoritative for what deployment #0 is). Added to `omegahive_recovery_runbook.md`, the one keep-current doc that had no `**Status:**` line at all. The other keep-current docs were read and their headers were accurate; they were left alone.
++
++**`docs/INDEX.md`** — new, workspace-INDEX format: one line per doc giving what it is, its authority scope, and its status, in six sections (front path, reference, deployments, evidence, archive, whitepaper). Every one of the 50 files under `docs/` appears exactly once (`docs/whitepaper/` indexed as a whole, as the order allows for a directory of build artefacts).
++
++**Convention READMEs** — `docs/archive/README.md` and `docs/reference/README.md`, two lines each: what lands here, that Status headers stay intact and nothing is updated again, and that `INDEX.md` is the map.
++
++**Link integrity.** Every cross-reference to a moved file was repointed: 8 files under `docs/`, `README.md`, `ladder/README.md`, `ladder/report.py`, and two `qual/` comments that named `omegahive_port_spec.md` bare. Backticked path mentions were qualified too (`docs/reference/…`, `docs/archive/…`), not just markdown links — an unqualified filename in prose is exactly the ambiguity the order is about.
++
++**Also fixed: 13 pre-existing dangling links inside `docs/archive/`.** `omegahive_architecture.md`, `omegahive_plan.md`, `omegahive_repo_hygiene_spec.md`, `omegahive_m5_spec.md`, and `omegahive_rp3_spec.md` carried `docs/`-relative link targets written before those files were archived, so they had been broken since the last docs pass. Path-only edits; no prose in an archived doc was touched.
++
++**README.** The repo-map block now shows the shelves under `docs/` with a one-line gloss each, the three moved links are repointed, and the closing paragraph sends a new reader to `docs/INDEX.md` first. This is the *reconciliation* half of the order's coordination note: readme-restructure, if it lands after this, should keep the `docs/INDEX.md` pointer and the shelf list — they are the only load-bearing additions.
++
++## How verified
++
++Two mechanical checks, both run through `bin/bench-verify`, both exit 0 on the merged tree. They are throwaway scripts, not repo artefacts (the order's stop-line is moves and labels only) — both are reproduced verbatim in **To operate** so they can be re-run.
++
++1. **Link check — method and result.** Walk every `.md` in the repo, skip fenced code blocks, extract every markdown link, skip `http(s):`/`mailto:`/in-page anchors, and resolve the rest against the containing file's directory. Result: **81 relative links across 62 markdown files, 0 dangling.** Baseline before the work, same method: 68 links, **14 dangling** — 13 real (all inside `docs/archive/`, listed above) and one false positive from `PAYLOADS[event_type](**payload)` inside a Python fence in `docs/archive/omegahive_m0_spec.md`, which is why the final checker skips code fences.
++2. **INDEX completeness.** Every file under `docs/` (with `docs/whitepaper/` counted as one entry) must match exactly one INDEX entry, and no entry may match two files. Result: **50 files, 50 entries, 0 unmatched, 0 duplicated.**
++3. **Grep sweep.** `git grep` for each moved filename across the whole repo, then a negative grep asserting no occurrence of a moved filename is preceded by anything other than `/`, `[`, `(`, or a backtick — i.e. every surviving mention is a correct path, a link label, or a directory-qualified target. Returns empty.
++
++One correctness note the order's context line got slightly wrong, stated because it changes what a future pass should look for: **no README link dangled.** All of the README's links resolved at baseline; the 13 dangling links were archive-internal, pointing *out* of `docs/archive/` at files that had never been there.
++
++**Independent review:** `/code-review` at low effort against the code clone, one bounded pass. **Zero findings** — its summary was "comment-only path updates in code files; the rest is docs moves/links." Effort was matched deliberately: the reviewable substance here is the INDEX's accuracy against each doc's content, which is a reading task, not a static-analysis one, and it was done by reading every doc's header and revision record before writing its line.
++
++**Not done here:** the `task.result_posted` emit. This session had no write path to the spine; the announcement is the operator's or a relaunched worker's to make against this file.
++
++## To operate
++
++Nothing to deploy — the change is documentation. Three things the operator may want to run or know:
++
++**Re-run the link check** (from the repo root; exits non-zero and lists offenders if anything dangles):
++
++```bash
++python3 - <<'PY'
++import os, re, sys
++SKIP = {".git", ".venv", "node_modules", "__pycache__"}
++LINK = re.compile(r'\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)')
++FENCE = re.compile(r'^\s*(```|~~~)')
++bad = checked = files = 0
++for dirpath, dirnames, filenames in os.walk("."):
++    dirnames[:] = [d for d in dirnames if d not in SKIP]
++    for fn in sorted(filenames):
++        if not fn.endswith(".md"):
++            continue
++        path = os.path.join(dirpath, fn); files += 1; in_fence = False
++        for lineno, line in enumerate(open(path, encoding="utf-8"), 1):
++            if FENCE.match(line):
++                in_fence = not in_fence; continue
++            if in_fence:
++                continue
++            for m in LINK.finditer(line):
++                target = m.group(1)
++                if re.match(r"^(https?:|mailto:|#)", target):
++                    continue
++                checked += 1
++                rel = target.split("#")[0]
++                if rel and not os.path.exists(os.path.normpath(os.path.join(dirpath, rel))):
++                    bad += 1; print(f"DANGLING {path}:{lineno} -> {target}")
++print(f"checked {checked} relative links across {files} markdown files; {bad} dangling")
++sys.exit(1 if bad else 0)
++PY
++```
++
++**Re-run the INDEX completeness check:**
++
++```bash
++python3 - <<'PY'
++import os, re, sys
++entries = [m.group(1) for m in
++           (re.match(r'^- ([^\s]+) — ', l) for l in open("docs/INDEX.md", encoding="utf-8")) if m]
++on_disk = set()
++for dirpath, dirnames, filenames in os.walk("docs"):
++    dirnames[:] = [d for d in dirnames if d != "whitepaper"]   # indexed as a whole
++    for fn in filenames:
++        on_disk.add(os.path.relpath(os.path.join(dirpath, fn), "docs"))
++named = {}
++for e in entries:
++    hits = [p for p in on_disk if p == e or os.path.basename(p) == e]
++    if len(hits) == 1:
++        named[hits[0]] = named.get(hits[0], 0) + 1
++    else:
++        print(("ENTRY WITH NO FILE: " if not hits else "AMBIGUOUS ENTRY: ") + e)
++dup = [p for p, n in named.items() if n > 1]
++missing = sorted(on_disk - set(named))
++for p in dup: print(f"LISTED TWICE: {p}")
++for p in missing: print(f"NOT IN INDEX: {p}")
++print(f"{len(on_disk)} files; {len(entries)} entries; {len(missing)} unmatched; {len(dup)} duplicated")
++sys.exit(1 if (missing or dup) else 0)
++PY
++```
++
++**The rule that keeps this true.** Adding a doc to `docs/` now costs one INDEX line. The INDEX check above is the guard; run it in the same pass as any docs change. Moving a doc costs the INDEX line plus a link-check run — relative links from `docs/archive/` and `docs/reference/` need `../`, which is the exact mistake that left 13 links dangling since the last pass.
++
++**Branch handling.** Work was done on `docs-triage` and merged to `main` locally with `--no-ff` (the order's definition of done says merged). Nothing was pushed — this clone has no remote.
++
++## Reflection
++
++**One survey verdict was wrong on reading, and it is the one the order predicted.** The verdict archived `omegahive_hive_user_migration.md` as an "executed procedure." Its own revision record says otherwise: Parts A–C (additive prep) were executed live on Beastie Jul 27 2026 and the document was corrected from that run, but **Part D — the cutover — is written and deliberately unexecuted**, and Part E's follow-ups wait on it. Three more things corroborate: it is item 2 of the Phase 2 identity gate, so it is open gate work; `omegahive_recovery_runbook.md` §6 routes the operator to it as *the* procedure for an account change; and `deploy/hive-user/precheck.sh` and `restore_rehearsal.sh` cite it as live tooling. Per the order's conservative-on-doubt rule it **stays in `docs/`**, labelled "CURRENT — procedure partly executed, cutover pending," with the archive trigger written into the label: it moves when Part D lands. Filing it as executed history would have buried a procedure with a scheduled future.
++
++**The order triages 14 docs; `docs/` had 22.** The eight the survey never staged are all self-contained work orders — `v0b_order`, `c2_v0a_v2_order`, `v3_kb_persona_brief`, `stage2_fixes_A1-A4`, `port_fixes_D1-D5`, `v3_fixes_B1-B6`, plus `o2_fork_patches` and `c2_battery_spec`. Several are demonstrably closed (the port fixes and stage-2 fixes describe merged commits; the fork patches produced the hive image). Under "moves and labels only, conservative on doubt" they stay in place, but each now carries an INDEX line that says so explicitly — *"Work order, on the front path — not triaged by the Jul 28 2026 docs pass"* — so the gap is visible rather than silent. **This is the next docs pass's work, and it is bigger than what this one did**: a `docs/orders/` shelf (or archiving the executed ones) would take the front path from 16 files to about 9. That is the shelf decision this triage did not have authority to make.
++
++**A wrinkle worth naming for whoever writes that order.** Three of those closed work orders cite `omegahive_stage2_spec.md` as their contract, and it is now archived. Nothing breaks — the links resolve into `docs/archive/`, and archive means retained, not deleted — but it does mean a current-shelf doc pointing at an archived one, which reads as inconsistent until the work orders are themselves shelved. Archiving `stage2_spec` was still right: the ladder is closed, `ladder/README.md` says so, and the verdict governs.
++
++**One deliberate non-edit.** `docs/archive/omegahive_docs_audit.md` mentions `omegahive_omegaclaw_binding.md` bare, in a Jun 29 2026 table whose whole point is to record each doc's status *at that date* ("**current** | none — just written"). Repointing a path inside a dated snapshot would falsify the snapshot. Left as is; the INDEX labels the audit a historical snapshot.
++
++**What consumed the effort** — not the moves. Six `git mv`s and the link repoints took one pass and were mechanical, exactly as predicted. The spend was **reading every doc's header and revision record to write its INDEX line honestly**, and the reading is what produced the only two findings of the task: the migration-doc deviation and the 13 pre-existing archive danglers. An INDEX that says "what it is, its authority scope, its status" cannot be assembled from filenames — the authority-scope clause in particular forced a judgment per doc (normative? historical? both, and which part is which?). If a future order wants this cheaper, the lever is not faster moves; it is per-doc Status headers that already answer the authority-scope question, which is what this pass has now put in place for the 22 files it touched or indexed.
++
++**Effort, measured:** first branch commit `3ff8418` to merge commit `6186a46` spans **under five minutes of commit timestamps**, which is the only clock this session can point at and is *not* the session's real span — most of the work (reading the docs, validating the verdicts) happened before the first commit, and no timestamp records it. Reported here as what consumed it, not as a duration.

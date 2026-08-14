@@ -1,0 +1,58 @@
+{
+  "cell_id": "cell-e2e6fd19de",
+  "dod_legs": [
+    {
+      "leg": "runbook-caveats",
+      "met": "no",
+      "note": "Code-repo side done: docs/omegahive_recovery_runbook.md restore step 3 no longer declares the bump inert (artefacts/docs/omegahive_recovery_runbook.md:92-93). Workspace projects/omegahive/RUNBOOK.md is untouched and its caveat stands; the attempt records it as owed rather than done (candidate.patch:136-143). The rubric's Out of scope list does not cover the workspace runbook."
+    },
+    {
+      "leg": "pytest",
+      "met": "yes",
+      "note": "verifier/pytest.log \u2014 408 passed, 1 warning in 35.96s. No regressions."
+    },
+    {
+      "leg": "ruff",
+      "met": "yes",
+      "note": "verifier/ruff.log \u2014 All checks passed!"
+    },
+    {
+      "leg": "mypy",
+      "met": "yes",
+      "note": "verifier/mypy.log \u2014 Success: no issues found in 149 source files (remaining lines are annotation-unchecked notes on pre-existing untyped test bodies)."
+    },
+    {
+      "leg": "registration-property",
+      "met": "no",
+      "note": "verifier/registration-property.log \u2014 1 property case failed. First emit, second-emit no-op and bump all hold, but the replayed-emit case fails: open_run sits after the idempotency early-return in Gateway.emit."
+    },
+    {
+      "leg": "no-generation-semantics",
+      "met": "yes",
+      "note": "Stop-line not crossed. The only source change is an `open_run()` (INSERT ... ON CONFLICT DO NOTHING) call inside the existing emit transaction; generation values, GENERATION_MISMATCH handling and cursor logic are untouched, and bump-generation's refusal on unregistered runs is left in place."
+    },
+    {
+      "leg": "never-bump-live",
+      "met": "yes",
+      "note": "Stop-line not crossed. All bump evidence in the report is against scratch run ids (scratch-registration-0721, cli-registration-test, gw-registration-test); no live-run bump appears in the patch or the report."
+    },
+    {
+      "leg": "omegahive-row-exists-with-query-evidence",
+      "met": "not-applicable",
+      "note": "Listed as out of scope for this attempt; the report correctly declines to claim it and files the confirming query under To operate item 1. Neither credited nor penalised."
+    }
+  ],
+  "verdict": "fail",
+  "would_have_shipped_defects": [
+    {
+      "evidence": "verifier/registration-property.log:1 \u2014 \"FAIL case 3: a REPLAYED emit against a run with events but no registry row did not register it \u2014 the open happens after the idempotency early-return\"; mechanism at artefacts/src/omegahive/gateway/gateway.py:101-113 (early `return Accepted(existing)` at line 104 precedes `self._store.open_run()` at line 113).",
+      "summary": "The idempotent open is placed after the idempotency early-return, so a replayed emit against a run that has events but no registry row still leaves it unregistered \u2014 exactly the state the durable `omegahive` run is in.",
+      "why_blocking": "The order's item 2 rests on `omegahive` entering the registry as a side effect of its next real emit. Every pre-existing run has events and no registry row; if that next emit carries an idempotency key that hits `find_by_key` (a client retry / ack-loss replay, the normal case the key exists for), `Gateway.emit` returns `Accepted(existing)` at step 1 and never reaches `open_run` at step 2a. The run stays unregistered while the shipped runbook now tells the operator the bump is a live signal, so a post-restore operator gets `run not registered` from `bump-generation --run-id omegahive` after being told registration is automatic \u2014 the interim 'restart every client' floor is silently back, unannounced, which is the precise failure the order exists to remove. The candidate's report reasons this away with 'its original emit already registered the run' (docs/evidence/2026-07-21-run-registration-result.md, candidate.patch:51-52), which is false for any run whose original emits predate this change."
+    },
+    {
+      "evidence": "candidate.patch touches only docs/omegahive_recovery_runbook.md and docs/deployments/deployment-0-beastie.md; no change to projects/omegahive/RUNBOOK.md. candidate.patch:136-143 \u2014 \"Workspace RUNBOOK edit still owed (this session had no workspace write path)\".",
+      "summary": "Only one of the two recovery-runbook restore steps was updated; the workspace `projects/omegahive/RUNBOOK.md` restore step 3 still carries the inert-bump caveat.",
+      "why_blocking": "Order item 4 requires both caveats retired. The ops RUNBOOK is the document an operator actually follows during a restore; it still reads that the bump 'only works if the run is registered' and that the durable signal is inert, directly contradicting the code-repo runbook this patch did update. An operator restoring from backup gets two documents disagreeing about whether `bump-generation` is meaningful. The attempt does not claim otherwise \u2014 it files the replacement text as still owed under To operate item 3."
+    }
+  ]
+}

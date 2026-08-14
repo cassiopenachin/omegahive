@@ -1,0 +1,36 @@
+# taskbench corpus v0 — the frozen seed for HIP-1 M1b.
+#
+# Eight closed, bounded-class orders drawn from both the hive and its tenant project. Five
+# qualify models; three are RESERVED and may never be executed, entered into a
+# qualification launch packet, used to pick a canary, or used to tune a prompt or a rubric.
+# A task once used to tune can never be held out again, which is why the split is fixed
+# here, before the first cell, and why every qualification path refuses a reserved id.
+#
+# Composition, stated so no reader has to infer it: seven of the eight are hive
+# infrastructure and one is tenant work. The single tenant task is a cross-project
+# sentinel — it proves the instrument reaches a second repository, a second language
+# ecosystem and a different work shape. It is not evidence that this corpus represents
+# applied PLN research, and no aggregate over these tasks may be read that way.
+#
+# Changing anything under this directory after a cell has run against it increments
+# `corpus_version` and invalidates every earlier cell. `taskbench freeze` refuses to
+# re-freeze a version that a record already pins.
+
+corpus_version: v0
+frozen_on: '2026-08-12'
+description: >-
+  Task-replay seed for HIP-1 M1b: five held-in tasks that qualify a candidate against the
+  closed outcome of a real order, and three held-out tasks reserved for zero-regression
+  checks on changes to worker instructions, order templates, or this benchmark.
+
+held_in:
+  - launch-pane-fix
+  - instrument-teeth
+  - docs-triage
+  - run-registration
+  - ptc-revalidate
+
+held_out:
+  - cli-qol
+  - notifier-deep-links
+  - port-sha-pin-fallback

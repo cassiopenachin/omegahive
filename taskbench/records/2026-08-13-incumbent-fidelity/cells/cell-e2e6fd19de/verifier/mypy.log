@@ -1,0 +1,7 @@
+tests/test_port_properties.py:102: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+tests/test_port_properties.py:123: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+tests/test_port_properties.py:154: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+tests/test_port_properties.py:239: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+tests/test_port_properties.py:417: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+Success: no issues found in 149 source files
+warning: `VIRTUAL_ENV=/home/cassio/work/sess-hip1-bench-seed-0812/omegahive/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead

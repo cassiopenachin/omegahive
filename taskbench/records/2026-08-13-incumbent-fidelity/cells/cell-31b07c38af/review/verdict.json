@@ -1,0 +1,42 @@
+{
+  "cell_id": "cell-31b07c38af",
+  "dod_legs": [
+    {
+      "leg": "suites-verbatim",
+      "met": "yes",
+      "note": "PeTTaChainer's Python suite is committed unedited, including the full unittest -v listing, all seven tracebacks and the trailing 'Ran 16 tests / FAILED (failures=5, errors=2)' (tests/expected/ptc-revalidate/verbatim/pettachainer-python-unittest.txt). The MeTTa suite reports per file, and per-file results are committed per file: exit code for all 50 files in the suite's own order (verbatim/pettachainer-metta-suite-exitcodes.txt) plus a per-file line in summary.txt carrying the first failing assertion's raw got=/want= and the failed/total assertion count. The multi-megabyte raw per-file logs are excluded with the reason stated in verbatim/README.md; the harness regenerates them. PeTTa's own suite is an extra control and is recorded as ok=157 failures=0."
+    },
+    {
+      "leg": "rerunnable",
+      "met": "yes",
+      "note": "tests/ptc-revalidate/run.sh clones both subjects at PTC_SHA/PETTA_SHA into the layout upstream's tooling hardcodes, builds PeTTaChainer's own .myclaw/Dockerfile, runs both suites, both minimal repros, the April probe and the PeTTa control, then diffs the normalised summary against the committed capture and exits 1 on divergence. What each log should contain is stated in verbatim/README.md and tests/ptc-revalidate/README.md, and both that README and the report state the divergence reading explicitly ('if the shas are unchanged, something in the host toolchain moved; if a sha changed, the verdict needs rerunning'), which is what separates 'still broken' from 'environment differs'. Offline bundle path and knobs documented in the report's 'To operate'."
+    },
+    {
+      "leg": "upstream-filing",
+      "met": "yes",
+      "note": "Executed: artefacts/outward/gh.md stages `gh issue create --repo rTreutlein/PeTTaChainer` with a body carrying two minimal reproductions (upstream's own test_query_adds.metta lines 1-8, and a dependency-free Python repro with timeout_sec=0 to exclude the multiprocessing path), the suite numbers for both suites, what was ruled out (PeTTa's suite 157 OK as a runtime control; empty against PeTTa@4a62d08 and the 40 most recent PeTTa commits; empty at all 99 PeTTaChainer commits since 2026-06-01), the pinned shas and toolchain versions, the second (STV-vs-CTV) finding, and the docs/known-issues.md #2 Direct.metta item as a postscript per the order's one-conversation-two-data-points instruction. Body committed at docs/upstream/2026-08-13-pettachainer-backward-chaining.md and cross-referenced from docs/known-issues.md."
+    },
+    {
+      "leg": "verdict-shape",
+      "met": "yes",
+      "note": "verifier/verdict-shape.log: 'ok \u2014 verdict present at the named path, both modes addressed, both shas named'. docs/ptc-verdict.md gives a per-mode table (forward works / backward broken) and both full shas with dates."
+    },
+    {
+      "leg": "repro-script-present",
+      "met": "yes",
+      "note": "verifier/repro-script-present.log: ok \u2014 tests/ptc-revalidate/probe/min_repro.py, probe/min_repro_stv_rule.py and run.sh committed executable and referenced from the verdict (docs/ptc-verdict.md:5, :42, :82)."
+    },
+    {
+      "leg": "subjects-unpatched",
+      "met": "yes",
+      "note": "verifier/subjects-unpatched.log: '19 changed file(s), none under a vendored subject; 0 vendored checkout(s) clean'. The diagnosis in finding 1 stops at 'the query compiles, chainer returns nothing' rather than entering backward_chainer.metta, and run.sh itself aborts if either checkout has modified tracked files. No semantic-parser changes, no dataset-scale runs, no LLM calls in the diff."
+    },
+    {
+      "leg": "stall-ledger-close (out of scope here)",
+      "met": "not-applicable",
+      "note": "Rubric places the live-workspace write out of scope. The attempt does not claim to have made it: the report states row S1 is 'ready to close against this report'."
+    }
+  ],
+  "verdict": "pass",
+  "would_have_shipped_defects": []
+}

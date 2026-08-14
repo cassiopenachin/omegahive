@@ -1,0 +1,265 @@
+diff --git a/scripts/hive-launch b/scripts/hive-launch
+index cb9529c..a141535 100755
+--- a/scripts/hive-launch
++++ b/scripts/hive-launch
+@@ -132,9 +132,22 @@ fi
+ # Clobber guards: never overwrite an existing clone or a same-named live pane.
+ [ ! -e "$WS_ROOT" ]   || die "$WS_ROOT already exists; pick a fresh --worker id or clear it"
+ [ ! -e "$CODE_ROOT" ] || die "$CODE_ROOT already exists; pick a fresh --worker id or clear it"
++# The pane NAME is the registry (Phase 1 refuses a registry file), and tmux itself
++# happily creates a second window with the same name — so this guard is the only
++# thing standing between one task and two panes claiming to be it. It is the ONE
++# collision that survives name-only allocation, and it is a refusal, never a second
++# window: which of the two panes is the task becomes unanswerable.
+ if tmux has-session -t "$HIVE_TMUX_SESSION" 2>/dev/null \
+    && tmux list-windows -t "$HIVE_TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qxF "$TASK"; then
+-  die "a tmux window named '$TASK' already exists in session '$HIVE_TMUX_SESSION' (the pane is the registry)"
++  {
++    echo "hive-launch: a tmux window named '$TASK' already exists in session '$HIVE_TMUX_SESSION' — the pane IS the registry, so a second one is refused."
++    echo "  Recovery depends on what that window is:"
++    echo "    - a live or dead worker on this task: kill the pane, then recover with task.reassigned"
++    echo "      (RUNBOOK, 'Dead worker recovery') — a relaunch is not recovery and the board will refuse it."
++    echo "    - debris (a window that outlived its worker, no board state): kill it, then re-run this launch."
++    echo "      tmux kill-window -t '$HIVE_TMUX_SESSION:$TASK'"
++  } >&2
++  exit 1
+ fi
+ 
+ # --- pin the order and build the seed payloads --------------------------------
+@@ -225,16 +238,88 @@ Container tooling is podman (not docker). Begin by reading both files, then emit
+ task.accepted and start.
+ KICK
+ 
++# --- fail-safe for anything that fails AFTER the board writes ------------------
++# The board now owns the task (assigned, on the board, kickoff never delivered)
++# while the pane does not exist: a HALF-LAUNCH. Found by use 2026-07-27, where
++# reconstructing the missing half took WORKER.md §Launch plus the launch output
++# read by hand. The launcher knows every value that reconstruction needs, so it
++# prints the manual completion path instead of leaving it to archaeology.
++half_launch() {  # half_launch <what-failed>
++  {
++    echo
++    echo "hive-launch: HALF-LAUNCHED '$TASK' — $1"
++    echo "  The board already owns this task on run '$RUN' (task.assigned emitted); only the pane is missing."
++    echo "  Do NOT re-run hive-launch: it refuses an owned task, and a relaunch is not recovery (RUNBOOK)."
++    echo "  Everything else is in place:"
++    echo "    workspace clone: $WS_ROOT"
++    echo "    code clone:      $CODE_ROOT"
++    echo "    emit wrapper:    $WRAPPER"
++    echo "    kickoff text:    $KICKOFF_FILE"
++    echo
++    echo "  Finish the launch by hand (WORKER.md 'Launch (operator side)'; RUNBOOK 'Half-launched task'):"
++    echo "  1. Open the worker's window and start the session — one command, kickoff read from the file:"
++    cat <<CMD
++       tmux new-window -a -t '$HIVE_TMUX_SESSION:{end}' -n '$TASK' -c '$WS_ROOT' \\
++         -e HIVE_KICKOFF="\$(cat '$KICKOFF_FILE')" '$HIVE_WORKER_CMD "\$HIVE_KICKOFF"'
++     (if session '$HIVE_TMUX_SESSION' does not exist, create it instead:)
++       tmux new-session -d -s '$HIVE_TMUX_SESSION' -n '$TASK' -c '$WS_ROOT' \\
++         -e HIVE_KICKOFF="\$(cat '$KICKOFF_FILE')" '$HIVE_WORKER_CMD "\$HIVE_KICKOFF"'
++     (or, from an attached client: prefix-c, then)
++       cd '$WS_ROOT' && $HIVE_WORKER_CMD "\$(cat '$KICKOFF_FILE')"
++CMD
++    echo "  2. The kickoff that command delivers (verbatim, so it can also be pasted into a running session):"
++    echo "  ----- kickoff -----"
++    printf '%s\n' "$KICKOFF" | sed 's/^/  /'
++    echo "  ----- end kickoff -----"
++    echo "  3. To abandon this launch instead: the task is owned, so recovery is task.reassigned"
++    echo "     (RUNBOOK, 'Dead worker recovery'), and clear $WORK_ROOT/$WORKER before reusing the worker id."
++  } >&2
++  exit 1
++}
++
++# The kickoff is also written to a file next to the worker's trees: it is what a
++# manual completion pastes if the pane step fails, and it costs nothing on the
++# happy path. Written through half_launch's guard like every other post-seeding
++# step — a failure here is a half-launch too, and the print carries the kickoff
++# verbatim, so the recovery survives even without the file.
++KICKOFF_FILE="$WORK_ROOT/$WORKER/kickoff.txt"
++printf '%s\n' "$KICKOFF" > "$KICKOFF_FILE" \
++  || half_launch "could not write the kickoff file $KICKOFF_FILE"
++
+ # Open the pane. The kickoff travels as an env var (HIVE_KICKOFF) so no multi-line
+ # text is ever quoted onto a command line; the window runs the worker command with
+ # it as the initial prompt. The pane NAME is the registry — no registry file.
++#
++# Allocation is BY NAME ONLY: we supply the session and the window name (the task
++# id), never an index — the index carries no meaning and must never be chosen by
++# us. `-a` against `{end}` (the session's highest-numbered window) is append
++# semantics: tmux allocates the next index ABOVE the last one, which is free by
++# construction, so `create window failed: index N in use` (2026-07-27) cannot
++# happen. Two things this is deliberately NOT:
++#   * an explicit derived index — the original defect;
++#   * a bare `-t <session>` with the index omitted — that still resolves target
++#     to a concrete index: it fills the lowest FREE slot, dropping the worker
++#     window into the middle of the operator's window order, and the 2026-07-27
++#     recovery saw it fail identically to the explicit form. Index omission is
++#     not the fix; append semantics are.
++# `-a -t <session>` alone would insert after the session's CURRENT window and
++# shuffle the operator's own windows up; `{end}` appends past the last window, so
++# no existing window moves. Nothing here assumes a base-index or renumber-windows
++# setting: the allocation is relative to whatever indices the session already has.
+ launch_cmd="$HIVE_WORKER_CMD \"\$HIVE_KICKOFF\""
+ if tmux has-session -t "$HIVE_TMUX_SESSION" 2>/dev/null; then
+-  tmux new-window -t "$HIVE_TMUX_SESSION" -n "$TASK" -c "$WS_ROOT" \
+-    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd"
++  tmux new-window -a -t "$HIVE_TMUX_SESSION:{end}" -n "$TASK" -c "$WS_ROOT" \
++    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd" \
++    || half_launch "tmux new-window failed in session '$HIVE_TMUX_SESSION' (see the tmux error above)"
+ else
+   tmux new-session -d -s "$HIVE_TMUX_SESSION" -n "$TASK" -c "$WS_ROOT" \
+-    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd"
++    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd" \
++    || half_launch "tmux new-session failed for session '$HIVE_TMUX_SESSION' (see the tmux error above)"
+ fi
++# Trust nothing about the pane: assert it exists. A window whose command died on
++# startup is a half-launch too, and it must reach the operator as one.
++tmux list-windows -t "$HIVE_TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qxF "$TASK" \
++  || half_launch "the window was created but is already gone (did '$HIVE_WORKER_CMD' exit immediately?)"
+ echo "  pane:   $HIVE_TMUX_SESSION:$TASK  (attach: tmux attach -t $HIVE_TMUX_SESSION)"
++echo "  kickoff: $KICKOFF_FILE"
+ echo "hive-launch: done."
+diff --git a/scripts/hive-tooling-drill.sh b/scripts/hive-tooling-drill.sh
+index abe7595..4e55682 100755
+--- a/scripts/hive-tooling-drill.sh
++++ b/scripts/hive-tooling-drill.sh
+@@ -19,6 +19,11 @@
+ # in the same events table under distinct run_ids, which auto-register — harmless
+ # debris in separate runs. Do NOT put `omegahive` in any conf here.
+ #
++# Nor the operator's tmux server: TMUX_TMPDIR moves the default socket into the
++# sandbox, so the drill's windows — including the deliberately hostile ones the
++# pane-allocation section builds — live on a private, throwaway server, never on
++# the one holding the live worker panes.
++#
+ # Usage: scripts/hive-tooling-drill.sh   (run from anywhere; needs podman + the stack up)
+ 
+ set -euo pipefail
+@@ -27,6 +32,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ STAMP="$(date +%Y%m%d-%H%M%S)"
+ SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/hive-drill-${STAMP}.XXXXXX")"
+ TMUX_SESSION="drill-${STAMP}"
++
++# tmux isolation — set before ANY tmux call, here or in the scripts under test.
++# The drill occupies indices, flips base-index/renumber-windows, and kills its
++# server at exit; doing that on the operator's default server would put every live
++# worker pane in the blast radius. TMUX_TMPDIR relocates the default socket, so a
++# plain `tmux` (which is what hive-launch calls) reaches the sandbox server only.
++export TMUX_TMPDIR="$SANDBOX/tmux"
++mkdir -p "$TMUX_TMPDIR"
++unset TMUX   # running the drill from inside a tmux client must not leak that client's server
+ OMEGA_DIR_REAL="${OMEGA_DIR:-$HOME/src/SNET/omegahive}"   # the real stack dir (compose + pg live here)
+ 
+ # The two scratch projects and their runs (run id = project name convention, but
+@@ -51,7 +65,9 @@ expect_fail_msg(){
+ }
+ 
+ cleanup() {
+-  tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
++  # kill-server, not kill-session: this is the sandbox's own server (TMUX_TMPDIR),
++  # so everything the drill created — every session, every occupant window — goes.
++  tmux kill-server 2>/dev/null || true
+   rm -rf "$SANDBOX"
+   echo
+   echo "drill: runs=$ARUN,$BRUN  PASS=$PASS  FAIL=$FAIL  (scratch events remain under those runs)"
+@@ -357,6 +373,101 @@ expect_fail_msg "launch refuses a done task (not launchable)" "not launchable" \
+   "$SCRIPT_DIR/hive-launch" "$AORDER" --worker "sess-adopt-done-${STAMP}"
+ check "adopt refusal emitted no board state" "[ ! -e '$WORK/sess-adopt-done-${STAMP}' ]"
+ 
++# ==============================================================================
++echo
++echo "== pane allocation: occupied indices, name collision, half-launch recovery =="
++# The 2026-07-27 launch seeded all three spine events and then died on
++# `create window failed: index 4 in use`, stranding a half-launched task. Four
++# assertions: the hazard is still real on this tmux, name-only allocation is
++# immune to it under any config, the one surviving collision (the NAME) refuses
++# instead of doubling the pane, and a pane failure after seeding prints the
++# manual completion path.
++
++# (i) Build the hazard: occupy a run of indices and leave the CURRENT window in
++#     the middle (so an append-after-current form would shuffle the others up).
++for i in 1 2 3; do
++  tmux new-window -d -t "$TMUX_SESSION" -n "occupant-$i" 'sleep 600' >/dev/null 2>&1
++done
++IDXS=$(tmux list-windows -t "$TMUX_SESSION" -F '#{window_index}' | sort -n)
++MAXIDX=$(printf '%s\n' "$IDXS" | tail -1)
++MIDIDX=$(printf '%s\n' "$IDXS" | head -2 | tail -1)
++tmux select-window -t "$TMUX_SESSION:$MIDIDX"
++expect_fail_msg "reproduction: creating at an explicit occupied index still fails (the 0727 defect)" "in use" \
++  tmux new-window -d -t "$TMUX_SESSION:$MAXIDX" -n repro-occupied 'sleep 600'
++
++# (ii) A real launch into exactly that state must allocate a free slot ABOVE the
++#      highest index and disturb no existing window.
++OORDER=$(add_order "$APROJ" "2026-07-13-drill-occupied" "occupied index")
++OWORKER="sess-occupied-${STAMP}"
++PANES_BEFORE=$(tmux list-windows -t "$TMUX_SESSION" -F '#{window_index}:#{window_name}' | sort)
++"$SCRIPT_DIR/hive-launch" "$OORDER" --worker "$OWORKER" >/dev/null
++PANES_AFTER=$(tmux list-windows -t "$TMUX_SESSION" -F '#{window_index}:#{window_name}' | sort)
++NEWIDX=$(tmux list-windows -t "$TMUX_SESSION" -F '#{window_index} #{window_name}' | awk '$2=="drill-occupied"{print $1}')
++MOVED=$(comm -23 <(printf '%s\n' "$PANES_BEFORE") <(printf '%s\n' "$PANES_AFTER") | tr '\n' ' ')
++check "occupied indices: launch created the window by name" "[ -n '$NEWIDX' ]"
++check "occupied indices: allocated above the highest index (append, never a chosen index)" \
++  "[ '${NEWIDX:-0}' -gt '$MAXIDX' ]"
++check "occupied indices: no existing window moved or was renamed" "[ -z '$MOVED' ]"
++check "occupied indices: board reached assigned"  "[ \"\$(bstatus '$ARUN' drill-occupied)\" = assigned ]"
++
++# (iii) The stop-line: allocation by name must hold under ANY tmux config, so run
++#       one launch with a hostile base-index and renumber-windows on.
++tmux set-option -g base-index 11 >/dev/null
++tmux set-option -g renumber-windows on >/dev/null
++BORDER2=$(add_order "$APROJ" "2026-07-13-drill-baseindex" "hostile base-index")
++"$SCRIPT_DIR/hive-launch" "$BORDER2" --worker "sess-baseidx-${STAMP}" >/dev/null
++check "hostile base-index + renumber-windows: window still created by name" \
++  "tmux list-windows -t '$TMUX_SESSION' -F '#{window_name}' | grep -qxF drill-baseindex"
++check "hostile base-index + renumber-windows: board reached assigned" \
++  "[ \"\$(bstatus '$ARUN' drill-baseindex)\" = assigned ]"
++tmux set-option -g renumber-windows off >/dev/null
++tmux set-option -g base-index 0 >/dev/null
++
++# (iv) The one collision name-only allocation cannot remove: a window already
++#      named for this task. tmux itself creates duplicate names happily, so this
++#      guard is the only thing keeping one task from having two panes.
++CORDER=$(add_order "$APROJ" "2026-07-13-drill-panecoll" "pane collision")
++tmux new-window -d -t "$TMUX_SESSION" -n drill-panecoll 'sleep 600'
++expect_fail_msg "an existing window with the task's name refuses the launch" "already exists" \
++  "$SCRIPT_DIR/hive-launch" "$CORDER" --worker "sess-panecoll-${STAMP}"
++expect_fail_msg "name-collision refusal names the recovery path (task.reassigned)" "task.reassigned" \
++  "$SCRIPT_DIR/hive-launch" "$CORDER" --worker "sess-panecoll-${STAMP}"
++NPANES=$(tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' | grep -cxF drill-panecoll)
++check "name collision created no second window"  "[ '$NPANES' = 1 ]"
++check "name collision provisioned nothing"       "[ ! -e '$WORK/sess-panecoll-${STAMP}' ]"
++check "name collision seeded no board state"     "[ -z \"\$(bstatus '$ARUN' drill-panecoll)\" ]"
++
++# (v) Fail-safe half-launch: force the pane step to fail exactly as it did on
++#     2026-07-27 with a PATH shim (the launcher calls plain `tmux`, so no seam is
++#     needed in production code) and assert the recovery print, not archaeology.
++REAL_TMUX=$(command -v tmux)
++SHIMDIR="$SANDBOX/shim"; mkdir -p "$SHIMDIR"
++cat > "$SHIMDIR/tmux" <<EOF
++#!/usr/bin/env bash
++# drill shim: fail new-window with the historical message; pass everything else through.
++[ "\$1" = new-window ] && { echo "create window failed: index 4 in use" >&2; exit 1; }
++exec "$REAL_TMUX" "\$@"
++EOF
++chmod +x "$SHIMDIR/tmux"
++HORDER=$(add_order "$APROJ" "2026-07-13-drill-halflaunch" "half launch")
++HWORKER="sess-halflaunch-${STAMP}"
++HALF_RC=0
++HALF_OUT=$(PATH="$SHIMDIR:$PATH" "$SCRIPT_DIR/hive-launch" "$HORDER" --worker "$HWORKER" 2>&1) || HALF_RC=$?
++printf '%s\n' "$HALF_OUT"
++check "half-launch: the launcher exits non-zero when the pane fails" "[ $HALF_RC -ne 0 ]"
++check "half-launch: the strand is real (board owns it, no pane)" "[ \"\$(bstatus '$ARUN' drill-halflaunch)\" = assigned ]"
++check "half-launch: no window was created" \
++  "! tmux list-windows -t '$TMUX_SESSION' -F '#{window_name}' | grep -qxF drill-halflaunch"
++check "half-launch: the output names it a half-launch"   "printf '%s' \"\$HALF_OUT\" | grep -qF 'HALF-LAUNCHED'"
++check "half-launch: forbids a re-run as recovery"        "printf '%s' \"\$HALF_OUT\" | grep -qF 'Do NOT re-run hive-launch'"
++check "half-launch: prints the filled kickoff text"      "printf '%s' \"\$HALF_OUT\" | grep -qF 'You are hive worker $HWORKER on task drill-halflaunch'"
++check "half-launch: the printed kickoff names the wrapper" "printf '%s' \"\$HALF_OUT\" | grep -qF '$WRAPPERS/$HWORKER.sh'"
++check "half-launch: prints the manual pane command"      "printf '%s' \"\$HALF_OUT\" | grep -qF 'tmux new-window -a -t'"
++check "half-launch: prints the abandon path (task.reassigned)" "printf '%s' \"\$HALF_OUT\" | grep -qF 'task.reassigned'"
++check "half-launch: kickoff also saved to a file"        "[ -s '$WORK/$HWORKER/kickoff.txt' ]"
++check "half-launch: clones survive for the manual finish" "[ -d '$WORK/$HWORKER/hive/.git' ]"
++check "half-launch: wrapper survives for the manual finish" "[ -x '$WRAPPERS/$HWORKER.sh' ]"
++
+ echo
+ echo "== refusal paths =="
+ # (a) dirty order — an uncommitted new order refuses at pin time.

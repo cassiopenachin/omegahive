@@ -1,0 +1,122 @@
+# taskbench corpus v0.1 — manifest for ptc-revalidate. Frozen; edits increment the corpus version.
+id: ptc-revalidate
+project: pln-benchmarks
+run: plnbench
+title: ptc-revalidate — PeTTaChainer chaining verdict at pinned shas
+task_class: bounded
+work_shape: external-verification
+bounded_because: 'A verification task with the subjects, the shas, the probe and the output path all
+  fixed in advance: build the pinned environment, run the upstream suites, reproduce one named example,
+  and write the verdict to a named file with a rerunnable script. The worker chooses no design; the
+  answer is whatever the runs say, and the order states in advance that a failed environment build IS
+  the finding.'
+workspace_repo: hive-workspace
+workspace_inputs:
+- path: projects/pln-benchmarks/orders/2026-07-28-ptc-revalidate.md
+  sha: c39c4c0438bf7bf4d59d9b77532e984c98cf07c1
+  role: order
+- path: projects/omegahive/WORKER.md
+  sha: c1ff3c3fc6ebccfe130e93f1ffa579986d9115d1
+  role: context
+- path: projects/pln-benchmarks/charter.md
+  sha: 5ed42c6b96205ba59ad3c93c9f4e7319234d5b41
+  role: context
+- path: projects/pln-benchmarks/notes/stall-ledger.md
+  sha: 5ed42c6b96205ba59ad3c93c9f4e7319234d5b41
+  role: context
+- path: projects/pln-benchmarks/ROADMAP.md
+  sha: c39c4c0438bf7bf4d59d9b77532e984c98cf07c1
+  role: context
+code:
+  repo: cassiopenachin/plnbench
+  pre_task_base_sha: 5f8ec4b1e7494286e421ed06719803cb1a9fb6a3
+  local_path: ~/src/SNET/plnbench
+dependency_snapshots:
+- name: PeTTaChainer
+  kind: git_bundle
+  ref: rTreutlein/PeTTaChainer
+  sha: 02a85c63be6a735f50f50e1084a717b3256b8406
+  local_path: ~/src/SNET/PeTTaChainer
+  note: the subject under test, at the sha the order pins
+- name: PeTTa
+  kind: git_bundle
+  ref: trueagi-io/PeTTa
+  sha: 43705f5
+  local_path: ~/src/SNET/PeTTa
+  note: the runtime the subject needs, at the sha pins.env carries
+- name: swipl-base
+  kind: image
+  ref: docker.io/library/swipl:9.3.33
+  note: base image of the subject's own isolated task environment; asserted present in local container
+    storage, never pulled by the runner
+expected_output_kinds:
+- code_patch
+- repro_script
+- verdict_doc
+required_artefacts:
+- docs/ptc-verdict.md
+environment_needs:
+- podman (or docker) with the swipl base image already in local storage.
+- The two dependency bundles are exported into deps/ and are the only source for the pinned upstream
+  repositories; there is no network fetch of them.
+- A warm uv cache, or network, for the subject's own `uv sync --frozen` inside its image.
+verifiers:
+- id: verdict-shape
+  argv:
+  - python3
+  - '{corpus}/verifiers/ptc_verdict_shape.py'
+  - .
+  description: the verdict document exists at the path the order names, states a status for BOTH chaining
+    modes, and names both pinned shas — checked for shape and pins, never against the historical text
+- id: repro-script-present
+  argv:
+  - python3
+  - '{corpus}/verifiers/ptc_repro_present.py'
+  - .
+  description: a committed, executable repro script exists that the verdict document points at, so the
+    rerunnability claim has a subject
+- id: subjects-unpatched
+  argv:
+  - python3
+  - '{corpus}/verifiers/ptc_subjects_unpatched.py'
+  - .
+  description: 'the stop-line: no upstream source was patched'
+checklist:
+- id: suites-verbatim
+  text: Both upstream suites' results are recorded verbatim, per test where the suite reports per test.
+- id: rerunnable
+  text: The repro script rebuilds the verdict from a clean clone and the document says what each log
+    should contain, so a later run can tell 'still broken' from 'environment differs'.
+- id: upstream-filing
+  text: 'The upstream disposition is executed: either a filing whose body carries a minimal reproduction,
+    what the run ruled out, and the pinned shas — or an explicit ''working, no filing needed'' backed
+    by the passing evidence. Judge what was written; the send itself is staged for the operator.'
+  applicable: offline
+- id: result-report
+  text: A result report exists under the project's reports directory carrying What shipped / How verified
+    / To operate / Reflection, and its claims match what the attempt actually did.
+  applicable: offline
+non_replayable_legs:
+- leg: Close the stall-ledger row against the report ref.
+  reason: A write to the live hive workspace. The instrument never touches it.
+  executed_by: not-executed
+- leg: Announce the result on the spine per WORKER.md.
+  reason: A spine emit, which this instrument's own scope forbids. The report the order asks for IS
+    written and graded — only the announcement is out of reach.
+  executed_by: not-executed
+stop_lines:
+- id: no-patching-subjects
+  text: No patches to the subjects under test — findings get filed, not fixed.
+- id: no-parser-changes
+  text: No semantic-parser changes, no dataset-scale runs, no LLM calls.
+rubric: rubrics/ptc-revalidate.md
+grading: grading/ptc-revalidate.yaml
+required_changes:
+- docs/ptc-verdict.md
+mock_tools:
+- name: gh
+  script: mocks/gh
+  purpose: the order's upstream disposition — file the issue as you normally would; it is recorded for
+    the operator to send rather than delivered from here
+writable_workspace_paths:
+- projects/pln-benchmarks/reports/*
