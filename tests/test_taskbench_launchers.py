@@ -25,7 +25,8 @@ WAVES = {
     "wave-3-deepseek-paired.sh": DEEPSEEK_PIN.request_string,
     "wave-4-muse-claude-code.sh": MUSE_PIN.request_string,
 }
-ALL_SCRIPTS = [*WAVES, "qualify-setup.sh", "cell-codex.sh", "cell-reasonix.sh", "lib.sh"]
+ALL_SCRIPTS = [*WAVES, "qualify-setup.sh", "cell-codex.sh", "cell-reasonix.sh",
+               "cell-claude-openrouter.sh", "lib.sh"]
 
 
 @pytest.mark.parametrize("name", ALL_SCRIPTS)
@@ -94,9 +95,12 @@ def test_no_script_reads_a_secrets_file_or_prints_a_key(name):
     body = (LAUNCH / name).read_text()
     for forbidden in (". ~/.secrets", "source ~/.secrets", "cat ~/.secrets"):
         assert forbidden not in body, f"{name} must never read a secrets file"
-    # The only place a key may be written is Reasonix's mandated per-cell .env, and even there
-    # it is a printf into a 0600 file that is removed on every exit path.
-    if name != "cell-reasonix.sh":
+    # Two scripts expand the key, both because the order says they may, and both under a
+    # stated condition: `cell-reasonix.sh` writes the one mandated per-cell `.env` (0600,
+    # removed on every exit path), and `cell-claude-openrouter.sh` derives the
+    # harness-compatibility name process-locally without persisting a duplicate. Every other
+    # script must never touch the value at all.
+    if name not in ("cell-reasonix.sh", "cell-claude-openrouter.sh"):
         assert "$OPENROUTER_API_KEY" not in body.replace(
             '"${OPENROUTER_API_KEY:-}"', ""
         ).replace("${OPENROUTER_API_KEY:-}", ""), f"{name} must not expand the key"
@@ -198,3 +202,69 @@ def test_every_wave_uses_the_one_shared_reviewer_block(name):
     body = (LAUNCH / name).read_text()
     assert "emit_reviewer_block" in body
     assert "reviewer:" not in body, f"{name} must not write its own reviewer configuration"
+
+
+# --- the OpenRouter Claude arms -------------------------------------------------------------
+
+
+def test_the_openrouter_claude_arms_go_through_the_bare_wrapper():
+    """Without `--bare`, Claude Code can satisfy itself from the operator's Anthropic OAuth
+    subscription and never reach OpenRouter — a cell that runs a different model from the one
+    its record claims. Wave 1 is the deliberate exception: it IS the subscription."""
+    wrapper = (LAUNCH / "cell-claude-openrouter.sh").read_text()
+    assert "--bare" in wrapper
+    assert "--strict-mcp-config" in wrapper
+    for name in ("wave-3-deepseek-paired.sh", "wave-4-muse-claude-code.sh"):
+        body = (LAUNCH / name).read_text()
+        assert "cell-claude-openrouter.sh" in body, f"{name} must use the wrapper"
+        assert "$CLAUDE_BIN" not in body, f"{name} must not invoke claude directly"
+    wave1 = (LAUNCH / "wave-1-haiku-claude-code.sh").read_text()
+    assert "cell-claude-openrouter.sh" not in wave1, (
+        "wave 1 runs on the Anthropic subscription and needs OAuth, which --bare disables"
+    )
+
+
+def test_the_wrapper_derives_the_harness_key_without_persisting_a_duplicate():
+    """The order allows one operator secret for all three direct-cost arms and permits a
+    process-local derivation; it forbids a durably persisted duplicate."""
+    body = (LAUNCH / "cell-claude-openrouter.sh").read_text()
+    assert 'export ANTHROPIC_API_KEY="$OPENROUTER_API_KEY"' in body
+    for persist in (">", "cat >", "tee"):
+        assert f"ANTHROPIC_API_KEY{persist}" not in body
+    assert "$HOME" not in body, "the derivation must not touch a profile or home file"
+
+
+# --- settings alignment on the matched pair -------------------------------------------------
+
+
+def test_the_reasonix_arm_switches_off_the_optional_subsystems_by_name():
+    """By name rather than by hoping a default holds: the order requires web, MCP, memory,
+    planner and subagent behaviour off for both arms."""
+    body = (LAUNCH / "cell-reasonix.sh").read_text()
+    # The invocation, not the comment that explains it.
+    line = next(ln for ln in body.splitlines() if ln.strip().startswith("--ablate"))
+    for subsystem in ("evidence", "planner", "subagent", "retrieval", "compaction"):
+        assert subsystem in line, f"{subsystem} must be ablated"
+    assert "--preset balanced" in body, (
+        "the execution preset must be pinned explicitly, so a changed default cannot move the arm"
+    )
+    assert "--metrics" in body, "the harness-side token totals must be a recorded fact"
+
+
+def test_the_paired_wave_records_what_it_could_not_align():
+    """An irreducible difference that is not written down reads afterwards as one nobody
+    checked."""
+    body = (LAUNCH / "wave-3-deepseek-paired.sh").read_text()
+    assert "IRREDUCIBLE" in body
+    assert "not the same unit" in body
+    assert "harness default" in body.lower()
+    assert "system prompts" in body
+
+
+def test_neither_deepseek_arm_overrides_the_output_cap():
+    """Aligned by both leaving it to the endpoint, which then decides identically for each.
+    An override on one side only would be the confound this pair exists to avoid."""
+    for name in ("cell-reasonix.sh", "cell-claude-openrouter.sh"):
+        body = (LAUNCH / name).read_text()
+        for override in ("--max-tokens", "MAX_OUTPUT_TOKENS", "max_tokens"):
+            assert override not in body, f"{name} overrides the output cap on one side only"

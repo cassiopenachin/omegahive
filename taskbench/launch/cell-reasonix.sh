@@ -52,7 +52,22 @@ context_window = 1000000
 TOML
 chmod 600 "$CELL_HOME/config.toml"
 
+# The optional subsystems the order requires off, switched off by name rather than by hoping a
+# default holds. `--ablate` is Reasonix's own benchmark-arm switch and covers exactly the set the
+# order names: evidence gathering, the planner, subagents, retrieval, and compaction.
+#
+# `--preset balanced` is Reasonix's documented default, stated explicitly so that a future
+# change to that default cannot silently move this arm to a different execution setting.
+#
+# `--metrics` is what makes this arm's harness-side token/cache totals a recorded fact rather
+# than a transcript estimate. It is corroboration, not evidence: this arm is SCORED on the
+# gateway receipts, which is why a harness-local cost field appearing here changes nothing.
 REASONIX_HOME="$CELL_HOME" exec reasonix run \
   --model omegahive-openrouter \
   --output-format json \
+  --permission-mode auto \
+  --preset balanced \
+  --ablate evidence,planner,subagent,retrieval,compaction \
+  --metrics "$BENCH_CELL_ROOT/run/reasonix-metrics.json" \
+  ${TASKBENCH_EFFORT:+--effort "$TASKBENCH_EFFORT"} \
   "$@"

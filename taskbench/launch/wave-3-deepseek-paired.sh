@@ -42,6 +42,7 @@ readonly REPO_ROOT
 readonly RECORDS_DIR="$REPO_ROOT/taskbench/records"
 readonly WORK_BASE="${TASKBENCH_WORK_BASE:-$HOME/work/taskbench}"
 readonly CELL_REASONIX="$REPO_ROOT/taskbench/launch/cell-reasonix.sh"
+readonly CELL_CLAUDE="$REPO_ROOT/taskbench/launch/cell-claude-openrouter.sh"
 
 step "The pair under test"
 need reasonix "arm A's harness"
@@ -51,6 +52,7 @@ need bwrap    "the reviewer's cold-reader sandbox needs it"
 need git      "the materializer exports pre-task trees with it"
 
 [ -x "$CELL_REASONIX" ] || die "$CELL_REASONIX is missing or not executable"
+[ -x "$CELL_CLAUDE" ] || die "$CELL_CLAUDE is missing or not executable"
 [ -n "${OPENROUTER_API_KEY:-}" ] || die "OPENROUTER_API_KEY is not exported.
 
   It is the operator's secret and lives outside both repositories. Export it into this shell,
@@ -58,7 +60,6 @@ need git      "the materializer exports pre-task trees with it"
 
 RX_HARNESS="$(reasonix_harness_version)";  readonly RX_HARNESS
 CC_HARNESS="$(claude_harness_version)";    readonly CC_HARNESS
-CLAUDE_BIN="$(command -v claude)";         readonly CLAUDE_BIN
 
 say "vendor:   $VENDOR"
 say "model:    $MODEL"
@@ -72,6 +73,23 @@ say "Both arms start from fresh harness state with optional web, MCP, memory, pl
 say "subagent behaviour off. Their different core system prompts, tool schemas and agent loops"
 say "REMAIN — that difference is the harness effect this pair exists to measure, not a"
 say "confound to be scrubbed."
+
+step "Settings, aligned where both harnesses expose them"
+say "Held identical, because both arms expose them:"
+say "  permission mode      auto"
+say "  optional subsystems  off — web, MCP, memory, planner, subagent, retrieval, compaction"
+say "  harness state        fresh per cell; no conversation carried between cells"
+say "  provider route       one preset, one upstream, fallback disabled"
+say "  output cap           left at the PROVIDER default for both; neither arm overrides it,"
+say "                       so the endpoint decides identically for each"
+say ""
+say "IRREDUCIBLE, and recorded rather than papered over:"
+say "  * Reasonix takes a named reasoning effort (--effort); Claude Code takes a thinking"
+say "    token budget. These are not the same unit and cannot be set to the same value, so"
+say "    BOTH ARE LEFT AT THEIR HARNESS DEFAULT and the difference is reported."
+say "  * Core system prompts, tool schemas and agent loops differ. That difference IS the"
+say "    harness effect this pair measures; scrubbing it would delete the experiment."
+say ""
 
 step "The frozen schedule"
 WORK_ROOT="$WORK_BASE/wave-3-deepseek-paired-$(date +%Y%m%d-%H%M%S)"
@@ -107,15 +125,17 @@ write_config() {
       printf '    TASKBENCH_MODEL: "%s"\n' "$MODEL"
       printf '    GIT_TERMINAL_PROMPT: "0"\n'
     else
-      printf '  argv: ["%s", "--model", "%s", "--print", "--output-format", "json",\n' \
-             "$CLAUDE_BIN" "$MODEL"
-      printf '         "--permission-mode", "auto"]\n'
+      # Through the wrapper, not `claude` directly: `--bare` is what keeps this arm from
+      # satisfying itself with the operator's Anthropic OAuth subscription and never reaching
+      # OpenRouter at all — a cell that would run a different model from the one it records.
+      printf '  argv: ["%s", "--model", "%s"]\n' "$CELL_CLAUDE" "$MODEL"
       printf '  labels: {vendor: "%s", model: "%s", harness: "%s"}\n' \
              "$VENDOR" "$MODEL" "$CC_HARNESS"
       printf '  result_envelope: claude-code-json\n'
-      # ANTHROPIC_AUTH_TOKEN is how Claude Code presents a bearer credential to a non-Anthropic
-      # Messages endpoint. It is passed THROUGH from the operator's shell, never written here.
-      printf '  env_passthrough: ["PATH", "LANG", "TERM", "XDG_RUNTIME_DIR", "ANTHROPIC_AUTH_TOKEN"]\n'
+      # Only the ONE operator secret crosses into the cell. The wrapper derives the
+      # harness-compatibility name from it inside that process and persists no duplicate,
+      # which is the condition the order attaches to that derivation.
+      printf '  env_passthrough: ["PATH", "LANG", "TERM", "XDG_RUNTIME_DIR", "OPENROUTER_API_KEY"]\n'
       printf '  env:\n'
       printf '    GIT_TERMINAL_PROMPT: "0"\n'
     fi
