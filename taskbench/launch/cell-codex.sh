@@ -31,8 +31,20 @@ readonly CELL_HOME="$BENCH_CELL_ROOT/.codex-home"
 # As in cell-reasonix.sh: NO `exec` below. `exec` replaces this shell's process image and
 # discards the EXIT trap, which left a copy of the operator's ChatGPT subscription credential
 # sitting in every cell root — and cell roots are retained with the record.
+#
+# Cleanup removes the CREDENTIAL, not the evidence. Codex writes a session rollout under the
+# home it is given, and that rollout is the only place it records which model it ran; deleting
+# the home wholesale threw that away and left every cell unattributable, which the record
+# validator then refused. So the rollout is preserved into the cell's run directory first.
 # shellcheck disable=SC2329  # invoked by the trap below
-cleanup() { rm -rf "$CELL_HOME"; }
+cleanup() {
+  if [ -d "$CELL_HOME/sessions" ]; then
+    mkdir -p "$BENCH_CELL_ROOT/run"
+    find "$CELL_HOME/sessions" -name 'rollout-*.jsonl' -exec \
+      cp {} "$BENCH_CELL_ROOT/run/codex-rollout.jsonl" \; 2>/dev/null || true
+  fi
+  rm -rf "$CELL_HOME"
+}
 trap cleanup EXIT INT TERM
 
 [ -f "$SOURCE_AUTH" ] || {
@@ -58,4 +70,25 @@ CODEX_HOME="$CELL_HOME" codex exec \
   "$@"
 status=$?
 set -e
+
+# Codex's event stream says nothing about which model answered, so a cell built from it alone is
+# unattributable and the record validator refuses it — correctly. The rollout does record the
+# model the harness ran with. Emit it as one more JSONL line for the envelope parser to find,
+# labelled with what kind of fact it is: the harness's own statement of its configured model,
+# NOT a server-resolved identity. The launch alias is still never promoted into one.
+ROLLOUT="$(find "$CELL_HOME/sessions" -name 'rollout-*.jsonl' 2>/dev/null | head -1 || true)"
+if [ -n "$ROLLOUT" ] && [ -f "$ROLLOUT" ]; then
+  python3 - "$ROLLOUT" <<'PYEOF' || true
+import json, re, sys
+text = open(sys.argv[1], errors="replace").read()
+m = re.search(r'"model"\s*:\s*"([^"]+)"', text)
+if m:
+    print(json.dumps({
+        "type": "taskbench.harness_model",
+        "model": m.group(1),
+        "source": "codex session rollout",
+    }))
+PYEOF
+fi
+
 exit "$status"

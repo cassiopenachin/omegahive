@@ -383,6 +383,7 @@ def _parse_codex_jsonl(stdout_text: str) -> dict[str, Any]:
     failure: Any = None
     turns = 0
     thread_id = None
+    harness_model: dict[str, Any] | None = None
     for line in stdout_text.splitlines():
         line = line.strip()
         if not line.startswith("{"):
@@ -403,6 +404,12 @@ def _parse_codex_jsonl(stdout_text: str) -> dict[str, Any]:
         elif kind == "turn.failed":
             turns += 1
             failure = event.get("error")
+        elif kind == "taskbench.harness_model":
+            # Emitted by `cell-codex.sh` after the run, read out of Codex's own session rollout.
+            # It is the harness's statement of the model it ran with, which is a weaker fact
+            # than the server-resolved id other arms report — and it is labelled as such below
+            # rather than quietly filling the same slot with the same authority.
+            harness_model = event
 
     if usage is None and failure is None:
         return {
@@ -426,10 +433,24 @@ def _parse_codex_jsonl(stdout_text: str) -> dict[str, Any]:
         }
     return {
         "available": True,
-        "resolved_model": None,
+        # Codex's event stream carries no model id at all. Its session rollout does, and the
+        # wrapper hands it over — so the cell is attributable, which is what the record
+        # validator is protecting. The launch alias is still never promoted: this value comes
+        # from the harness's own record of the run, and `resolved_model_source` says so.
+        "resolved_model": (harness_model or {}).get("model"),
+        "resolved_model_source": (
+            (harness_model or {}).get("source", "codex session rollout")
+            if harness_model
+            else None
+        ),
         "resolved_model_missing_surface": (
-            "codex exec --json reports no server-resolved model id; the launch alias is a "
-            "request, not an identity, and is not promoted to one here"
+            "codex exec --json reports no SERVER-resolved model id. The value above is the "
+            "model Codex records having been configured with, read from its session rollout — "
+            "a harness statement, not a gateway or API echo. Weigh it accordingly."
+            if harness_model
+            else "codex exec --json reports no server-resolved model id, and no session "
+            "rollout was available to read one from; the launch alias is a request, not an "
+            "identity, and is not promoted to one here"
         ),
         "provider": None,
         "usage": normalised,

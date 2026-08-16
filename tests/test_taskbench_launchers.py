@@ -131,15 +131,23 @@ def test_the_reasonix_wrapper_removes_its_env_on_every_exit_path():
     assert "chmod 600" in body
 
 
-def test_the_codex_wrapper_carries_auth_and_nothing_else():
-    """Fresh state by absence, not by a set of disable flags whose meaning can change."""
-    body = (LAUNCH / "cell-codex.sh").read_text()
-    assert "auth.json" in body
+def test_the_codex_wrapper_seeds_the_cell_home_with_auth_and_nothing_else():
+    """Fresh state by absence, not by a set of disable flags whose meaning can change.
+
+    Direction matters, and the first version of this test got it wrong by forbidding a word
+    rather than a behaviour: copying prior state *into* the fresh home is what must never
+    happen, while copying evidence *out* of it before deletion is required — the rollout is the
+    only place Codex records which model it ran.
+    """
+    body = code("cell-codex.sh")
+    seeding = body.split("set +e")[0]  # everything before the harness is launched
+    assert "auth.json" in seeding
     assert "--ignore-user-config" in body
     assert "trap cleanup EXIT INT TERM" in body
-    for carried in ("sessions", "memories", "skills", "plugins"):
-        assert carried not in body.split("# Everything after")[-1], (
-            f"the wrapper must not copy {carried} into the cell home"
+    for carried in ("sessions", "memories", "goals", "queue", "skills", "plugins"):
+        assert 'cp "$SOURCE_AUTH"' in seeding
+        assert f"/{carried}" not in seeding, (
+            f"the wrapper must not seed the cell home with {carried}"
         )
 
 
@@ -458,3 +466,15 @@ def test_the_variadic_flag_is_never_last_before_the_kickoff():
         "the last thing emitted must be a non-variadic flag and its value"
     )
     assert "--allowedTools" not in lines[-1]
+
+
+def test_the_codex_wrapper_preserves_the_rollout_before_deleting_the_home():
+    """Cleanup removes the CREDENTIAL, not the evidence. Deleting the home wholesale threw away
+    the only place Codex records which model it ran, leaving every cell unattributable — which
+    the record validator then refused, after all five cells had been spent."""
+    body = code("cell-codex.sh")
+    assert "codex-rollout.jsonl" in body
+    assert body.index("cp {}") < body.index('rm -rf "$CELL_HOME"'), (
+        "the rollout must be copied out before the home is removed"
+    )
+    assert "taskbench.harness_model" in body

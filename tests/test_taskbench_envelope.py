@@ -167,3 +167,25 @@ def test_an_unknown_envelope_kind_is_still_refused():
     e = parse_result_envelope("some-future-harness", "{}")
     assert not e["available"]
     assert "unknown result_envelope kind" in e["missing_surface"]
+
+
+def test_codex_reports_the_model_its_rollout_recorded_but_labels_what_kind_of_fact_it_is():
+    """Found by running a real Codex cell end to end: the event stream carries no model at all,
+    so `validate_record` refused the cell as unattributable — correctly. The rollout does record
+    one, and the wrapper hands it over. It fills the slot without claiming the authority of a
+    server-resolved id."""
+    stream = CODEX_OK + "\n" + json.dumps(
+        {"type": "taskbench.harness_model", "model": "gpt-5.6-luna",
+         "source": "codex session rollout"}
+    )
+    e = parse_result_envelope("codex-jsonl", stream)
+    assert e["resolved_model"] == "gpt-5.6-luna"
+    assert e["resolved_model_source"] == "codex session rollout"
+    assert "not a gateway or API echo" in e["resolved_model_missing_surface"]
+
+
+def test_without_a_rollout_codex_still_refuses_to_invent_one():
+    e = parse_result_envelope("codex-jsonl", CODEX_OK)
+    assert e["resolved_model"] is None
+    assert e["resolved_model_source"] is None
+    assert "no session rollout was available" in e["resolved_model_missing_surface"]
