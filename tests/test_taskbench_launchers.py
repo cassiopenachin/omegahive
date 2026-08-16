@@ -462,6 +462,22 @@ def test_the_dropped_reasonix_arm_is_recorded_in_the_launcher_itself():
 def test_wave_3_is_a_single_arm_on_the_pinned_deepseek_route():
     body = code("wave-3-deepseek.sh")
     assert "ARM_ORDER=(claude-code)" in body
-    assert "cell-reasonix.sh" not in body
     assert "gmicloud/fp8" in body
     assert DEEPSEEK_PIN.request_string in body
+
+
+def test_no_executable_line_names_an_arm_outside_arm_order():
+    """The dropped arm survived in the smoke loop as a bare name — `for arm in reasonix
+    claude-code` — while `ARM_ORDER` had already lost it. The wrapper path is DERIVED from that
+    name, so a check for `cell-reasonix.sh` sees nothing, and the launch still spends real money
+    smoking an arm nobody approved, before the arm that matters runs at all.
+
+    Every arm an executable line names must therefore be one this launcher declares."""
+    body = code("wave-3-deepseek.sh")
+    assert "reasonix" not in body, (
+        "an arm named in code but not in ARM_ORDER is an arm that still runs"
+    )
+    # And the loops must iterate the declaration rather than repeat its contents.
+    assert body.count('for arm in "${ARM_ORDER[@]}"') >= 2, (
+        "each per-arm loop reads ARM_ORDER, so dropping an arm is one edit and not three"
+    )

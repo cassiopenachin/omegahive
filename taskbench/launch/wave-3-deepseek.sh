@@ -35,24 +35,18 @@ readonly VENDOR="deepseek"
 readonly UPSTREAM="gmicloud/fp8"
 
 # THE FROZEN SCHEDULE. Written down here, before any result exists, and echoed into the work
-# root at launch so it is auditable afterwards.
+# root at launch so it is auditable afterwards. One arm, five cells, in the task order below.
 #
-# WHAT THIS IS NOT, and the reason is worth reading before trusting the deltas. The order asks
-# for the arms to run as ADJACENT MATCHED PAIRS with an alternating lead — arm A then arm B on
-# each task in turn — so that neither systematically gets the colder cache or the busier hour.
-# That cannot be built here: per-task interleaving means every invocation but the last declares
-# a subset of the held-in set, and `preflight.check_corpus` refuses a launch that does not
-# declare all five. That guard is the only thing standing between a partial bundle and a pass
-# rate that looks whole, so it is not something to relax for one wave's schedule; the clean
-# implementation needs `pipeline.run_batch` to stop after N cells, and `pipeline.py` is
-# byte-frozen to the pinned revision.
-#
-# So each arm runs its five cells as one ordinary batch, BACK TO BACK, in the lead order below.
-# What is preserved: same model, same preset, same upstream, fallback disabled, same tasks, same
-# kickoff, and a per-generation receipt naming the provider that served every call — which is
-# what the pair's claim actually rests on. What is lost: per-task adjacency, so a drift in
-# gateway conditions across the hour lands unevenly between the two columns. That loss belongs
-# in the result beside the deltas, not in a footnote.
+# A constraint worth recording even though the pair was dropped, because it bounds what a future
+# rerun of the pair can promise: the order asks for arms to run as ADJACENT MATCHED PAIRS with an
+# alternating lead, so neither systematically gets the colder cache or the busier hour. That
+# cannot be built on this instrument. Per-task interleaving means every invocation but the last
+# declares a subset of the held-in set, and `preflight.check_corpus` refuses a launch that does
+# not declare all five — the one guard standing between a partial bundle and a pass rate that
+# looks whole. Relaxing it for a schedule is not a trade worth making; the clean implementation
+# needs `pipeline.run_batch` to stop after N cells, and `pipeline.py` is byte-frozen to the
+# pinned revision. So a pair here would have run as whole batches back to back, and the result
+# would have had to carry that.
 readonly TASK_ORDER=(docs-triage instrument-teeth launch-pane-fix ptc-revalidate run-registration)
 readonly ARM_ORDER=(claude-code)
 
@@ -94,17 +88,17 @@ mkdir -p "$WORK_ROOT" "$RECORDS_DIR"
 SCHEDULE="$WORK_ROOT/frozen-schedule.txt"
 readonly SCHEDULE
 {
-  printf '# Frozen before any cell ran. Adjacent matched pairs, alternating lead by task.\n'
+  printf '# Frozen before any cell ran.\n'
   printf '# preset=%s upstream=%s model=%s\n' "$PRESET" "$UPSTREAM" "$MODEL"
-  printf '# arms run as whole five-cell batches, back to back, in this order:\n'
+  printf '# arm(s), each running its five cells as one whole batch:\n'
   for i in "${!ARM_ORDER[@]}"; do
     printf '%d %s\n' "$((i + 1))" "${ARM_ORDER[$i]}"
   done
-  printf '# tasks, identical and in this order for both arms:\n'
+  printf '# tasks, identical and in this order for every arm:\n'
   for i in "${!TASK_ORDER[@]}"; do
     printf '%d %s\n' "$((i + 1))" "${TASK_ORDER[$i]}"
   done
-  printf '# NOT per-task adjacency: see the header of this launcher for why, and report it.\n' 
+  printf '# One arm: the Reasonix arm was dropped on 2026-08-16, so this is not a pair.\n' 
 } > "$SCHEDULE"
 cat "$SCHEDULE"
 say ""
@@ -182,11 +176,11 @@ run_arm_task() {
   return $status
 }
 
-step "Smoke: BOTH arms, before either spends"
-say "One disposable read/edit/test loop per arm, using each arm's real argv. Both must be"
-say "green: a pair in which only one arm can reach its model is not a pair, and running the"
-say "reachable half alone would produce a column with nothing to compare it against."
-for arm in reasonix claude-code; do
+step "Smoke: every arm, before any of them spends"
+say "One disposable read/edit/test loop per arm, using that arm's real argv. Every arm must"
+say "be green before any of them runs a scored cell: a bundle that cannot read a file it was"
+say "not given, edit a second and run the third has nothing to say about an order."
+for arm in "${ARM_ORDER[@]}"; do
   write_config "$arm" "$WORK_ROOT/smoke-$arm.yaml"
   set +e
   (
@@ -206,10 +200,10 @@ done
 
 install_interrupt_trap "$RECORDS_DIR" "wave-3-deepseek-paired" "$WORK_ROOT"
 
-step "The pause point: ${TASK_ORDER[0]} first, both arms"
-say "The precommitted cheapest/high-signal task runs first for BOTH arms. When the pair"
-say "finishes, STOP AND LOOK before the other four. It is a pause point, never permission to"
-say "score a partial bundle as adequate."
+step "The pause point: ${TASK_ORDER[0]} first"
+say "The precommitted cheapest/high-signal task runs first for every arm. When it finishes,"
+say "STOP AND LOOK before the other four. It is a pause point, never permission to score a"
+say "partial bundle as adequate."
 
 ALL_TASKS="$(IFS=,; printf '%s' "${TASK_ORDER[*]}")"
 readonly ALL_TASKS
