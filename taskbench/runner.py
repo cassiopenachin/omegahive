@@ -589,6 +589,7 @@ def parse_result_envelope(kind: str | None, stdout_text: str) -> dict[str, Any]:
         "model_usage": model_usage,
         "usage": envelope.get("usage"),
         "total_cost_usd": envelope.get("total_cost_usd"),
+        "session_id": envelope.get("session_id"),
         "num_turns": envelope.get("num_turns"),
         "duration_ms": envelope.get("duration_ms"),
         "is_error": envelope.get("is_error"),

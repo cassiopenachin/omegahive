@@ -1,0 +1,14 @@
+{
+  "gh": [
+    {
+      "argv": [
+        "/home/cassio/work/taskbench/wave-1-haiku-claude-code/cell-02ccfe0124/bin/gh",
+        "--version"
+      ],
+      "body": null,
+      "repo": "unknown/unknown",
+      "stdin": "",
+      "title": null
+    }
+  ]
+}

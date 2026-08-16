@@ -68,26 +68,39 @@ resolver_bind() {
   fi
 }
 
-# The tool grant every Claude Code invocation in this study uses, and the reason it is not
+# The tool grant every Claude Code invocation in this study uses, and why it is not
 # `--permission-mode auto`.
 #
-# On Claude Code 2.1.231 — the build that produced the incumbent record — `auto` let a cell
-# read, edit and run: all five incumbent cells invoked bin/bench-verify and four had zero
-# permission denials. On 2.1.233 the SAME FLAG DENIES EDITS OUTRIGHT. A probe on the current
-# build read the fixture, worked out the correct answer, and was refused permission to write it,
-# twice, ending with "I need your permission to edit answer.py". `dontAsk` behaves the same way;
-# `acceptEdits` alone permits the edit but still denies Bash, so the candidate cannot run a
-# single verifier.
+# THE CAUSE, corrected after diagnosis. `auto` was not redefined between builds — it was
+# SILENTLY DOWNGRADED TO `default`. A migration in the binary clears the account's stored
+# auto-mode opt-in when the "auto is now the default" rollout reaches it; between that flip and
+# the operator re-accepting the dialog, `--permission-mode auto` is a no-op. The same migration
+# is present in 2.1.231, 2.1.232 and 2.1.233 alike, and the rollout merely happened to flip near
+# an upgrade — which is why it looked like a version regression and was not one. Under `--print`,
+# `default` turns every tool call into a denial, and the downgrade is invisible: empty stderr,
+# exit 0, `is_error: false`. It cost a batch before it was understood.
 #
-# A candidate that cannot write files is not a weaker candidate — it is a broken measurement.
-# The flag string is not the configuration; the effective capability is. Granting the tools
-# explicitly and accepting edits reproduces the incumbent's conditions with ZERO denials on the
-# current build, verified by running it rather than by reading release notes.
+# WHY HEADLESS SHOULD AVOID `auto` ANYWAY, independent of that:
 #
-# ORDERING CONSTRAINT: `--allowedTools` is variadic. It must never be the last flag before the
-# kickoff the runner appends, or it swallows the prompt — observed as "Input must be provided
-# either through stdin or as a prompt argument when using --print". `--permission-mode` follows
-# it here for exactly that reason.
+#   * It fails closed non-interactively. An unreachable classifier denies with retry guidance;
+#     a soft block that would prompt a human just denies; a long transcript aborts the agent
+#     outright once the classifier's own context is exceeded.
+#   * It puts a SECOND PAID MODEL INSIDE THE MEASUREMENT. Each non-fast-pathed tool call is a
+#     classifier request — latency, cost and non-determinism landing directly on a cell's score.
+#     A benchmark cell must not have another model's judgement in its loop.
+#
+# Edits inside the workspace fast-path around the classifier entirely, which is why
+# `acceptEdits` was never affected by any of this.
+#
+# So: grant the tools explicitly and accept edits. Verified on the current build with zero
+# denials across a full five-cell batch — 49 to 73 turns per cell — so the enumeration is not
+# pinching where real corpus work happens.
+#
+# ORDERING CONSTRAINT: `--allowedTools` is variadic and `--debug` takes an OPTIONAL argument;
+# either one placed last will swallow the kickoff the runner appends ("Input must be provided
+# either through stdin or as a prompt argument when using --print"). Use `--debug-file <path>`
+# if debugging is ever needed. Rule: no variadic or optional-argument flag immediately before
+# the prompt. `--permission-mode` closes this grant for exactly that reason.
 emit_claude_tool_grant() {
   printf '         "--allowedTools", "Bash", "Edit", "Write", "Read", "Glob", "Grep",\n'
   printf '         "NotebookEdit", "TodoWrite", "MultiEdit",\n'

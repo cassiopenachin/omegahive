@@ -30,7 +30,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .runner import _detect_terminal_error, _utc, classify_pulse
+from .runner import _detect_terminal_error, _utc, classify_pulse, parse_result_envelope
 
 #: Not a secret and not random — a fixed literal, so the smoke is reproducible and a failure is
 #: never "maybe it drew a hard token". It is absent from the prompt, which is the whole point.
@@ -87,6 +87,53 @@ class SmokeResult:
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def find_session_transcript(session_id: str, home: Path) -> Path | None:
+    """Claude Code's own JSONL for one session, under whichever HOME it ran with."""
+    projects = home / ".claude" / "projects"
+    if not projects.is_dir():
+        return None
+    matches = list(projects.glob(f"*/{session_id}.jsonl"))
+    return matches[0] if matches else None
+
+
+def effective_permission_mode(session_id: str, home: Path) -> str | None:
+    """The mode the session ACTUALLY ran under, not the one the flag asked for.
+
+    `--permission-mode auto` can silently degrade to `default`: a migration in the binary
+    clears the stored auto-mode opt-in when the "auto is now the default" rollout reaches an
+    account, and between that flip and the operator re-accepting the dialog the flag is a no-op.
+    The downgrade is *silent* — empty stderr, exit 0, `is_error: false` — and under `--print`,
+    `default` turns every tool call into a denial. It cost a batch here before it was understood.
+
+    The transcript records the effective mode, so the flag never has to be trusted. Reading it
+    is free and turns an invisible downgrade into a refusal before anything is spent.
+    """
+    transcript = find_session_transcript(session_id, home)
+    if transcript is None:
+        return None
+    try:
+        for line in transcript.read_text(errors="replace").splitlines():
+            if '"permissionMode"' not in line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            mode = rec.get("permissionMode")
+            if isinstance(mode, str):
+                return mode
+    except OSError:
+        return None
+    return None
+
+
+def requested_permission_mode(argv: list[str]) -> str | None:
+    for i, arg in enumerate(argv):
+        if arg == "--permission-mode" and i + 1 < len(argv):
+            return argv[i + 1]
+    return None
 
 
 def build_fixture(root: Path) -> Path:
@@ -267,10 +314,37 @@ def run_smoke(
         # this vocabulary exists to prevent. Any change under the fixture counts as evidence.
         outcome, detail = _classify_failure(combined, responded=bool(out or err) or touched)
 
+    # The mode assertion. A harness that silently ran in a weaker mode than it was asked for
+    # produces cells whose denials look like model behaviour, so this is checked before the
+    # batch rather than diagnosed after it.
+    extra: dict[str, Any] = {}
+    wanted = requested_permission_mode(list(argv))
+    if wanted:
+        extra["requested_permission_mode"] = wanted
+        envelope = parse_result_envelope("claude-code-json", out or "")
+        session = envelope.get("session_id") if envelope.get("available") else None
+        if session is None:
+            session = _session_id_from(out or "")
+        if session:
+            actual = effective_permission_mode(
+                session, Path(child_env.get("HOME", str(root)))
+            )
+            extra["effective_permission_mode"] = actual
+            if actual and actual != wanted:
+                outcome = "unreachable-harness-startup"
+                detail = (
+                    f"the harness was asked for --permission-mode {wanted!r} and actually ran "
+                    f"as {actual!r}. This degrades silently — empty stderr, exit 0, no error "
+                    "flag — and every tool call a cell makes under the weaker mode is denied, "
+                    "which reads as model behaviour rather than as setup. Fix the mode, not "
+                    "the cells."
+                )
+
     return SmokeResult(
         bundle=bundle,
         outcome=outcome,
         detail=detail,
+        extra=extra,
         argv=list(argv),
         exit_code=proc.returncode,
         wall_ms=int((finished - started) * 1000),
@@ -282,6 +356,21 @@ def run_smoke(
         stdout_tail=(out or "")[-4000:],
         stderr_tail=(err or "")[-4000:],
     )
+
+
+def _session_id_from(stdout_text: str) -> str | None:
+    """The envelope's session id, without needing the envelope to be otherwise usable."""
+    for line in reversed(stdout_text.splitlines()):
+        line = line.strip()
+        if not (line.startswith("{") and line.endswith("}")):
+            continue
+        try:
+            doc = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(doc, dict) and isinstance(doc.get("session_id"), str):
+            return doc["session_id"]
+    return None
 
 
 def write_smoke(result: SmokeResult, out_dir: Path) -> Path:

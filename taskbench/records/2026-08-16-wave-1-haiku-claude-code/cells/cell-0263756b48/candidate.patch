@@ -1,0 +1,113 @@
+diff --git a/scripts/hive-launch b/scripts/hive-launch
+index cb9529c..a27602b 100755
+--- a/scripts/hive-launch
++++ b/scripts/hive-launch
+@@ -186,27 +186,7 @@ echo "  wrapper: $WRAPPER"
+ assigned_payload=$(jq -cn --arg w "$WORKER" '{worker:$w}')
+ registered_payload=$(jq -cn --arg w "$WORKER" '{worker_id:$w}')
+ 
+-# Two seeding modes. Create: task.created -> ready, then register + assign.
+-# Adopt: the task is ALREADY `ready` (unowned) from its seeded task.created —
+-# re-emitting one would regress it, so we emit ONLY register + assign. Order
+-# matters in both: registered -> roster (assign's target must be registered),
+-# assigned -> owned.
+-if [ -n "$ADOPT" ]; then
+-  emit human "$OPERATOR_ACTOR" worker.registered              --payload "$registered_payload" >/dev/null
+-  emit coordinator "$OPERATOR_ACTOR" task.assigned --task "$TASK" --payload "$assigned_payload" >/dev/null
+-  echo "  adopted: existing ready task -> worker.registered + task.assigned (no task.created)"
+-  echo "  caveat: acceptance stays the seeded task.created pin, which may be STALE against $REL@$SHA at HEAD;"
+-  echo "          the worker reads the order at HEAD (WORKER.md), so this is protocol-consistent — just be aware."
+-else
+-  created_payload=$(jq -cn --arg t "$TITLE" --arg ty "$TASK_TYPE" --arg a "$ACCEPTANCE" \
+-    '{title:$t, task_type:$ty, acceptance:$a}')
+-  emit human "$OPERATOR_ACTOR" task.created     --task "$TASK" --payload "$created_payload"    >/dev/null
+-  emit human "$OPERATOR_ACTOR" worker.registered              --payload "$registered_payload" >/dev/null
+-  emit coordinator "$OPERATOR_ACTOR" task.assigned --task "$TASK" --payload "$assigned_payload" >/dev/null
+-  echo "  seeded: task.created + worker.registered + task.assigned"
+-fi
+-
+-# --- kickoff --------------------------------------------------------------------
++# --- kickoff template (used for tmux window) -----------------------------------
+ # The WORKER.md launch template with clone paths filled, plus the one line that
+ # points the worker at its wrapper: everywhere WORKER.md shows
+ # `hive emit --run-id $RUN --role worker --actor $WORKER ...`, the worker calls
+@@ -225,16 +205,41 @@ Container tooling is podman (not docker). Begin by reading both files, then emit
+ task.accepted and start.
+ KICK
+ 
+-# Open the pane. The kickoff travels as an env var (HIVE_KICKOFF) so no multi-line
+-# text is ever quoted onto a command line; the window runs the worker command with
+-# it as the initial prompt. The pane NAME is the registry — no registry file.
++# --- open the pane FIRST (before spine seeding) --------------------------------
++# Collision-free window allocation: create with -a (append/free-slot semantics)
++# before any board write. This ensures a failure here is clean (no orphaned board
++# state), and the append semantics avoid implicit index collisions. The pane name
++# is the task id; a name collision (task already assigned a window on this session)
++# is caught by the earlier guard and refuses here with an explicit error.
+ launch_cmd="$HIVE_WORKER_CMD \"\$HIVE_KICKOFF\""
+ if tmux has-session -t "$HIVE_TMUX_SESSION" 2>/dev/null; then
+-  tmux new-window -t "$HIVE_TMUX_SESSION" -n "$TASK" -c "$WS_ROOT" \
+-    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd"
++  tmux new-window -a -t "$HIVE_TMUX_SESSION" -n "$TASK" -c "$WS_ROOT" \
++    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd" || die "failed to create tmux window for task '$TASK' (check HIVE_TMUX_SESSION='$HIVE_TMUX_SESSION')"
+ else
+   tmux new-session -d -s "$HIVE_TMUX_SESSION" -n "$TASK" -c "$WS_ROOT" \
+-    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd"
++    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd" || die "failed to create tmux session '$HIVE_TMUX_SESSION' with window '$TASK'"
+ fi
+ echo "  pane:   $HIVE_TMUX_SESSION:$TASK  (attach: tmux attach -t $HIVE_TMUX_SESSION)"
++
++# --- spine seeding (after pane is live) ----------------------------------------
++# Two seeding modes. Create: task.created -> ready, then register + assign.
++# Adopt: the task is ALREADY `ready` (unowned) from its seeded task.created —
++# re-emitting one would regress it, so we emit ONLY register + assign. Order
++# matters in both: registered -> roster (assign's target must be registered),
++# assigned -> owned.
++if [ -n "$ADOPT" ]; then
++  emit human "$OPERATOR_ACTOR" worker.registered              --payload "$registered_payload" >/dev/null
++  emit coordinator "$OPERATOR_ACTOR" task.assigned --task "$TASK" --payload "$assigned_payload" >/dev/null
++  echo "  adopted: existing ready task -> worker.registered + task.assigned (no task.created)"
++  echo "  caveat: acceptance stays the seeded task.created pin, which may be STALE against $REL@$SHA at HEAD;"
++  echo "          the worker reads the order at HEAD (WORKER.md), so this is protocol-consistent — just be aware."
++else
++  created_payload=$(jq -cn --arg t "$TITLE" --arg ty "$TASK_TYPE" --arg a "$ACCEPTANCE" \
++    '{title:$t, task_type:$ty, acceptance:$a}')
++  emit human "$OPERATOR_ACTOR" task.created     --task "$TASK" --payload "$created_payload"    >/dev/null
++  emit human "$OPERATOR_ACTOR" worker.registered              --payload "$registered_payload" >/dev/null
++  emit coordinator "$OPERATOR_ACTOR" task.assigned --task "$TASK" --payload "$assigned_payload" >/dev/null
++  echo "  seeded: task.created + worker.registered + task.assigned"
++fi
++
+ echo "hive-launch: done."
+diff --git a/scripts/hive-tooling-drill.sh b/scripts/hive-tooling-drill.sh
+index abe7595..7dc4641 100755
+--- a/scripts/hive-tooling-drill.sh
++++ b/scripts/hive-tooling-drill.sh
+@@ -357,6 +357,27 @@ expect_fail_msg "launch refuses a done task (not launchable)" "not launchable" \
+   "$SCRIPT_DIR/hive-launch" "$AORDER" --worker "sess-adopt-done-${STAMP}"
+ check "adopt refusal emitted no board state" "[ ! -e '$WORK/sess-adopt-done-${STAMP}' ]"
+ 
++echo
++echo "== collision-free window allocation with -a (append/free-slot semantics) =="
++# The original defect: implicit window index collision when multiple workers exist.
++# The fix: use new-window -a which appends to the end, avoiding explicit indices.
++# Pre-populate the session with extra windows to simulate an occupied index scenario.
++CORDER=$(add_order "$APROJ" "2026-07-13-drill-collision" "collision test")
++CWORKER="sess-collision-${STAMP}"
++CWRAP="$WRAPPERS/$CWORKER.sh"
++# Create dummy windows to force a collision if the launcher doesn't use -a.
++# Without -a, tmux would implicitly target an index that might be in use; with -a,
++# it appends safely.
++tmux new-window -t "$TMUX_SESSION" -n "dummy1" >/dev/null 2>&1 || true
++tmux new-window -t "$TMUX_SESSION" -n "dummy2" >/dev/null 2>&1 || true
++# Now launch into a session with occupied indices — this succeeds with -a,
++# would fail or misallocate without it.
++"$SCRIPT_DIR/hive-launch" "$CORDER" --worker "$CWORKER" >/dev/null
++check "collision-free: launch succeeds despite occupied indices" "[ \"\$(bstatus '$ARUN' drill-collision)\" = assigned ]"
++check "collision-free: task window created with correct name" "tmux list-windows -t '$TMUX_SESSION' -F '#{window_name}' | grep -qxF 'drill-collision'"
++check "collision-free: wrapper issued" "[ -x '$CWRAP' ]"
++check "collision-free: clones provisioned" "[ -d '$WORK/$CWORKER/hive/.git' ]"
++
+ echo
+ echo "== refusal paths =="
+ # (a) dirty order — an uncommitted new order refuses at pin time.

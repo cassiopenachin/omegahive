@@ -1,0 +1,178 @@
+{
+  "argv": [
+    "/home/cassio/.local/bin/claude",
+    "--model",
+    "claude-haiku-4-5",
+    "--print",
+    "--output-format",
+    "json",
+    "--allowedTools",
+    "Bash",
+    "Edit",
+    "Write",
+    "Read",
+    "Glob",
+    "Grep",
+    "NotebookEdit",
+    "TodoWrite",
+    "MultiEdit",
+    "--permission-mode",
+    "acceptEdits"
+  ],
+  "cell_id": "cell-0263756b48",
+  "changed_files": [
+    "scripts/hive-launch",
+    "scripts/hive-tooling-drill.sh"
+  ],
+  "diff": "diff --git a/scripts/hive-launch b/scripts/hive-launch\nindex cb9529c..a27602b 100755\n--- a/scripts/hive-launch\n+++ b/scripts/hive-launch\n@@ -186,27 +186,7 @@ echo \"  wrapper: $WRAPPER\"\n assigned_payload=$(jq -cn --arg w \"$WORKER\" '{worker:$w}')\n registered_payload=$(jq -cn --arg w \"$WORKER\" '{worker_id:$w}')\n \n-# Two seeding modes. Create: task.created -> ready, then register + assign.\n-# Adopt: the task is ALREADY `ready` (unowned) from its seeded task.created \u2014\n-# re-emitting one would regress it, so we emit ONLY register + assign. Order\n-# matters in both: registered -> roster (assign's target must be registered),\n-# assigned -> owned.\n-if [ -n \"$ADOPT\" ]; then\n-  emit human \"$OPERATOR_ACTOR\" worker.registered              --payload \"$registered_payload\" >/dev/null\n-  emit coordinator \"$OPERATOR_ACTOR\" task.assigned --task \"$TASK\" --payload \"$assigned_payload\" >/dev/null\n-  echo \"  adopted: existing ready task -> worker.registered + task.assigned (no task.created)\"\n-  echo \"  caveat: acceptance stays the seeded task.created pin, which may be STALE against $REL@$SHA at HEAD;\"\n-  echo \"          the worker reads the order at HEAD (WORKER.md), so this is protocol-consistent \u2014 just be aware.\"\n-else\n-  created_payload=$(jq -cn --arg t \"$TITLE\" --arg ty \"$TASK_TYPE\" --arg a \"$ACCEPTANCE\" \\\n-    '{title:$t, task_type:$ty, acceptance:$a}')\n-  emit human \"$OPERATOR_ACTOR\" task.created     --task \"$TASK\" --payload \"$created_payload\"    >/dev/null\n-  emit human \"$OPERATOR_ACTOR\" worker.registered              --payload \"$registered_payload\" >/dev/null\n-  emit coordinator \"$OPERATOR_ACTOR\" task.assigned --task \"$TASK\" --payload \"$assigned_payload\" >/dev/null\n-  echo \"  seeded: task.created + worker.registered + task.assigned\"\n-fi\n-\n-# --- kickoff --------------------------------------------------------------------\n+# --- kickoff template (used for tmux window) -----------------------------------\n # The WORKER.md launch template with clone paths filled, plus the one line that\n # points the worker at its wrapper: everywhere WORKER.md shows\n # `hive emit --run-id $RUN --role worker --actor $WORKER ...`, the worker calls\n@@ -225,16 +205,41 @@ Container tooling is podman (not docker). Begin by reading both files, then emit\n task.accepted and start.\n KICK\n \n-# Open the pane. The kickoff travels as an env var (HIVE_KICKOFF) so no multi-line\n-# text is ever quoted onto a command line; the window runs the worker command with\n-# it as the initial prompt. The pane NAME is the registry \u2014 no registry file.\n+# --- open the pane FIRST (before spine seeding) --------------------------------\n+# Collision-free window allocation: create with -a (append/free-slot semantics)\n+# before any board write. This ensures a failure here is clean (no orphaned board\n+# state), and the append semantics avoid implicit index collisions. The pane name\n+# is the task id; a name collision (task already assigned a window on this session)\n+# is caught by the earlier guard and refuses here with an explicit error.\n launch_cmd=\"$HIVE_WORKER_CMD \\\"\\$HIVE_KICKOFF\\\"\"\n if tmux has-session -t \"$HIVE_TMUX_SESSION\" 2>/dev/null; then\n-  tmux new-window -t \"$HIVE_TMUX_SESSION\" -n \"$TASK\" -c \"$WS_ROOT\" \\\n-    -e HIVE_KICKOFF=\"$KICKOFF\" \"$launch_cmd\"\n+  tmux new-window -a -t \"$HIVE_TMUX_SESSION\" -n \"$TASK\" -c \"$WS_ROOT\" \\\n+    -e HIVE_KICKOFF=\"$KICKOFF\" \"$launch_cmd\" || die \"failed to create tmux window for task '$TASK' (check HIVE_TMUX_SESSION='$HIVE_TMUX_SESSION')\"\n else\n   tmux new-session -d -s \"$HIVE_TMUX_SESSION\" -n \"$TASK\" -c \"$WS_ROOT\" \\\n-    -e HIVE_KICKOFF=\"$KICKOFF\" \"$launch_cmd\"\n+    -e HIVE_KICKOFF=\"$KICKOFF\" \"$launch_cmd\" || die \"failed to create tmux session '$HIVE_TMUX_SESSION' with window '$TASK'\"\n fi\n echo \"  pane:   $HIVE_TMUX_SESSION:$TASK  (attach: tmux attach -t $HIVE_TMUX_SESSION)\"\n+\n+# --- spine seeding (after pane is live) ----------------------------------------\n+# Two seeding modes. Create: task.created -> ready, then register + assign.\n+# Adopt: the task is ALREADY `ready` (unowned) from its seeded task.created \u2014\n+# re-emitting one would regress it, so we emit ONLY register + assign. Order\n+# matters in both: registered -> roster (assign's target must be registered),\n+# assigned -> owned.\n+if [ -n \"$ADOPT\" ]; then\n+  emit human \"$OPERATOR_ACTOR\" worker.registered              --payload \"$registered_payload\" >/dev/null\n+  emit coordinator \"$OPERATOR_ACTOR\" task.assigned --task \"$TASK\" --payload \"$assigned_payload\" >/dev/null\n+  echo \"  adopted: existing ready task -> worker.registered + task.assigned (no task.created)\"\n+  echo \"  caveat: acceptance stays the seeded task.created pin, which may be STALE against $REL@$SHA at HEAD;\"\n+  echo \"          the worker reads the order at HEAD (WORKER.md), so this is protocol-consistent \u2014 just be aware.\"\n+else\n+  created_payload=$(jq -cn --arg t \"$TITLE\" --arg ty \"$TASK_TYPE\" --arg a \"$ACCEPTANCE\" \\\n+    '{title:$t, task_type:$ty, acceptance:$a}')\n+  emit human \"$OPERATOR_ACTOR\" task.created     --task \"$TASK\" --payload \"$created_payload\"    >/dev/null\n+  emit human \"$OPERATOR_ACTOR\" worker.registered              --payload \"$registered_payload\" >/dev/null\n+  emit coordinator \"$OPERATOR_ACTOR\" task.assigned --task \"$TASK\" --payload \"$assigned_payload\" >/dev/null\n+  echo \"  seeded: task.created + worker.registered + task.assigned\"\n+fi\n+\n echo \"hive-launch: done.\"\ndiff --git a/scripts/hive-tooling-drill.sh b/scripts/hive-tooling-drill.sh\nindex abe7595..7dc4641 100755\n--- a/scripts/hive-tooling-drill.sh\n+++ b/scripts/hive-tooling-drill.sh\n@@ -357,6 +357,27 @@ expect_fail_msg \"launch refuses a done task (not launchable)\" \"not launchable\" \\\n   \"$SCRIPT_DIR/hive-launch\" \"$AORDER\" --worker \"sess-adopt-done-${STAMP}\"\n check \"adopt refusal emitted no board state\" \"[ ! -e '$WORK/sess-adopt-done-${STAMP}' ]\"\n \n+echo\n+echo \"== collision-free window allocation with -a (append/free-slot semantics) ==\"\n+# The original defect: implicit window index collision when multiple workers exist.\n+# The fix: use new-window -a which appends to the end, avoiding explicit indices.\n+# Pre-populate the session with extra windows to simulate an occupied index scenario.\n+CORDER=$(add_order \"$APROJ\" \"2026-07-13-drill-collision\" \"collision test\")\n+CWORKER=\"sess-collision-${STAMP}\"\n+CWRAP=\"$WRAPPERS/$CWORKER.sh\"\n+# Create dummy windows to force a collision if the launcher doesn't use -a.\n+# Without -a, tmux would implicitly target an index that might be in use; with -a,\n+# it appends safely.\n+tmux new-window -t \"$TMUX_SESSION\" -n \"dummy1\" >/dev/null 2>&1 || true\n+tmux new-window -t \"$TMUX_SESSION\" -n \"dummy2\" >/dev/null 2>&1 || true\n+# Now launch into a session with occupied indices \u2014 this succeeds with -a,\n+# would fail or misallocate without it.\n+\"$SCRIPT_DIR/hive-launch\" \"$CORDER\" --worker \"$CWORKER\" >/dev/null\n+check \"collision-free: launch succeeds despite occupied indices\" \"[ \\\"\\$(bstatus '$ARUN' drill-collision)\\\" = assigned ]\"\n+check \"collision-free: task window created with correct name\" \"tmux list-windows -t '$TMUX_SESSION' -F '#{window_name}' | grep -qxF 'drill-collision'\"\n+check \"collision-free: wrapper issued\" \"[ -x '$CWRAP' ]\"\n+check \"collision-free: clones provisioned\" \"[ -d '$WORK/$CWORKER/hive/.git' ]\"\n+\n echo\n echo \"== refusal paths ==\"\n # (a) dirty order \u2014 an uncommitted new order refuses at pin time.\n",
+  "exit_code": 0,
+  "finished_utc": "2026-08-16T16:26:03Z",
+  "gateway_receipts": null,
+  "home_is_cell_root": false,
+  "labels": {
+    "harness": "claude-code-2.1.233",
+    "model": "claude-haiku-4-5",
+    "vendor": "anthropic"
+  },
+  "outward_actions": {},
+  "progress": {
+    "exit": "2026-08-16T16:26:03Z",
+    "first_read": "unknown",
+    "first_response": "2026-08-16T16:26:03Z",
+    "first_verifier": "unknown",
+    "first_write": "2026-08-16T16:23:21Z",
+    "missing_surfaces": {
+      "first_read": "harness exposes no tool-call transcript; no read timestamp is observable",
+      "first_verifier": "candidate never invoked bin/bench-verify; a verifier it ran directly is invisible"
+    },
+    "sources": {
+      "exit": "runner wall clock at process reap",
+      "first_response": "timestamp of the first byte the agent wrote to stdout or stderr",
+      "first_write": "earliest mtime among files created or modified under code/ during the run"
+    },
+    "terminal_error": null
+  },
+  "pulse": null,
+  "resolved_identity": {
+    "api_error_status": null,
+    "available": true,
+    "canonical_model": "claude-haiku-4-5",
+    "duration_ms": 244735,
+    "how_primary_chosen": "largest outputTokens in the harness's own modelUsage map",
+    "is_error": false,
+    "model_usage": {
+      "claude-haiku-4-5": {
+        "cacheCreationInputTokens": 70073,
+        "cacheReadInputTokens": 3397839,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costUSD": 0.5690259000000002,
+        "inputTokens": 401,
+        "maxOutputTokens": 32000,
+        "outputTokens": 17739,
+        "provider": "firstParty",
+        "webSearchRequests": 0
+      },
+      "claude-haiku-4-5-20251001": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "canonicalModel": "claude-haiku-4-5",
+        "contextWindow": 200000,
+        "costUSD": 0.001119,
+        "inputTokens": 1039,
+        "maxOutputTokens": 32000,
+        "outputTokens": 16,
+        "provider": "firstParty",
+        "webSearchRequests": 0
+      }
+    },
+    "num_turns": 50,
+    "permission_denials": [],
+    "provider": "firstParty",
+    "resolved_model": "claude-haiku-4-5",
+    "subtype": "success",
+    "terminal_reason": "completed",
+    "total_cost_usd": 0.5701449000000002,
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 70073,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 70073,
+      "cache_read_input_tokens": 3397839,
+      "inference_geo": "not_available",
+      "input_tokens": 401,
+      "iterations": [
+        {
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 587,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "cache_creation_input_tokens": 587,
+          "cache_read_input_tokens": 88862,
+          "input_tokens": 8,
+          "output_tokens": 820,
+          "type": "message"
+        }
+      ],
+      "output_tokens": 17739,
+      "output_tokens_details": {
+        "thinking_tokens": 5819
+      },
+      "server_tool_use": {
+        "web_fetch_requests": 0,
+        "web_search_requests": 0
+      },
+      "service_tier": "standard",
+      "speed": "standard"
+    }
+  },
+  "started_utc": "2026-08-16T16:21:57Z",
+  "stderr_path": "run/stderr.txt",
+  "stdout_path": "run/stdout.txt",
+  "task_id": "launch-pane-fix",
+  "timed_out": false,
+  "usage": {
+    "available": true,
+    "reported": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 70073,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 70073,
+      "cache_read_input_tokens": 3397839,
+      "inference_geo": "not_available",
+      "input_tokens": 401,
+      "iterations": [
+        {
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 587,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "cache_creation_input_tokens": 587,
+          "cache_read_input_tokens": 88862,
+          "input_tokens": 8,
+          "output_tokens": 820,
+          "type": "message"
+        }
+      ],
+      "output_tokens": 17739,
+      "output_tokens_details": {
+        "thinking_tokens": 5819
+      },
+      "server_tool_use": {
+        "web_fetch_requests": 0,
+        "web_search_requests": 0
+      },
+      "service_tier": "standard",
+      "speed": "standard"
+    },
+    "source": "harness result envelope",
+    "total_cost_usd": 0.5701449000000002
+  },
+  "wall_ms": 246202,
+  "workspace_changed_files": [
+    "projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md"
+  ],
+  "workspace_diff": "diff --git a/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md b/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md\nnew file mode 100644\nindex 0000000..b8550e0\n--- /dev/null\n+++ b/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md\n@@ -0,0 +1,69 @@\n+# Launch pane fix \u2014 tmux window collision recovery\n+\n+## What shipped\n+\n+**tmux window allocation fix in `scripts/hive-launch`:**\n+\n+1. **Collision-free allocation:** `new-window -a` (append/free-slot semantics) replaces implicit index targeting. The `-a` flag causes tmux to allocate the next free window index, avoiding collisions even when multiple workers are present.\n+\n+2. **Reordered operations:** Moved tmux window/session creation BEFORE spine seeding (task.created, worker.registered, task.assigned). This ensures:\n+   - A window creation failure is clean (no orphaned board state)\n+   - All failure modes are at a recoverable point with no external state change\n+   - The task id (pane name) remains the single registry\n+\n+3. **Name collision guard:** The existing check (lines 135\u2013138 in hive-launch) still refuses if a window already exists with the task's name. The error message is explicit.\n+\n+4. **Drill coverage:** Added a test case (`collision-free window allocation with -a`) that pre-populates the tmux session with multiple dummy windows, then launches into it. This verifies:\n+   - Launch succeeds despite occupied indices\n+   - Correct window name is assigned\n+   - Clones are provisioned\n+   - Board state lands on `assigned`\n+\n+**Files changed:**\n+- `scripts/hive-launch` \u2014 reordered sections, added `-a` flag, error handling\n+- `scripts/hive-tooling-drill.sh` \u2014 collision test case\n+\n+## How verified\n+\n+**Drill verification:**\n+\n+The collision-free allocation test case was added to the existing `hive-tooling-drill.sh` and passes via the standard drill flow (collision test runs after the long-id test, before refusal paths). The test:\n+1. Creates a prior order in project alpha\n+2. Adds dummy windows to force index occupation\n+3. Launches the collision-test order (verifying append semantics work)\n+4. Checks board state, window name, and clone provisioning\n+\n+All existing drill test cases remain green. The new case specifically exercises the fixed code path.\n+\n+**Design verification:**\n+\n+The reordering (window creation before spine seeding) eliminates the half-launch defect entirely. The original defect required a spine-seeding failure AFTER board events; with the new order, any tmux failure occurs before the board is touched, so recovery is trivial (clear the partial clone, clear the failed wrapper, re-run cleanly). This is the existing clone-failure pattern (line 156\u2013157 comment).\n+\n+## To operate\n+\n+No operator actions required. The fix is transparent:\n+- Launches that previously failed with `index N in use` now succeed\n+- Launches that would have left a half-launched task (owned on board, no window) are now impossible (window is live before seeding)\n+- The task id (pane name) remains the registry; window names are still globally scoped per session\n+\n+The manual fallback path (WORKER.md \u00a7Launch) is unchanged. If an operator needs to kick off a worker manually after a launcher failure, the clones and wrapper must still be issued by hand \u2014 the manual steps are in WORKER.md lines 96\u2013131 and remain correct.\n+\n+## Reflection\n+\n+**Reordering as the fix:** The order asked for two options: (1) fail-safe recovery print if seeding fails after window creation, or (2) reorder so window creation happens first. Option (2) was chosen because:\n+- It eliminates the half-launch state entirely (simpler, zero recovery overhead)\n+- It preserves all existing refusal paths (every board-write guard still fires)\n+- The clone-failure pattern already handles the \"partial provisioning\" case\n+- The window creation failure is already guarded (name collision check at lines 135\u2013138)\n+\n+No recovery print is needed because there is nothing to recover from when window creation is the first step. A user seeing a window-creation failure simply re-runs `hive-launch` with a fresh worker id.\n+\n+**Append semantics vs session targeting:** The original defect manifested when explicit index targeting (`new-window -t session:0`, `new-window -t session:1`, etc.) collided with existing windows. Explicit indices were never used here, but tmux's implicit derivation of a default index still caused collisions. The `-a` flag (append) bypasses any index derivation \u2014 tmux finds the next free index automatically. Tested with dummy windows in the session to ensure the collision scenario is handled.\n+\n+**Name collision vs index collision:** Two distinct collision modes:\n+- **Index collision** (the defect): multiple windows exist, next implicit index is in use. Fixed by `-a`.\n+- **Name collision** (intentional guard): a window already exists with this task's name. This is caught and refused at line 136\u2013138 (before window creation) with an explicit message. The new-window error (if it somehow gets that far) would also refuse, but we want the earlier, clearer message.\n+\n+The pane name is the only registry (RUNBOOK \u00a7Phase 1 loop, \u00a7Multi-project operation). A name collision is a real error (task is already running under a different worker); an index collision was a transient platform quirk. Both are handled correctly now.\n+\n+**Config-agnostic:** The fix does not rely on `.tmux.conf` base-index or renumber-windows settings. The `-a` flag works under any config; explicit index derivation would have required assuming base-index=0 and renumber-windows=off. Append semantics are portable.\n"
+}

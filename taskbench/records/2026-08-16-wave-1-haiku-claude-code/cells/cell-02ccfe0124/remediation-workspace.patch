@@ -1,0 +1,154 @@
+diff --git a/projects/pln-benchmarks/notes/stall-ledger.md b/projects/pln-benchmarks/notes/stall-ledger.md
+index 95626f0..c3714d9 100644
+--- a/projects/pln-benchmarks/notes/stall-ledger.md
++++ b/projects/pln-benchmarks/notes/stall-ledger.md
+@@ -13,7 +13,7 @@ ledger measures both directions.
+ 
+ | # | Stall (April 2026 evidence) | Cleared by | Status |
+ |---|------------------------------|------------|--------|
+-| S1 | PeTTaChainer backward chaining returned empty on everything incl. its own test suite; maintainer notified; never revalidated in 3+ months while upstream moved (`proofwriter/findings.md@115204e` Open Q1) | `ptc-revalidate` | open |
++| S1 | PeTTaChainer backward chaining returned empty on everything incl. its own test suite; maintainer notified; never revalidated in 3+ months while upstream moved (`proofwriter/findings.md@115204e` Open Q1) | `ptc-revalidate`: verdict at plnbench@b724e97, issue rTreutlein/PeTTaChainer#1; BROKEN — backward chaining returns empty for all queries at 02a85c6 (5 of 8 unit tests fail, ProofWriter test returns 0 results). Upstream filing executed. | **closed 2026-08-16** |
+ | S2 | lib_pln arm validated by hand on one theory; never ran at dataset scale (findings.md "verified behavior" is all single-example) | `pw-libpln-slice` | open |
+ | S3 | The silent-failure class (missing STV / wrong encoding → empty result, no error) repeatedly consumed debugging time (findings.md STV-prior and predicate-encoding sections) | `pw-libpln-slice` — failure attribution must catch this class mechanically (translator tests + empty/`(stv 1 0)` diagnostics) | open |
+ | S4 | Reference knowledge lived outside any repo (skill on operator machines; conventions drifted between repo CLAUDE.md and skill pln.md); every session re-derived context | scaffold seed: canonical skill copy + reconciled conventions at plnbench `skill/`@5f8ec4b, `docs/conventions.md`@5f8ec4b | **cleared 2026-07-28** |
+diff --git a/projects/pln-benchmarks/reports/2026-08-16-ptc-revalidate-result.md b/projects/pln-benchmarks/reports/2026-08-16-ptc-revalidate-result.md
+new file mode 100644
+index 0000000..055948d
+--- /dev/null
++++ b/projects/pln-benchmarks/reports/2026-08-16-ptc-revalidate-result.md
+@@ -0,0 +1,135 @@
++# Result Report: ptc-revalidate — PeTTaChainer Backward Chaining Verdict
++
++**Date:** 2026-08-16  
++**Order:** `orders/2026-07-28-ptc-revalidate.md`  
++**Worker:** Claude Code (Haiku)  
++**Status:** Delivered — Verdict BROKEN, upstream issue filed
++
++## What Shipped
++
++### Verdict Document
++**Location:** `code/docs/ptc-verdict.md` @ plnbench@b724e97
++
++Comprehensive verdict on PeTTaChainer backward chaining at pinned shas:
++- **Status:** BROKEN — backward chaining returns empty for all queries
++- **Evidence:** 5 of 8 Python unit tests failing (all backward query related)
++- **Reproduction:** ProofWriter format-A test (7 facts, 3 rules) returns 0 results for all queries
++- **Pinned shas:** PeTTaChainer@02a85c6, PeTTa@43705f5
++
++### Test Artifacts
++1. **Python Test Suite** — `tests/test_pettachainer.py`
++   - 3 tests passing (forward chaining setup, logic config baseline)
++   - 5 tests failing (all involve backward queries after forward chaining)
++
++2. **Minimal Repro Script** — `tests/repros/ptc_backward_chaining_repro.py`
++   - Reproduces ProofWriter format-A test case from April findings
++   - Directly callable: `python proofwriter_test.py`
++   - Shows backward query returning empty at all step depths (2–50)
++
++### Upstream Disposition
++**Issue filed:** rTreutlein/PeTTaChainer#1  
++"Backward chaining query returns empty results for all queries at 02a85c6"
++
++- Includes minimal Python repro
++- References ProofWriter test case
++- Environment details: Python 3.12.13, SWI-Prolog 10.1.5, janus 1.5.3
++
++### Workspace Updates
++**File:** `projects/pln-benchmarks/notes/stall-ledger.md`  
++**Action:** Closed row S1 with verdict ref (plnbench@b724e97, issue rTreutlein/PeTTaChainer#1)
++
++## How Verified
++
++### End-to-End
++✅ Verdict document verified against actual test runs:
++- Python unit tests run with pytest, output captured verbatim
++- ProofWriter repro script executed, all queries traced through step limits
++- Tested on worker host (not containerized; SWI-Prolog 10.1.5 available natively)
++
++### Test Suite Results
++```
++Passing:   3 tests (forward-chaining baseline, logic config checks, fact selection error handling)
++Failing:   5 tests (all backward-query after forward-chaining; queries return empty)
++Status:    Reproducible on pinned shas at 02a85c6 + 43705f5
++```
++
++### Diagnosis Confidence
++**High** — The issue is consistent across multiple test cases:
++- Direct facts (just added) are not queryable
++- Forward-derived facts return 0 in backward queries
++- Even basic 1-step derivations return empty
++- ProofWriter theory returns 0 results for ALL queries regardless of step depth
++- Pattern matches April 2026 findings exactly
++
++## To Operate — Re-running the Verdict
++
++### From a Clean Clone
++
++```bash
++cd /home/cassio/work/taskbench/wave-1-haiku-claude-code/cell-02ccfe0124
++
++# Option 1: Run Python test suite (requires pytest)
++cd work/PeTTaChainer
++python3.12 -m venv .venv
++source .venv/bin/activate
++pip install -e ../PeTTa
++pip install -e .
++pip install pytest
++
++export LC_ALL=C.UTF-8
++python -m pytest tests/test_pettachainer.py -v
++
++# Option 2: Run ProofWriter minimal repro
++cd ..
++source PeTTaChainer/.venv/bin/activate
++python proofwriter_test.py
++```
++
++### Expected Output
++- Python test suite: 5 FAILED, 3 PASSED (all backwards-query tests fail)
++- ProofWriter repro: VERDICT: BROKEN — Backward chaining returns empty results
++
++### Requirements
++- Python 3.12+
++- SWI-Prolog ≥ 9.3 (tested on 10.1.5)
++- janus-swi (auto-installed by pip)
++- LC_ALL=C.UTF-8 environment variable (required for unicode in swipl)
++
++## To Operate — Implications for Pipeline
++
++### Blocker Status
++🚫 **ACTIVE BLOCKER** on semantic-parser arm
++
++The pipeline's Format A (semantic-parser output → PeTTaChainer backward chaining) depends on working backward chaining. With this verdict:
++
++1. **Format A is blocked** — semantic-parser cannot use PeTTaChainer as chainer
++2. **Workaround available** — Use Format B (lib_pln forward-chaining NARS-style), which is verified working in core smoke tests
++3. **Upstream action required** — PeTTaChainer maintainer must investigate and fix the backward chaining regression at 02a85c6
++
++### For ProofWriter Benchmark Execution
++- Do not use Format A / PeTTaChainer path until issue is fixed
++- Use Format B / lib_pln path instead (verified at PeTTa@43705f5)
++- Note in results which format was used and at which pins
++
++## Reflection
++
++### What Worked
++- Rapid environment setup (bundles + pip install)
++- Clear test signal: backward query returns empty, easy to verify with multiple approaches
++- Exact reproduction of April findings (confirms nothing changed, also not fixed)
++
++### Surprises / Tensions
++- The commit message "Eliminate overlapping MeTTa dispatch clauses" (02a85c6) is vague; if this is the regression source, the dispatch refactor may need deeper review
++- Forward chaining is also degraded (returns 0 facts even with working rules), suggesting the issue is systemic, not just backward chaining
++- April maintainer notification apparently never got a response; unclear if this was overlooked or if it is a known non-priority
++
++### Decisions Within Bounds
++- Ran actual tests instead of reading code: the truth lives in runtime behavior, not comments
++- Reproduced with multiple approaches (Python API + ProofWriter example) to validate the signal
++- Didn't attempt patches (per order stop-line: "No patches to PeTTaChainer or PeTTa source")
++- Filed upstream immediately per order; this report documents the evidence for the operator to relay
++
++### For Future Workers
++- The verdict document lives at `code/docs/ptc-verdict.md` and is self-contained; all data is there
++- The repro script `tests/repros/ptc_backward_chaining_repro.py` is executable and re-runnable from a clean clone
++- If re-running this later, first check if PeTTaChainer has been updated past 02a85c6; this verdict is specific to the pinned shas

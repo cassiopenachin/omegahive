@@ -228,6 +228,9 @@ SCORING_FROZEN = (
     "taskbench/pipeline.py",
     "taskbench/remediation.py",
     "taskbench/review.py",
+    # The baseline every candidate is measured against. It is evidence, not instrument, and a
+    # record that moved after the fact would make every comparison against it meaningless.
+    "taskbench/records/2026-08-13-incumbent-fidelity-v0-1-2",
 )
 
 #: Files this task is permitted to add, because the order requires them: the gateway receipt
@@ -242,6 +245,10 @@ QUALIFY_ADDITIVE = (
     "taskbench/smoke.py",
     "taskbench/launch/",
     "taskbench/configs/",
+    # New records are what the study PRODUCES. Flagging them as instrument drift would mean
+    # every batch made its own preflight refuse the next one. The incumbent record is exempt
+    # from this and byte-frozen above, because it is the thing being compared against.
+    "taskbench/records/",
 )
 
 #: Changed, and each carries a written disposition in the result report. Instrumentation and

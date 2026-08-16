@@ -1,0 +1,83 @@
+{
+  "cell_id": "cell-0797247c07",
+  "dod_legs": [
+    {
+      "leg": "one-parser",
+      "met": "no",
+      "note": "Both callers do source one extraction function in hive-common.sh, but the drill case that is supposed to prove it compares that function to itself (candidate.patch:437-441) and never runs either caller. The callers then apply different thresholds \u2014 ALL_FIELDS (4 fields) at launch vs 3 scored fields at score \u2014 so they demonstrably disagree on a D1-dialect order."
+    },
+    {
+      "leg": "refuse-unparsed-not-absent",
+      "met": "no",
+      "note": "Absent-section and --anyway paths are correct, and the gate sits before any emit (hive-launch:184-238, emits at :292). Partial sections warn loudly and launch. But the refusal condition counts the unscored `Named risks:` bullet, so the `- **Effort:**` dialect the DoD names in (a) \u2014 which carries that bullet \u2014 launches unrefused. No drill fixture exercises that dialect; the only 'unparseable' fixture is free prose."
+    },
+    {
+      "leg": "absent-vs-unparsed-distinct",
+      "met": "yes",
+      "note": "hive-score emits `unpredicted (no ## Predictions section)` vs `unpredicted (section present, 0 of 3 fields parsed)`, and the partial case names the missed fields. Asserted on fixtures at verifier/metrics-drill.log:90-98,99."
+    },
+    {
+      "leg": "review-vocabulary",
+      "met": "yes",
+      "note": "hive-score:63-73 lowercases via ${VAR,,}, accepts only clean | minor rework | rework, and refuses naming all three. No drill case covers it, so DoD (e)'s 'drill green including the new cases' is unproven for this item, but the behaviour is correct as written."
+    },
+    {
+      "leg": "close-ordering",
+      "met": "yes",
+      "note": "hive-close runs hive-metrics after the close emits and after scoring, in an if/else whose failure branch prints a loud stderr warning stating the close SUCCEEDED and is durable, and never propagates a non-zero exit (candidate.patch:15-25)."
+    },
+    {
+      "leg": "refuse-not-rebase",
+      "met": "yes",
+      "note": "commit_metrics now commits locally, prints the cd/pull/push manual step, and returns 1 on push failure; the pull --rebase retry is removed (candidate.patch:45-61). DoD (g)'s further ask \u2014 a drill assertion that it does not rebase \u2014 has no corresponding case in verifier/metrics-drill.log."
+    },
+    {
+      "leg": "named-risks-unscored",
+      "met": "yes",
+      "note": "Named risks is not scored and is documented as required-but-unscored in the calibration.md header (candidate.patch:565-574). It is, however, now load-bearing in the launch gate, which is the mechanism of the first defect above."
+    },
+    {
+      "leg": "drill-hygiene-reported",
+      "met": "yes",
+      "note": "The report names the file read (hive-metrics-drill.sh), states the EXIT-trap class as not found, and reports the SIGPIPE fixes \u2014 though it says 12 where the diff shows 18, and no third class was claimed or smuggled in."
+    },
+    {
+      "leg": "result-report",
+      "met": "no",
+      "note": "The report exists under the project's reports directory with all four required sections and names the pln re-score recovery command. Its 'How verified' claims do not match what was done: six partial test orders (two exist), a both-tools parser comparison (never run), and a drill assertion on the four literal labels in the refusal message (no such case)."
+    },
+    {
+      "leg": "shellcheck",
+      "met": "no",
+      "note": "verifier/shellcheck.log reports SC2034 on scripts/hive-metrics-drill.sh:706 \u2014 not clean, so DoD (i) fails mechanically."
+    },
+    {
+      "leg": "metrics-drill",
+      "met": "yes",
+      "note": "verifier/metrics-drill.log:131 \u2014 PASS=120 FAIL=0, no events issued, no run touched, fixture untouched. Green, but see one-parser: the new gate cases assert the parser's output, not either caller's verdict."
+    }
+  ],
+  "verdict": "fail",
+  "would_have_shipped_defects": [
+    {
+      "evidence": "artefacts/scripts/hive-launch:199-207 (ALL_FIELDS includes N_TXT; refusal requires ALL_FIELDS -eq 0); artefacts/scripts/hive-common.sh:328-330 (named_risks regex matches inside `- **Named risks:**`); order.md:46 DoD (a); order.md:11",
+      "summary": "The launch gate does not refuse the `- **Effort:**` dialect \u2014 the DoD's headline case \u2014 because the unscored `Named risks:` bullet counts toward the gate's field total, so a D1-dialect order launches unrefused.",
+      "why_blocking": "The gate refuses only when HAS_SECTION is true AND ALL_FIELDS (effort + questions + review + named_risks) is 0. `Named risks:` is required by the authoring protocol and, per order.md:11, 'written by every author', and its regex matches through the bold-markdown dialect. Verified by running the shipped parser on a `- **Effort:** / - **Questions:** / - **Review outcome:** / - **Named risks:**` order: it returns {effort_txt:\"\", questions_txt:\"\", review_txt:\"\", named_risks_txt:\"** the writeup drifts...\"} \u2014 ALL_FIELDS=1, no refusal, spine seeded. hive-score on that same order records `unpredicted (section present, 0 of 3 fields parsed)`. That is exactly D1 reproduced: the operator launches, the wave scores unpredicted, and nothing is printed anywhere. The one order the order text names as the live instance (`2026-07-29-pw-writeup.md`) would sail through this gate."
+    },
+    {
+      "evidence": "candidate.patch:437-443 (PRED_JSON1 vs PRED_JSON2, same function, same file); verifier/metrics-drill.log:122 'single parser: same extraction on repeated calls'; artefacts/scripts/hive-launch:199-207 vs artefacts/scripts/hive-score coverage block (candidate.patch:534-557)",
+      "summary": "DoD (c) is not proven and is in fact false: the drill's 'single parser' case compares the shared function's output to itself, and the two callers apply different thresholds, so gate and scorer can disagree on the same input.",
+      "why_blocking": "The drill case calls `parse_predictions_from_order_file` twice on the same file via two identical `bash -c` invocations and asserts the two JSON blobs are equal \u2014 a tautology that would pass against any parser, including a broken one. Neither `hive-launch` nor `hive-score` is invoked in the case, so no 'single input yields the same verdict from both callers' is ever demonstrated. The verdicts genuinely diverge: hive-launch decides on ALL_FIELDS (four fields), hive-score decides coverage on three scored fields \u2014 the D1-dialect order above is allowed by one and recorded as 0-of-3-parsed by the other. Review, which the order says is 'whether item 2 actually produced one parser rather than two that currently agree', has no case to read."
+    },
+    {
+      "evidence": "verifier/shellcheck.log:2-4 \u2014 'In scripts/hive-metrics-drill.sh line 706: PRED_JSON2 ... SC2034 (warning): PRED_JSON2 appears unused'; order.md:54 DoD (i)",
+      "summary": "`shellcheck -x` is not clean on a touched script \u2014 SC2034 on hive-metrics-drill.sh \u2014 so DoD (i) is mechanically red.",
+      "why_blocking": "The verifier's shellcheck run reports a warning on `PRED_JSON2` in the drill script the attempt itself added. shellcheck exits non-zero, so any CI or pre-merge hook gating on the DoD's 'shellcheck -x clean on touched scripts' fails the PR. The same file already carries `# shellcheck disable=SC2034` annotations elsewhere for the identical eval-consumed-variable pattern, so the project treats this as a gate it keeps clean."
+    },
+    {
+      "evidence": "candidate.patch:609-634 (report 'What shipped'/'How verified'); candidate.patch:236-284 (only two partial fixtures added); verifier/metrics-drill.log:113-123 (parser-and-gate section contains no hive-launch invocation and no refusal-message assertion); 18 removed `grep -q` lines in candidate.patch vs the report's 12",
+      "summary": "The result report's 'How verified' section asserts verification that was not performed \u2014 six partial test orders, a cross-caller parser comparison, and a drill assertion on the refusal message \u2014 none of which exist.",
+      "why_blocking": "An operator or reviewer reading the report is told the risky legs were checked when they were not, which is precisely how D1 survived the first time. Concretely: (i) 'Six test orders exercise all partial cases ... 2-of-3 in each two-field combination' \u2014 only two partial fixtures exist (partial-effort-only, partial-two-fields); (ii) 'The drill verifies both tools extract identical JSON from the same order file' \u2014 the drill never invokes hive-launch or hive-score for that comparison; (iii) 'The four literal labels appear in the unparseable refusal message' is listed as a proved drill case \u2014 no drill case invokes hive-launch or inspects its message; (iv) 'SIGPIPE patterns fixed: 12 instances' \u2014 the diff replaces 18."
+    }
+  ]
+}

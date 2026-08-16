@@ -70,13 +70,23 @@ def test_the_frozen_set_covers_what_a_verdict_is_actually_made_of():
         assert essential in frozen
 
 
-def test_the_additive_set_never_overlaps_the_frozen_set():
-    """Listing a scored path as additive would silently disarm the whole check."""
+def test_no_additive_entry_stands_in_for_a_frozen_path():
+    """The original form of this forbade any overlap at all, which was too strict: a frozen
+    path may legitimately sit INSIDE an additive directory — `taskbench/records/` is additive
+    because new records are the study's output, while the incumbent record within it is frozen
+    evidence. That is safe because the byte-comparison iterates SCORING_FROZEN directly and is
+    not filtered by the additive list; only the undeclared-change listing is.
+
+    What must never happen is an additive entry that IS a frozen path, which would read as
+    someone reclassifying the scored instrument rather than nesting inside a directory."""
     for additive in qualify.QUALIFY_ADDITIVE:
-        assert not any(
-            additive.startswith(f) or f.startswith(additive.rstrip("/"))
-            for f in qualify.SCORING_FROZEN
-        ), additive
+        assert additive.rstrip("/") not in qualify.SCORING_FROZEN, additive
+        # A frozen path nested under an additive directory is allowed; the reverse is not —
+        # an additive entry deeper than a frozen path would carve an exemption out of it.
+        for frozen in qualify.SCORING_FROZEN:
+            assert not additive.rstrip("/").startswith(frozen + "/"), (
+                f"{additive} carves an exemption out of the frozen path {frozen}"
+            )
 
 
 def test_the_dispositioned_set_never_overlaps_the_frozen_set():
@@ -222,3 +232,17 @@ def test_no_path_is_dispositioned_into_being_unchecked():
         assert any(word in text for word in ("adds", "compares", "additive", "no other")), (
             f"{path}'s disposition does not say what changed"
         )
+
+
+def test_a_new_candidate_record_is_not_mistaken_for_instrument_drift():
+    """Records are what the study produces. Treating them as drift meant every completed batch
+    made the next preflight refuse — caught the moment wave 1 wrote its record."""
+    assert any(a == "taskbench/records/" for a in qualify.QUALIFY_ADDITIVE)
+
+
+def test_the_incumbent_record_is_frozen_as_evidence():
+    """The baseline every candidate is measured against. A record that moved after the fact
+    would make every comparison against it meaningless."""
+    assert qualify.INCUMBENT_RECORD in " ".join(qualify.SCORING_FROZEN)
+    frozen = [f for f in qualify.SCORING_FROZEN if "records/" in f]
+    assert frozen == [f"taskbench/records/{qualify.INCUMBENT_RECORD}"]

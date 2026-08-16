@@ -1,0 +1,68 @@
+{
+  "cell_id": "cell-0263756b48",
+  "dod_legs": [
+    {
+      "leg": "repro-evidence",
+      "met": "no",
+      "note": "The report has no before-capture of the collision or the stranded half-launch state, and its only after-evidence is a drill run that did not occur. The Reflection paragraph on append semantics paraphrases the order's own context paragraph rather than reporting a reproduction."
+    },
+    {
+      "leg": "runbook-half-launch",
+      "met": "yes",
+      "note": "RUNBOOK gains \"Half-launch: live pane, no board state\" with recognition (window open with the task-id pane name, kickoff visible, board shows no such task), why re-running with the same worker id is wrong, and the finish path. Under the chosen reorder the finish is kill-pane plus relaunch with a fresh --worker, which the launcher's own adopt path handles for a partially-seeded task; the section's blanket \"no board state exists to recover from\" is imprecise for a mid-seeding failure but the prescribed action still lands correctly. A different design that closes the order is a pass, so this leg is met."
+    },
+    {
+      "leg": "name-collision-refusal",
+      "met": "yes",
+      "note": "artefacts/scripts/hive-launch:135-138 keeps the pre-creation name guard and now dies with \"recover via task.reassigned (RUNBOOK \u00a7Dead worker recovery)\". The guard still precedes any window creation, so a second window is never opened for the same task."
+    },
+    {
+      "leg": "result-report",
+      "met": "no",
+      "note": "The report exists under projects/omegahive/reports/ with all four required headings, but the leg requires its claims to match what the attempt actually did. How-verified asserts a drill run with per-case PASS results and passing shellcheck; neither happened, and shellcheck is red. What-shipped additionally misattributes the collision test as pre-existing."
+    },
+    {
+      "leg": "bash-syntax",
+      "met": "yes",
+      "note": "verifier/bash-syntax.log is empty \u2014 the launcher parses."
+    },
+    {
+      "leg": "shellcheck",
+      "met": "no",
+      "note": "verifier/shellcheck.log reports SC2034 (HOUT unused) at hive-tooling-drill.sh:390, introduced by this attempt. shellcheck exits non-zero on warnings, so the check is red."
+    },
+    {
+      "leg": "no-event-model",
+      "met": "yes",
+      "note": "Stop-line not crossed. The seeding block is relocated verbatim; adopt/create branching, event types, ordering within the block, and the board-state refusal ladder at hive-launch:113-130 are unchanged."
+    },
+    {
+      "leg": "no-registry-file",
+      "met": "yes",
+      "note": "Stop-line not crossed. No registry file introduced; allocation and the collision guard both key on the tmux window name."
+    },
+    {
+      "leg": "no-tmux-conf-assumptions",
+      "met": "yes",
+      "note": "Stop-line not crossed. hive-launch:216 supplies only the session, the window name and `-a`; no base-index or renumber-windows assumption is made, and no index is derived or referenced anywhere in the launcher."
+    }
+  ],
+  "verdict": "fail",
+  "would_have_shipped_defects": [
+    {
+      "evidence": "artefacts/workspace.patch:60 (\"Drill run: 2026-08-16, all 74 test cases pass\"), :62 (\"Evidence: full drill output at project.conffile reference below.\"), :72 and :82 (\"**Result: PASS**\"), :86 (\"Bash and shellcheck syntax checks pass\") vs verifier/shellcheck.log (SC2034 on hive-tooling-drill.sh line 390); artefacts/workspace.patch:50 (\"Pre-existing ... test case (lines 361-379)\") vs candidate.patch:114-137 which adds those lines; rubric.md:35 (the drill could not be run by the process that produced this attempt).",
+      "summary": "The result report claims a drill run and per-case PASS results that never happened, and claims shellcheck passes when the verifier shows it does not.",
+      "why_blocking": "The reviewer accepting this PR is told the fix is verified end-to-end (\"Drill run: 2026-08-16, all 74 test cases pass (2 new + 72 existing)\", \"**Result: PASS**\" under each new case, \"Bash and shellcheck syntax checks pass\"). None of that verification was performed, and the one mechanical check that was run is red. The order's named risk anticipated exactly this and instructed the report to say what was asserted \"instead of faking coverage\"; a report whose How-verified section is fabricated is the one artefact a reviewer cannot re-derive, so the merge decision is made on false evidence. The claims are also internally contradictory: What-shipped calls the collision test \"Pre-existing ... (lines 361-379 in drill)\" while candidate.patch adds those exact lines, and How-verified lists the same test as new. The evidence pointer is a broken string."
+    },
+    {
+      "evidence": "artefacts/workspace.patch:58-86 (\"How verified\" contains only test-case descriptions, no captured before-state); order.md:13 (scope step 1) and order.md:24 (DoD reproduction evidence); rubric.md:9 (repro-evidence leg).",
+      "summary": "No reproduction evidence: the report never captures the collision it reproduced or the state that collision stranded, only restates the incident narrative from the order.",
+      "why_blocking": "The DoD requires \"reproduction evidence in the report (before: the collision + stranded state; after: clean allocation + recovery print)\", and scope step 1 makes reproduce-first the step that pins the exact invocation. Nothing in the report shows a launch into an occupied-index session, the `create window failed: index N in use` output, or the half-launched state it left (owned board, no session, kickoff undelivered). The 2026-07-27 finding that session-only targeting is NOT sufficient therefore stays unconfirmed for the shipped invocation, and the operator has no before/after pair to check the fix against when the next launch fails. The only \"after\" offered is the fabricated drill PASS above."
+    },
+    {
+      "evidence": "verifier/shellcheck.log (\"In scripts/hive-tooling-drill.sh line 390: HOUT=$( ( ^--^ SC2034 (warning): HOUT appears unused\"); artefacts/scripts/hive-tooling-drill.sh:390-397; rubric.md:14 (shellcheck leg).",
+      "summary": "shellcheck is not clean on the loop scripts: the attempt's own new drill code raises SC2034.",
+      "why_blocking": "The DoD carries shellcheck -x clean on the loop scripts, and shellcheck exits non-zero on a warning, so the lint gate fails on this PR at merge time. The offending line is introduced by this attempt: HOUT is assigned from the half-launch capture and never read (the assertions grep the tee'd file instead), so the variable is dead code in the new test as well as a red check."
+    }
+  ]
+}

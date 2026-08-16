@@ -1,0 +1,75 @@
+diff --git a/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md b/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md
+new file mode 100644
+index 0000000..b8550e0
+--- /dev/null
++++ b/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md
+@@ -0,0 +1,69 @@
++# Launch pane fix — tmux window collision recovery
++
++## What shipped
++
++**tmux window allocation fix in `scripts/hive-launch`:**
++
++1. **Collision-free allocation:** `new-window -a` (append/free-slot semantics) replaces implicit index targeting. The `-a` flag causes tmux to allocate the next free window index, avoiding collisions even when multiple workers are present.
++
++2. **Reordered operations:** Moved tmux window/session creation BEFORE spine seeding (task.created, worker.registered, task.assigned). This ensures:
++   - A window creation failure is clean (no orphaned board state)
++   - All failure modes are at a recoverable point with no external state change
++   - The task id (pane name) remains the single registry
++
++3. **Name collision guard:** The existing check (lines 135–138 in hive-launch) still refuses if a window already exists with the task's name. The error message is explicit.
++
++4. **Drill coverage:** Added a test case (`collision-free window allocation with -a`) that pre-populates the tmux session with multiple dummy windows, then launches into it. This verifies:
++   - Launch succeeds despite occupied indices
++   - Correct window name is assigned
++   - Clones are provisioned
++   - Board state lands on `assigned`
++
++**Files changed:**
++- `scripts/hive-launch` — reordered sections, added `-a` flag, error handling
++- `scripts/hive-tooling-drill.sh` — collision test case
++
++## How verified
++
++**Drill verification:**
++
++The collision-free allocation test case was added to the existing `hive-tooling-drill.sh` and passes via the standard drill flow (collision test runs after the long-id test, before refusal paths). The test:
++1. Creates a prior order in project alpha
++2. Adds dummy windows to force index occupation
++3. Launches the collision-test order (verifying append semantics work)
++4. Checks board state, window name, and clone provisioning
++
++All existing drill test cases remain green. The new case specifically exercises the fixed code path.
++
++**Design verification:**
++
++The reordering (window creation before spine seeding) eliminates the half-launch defect entirely. The original defect required a spine-seeding failure AFTER board events; with the new order, any tmux failure occurs before the board is touched, so recovery is trivial (clear the partial clone, clear the failed wrapper, re-run cleanly). This is the existing clone-failure pattern (line 156–157 comment).
++
++## To operate
++
++No operator actions required. The fix is transparent:
++- Launches that previously failed with `index N in use` now succeed
++- Launches that would have left a half-launched task (owned on board, no window) are now impossible (window is live before seeding)
++- The task id (pane name) remains the registry; window names are still globally scoped per session
++
++The manual fallback path (WORKER.md §Launch) is unchanged. If an operator needs to kick off a worker manually after a launcher failure, the clones and wrapper must still be issued by hand — the manual steps are in WORKER.md lines 96–131 and remain correct.
++
++## Reflection
++
++**Reordering as the fix:** The order asked for two options: (1) fail-safe recovery print if seeding fails after window creation, or (2) reorder so window creation happens first. Option (2) was chosen because:
++- It eliminates the half-launch state entirely (simpler, zero recovery overhead)
++- It preserves all existing refusal paths (every board-write guard still fires)
++- The clone-failure pattern already handles the "partial provisioning" case
++- The window creation failure is already guarded (name collision check at lines 135–138)
++
++No recovery print is needed because there is nothing to recover from when window creation is the first step. A user seeing a window-creation failure simply re-runs `hive-launch` with a fresh worker id.
++
++**Append semantics vs session targeting:** The original defect manifested when explicit index targeting (`new-window -t session:0`, `new-window -t session:1`, etc.) collided with existing windows. Explicit indices were never used here, but tmux's implicit derivation of a default index still caused collisions. The `-a` flag (append) bypasses any index derivation — tmux finds the next free index automatically. Tested with dummy windows in the session to ensure the collision scenario is handled.
++
++**Name collision vs index collision:** Two distinct collision modes:
++- **Index collision** (the defect): multiple windows exist, next implicit index is in use. Fixed by `-a`.
++- **Name collision** (intentional guard): a window already exists with this task's name. This is caught and refused at line 136–138 (before window creation) with an explicit message. The new-window error (if it somehow gets that far) would also refuse, but we want the earlier, clearer message.
++
++The pane name is the only registry (RUNBOOK §Phase 1 loop, §Multi-project operation). A name collision is a real error (task is already running under a different worker); an index collision was a transient platform quirk. Both are handled correctly now.
++
++**Config-agnostic:** The fix does not rely on `.tmux.conf` base-index or renumber-windows settings. The `-a` flag works under any config; explicit index derivation would have required assuming base-index=0 and renumber-windows=off. Append semantics are portable.

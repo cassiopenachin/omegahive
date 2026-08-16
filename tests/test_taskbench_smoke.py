@@ -218,3 +218,61 @@ def test_the_smoke_still_supplies_path_and_a_home(tmp_path):
     )
     assert "OK=True" in (tmp_path / "fixture" / "answer.py").read_text()
     assert got.read_and_edited
+
+
+# --- the effective permission mode, which the flag does not guarantee -------------------------
+
+
+def test_the_effective_mode_is_read_from_the_transcript_not_the_flag(tmp_path):
+    """`--permission-mode auto` can degrade to `default` silently — empty stderr, exit 0, no
+    error flag — when the account's auto-mode opt-in has been cleared by a rollout migration.
+    Under `--print` that turns every tool call into a denial, which reads as model behaviour."""
+    from taskbench.smoke import effective_permission_mode
+
+    home = tmp_path / "home"
+    proj = home / ".claude" / "projects" / "-some-cell-code"
+    proj.mkdir(parents=True)
+    (proj / "sess-1.jsonl").write_text(
+        '{"type":"user"}\n{"type":"assistant","permissionMode":"default"}\n'
+    )
+    assert effective_permission_mode("sess-1", home) == "default"
+    assert effective_permission_mode("no-such-session", home) is None
+
+
+def test_requested_mode_is_parsed_out_of_the_real_argv():
+    from taskbench.smoke import requested_permission_mode
+
+    argv = ["claude", "--allowedTools", "Bash", "Edit", "--permission-mode", "acceptEdits"]
+    assert requested_permission_mode(argv) == "acceptEdits"
+    assert requested_permission_mode(["claude", "--print"]) is None
+
+
+def test_a_silently_downgraded_mode_fails_the_smoke(tmp_path, monkeypatch):
+    """The whole point: refuse before the batch, rather than diagnose after five red cells."""
+    import taskbench.smoke as mod
+
+    monkeypatch.setattr(mod, "effective_permission_mode", lambda s, h: "default")
+    monkeypatch.setattr(mod, "_session_id_from", lambda t: "sess-1")
+    got = run_smoke(
+        "downgraded",
+        ["python3", "-c", SOLVES, "--permission-mode", "acceptEdits"],
+        root=tmp_path, timeout_s=60,
+    )
+    assert got.outcome == "unreachable-harness-startup"
+    assert "actually ran as 'default'" in got.detail
+    assert "Fix the mode, not the cells" in got.detail
+    assert got.extra["requested_permission_mode"] == "acceptEdits"
+    assert got.extra["effective_permission_mode"] == "default"
+
+
+def test_a_matching_mode_is_recorded_and_does_not_fail(tmp_path, monkeypatch):
+    import taskbench.smoke as mod
+
+    monkeypatch.setattr(mod, "effective_permission_mode", lambda s, h: "acceptEdits")
+    monkeypatch.setattr(mod, "_session_id_from", lambda t: "sess-1")
+    got = run_smoke(
+        "fine", ["python3", "-c", SOLVES, "--permission-mode", "acceptEdits"],
+        root=tmp_path, timeout_s=60,
+    )
+    assert got.outcome == "green"
+    assert got.extra["effective_permission_mode"] == "acceptEdits"

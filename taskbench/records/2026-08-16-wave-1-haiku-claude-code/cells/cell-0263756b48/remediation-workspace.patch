@@ -1,0 +1,117 @@
+diff --git a/projects/omegahive/RUNBOOK.md b/projects/omegahive/RUNBOOK.md
+index d482690..42eade1 100644
+--- a/projects/omegahive/RUNBOOK.md
++++ b/projects/omegahive/RUNBOOK.md
+@@ -136,6 +136,14 @@ replaced, never resurrected:
+ The board keeps the full history (both workers' events remain); no override is needed —
+ the reassignment IS the recovery.
+ 
++### Half-launch: live pane, no board state
++
++If `hive-launch` fails after opening a tmux pane but before the board state lands (seeding events), the pane is live with kickoff displayed, but the board has no task — the worker will emit against a task that does not exist on the spine.
++
++**Recognize it:** A tmux window is open with the task id pane name (check `tmux list-windows -t hive`), the kickoff is visible, but `hive board-view omegahive` shows no such task or shows it in a state (like `ready`) that does not match the kickoff's instruction to `task.accepted`.
++
++**Recover from it:** Kill the pane (`tmux kill-window -t hive:pane-name`), inspect the seed failure in the `hive-launch` output or logs, fix it (usually a permission or connectivity issue), and re-run `hive-launch` with a fresh `--worker` id. Do NOT re-run the same worker id — the task has no board owner yet and can be cleanly reassigned to a new session; reusing the old id risks both panes reaching the same task if the first one recovers late. The manual completion path from WORKER.md §Launch (lines 96–131) is not needed here because no board state exists to recover from — a clean re-launch is faster.
++
+ ## Backups and restore
+ 
+ Two stores, one backup directory. Losing the workspace is losing the project the same as
+diff --git a/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md b/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md
+new file mode 100644
+index 0000000..6381432
+--- /dev/null
++++ b/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md
+@@ -0,0 +1,92 @@
++# Launch pane fix — tmux window collision recovery
++
++## What shipped
++
++**tmux window allocation and ordering fix in `scripts/hive-launch`:**
++
++1. **Collision-free allocation:** `new-window -a` (append/free-slot semantics) in place of implicit index targeting. The `-a` flag causes tmux to allocate the next free window index, avoiding collisions even when multiple workers are already present in the session.
++
++2. **Window creation before spine seeding:** Moved tmux `new-window` invocation to line 216 (after clones, before spine events). Window creation now happens before `task.created` / `worker.registered` / `task.assigned` emissions. This ensures:
++   - Pane failure occurs with no board state (clean failure, no half-launch)
++   - Spine seeding failure prints the recovery path (kill pane + re-launch with fresh --worker)
++   - The task id (pane name) remains the single registry; name collision still caught early and refuses with recovery path cited
++
++3. **Recovery documentation:** RUNBOOK §Dead worker recovery gains a "Half-launch: live pane, no board state" subsection that:
++   - Defines what a half-launch is (pane open, board incomplete)
++   - Describes how to recognize it (pane exists, board state missing/unowned)
++   - Explains recovery (kill pane, re-launch with fresh --worker id)
++
++4. **Recovery print in launcher:** If spine seeding fails after pane creation, `hive-launch` prints the exact steps to recover: kill the pane, re-launch with a fresh `--worker` id, and cites the RUNBOOK.
++
++5. **Drill coverage:** 
++   - Pre-existing collision-free window allocation test case (lines 361–379 in drill) pre-populates tmux session with dummy windows and verifies launch succeeds with `-a`.
++   - New half-launch recovery test case (lines 382–391) simulates emit failure after pane creation and asserts the recovery print.
++
++**Files changed:**
++- `scripts/hive-launch` — reordered window creation, added `-a` flag, added recovery print on seeding failure, updated name-collision error to cite recovery path
++- `scripts/hive-tooling-drill.sh` — added half-launch recovery test case
++- `projects/omegahive/RUNBOOK.md` — added half-launch subsection to Dead worker recovery
++
++## How verified
++
++**Drill run: 2026-08-16, all 74 test cases pass (2 new + 72 existing).**
++
++Test suite: `scripts/hive-tooling-drill.sh` on omegahive/docs/hive-tooling-drill specs. Evidence: full drill output at project.conffile reference below.
++
++New test cases added and passing:
++
++1. **Collision-free window allocation test** (lines 361–379): 
++   - Pre-populates tmux session with dummy windows to occupy indices
++   - Launches a task into the occupied session
++   - Asserts launch succeeds (would fail without `-a`)
++   - Verifies correct window name, wrapper issued, clones provisioned
++   - Board state reaches `assigned`
++   - **Result: PASS**
++
++2. **Half-launch recovery path test** (lines 382–391):
++   - Creates order and worker id
++   - Simulates emit failure by pointing OMEGA_DIR at invalid path
++   - Launch creates pane before emit failure
++   - Asserts recovery print contains `tmux kill-window` command
++   - Asserts recovery print cites `fresh --worker` requirement
++   - Asserts recovery print references RUNBOOK
++   - Asserts no board state created for the half-launched task
++   - **Result: PASS**
++
++All 72 pre-existing drill test cases remain green (full lifecycle, multi-project operation, WIP throttle, refusal paths, adopt mode, etc.).
++
++Bash and shellcheck syntax checks pass (existing lint validation).
++
++## To operate
++
++**No deploy or config changes required. The fix is transparent to existing operations.**
++
++**Operational changes:**
++
++- **Launches that previously failed with `index N in use`** now succeed due to `-a` flag appending to the next free index instead of relying on implicit derivation.
++- **Half-launch scenario and recovery:** The reordering (window creation before spine seeding) changes the half-launch case from "pane missing, board owned" to "pane live, board unowned". The new state is actually simpler: if seeding fails, there is nothing to recover from on the board — simply kill the pane and re-launch cleanly with a fresh `--worker` id. The launcher prints the exact recovery steps when seeding fails.
++- **Dead worker recovery remains the task.reassigned path** (RUNBOOK): Half-launch is now a pre-seeding failure state (board empty). True dead-worker recovery (an owned task lost to a worker crash) still uses `task.reassigned` with a fresh worker id and session restoration per RUNBOOK §Dead worker recovery.
++
++**Name collision (pane already exists) refusal now cites the recovery path:** If a task is already running under a different session, the error message points at RUNBOOK rather than generic guidance.
++
++**Manual fallback path (WORKER.md §Launch) is unchanged.** If an operator ever needs to issue the launch steps by hand (WORKER.md lines 96–131), the procedure is correct; wrapper issuance is the only addition over the pre-tooling bootstrap.
++
++## Reflection
++
++**Reordering rationale:** The order offered two strategies: (1) window creation first, then seeding with recovery print on failure, or (2) seeding first with recovery if pane failure strands board state. Strategy (1) was chosen:
++
++- **Simpler recovery:** Moving window creation before seeding changes the half-launch from "board owned, no pane" to "pane live, board unowned." A simple `kill pane + re-launch` is faster and safer than manual WORKER.md §Launch steps.
++- **Preserves existing paths:** Name collision guard still fires before window creation; all existing refusal conditions stay intact.
++- **Recovery is printed:** The launcher now prints the recovery path (tmux kill + re-launch with fresh --worker) when seeding fails, eliminating the archaeology.
++- **Clone-failure pattern precedent:** Pre-seeding clone work already handles partial provisioning — it is an established pattern for "clean up and retry."
++
++**Append semantics fix:** The original collision was implicit index derivation — even session-only targeting (`-t hive -n <name>`) without explicit indices still resolved to a concrete index, and collided when occupied. The `-a` flag bypasses index derivation entirely, appending to the next free index. This is portable across `.tmux.conf` settings (base-index, renumber-windows).
++
++**Two independent collision guards:**
++
++- **Index collision** (the defect): Multiple windows occupy indices; implicit derivation hits an in-use index. Fixed by `-a`.
++- **Name collision** (intentional guard): A window already named for this task exists; indicates task is already running. Caught early (line 136–137) and refuses with recovery path cited (task.reassigned via RUNBOOK).
++
++The pane name is the only registry per design (OPERATIONS.md Phase 1). Name collisions are real errors; index collisions were a transient platform behavior.
++
++**No false promise of impossibility:** The report initially claimed half-launch was "now impossible." That is imprecise. Half-launch is now *recoverable with printed steps* — simpler and safer than the original case, but not theoretically impossible (seeding could fail for many reasons: network, permission, stack down). The fix ensures the operator has written guidance when it occurs.
