@@ -493,6 +493,37 @@ def matrix_cmd(
         print(text)
 
 
+@app.command("preset-hash")
+def preset_hash_cmd(
+    slug: str = typer.Argument(..., help="preset slug, e.g. omegahive-muse-spark-1-2"),
+    version: int | None = typer.Option(None, "--version"),
+) -> None:
+    """Print the exact canonical bytes of a live preset and their SHA-256.
+
+    The rule made executable. Two pinned hashes were once computed under a rule nobody wrote
+    down; when a later re-fetch disagreed, there was no way to tell a changed preset from a
+    changed rule, and it cost three refused preflight runs. A pinned hash that cannot be
+    regenerated in one command is not a tripwire, it is a rumour.
+    """
+    from . import openrouter as orouter
+    from .receipts import api_key_from_env
+
+    fetched = orouter.fetch_preset(slug, api_key_from_env(), version=version)
+    console.print(f"slug:    {fetched.slug}")
+    console.print(f"version: {fetched.version}")
+    console.print(f"source:  {fetched.source_path}")
+    console.print("canonical bytes (this is what is hashed):")
+    print(fetched.canonical_json)
+    console.print(f"sha256:  {fetched.config_sha256}")
+    pin = {p.slug: p for p in (orouter.DEEPSEEK_PIN, orouter.MUSE_PIN)}.get(slug)
+    if pin:
+        agree = pin.config_sha256 == fetched.config_sha256
+        console.print(
+            ("[bold]✓[/bold] matches the pin" if agree else "[bold]✗[/bold] differs from the pin ")
+            + ("" if agree else f"({pin.config_sha256})")
+        )
+
+
 @app.command("qualify-confirm")
 def qualify_confirm_cmd(
     out: str = typer.Option(..., "--out", help="the preflight record directory"),

@@ -103,8 +103,17 @@ def test_every_disagreement_is_reported_at_once():
 
 
 def test_a_hash_mismatch_says_what_to_suspect_first():
-    """A bare hash mismatch cannot tell a changed preset from a changed canonicalisation."""
-    problems = check_preset(DEEPSEEK_PIN, _fetched(GOOD_CONFIG))
+    """A bare hash mismatch cannot tell a changed preset from a changed canonicalisation.
+
+    The config here carries a system prompt the pin's four field checks do not name — which is
+    exactly the residue the hash exists to catch, and exactly the case where the message has to
+    tell a reader which of the two explanations to test first. It happened for real on
+    2026-08-16 and the answer was the rule, not the preset.
+    """
+    with_residue = {**GOOD_CONFIG, "system": "be brief"}
+    problems = check_preset(DEEPSEEK_PIN, _fetched(with_residue))
+    # The field checks all still agree — only the hash moved, which is the diagnostic problem.
+    assert [p for p in problems if "canonical config hash" not in p] == []
     (hash_problem,) = [p for p in problems if "canonical config hash" in p]
     assert "canonicalization rule" in hash_problem
     assert "rather than re-pinning" in hash_problem
@@ -272,3 +281,48 @@ def test_an_endpoint_advertising_no_parameters_at_all_is_unproven_not_agreed():
         DEEPSEEK_PIN, [{"provider_name": "GMICloud", "quantization": "fp8"}]
     )
     assert any("unproven" in p and "not agreed" in p for p in problems)
+
+
+# --- the pinned hashes, reproduced from their inputs -----------------------------------------
+
+#: The live preset configs as fetched on 2026-08-16, field for field what the order pins.
+LIVE_DEEPSEEK = {
+    "model": "deepseek/deepseek-v4-flash-0731",
+    "provider": {"order": ["gmicloud/fp8"], "allow_fallbacks": False},
+}
+LIVE_MUSE = {
+    "model": "meta/muse-spark-1.2",
+    "provider": {"order": ["meta"], "allow_fallbacks": False},
+}
+
+
+@pytest.mark.parametrize(
+    ("config", "pin"), [(LIVE_DEEPSEEK, DEEPSEEK_PIN), (LIVE_MUSE, MUSE_PIN)]
+)
+def test_each_pinned_hash_is_reproducible_from_its_inputs(config, pin):
+    """The defect that cost three refused preflight runs was not a wrong hash — it was a hash
+    nobody could regenerate, so a disagreement could not distinguish a changed preset from a
+    changed rule. This test is the fix: the pinned value must fall out of the stated rule
+    applied to the stated config, offline, with no network."""
+    assert sha256_of(canonicalize(config)) == pin.config_sha256
+
+
+@pytest.mark.parametrize(
+    ("config", "pin"), [(LIVE_DEEPSEEK, DEEPSEEK_PIN), (LIVE_MUSE, MUSE_PIN)]
+)
+def test_a_pinned_config_also_passes_every_field_check(config, pin):
+    """The hash and the field checks must agree about the same preset, or one of them is
+    describing something else."""
+    assert check_preset(pin, _fetched(config, version=pin.version, slug=pin.slug)) == []
+
+
+def test_the_canonical_bytes_are_exactly_what_was_recorded():
+    """Written out literally: if the rule ever changes, this fails and names the new output,
+    rather than a hash changing with nothing to compare it to."""
+    assert canonicalize(LIVE_DEEPSEEK) == (
+        '{"model":"deepseek/deepseek-v4-flash-0731",'
+        '"provider":{"allow_fallbacks":false,"order":["gmicloud/fp8"]}}'
+    )
+    assert canonicalize(LIVE_MUSE) == (
+        '{"model":"meta/muse-spark-1.2","provider":{"allow_fallbacks":false,"order":["meta"]}}'
+    )

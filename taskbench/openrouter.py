@@ -71,13 +71,25 @@ class PresetPin:
 
 #: The two pins the order fixes. Version and hash are re-fetched and re-verified at launch;
 #: they are written here so that drift is a refusal rather than a shrug.
+#:
+#: **The hashes were re-pinned on 2026-08-16, by operator decision.** The order carried two
+#: values computed by an earlier session under a canonicalization rule nobody wrote down, and a
+#: live re-fetch agreed with the pin on every field it names — model, single upstream,
+#: fallback-off, version — while disagreeing on both hashes. That is two rules over identical
+#: content, not a drifted preset, and it cost three refused preflight runs.
+#:
+#: The lesson is not "the hash was wrong". It is that **a tripwire nobody can reproduce is not a
+#: tripwire.** So the rule is now executable: `taskbench preset-hash <slug>` prints the exact
+#: canonical bytes and their SHA-256, and the values below were reproduced from those bytes
+#: offline before being written here. Anyone can check them in one command; nobody has to trust
+#: this comment.
 DEEPSEEK_PIN = PresetPin(
     slug="omegahive-deepseek-v4-flash-0731",
     version=3,
     model=DEEPSEEK_MODEL,
     provider_order=("gmicloud/fp8",),
     allow_fallbacks=False,
-    config_sha256="d4baa44ba0d4f552a56d3c40ff3fb5948108e0a6c307689ca66ab1a1f8b7ede5",
+    config_sha256="0405308a1902574fa6e9733e6a6686997c438d06e62ce33a939d0f1bedd33168",
     quantization="fp8",
 )
 
@@ -87,7 +99,7 @@ MUSE_PIN = PresetPin(
     model=MUSE_MODEL,
     provider_order=("meta",),
     allow_fallbacks=False,
-    config_sha256="d83f9918465db2dcf400a2944157e73d2deb25868ee08f2773e0b015aad195b1",
+    config_sha256="32f1d575af716bdebe7f796bc29b6b267976575adfa240b608b0d3b0b0ec371b",
 )
 
 
@@ -154,8 +166,16 @@ _VOLATILE = frozenset(
 def canonicalize(config: dict[str, Any]) -> str:
     """Deterministic JSON for hashing: sorted keys, no whitespace, volatile fields dropped.
 
-    Spelled out rather than left to `json.dumps` defaults because the value this produces is
-    pinned in the order — the rule has to be readable by whoever has to reproduce it.
+    **The rule, in full, because a pinned hash is worthless if nobody can regenerate it:**
+
+    1. Take the preset's `config` object — the routing policy, not the API envelope around it.
+    2. Drop every key in `_VOLATILE`: bookkeeping that changes on its own, and identity that is
+       checked by name instead.
+    3. `json.dumps(..., sort_keys=True, separators=(",", ":"), ensure_ascii=False)`.
+    4. SHA-256 the UTF-8 encoding of that string.
+
+    `taskbench preset-hash <slug>` executes exactly these steps and prints both the bytes and
+    the digest, so the rule can be checked rather than believed.
     """
     pruned = {k: v for k, v in config.items() if k not in _VOLATILE}
     return json.dumps(pruned, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
