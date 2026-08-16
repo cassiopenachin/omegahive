@@ -1,0 +1,32 @@
+{
+  "gh": [
+    {
+      "argv": [
+        "/home/cassio/work/taskbench/wave-3-deepseek-paired-20260816-173341/wave-3-deepseek-claude-code/cell-a6775cf48e/bin/gh",
+        "auth",
+        "status"
+      ],
+      "body": null,
+      "repo": "unknown/unknown",
+      "stdin": "",
+      "title": null
+    },
+    {
+      "argv": [
+        "/home/cassio/work/taskbench/wave-3-deepseek-paired-20260816-173341/wave-3-deepseek-claude-code/cell-a6775cf48e/bin/gh",
+        "issue",
+        "create",
+        "--repo",
+        "rTreutlein/PeTTaChainer",
+        "--title",
+        "Backward chaining (query) returns empty for every query at 02a85c6 \u2014 including directly-asserted facts",
+        "--body-file",
+        "benchmarks/ptc-revalidate/issue/minimal-repro-body.md"
+      ],
+      "body": "## Summary\n\nBackward chaining (`query`) returns an empty list for **every** query at the current\npinned shas, including queries over directly-asserted facts and over facts the\nforward chainer has just derived. The forward chainer derives internally, but its\nresults (and the originally-asserted facts themselves) are invisible to `query`.\n\nThis is the April 2026 blocker (plnbench `docs/april-findings.md` Open Question 1),\nreproduced at a fresh pin after the 0717\u20130720 movement \u2014 it is **not fixed**.\n\n## Environment\n\n- PeTTaChainer `02a85c63be6a735f50f50e1084a717b3256b8406` (main, last commit of the\n  0717\u20130720 movement)\n- PeTTa `43705f5d9ff8958ffe7f0aa6777fb8477f2401f2` (PR #212 era)\n- SWI-Prolog 9.3.33 (the isolated-task-environment base image), python 3.10 via\n  `uv sync --frozen`\n- janus-swi 1.5.2\n\n## Minimal repro\n\nOne fact, one CTV implication:\n\n```metta\n(: edge_ab (Edge A B) (STV 1.0 1.0))\n(: edge_to_path\n   (Implication (Premises (Edge $x $y)) (Conclusions (Path $x $y)))\n   (CTV (STV 1.0 1.0) (STV 0.0 1.0)))\n```\n\nThen, via the Python API:\n\n```python\nh = PeTTaChainer()\nh.add_atom(\"(: edge_ab (Edge A B) (STV 1.0 1.0))\")\nh.add_atom(\"(: edge_to_path (Implication (Premises (Edge $x $y)) (Conclusions (Path $x $y))) (CTV (STV 1.0 1.0) (STV 0.0 1.0)))\")\n\nprint(h.query(\"(: $prf (Edge A B) $tv)\", steps=10, timeout_sec=0))\n# []\n\nseeds = h.select_facts([\"(Edge A B)\"])\nprint(h.forward_chain(seeds, steps=10))\n# [((Path A B) (kb\u2026 MAIN Nil) (edge_to_path edge_ab) (STV 1.0 0.9998\u2026))]\n\nprint(h.query(\"(: $prf (Path A B) $tv)\", steps=10, timeout_sec=0))\n# []\n\nprint(h.all_facts())\n# both (Edge A B) and (Path A B) are present\n```\n\n`query` returns `[]` for the **directly-asserted fact** and for the **derived\nconclusion**, while `all_facts()` confirms both are in the KB. Backward chaining\ncannot see any of it.\n\n## Own test suite\n\n- Metta suite (`pettachainer/metta/test.sh`): **Summary: 6 passed, 44 failed**.\n  Every failing file halts at its first failing `!(test ...)` assertion, and that\n  first failure is a backward `query` returning `()` where a proof is expected in\n  the overwhelming majority of files (e.g. `test_forward_backward_compose`:\n  `is (), should (: (r2 (r1 a0)) (Goal) ...). \u274c`).\n- Python unit tests (`uv run python -m unittest discover -s tests`):\n  **Ran 16 tests \u2026 FAILED (failures=5, errors=2)**; all 5 failures and both errors\n  are `AssertionError: [] is not true` / `PeTTaChainer returned no accept decision`\n  (backward `query` empty).\n\n## Additional observation\n\nForward chaining with **CTV** rules derives correctly (the minimal repro derives\n`(Path A B)`), but forward chaining with **STV** rules \u2014 the convention used by the\nformat-A semantic-parser target \u2014 derives **nothing** (0 changed). The two gaps are\nseparable: STV-rule forward chaining derives 0; CTV-rule forward chaining derives\nbut `query` still returns `[]`.\n\n## Repro\n\nFull reproducible arm (image + probes + captured outputs) is committed in plnbench\n`benchmarks/ptc-revalidate/` (order `2026-07-28-ptc-revalidate`); the minimal probe\nis `probe/minimal_repro.py` and the April format-A probe is\n`probe/formatA_proofwriter.py`. The container image is pinned (swipl:9.3.33 +\n`uv sync --frozen`), so it should reproduce as-is.\n\nCompanion data point (same maintainers, one conversation): plnbench\n`docs/known-issues.md` #2 \u2014 `PLN/examples/Direct.metta` is stale vs current PeTTa\n(annotation convention; PR #212-era). Separate diagnosis, same upstream surface.\n\n## Expected\n\nBackward `query` should return the proof(s) for a directly-asserted fact and for a\nfact derivable by forward chaining. Currently it returns empty for everything.\n",
+      "repo": "rTreutlein/PeTTaChainer",
+      "stdin": "",
+      "title": "Backward chaining (query) returns empty for every query at 02a85c6 \u2014 including directly-asserted facts"
+    }
+  ]
+}

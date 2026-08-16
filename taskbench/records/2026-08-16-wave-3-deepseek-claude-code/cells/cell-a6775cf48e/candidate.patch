@@ -1,0 +1,994 @@
+diff --git a/benchmarks/ptc-revalidate/.gitignore b/benchmarks/ptc-revalidate/.gitignore
+new file mode 100644
+index 0000000..89f9ac0
+--- /dev/null
++++ b/benchmarks/ptc-revalidate/.gitignore
+@@ -0,0 +1 @@
++out/
+diff --git a/benchmarks/ptc-revalidate/Dockerfile b/benchmarks/ptc-revalidate/Dockerfile
+new file mode 100644
+index 0000000..ccf6bc9
+--- /dev/null
++++ b/benchmarks/ptc-revalidate/Dockerfile
+@@ -0,0 +1,42 @@
++# ptc-revalidate isolated task environment.
++#
++# Mirrors upstream PeTTaChainer's own isolated-task-environment base
++# (`.myclaw/Dockerfile`, swipl:9.3.33) with two deliberate differences:
++#   1. The `petta` wrapper points at /PeTTa/run.sh instead of the author's
++#      host path /nexus/Dev/OpenCog/PeTTa/run.sh.
++#   2. PeTTaChainer is at /ptc/PeTTaChainer and PeTTa at /PeTTa so the
++#      `uv.lock` path-source `../../PeTTa` resolves (two levels up from
++#      /ptc/PeTTaChainer is `/`, then `/PeTTa`).
++#
++# Build context must contain `PeTTa` and `PeTTaChainer` as siblings.
++FROM swipl:9.3.33
++
++ARG DEBIAN_FRONTEND=noninteractive
++ARG UV_VERSION=0.8.22
++
++RUN apt-get update && apt-get install -y --no-install-recommends \
++        build-essential \
++        ca-certificates \
++        git \
++        pkg-config \
++        python3 \
++        python3-dev \
++        python3-pip \
++        python3-venv \
++    && rm -rf /var/lib/apt/lists/*
++
++ENV HOME=/tmp/ptc-home \
++    UV_CACHE_DIR=/opt/ptc/uv-cache
++
++RUN mkdir -p "$HOME" "$UV_CACHE_DIR" && chmod 1777 "$HOME" "$UV_CACHE_DIR" \
++    && python3 -m pip install --break-system-packages --no-cache-dir "uv==$UV_VERSION"
++
++COPY PeTTa /PeTTa
++COPY PeTTaChainer /ptc/PeTTaChainer
++
++# `petta` command for the metta test suite (test.sh calls `petta file`).
++RUN printf '#!/bin/sh\nexport LC_ALL=C.UTF-8 LANG=C.UTF-8\nexec /PeTTa/run.sh "$@"\n' \
++        > /usr/local/bin/petta && chmod 0755 /usr/local/bin/petta
++
++WORKDIR /ptc/PeTTaChainer
++RUN uv sync --frozen
+diff --git a/benchmarks/ptc-revalidate/README.md b/benchmarks/ptc-revalidate/README.md
+new file mode 100644
+index 0000000..e77c798
+--- /dev/null
++++ b/benchmarks/ptc-revalidate/README.md
+@@ -0,0 +1,29 @@
++# ptc-revalidate — PeTTaChainer chaining verdict at pinned shas
++
++Order `2026-07-28-ptc-revalidate` (workspace `projects/pln-benchmarks/orders/`).
++This arm answers the April 2026 stall S1: does PeTTaChainer chaining work at the
++pinned shas after upstream's 0717–0720 movement?
++
++**Verdict: BROKEN.** Backward chaining (`query`) returns empty for every query,
++including queries over directly-asserted facts and over facts the forward
++chainer just derived. See `docs/ptc-verdict.md` for the full write-up.
++
++## Contents
++
++| Path | What |
++|---|---|
++| `Dockerfile` | isolated task environment (swipl 9.3.33 + python/uv), mirrors upstream `.myclaw` |
++| `repro.sh` | re-runnable repro: bundles → image → test suite → probes → verdict check |
++| `probe/minimal_repro.py` | minimal repro for the upstream filing |
++| `probe/formatA_proofwriter.py` | April format-A ProofWriter example (7 facts, 3 rules) |
++| `results/` | verbatim captured outputs at verification time (2026-08-16) |
++| `out/` | fresh repro output (created by `repro.sh`, not committed) |
++
++## Rerunning
++
++```bash
++# from the plnbench repo root, with deps/ bundles available next to the repo:
++bin/bench-verify -- bash benchmarks/ptc-revalidate/repro.sh
++```
++
++See `docs/ptc-verdict.md` → *Repro* for env vars and expectations.
+diff --git a/benchmarks/ptc-revalidate/issue/minimal-repro-body.md b/benchmarks/ptc-revalidate/issue/minimal-repro-body.md
+new file mode 100644
+index 0000000..45d6360
+--- /dev/null
++++ b/benchmarks/ptc-revalidate/issue/minimal-repro-body.md
+@@ -0,0 +1,91 @@
++## Summary
++
++Backward chaining (`query`) returns an empty list for **every** query at the current
++pinned shas, including queries over directly-asserted facts and over facts the
++forward chainer has just derived. The forward chainer derives internally, but its
++results (and the originally-asserted facts themselves) are invisible to `query`.
++
++This is the April 2026 blocker (plnbench `docs/april-findings.md` Open Question 1),
++reproduced at a fresh pin after the 0717–0720 movement — it is **not fixed**.
++
++## Environment
++
++- PeTTaChainer `02a85c63be6a735f50f50e1084a717b3256b8406` (main, last commit of the
++  0717–0720 movement)
++- PeTTa `43705f5d9ff8958ffe7f0aa6777fb8477f2401f2` (PR #212 era)
++- SWI-Prolog 9.3.33 (the isolated-task-environment base image), python 3.10 via
++  `uv sync --frozen`
++- janus-swi 1.5.2
++
++## Minimal repro
++
++One fact, one CTV implication:
++
++```metta
++(: edge_ab (Edge A B) (STV 1.0 1.0))
++(: edge_to_path
++   (Implication (Premises (Edge $x $y)) (Conclusions (Path $x $y)))
++   (CTV (STV 1.0 1.0) (STV 0.0 1.0)))
++```
++
++Then, via the Python API:
++
++```python
++h = PeTTaChainer()
++h.add_atom("(: edge_ab (Edge A B) (STV 1.0 1.0))")
++h.add_atom("(: edge_to_path (Implication (Premises (Edge $x $y)) (Conclusions (Path $x $y))) (CTV (STV 1.0 1.0) (STV 0.0 1.0)))")
++
++print(h.query("(: $prf (Edge A B) $tv)", steps=10, timeout_sec=0))
++# []
++
++seeds = h.select_facts(["(Edge A B)"])
++print(h.forward_chain(seeds, steps=10))
++# [((Path A B) (kb… MAIN Nil) (edge_to_path edge_ab) (STV 1.0 0.9998…))]
++
++print(h.query("(: $prf (Path A B) $tv)", steps=10, timeout_sec=0))
++# []
++
++print(h.all_facts())
++# both (Edge A B) and (Path A B) are present
++```
++
++`query` returns `[]` for the **directly-asserted fact** and for the **derived
++conclusion**, while `all_facts()` confirms both are in the KB. Backward chaining
++cannot see any of it.
++
++## Own test suite
++
++- Metta suite (`pettachainer/metta/test.sh`): **Summary: 6 passed, 44 failed**.
++  Every failing file halts at its first failing `!(test ...)` assertion, and that
++  first failure is a backward `query` returning `()` where a proof is expected in
++  the overwhelming majority of files (e.g. `test_forward_backward_compose`:
++  `is (), should (: (r2 (r1 a0)) (Goal) ...). ❌`).
++- Python unit tests (`uv run python -m unittest discover -s tests`):
++  **Ran 16 tests … FAILED (failures=5, errors=2)**; all 5 failures and both errors
++  are `AssertionError: [] is not true` / `PeTTaChainer returned no accept decision`
++  (backward `query` empty).
++
++## Additional observation
++
++Forward chaining with **CTV** rules derives correctly (the minimal repro derives
++`(Path A B)`), but forward chaining with **STV** rules — the convention used by the
++format-A semantic-parser target — derives **nothing** (0 changed). The two gaps are
++separable: STV-rule forward chaining derives 0; CTV-rule forward chaining derives
++but `query` still returns `[]`.
++
++## Repro
++
++Full reproducible arm (image + probes + captured outputs) is committed in plnbench
++`benchmarks/ptc-revalidate/` (order `2026-07-28-ptc-revalidate`); the minimal probe
++is `probe/minimal_repro.py` and the April format-A probe is
++`probe/formatA_proofwriter.py`. The container image is pinned (swipl:9.3.33 +
++`uv sync --frozen`), so it should reproduce as-is.
++
++Companion data point (same maintainers, one conversation): plnbench
++`docs/known-issues.md` #2 — `PLN/examples/Direct.metta` is stale vs current PeTTa
++(annotation convention; PR #212-era). Separate diagnosis, same upstream surface.
++
++## Expected
++
++Backward `query` should return the proof(s) for a directly-asserted fact and for a
++fact derivable by forward chaining. Currently it returns empty for everything.
+diff --git a/benchmarks/ptc-revalidate/probe/formatA_proofwriter.py b/benchmarks/ptc-revalidate/probe/formatA_proofwriter.py
+new file mode 100644
+index 0000000..6d81eb1
+--- /dev/null
++++ b/benchmarks/ptc-revalidate/probe/formatA_proofwriter.py
+@@ -0,0 +1,65 @@
++"""April probe via the PeTTaChainer Python API (the semantic-parser path).
++
++Reproduces the format-A ProofWriter example from docs/april-findings.md
++(7 facts, 3 rules, type defs excluded) and runs the True/Unknown queries
++from the findings table, forward and backward chaining both.
++"""
++from pettachainer import PeTTaChainer
++
++FACTS = [
++    "(: bear_likes_dog     (Like bear_1 dog_1)         (STV 1.0 0.9))",
++    "(: cow_is_round       (HasAttribute cow_1 round)  (STV 1.0 0.9))",
++    "(: cow_likes_bear     (Like cow_1 bear_1)         (STV 1.0 0.9))",
++    "(: cow_needs_bear     (Need cow_1 bear_1)         (STV 1.0 0.9))",
++    "(: dog_needs_squirrel (Need dog_1 squirrel_1)     (STV 1.0 0.9))",
++    "(: dog_sees_cow       (See dog_1 cow_1)           (STV 1.0 0.9))",
++    "(: squirrel_needs_dog (Need squirrel_1 dog_1)     (STV 1.0 0.9))",
++]
++
++RULES = [
++    # "If someone is round then they like the squirrel"
++    "(: round_likes_squirrel "
++    "(Implication (Premises (HasAttribute $x round)) "
++    "(Conclusions (Like $x squirrel_1))) "
++    "(STV 1.0 0.9))",
++    # "If the bear is round and the bear likes the squirrel then the squirrel needs the bear"
++    "(: bear_round_squirrel_needs "
++    "(Implication (Premises (HasAttribute bear_1 round) (Like bear_1 squirrel_1)) "
++    "(Conclusions (Need squirrel_1 bear_1))) "
++    "(STV 1.0 0.9))",
++    # "If the cow needs the dog then the cow is cold"
++    "(: cow_needs_dog_cold "
++    "(Implication (Premises (Need cow_1 dog_1)) "
++    "(Conclusions (HasAttribute cow_1 cold))) "
++    "(STV 1.0 0.9))",
++]
++
++
++def main():
++    handler = PeTTaChainer()
++    for atom in FACTS + RULES:
++        handler.add_atom(atom)
++
++    print("=== BACKWARD (query) ===")
++    queries = [
++        ("cow likes squirrel (expected True, depth 1)", "(: $prf (Like cow_1 squirrel_1) $tv)"),
++        ("dog likes bear (expected Unknown)",           "(: $prf (Like dog_1 bear_1) $tv)"),
++        ("bear likes squirrel (expected Unknown)",      "(: $prf (Like bear_1 squirrel_1) $tv)"),
++    ]
++    for label, q in queries:
++        r = handler.query(q, steps=50, timeout_sec=0)
++        print(f"{label}: {r}")
++
++    print("=== FORWARD (full saturation) ===")
++    all_facts = handler.all_facts()
++    print(f"seed count: {len(all_facts)}")
++    changed = handler.forward_chain(all_facts, steps=100)
++    print(f"changed count: {len(changed)}")
++
++    print("=== FORWARD-then-QUERY ===")
++    r = handler.query("(: $prf (Like cow_1 squirrel_1) $tv)", steps=50, timeout_sec=0)
++    print(f"cow likes squirrel after forward (expected True): {r}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/benchmarks/ptc-revalidate/probe/minimal_repro.py b/benchmarks/ptc-revalidate/probe/minimal_repro.py
+new file mode 100644
+index 0000000..7085b1a
+--- /dev/null
++++ b/benchmarks/ptc-revalidate/probe/minimal_repro.py
+@@ -0,0 +1,25 @@
++"""Minimal repro: forward-chain a single implication, then backward-query its conclusion."""
++from pettachainer import PeTTaChainer
++
++h = PeTTaChainer()
++h.add_atom("(: edge_ab (Edge A B) (STV 1.0 1.0))")
++h.add_atom(
++    "(: edge_to_path "
++    "(Implication (Premises (Edge $x $y)) (Conclusions (Path $x $y))) "
++    "(CTV (STV 1.0 1.0) (STV 0.0 1.0)))"
++)
++
++print("=== direct backward query for the fact ===")
++print("query (Edge A B):", h.query("(: $prf (Edge A B) $tv)", steps=10, timeout_sec=0))
++
++print("=== forward chain ===")
++seeds = h.select_facts(["(Edge A B)"])
++print("seeds:", seeds)
++changed = h.forward_chain(seeds, steps=10)
++print("changed:", changed)
++
++print("=== backward query for derived conclusion ===")
++print("query (Path A B):", h.query("(: $prf (Path A B) $tv)", steps=10, timeout_sec=0))
++
++print("=== what's in the KB ===")
++print("all_facts:", h.all_facts())
+diff --git a/benchmarks/ptc-revalidate/repro.sh b/benchmarks/ptc-revalidate/repro.sh
+new file mode 100755
+index 0000000..b82fe22
+--- /dev/null
++++ b/benchmarks/ptc-revalidate/repro.sh
+@@ -0,0 +1,126 @@
++#!/usr/bin/env bash
++# ptc-revalidate — PeTTaChainer chaining verdict repro at pinned shas.
++#
++# Rerunnable from a clean clone. The pinned upstream repos come ONLY from the
++# offline bundles in deps/ (no network fetch of them). The container build and
++# `uv sync --frozen` inside the image need network or a warm uv cache.
++#
++# Exit status: 0 when the reproduced state matches this verdict (chaining
++# broken with the documented markers); 1 when the environment/toolchain cannot
++# be built; 2 when the reproduced behavior differs from the verdict (e.g. a
++# backward query returns a proof — re-run the probe and re-verify before
++# trusting this script's exit code).
++#
++# Usage:
++#   PTC_DEPS_DIR=/path/with/deps/bundles bash benchmarks/ptc-revalidate/repro.sh
++#
++# Env:
++#   PTC_DEPS_DIR   dir containing PeTTa.bundle + PeTTaChainer.bundle
++#                  (default: <repo-root>/../deps)
++#   PTC_OUT_DIR    where fresh run outputs go
++#                  (default: <repo-root>/benchmarks/ptc-revalidate/out)
++#   PTC_RUNTIME    container runtime, podman or docker (default: podman)
++set -uo pipefail
++
++SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
++ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
++DEPS_DIR="${PTC_DEPS_DIR:-$(cd "$ROOT/.." && pwd)/deps}"
++OUT_DIR="${PTC_OUT_DIR:-$ROOT/benchmarks/ptc-revalidate/out}"
++RUNTIME="${PTC_RUNTIME:-podman}"
++
++PETTA_SHA="43705f5d9ff8958ffe7f0aa6777fb8477f2401f2"
++PETTACHAINER_SHA="02a85c63be6a735f50f50e1084a717b3256b8406"
++IMAGE="ptc-revalidate:dev"
++
++say() { printf 'ptc-revalidate: %s\n' "$*"; }
++die() { say "ERROR: $*"; exit 1; }
++
++# --- input checks ----------------------------------------------------------
++[ -f "$DEPS_DIR/PeTTa.bundle" ]         || die "PeTTa.bundle not found under $DEPS_DIR (set PTC_DEPS_DIR)"
++[ -f "$DEPS_DIR/PeTTaChainer.bundle" ]  || die "PeTTaChainer.bundle not found under $DEPS_DIR (set PTC_DEPS_DIR)"
++command -v "$RUNTIME" >/dev/null 2>&1   || die "container runtime '$RUNTIME' not found (set PTC_RUNTIME)"
++
++# --- build context (pinned repos from bundles) ----------------------------
++CTX="$ROOT/results/ptc-revalidate/ctx"
++rm -rf "$CTX"
++mkdir -p "$CTX"
++say "cloning pinned PeTTa + PeTTaChainer from bundles under $DEPS_DIR"
++git clone -q -b pinned "$DEPS_DIR/PeTTa.bundle"         "$CTX/PeTTa"
++git clone -q -b pinned "$DEPS_DIR/PeTTaChainer.bundle"  "$CTX/PeTTaChainer"
++cp "$SCRIPT_DIR/Dockerfile" "$CTX/Dockerfile"
++
++actual_petta="$(git -C "$CTX/PeTTa" rev-parse HEAD)"
++actual_ptc="$(git -C "$CTX/PeTTaChainer" rev-parse HEAD)"
++[ "$actual_petta" = "$PETTA_SHA" ]        || die "PeTTa bundle head $actual_petta != pinned $PETTA_SHA"
++[ "$actual_ptc" = "$PETTACHAINER_SHA" ]   || die "PeTTaChainer bundle head $actual_ptc != pinned $PETTACHAINER_SHA"
++say "pins OK: PeTTa@${PETTA_SHA:0:7} PeTTaChainer@${PETTACHAINER_SHA:0:7}"
++
++# --- image build -----------------------------------------------------------
++if ! "$RUNTIME" image exists "$IMAGE" 2>/dev/null; then
++    say "building image $IMAGE (first build fetches apt/pip deps)"
++    "$RUNTIME" build --security-opt label=disable -t "$IMAGE" "$CTX" \
++        || die "image build failed — cannot build the toolchain on this host; that IS the finding"
++else
++    say "image $IMAGE already present"
++fi
++
++# --- run -------------------------------------------------------------------
++mkdir -p "$OUT_DIR"
++say "running metta test suite, python unit tests, and probes; outputs -> $OUT_DIR"
++
++"$RUNTIME" run --rm --security-opt label=disable \
++    -v "$OUT_DIR:/tmp/out" \
++    -v "$SCRIPT_DIR/probe:/tmp/probe:ro" \
++    "$IMAGE" bash -lc '
++set -uo pipefail
++export LC_ALL=C.UTF-8 LANG=C.UTF-8
++cd /ptc/PeTTaChainer
++
++echo "### metta test suite (test.sh) ###"
++( cd pettachainer/metta && ./test.sh > /tmp/out/metta-test-suite.log 2>&1 ); echo "metta test.sh exit=$?"
++
++echo "### python unit tests ###"
++uv run python -m unittest discover -s tests > /tmp/out/python-unittest.log 2>&1; echo "python unittest exit=$?"
++
++echo "### minimal repro (Python API) ###"
++uv run python /tmp/probe/minimal_repro.py > /tmp/out/minimal-repro.log 2>&1; echo "minimal repro exit=$?"
++
++echo "### April format-A probe (Python API) ###"
++uv run python /tmp/probe/formatA_proofwriter.py > /tmp/out/probe-formatA-python.log 2>&1; echo "format-A probe exit=$?"
++' || die "container run failed"
++
++# --- verdict check ----------------------------------------------------------
++say "checking reproduced state against the documented verdict"
++fail=0
++
++# 1. Metta suite must still show the documented failure count (6 passed / 44 failed).
++if grep -q '^Summary: 6 passed, 44 failed$' "$OUT_DIR/metta-test-suite.log"; then
++    say "metta suite summary matches verdict: 6 passed, 44 failed"
++else
++    say "DIFF: metta suite summary changed (expected 'Summary: 6 passed, 44 failed')"
++    grep '^Summary:' "$OUT_DIR/metta-test-suite.log" || true
++    fail=1
++fi
++
++# 2. Minimal repro: backward query for a direct fact must still be empty.
++if grep -q '^query (Edge A B): \[\]$' "$OUT_DIR/minimal-repro.log"; then
++    say "minimal repro: backward query for direct fact still empty (broken as documented)"
++else
++    say "DIFF: minimal repro backward query for a direct fact is NOT empty — behavior changed"
++    fail=1
++fi
++
++# 3. April probe: backward query for the derivable True statement must still be empty.
++if grep -q '^cow likes squirrel (expected True, depth 1): \[\]$' "$OUT_DIR/probe-formatA-python.log"; then
++    say "format-A probe: backward query for cow-likes-squirrel still empty (broken as documented)"
++else
++    say "DIFF: format-A probe backward query for cow-likes-squirrel is NOT empty — behavior changed"
++    fail=1
++fi
++
++if [ "$fail" -ne 0 ]; then
++    say "REPRODUCED STATE DIFFERS FROM VERDICT — re-verify before trusting the verdict"
++    exit 2
++fi
++say "reproduced state matches the committed verdict (chaining broken at pinned shas)"
++exit 0
+diff --git a/benchmarks/ptc-revalidate/results/README.md b/benchmarks/ptc-revalidate/results/README.md
+new file mode 100644
+index 0000000..3b1bab4
+--- /dev/null
++++ b/benchmarks/ptc-revalidate/results/README.md
+@@ -0,0 +1,16 @@
++# ptc-revalidate — captured results (2026-08-16)
++
++Verbatim outputs captured at verification time. Each file names the run it came
++from; the pins are recorded in `docs/ptc-verdict.md` and re-checked by
++`repro.sh` on every rerun.
++
++| File | Contents |
++|---|---|
++| `metta-test-suite.log` | `cd pettachainer/metta && ./test.sh` — PASS/FAIL per test file + summary (6 passed / 44 failed) |
++| `metta-per-file-summary.txt` | per-file exit codes from running each `tests/test*.metta` individually |
++| `metta-first-failing-assertion.tsv` | per-file first `!(test ...)` assertion that failed (each file halts at its first failure, so this is the file-level cause) |
++| `python-unittest.log` | `uv run python -m unittest discover -s tests` — 9 pass / 5 fail / 2 error |
++| `minimal-repro.log` | `probe/minimal_repro.py` — forward-chain works, `query` returns `[]` for a direct fact and for the derived fact |
++| `probe-formatA-python.log` | `probe/formatA_proofwriter.py` — April format-A ProofWriter example, forward + backward |
++| `forward-ctv-isolation.log` | isolation experiment: same format-A KB but rules as `CTV` instead of `STV` — forward chain derives the True fact, backward query still `[]` |
++| `language-spec.log` | `get_language_spec(llm_focused=True/False)` returns the spec documents (the semantic-parser integration point) |
+diff --git a/benchmarks/ptc-revalidate/results/forward-ctv-isolation.log b/benchmarks/ptc-revalidate/results/forward-ctv-isolation.log
+new file mode 100644
+index 0000000..1cd9ae7
+--- /dev/null
++++ b/benchmarks/ptc-revalidate/results/forward-ctv-isolation.log
+@@ -0,0 +1,7 @@
++2026-08-16 23:14:06,185 [INFO] Loading MeTTa library from /ptc/PeTTaChainer/pettachainer/metta/petta_chainer.metta
++=== forward chain all facts (CTV rules) ===
++seed count: 7
++changed count: 1
++  CHANGED: ((Like cow_1 squirrel_1) (kb3c55742b883d45e98c70475c8e8f2f31 MAIN Nil) (round_likes_squirrel cow_is_round) (STV 1.0 0.8181611546663258))
++=== backward query cow likes squirrel ===
++[]
+diff --git a/benchmarks/ptc-revalidate/results/language-spec.log b/benchmarks/ptc-revalidate/results/language-spec.log
+new file mode 100644
+index 0000000..084a3af
+--- /dev/null
++++ b/benchmarks/ptc-revalidate/results/language-spec.log
+@@ -0,0 +1,53 @@
++llm_focused len: 2510
++# PeTTaChainer LLM Rule Spec
++
++This spec focuses only on constructing valid Statements and Queries.
++It does not describe how to invoke chainer interface functions.
++
++## Core Forms
++
++- Statement form (fact or rule assertion):
++
++```metta
++(: proof-id type tv)
++```
++
++- Query pattern form:
++
++```metta
++(: $proofVar typePattern $tvVar)
++```
++
++## Rule Template
++
++```metta
++(: ruleName
++    (Implication
++        (Premises
++            premise1
++            premise2)
++        (Conclusions
++            conclusion1))
++    (STV
++full len: 7893
++# PeTTaChainer Language Spec
++
++This document describes how to write facts, rules, and queries in the PeTTaChainer MeTTa language used in this repository.
++
++If you need an LLM-oriented helper-first spec, use `pettachainer/LLM_RULE_SPEC.md`.
++
++## Core Model
++
++- Knowledge is stored as proof atoms of the form:
++
++```metta
++(: proof-id type tv)
++```
++
++- In user code, facts/rules are usually inserted with:
++
++```metta
++!(compileadd kb (: proof-id type tv))
++```
++
++- Incremental pattern mining on insert is off by def
+diff --git a/benchmarks/ptc-revalidate/results/metta-first-failing-assertion.tsv b/benchmarks/ptc-revalidate/results/metta-first-failing-assertion.tsv
+new file mode 100644
+index 0000000..e6b6ef4
+--- /dev/null
++++ b/benchmarks/ptc-revalidate/results/metta-first-failing-assertion.tsv
+@@ -0,0 +1,42 @@
++file	exit	first_failing_assertion
++test	FAIL	is (), should (: (foldRule (foldall-proof prf prf prf)) (ScoreTotal 6) (STV 1.0 0.9998000399670116)). ❌
++test_backward_dag_helpers	FAIL	is 1.0, should 0.8999975376989856. ❌
++test_backward_open_query_results	FAIL	is (), should ((: ((no_inverse dog_to_animal) d1) (Animal max) (STV 1.0 0.9998000399670116)) (: ((no_inverse dog_to_animal) d2) (Animal ann) (STV 1.0 0.9998000399670116))). ❌
++test_base_rate_cache	FAIL	is (), should (: ((inverted r with (foldall-proof pb) (foldall-proof qa (r pb))) qa) (P alice) (STV 0.736162240263287 0.0003604307138536469)). ❌
++test_benchgen_metta	FAIL	is false, should true. ❌
++test_best_first_runtime	FAIL	is (), should (: (merge/revision (ruleStable baseFact) (ruleHighThenDrop (conjunction weakFact baseFact))) (SwitchGoal) (STV 1.0 0.7094641445679878)). ❌
++test_chainer_add_atom	PASS	
++test_dispatch_determinism	PASS	
++test_distribution_values	FAIL	is (), should true. ❌
++test_evidence_semantics	FAIL	is (), should (CTV (STV 0.125 0.9692294378874315) (STV 0.0 0.9999367205825538)). ❌
++test_foldall_merged_outputs	FAIL	is (), should (: (merge/revision (qToScore qFact) directScore) (Score a 1) (STV 0.44000002400830773 0.9090908594869702)). ❌
++test_foldall_query_goal	FAIL	is (), should ((foldall-proof prfA prfB prfC) (Score $_2212 $_2218) $_2218 0 6 (STV 1.0 1.0)). ❌
++test_forward_backward_compose	FAIL	is (), should (: (r2 (r1 a0)) (Goal) (STV 1.0 0.999700089898053)). ❌
++test_forward_chainer	PASS	
++test_forward_incremental_base_rates	FAIL	is (), should (: ((inverted pToQ with (foldall-proof pb) (foldall-proof qa (pToQ pb))) qa) (P alice) (STV 0.736162240263287 0.0003604307138536469)). ❌
++test_frontier_pooling	FAIL	is (), should (: (conjunction (marginal-proj 1 bc) (marginal-proj 2 bc) (marginal-proj 0 bc)) (And (A e1 bob) (P e1 dinner) (M e1 cook)) (STV 0.9 0.99)). ❌
++test_height_average	FAIL	is (), should 0.0. ❌
++test_idealized_confidence	FAIL	is (), should (: (fluRule (conjunction fever cough)) (Flu p) (STV 0.62 0.49224732166420715)). ❌
++test_implication_inversion	FAIL	is (), should (: ((inverted r with (foldall-proof pb) (foldall-proof qa (r pb))) qa) (P alice) (STV 0.736162240263287 0.0003604307138536469)). ❌
++test_implication_premise	FAIL	is (), should (: (ab_c (total-implication (a_b (ctx proof 2)) (a_b (ctx proof 3)))) (C) (STV 1.0 0.999700089898053)). ❌
++test_inheritance_aggregate_cycle	FAIL	is (), should ((: (inheritance-implication-fold (total-implication ((inverted (inheritance-implication penguinBird) with cpu (foldall-proof ravenBird penguinBird)) ((inheritance-implication ravenBird) (ctx proof 0))) ((inverted (inheritance-implication penguinBird) with cpu (foldall-proof ravenBird penguinBird)) ((inheritance-implication ravenBird) (ctx proof 1))))) (Inheritance Raven Penguin) (ST...
++test_inheritance_query_proof	FAIL	is 0, should 1. ❌
++test_lifting_merge	FAIL	is (), should (: (merge/revision (ab1 a) (ab2 a)) (B i) (STV 0.6 0.9473684208506429)). ❌
++test_logic_config	FAIL	is (), should (: (marginal-proj 1 ab) (B) (STV 1.0 0.9)). ❌
++test_math	FAIL	is (), should (: ax-k (Provable (→ $_1736 (→ $_1754 $_1736))) (STV 1.0 1.0)). ❌
++test_member_compat	FAIL	is (), should ((: tomHuman (Member Tom Human) (STV 0.99 0.9))). ❌
++test_member_concept_node	PASS	
++test_merged_subgoal_rule_application	FAIL	is (), should (: (smokingCancerRule (merge/revision smokesEdward (friendSmokingRule (conjunction friendAnnaEdward smokesAnna)))) (Cancerous Edward) (STV 0.4200001200414666 0.9338110214376288)). ❌
++test_nary_conjuction	FAIL	is (), should (: (conjunction a b c) (And A B C) (STV 1.0 0.999700089898053)). ❌
++test_negated_evidence_merge	FAIL	is (), should (: (merge/revision (nd_a (negated d)) (d_a d)) (Animal) (STV 0.2954555464817422 0.880073171795134)). ❌
++test_numeric_pattern_dist	FAIL	is (), should ((: (sampleRule (conjunction fx7 fy7 cpu fz8)) (XYZSample (Pair (XY 10.0 2.0) 49.0)) (STV 1.0 0.74983534451576)) (: (sampleRule (conjunction fx1 fy1 cpu fz2)) (XYZSample (Pair (XY 10.0 100.0) 20.0)) (STV 1.0 0.74983534451576)) (: (sampleRule (conjunction fx3 fy3 cpu fz4)) (XYZSample (Pair (XY 10.0 100.0) 21.0)) (STV 1.0 0.74983534451576)) (: (sampleRule (conjunction fx5 fy5 cpu fz6))...
++test_particle_values	FAIL	is (), should 0.5. ❌
++test_query_adds	FAIL	is (), should (: pa (A) (STV 1.0 1.0)). ❌
++test_query_compute_in_compound	FAIL	is (), should ((: (query-compound (conjunction p1 cpu p2)) (And (P 1) (Compute + (1 1) 2) (P 2)) (STV 1.0 0.9996001597861454)) (: (query-compound (conjunction p2 cpu p3)) (And (P 2) (Compute + (2 1) 3) (P 3)) (STV 1.0 0.9996001597861454))). ❌
++test_query_materialize	FAIL	is (), should (: (r2 (r1 a0)) (Goal) (STV 1.0 0.999700089898053)). ❌
++test_rectangle_area	FAIL	is (), should true. ❌
++test_specializing_rule	FAIL	is (), should (: (sum_rel (conjunction tag f1)) (Friend alice bob) (STV 0.9 0.03939074332138302)). ❌
++test_stv_implication_derived_ctv	FAIL	is (), should (: (aToB a) (B x) (STV 0.6 0.8999998649685302)). ❌
++test_total_implication_aggregate	FAIL	is (), should (: (ii_total tb (foldall-proof (total-pos (conjunction tl fl)) (total-neg (conjunction (negated tl) fl)) (total-pos (conjunction ta fa)) (total-neg (conjunction (negated ta) fa)) (total-pos (conjunction tm fm)) (total-neg (conjunction (negated tm) fm)))) (Female bob) (STV 0.9049050000000001 0.7525704728622737)). ❌
++test_uniform_prior	PASS	
++test_var_head	FAIL	is (), should (: (sum_rel (conjunction tag f1)) (Friend alice bob) (STV 0.7290000000000001 0.9092749078344904)). ❌
+diff --git a/benchmarks/ptc-revalidate/results/metta-per-file-summary.txt b/benchmarks/ptc-revalidate/results/metta-per-file-summary.txt
+new file mode 100644
+index 0000000..9d20326
+--- /dev/null
++++ b/benchmarks/ptc-revalidate/results/metta-per-file-summary.txt
+@@ -0,0 +1,41 @@
++test RC=1
++test_backward_dag_helpers RC=1
++test_backward_open_query_results RC=1
++test_base_rate_cache RC=1
++test_benchgen_metta RC=1
++test_best_first_runtime RC=1
++test_chainer_add_atom RC=0
++test_dispatch_determinism RC=0
++test_distribution_values RC=1
++test_evidence_semantics RC=1
++test_foldall_merged_outputs RC=1
++test_foldall_query_goal RC=1
++test_forward_backward_compose RC=1
++test_forward_chainer RC=0
++test_forward_incremental_base_rates RC=1
++test_frontier_pooling RC=1
++test_height_average RC=1
++test_idealized_confidence RC=1
++test_implication_inversion RC=1
++test_implication_premise RC=1
++test_inheritance_aggregate_cycle RC=1
++test_inheritance_query_proof RC=1
++test_lifting_merge RC=1
++test_logic_config RC=1
++test_math RC=1
++test_member_compat RC=1
++test_member_concept_node RC=0
++test_merged_subgoal_rule_application RC=1
++test_nary_conjuction RC=1
++test_negated_evidence_merge RC=1
++test_numeric_pattern_dist RC=1
++test_particle_values RC=1
++test_query_adds RC=1
++test_query_compute_in_compound RC=1
++test_query_materialize RC=1
++test_rectangle_area RC=1
++test_specializing_rule RC=1
++test_stv_implication_derived_ctv RC=1
++test_total_implication_aggregate RC=1
++test_uniform_prior RC=0
++test_var_head RC=1
+diff --git a/benchmarks/ptc-revalidate/results/metta-test-suite.log b/benchmarks/ptc-revalidate/results/metta-test-suite.log
+new file mode 100644
+index 0000000..7e46db2
+--- /dev/null
++++ b/benchmarks/ptc-revalidate/results/metta-test-suite.log
+@@ -0,0 +1,97 @@
++FAIL tests/test.metta
++FAIL tests/test_backward_dag_helpers.metta
++FAIL tests/test_backward_open_query_results.metta
++FAIL tests/test_base_rate_cache.metta
++FAIL tests/test_benchgen_metta.metta
++FAIL tests/test_best_first_runtime.metta
++PASS tests/test_chainer_add_atom.metta
++PASS tests/test_dispatch_determinism.metta
++FAIL tests/test_distribution_values.metta
++FAIL tests/test_evidence_semantics.metta
++FAIL tests/test_foldall_merged_outputs.metta
++FAIL tests/test_foldall_query_goal.metta
++FAIL tests/test_forward_backward_compose.metta
++PASS tests/test_forward_chainer.metta
++FAIL tests/test_forward_incremental_base_rates.metta
++FAIL tests/test_frontier_pooling.metta
++FAIL tests/test_height_average.metta
++FAIL tests/test_idealized_confidence.metta
++FAIL tests/test_implication_inversion.metta
++FAIL tests/test_implication_premise.metta
++FAIL tests/test_inheritance_aggregate_cycle.metta
++FAIL tests/test_inheritance_query_proof.metta
++FAIL tests/test_lifting_merge.metta
++FAIL tests/test_logic_config.metta
++FAIL tests/test_math.metta
++FAIL tests/test_member_compat.metta
++PASS tests/test_member_concept_node.metta
++FAIL tests/test_merged_subgoal_rule_application.metta
++FAIL tests/test_nary_conjuction.metta
++FAIL tests/test_negated_evidence_merge.metta
++FAIL tests/test_numeric_pattern_dist.metta
++FAIL tests/test_particle_values.metta
++FAIL tests/test_query_adds.metta
++FAIL tests/test_query_compute_in_compound.metta
++FAIL tests/test_query_materialize.metta
++FAIL tests/test_rectangle_area.metta
++FAIL tests/test_specializing_rule.metta
++FAIL tests/test_stv_implication_derived_ctv.metta
++FAIL tests/test_total_implication_aggregate.metta
++PASS tests/test_uniform_prior.metta
++FAIL tests/test_var_head.metta
++PASS examples/base_rate_acceptance_game_libpln.metta
++FAIL examples/base_rate_acceptance_game_pettachainer.metta
++FAIL examples/deductionrevision.metta
++FAIL examples/direct.metta
++FAIL examples/flyingraven.metta
++FAIL examples/raveninduction.metta
++FAIL examples/raveninduction_implication_pettachainer.metta
++FAIL examples/smokes.metta
++FAIL examples/toothbrush.metta
++
++Summary: 6 passed, 44 failed
++Failing files:
++ - tests/test.metta
++ - tests/test_backward_dag_helpers.metta
++ - tests/test_backward_open_query_results.metta
++ - tests/test_base_rate_cache.metta
++ - tests/test_benchgen_metta.metta
++ - tests/test_best_first_runtime.metta
++ - tests/test_distribution_values.metta
++ - tests/test_evidence_semantics.metta
++ - tests/test_foldall_merged_outputs.metta
++ - tests/test_foldall_query_goal.metta
++ - tests/test_forward_backward_compose.metta
++ - tests/test_forward_incremental_base_rates.metta
++ - tests/test_frontier_pooling.metta
++ - tests/test_height_average.metta
++ - tests/test_idealized_confidence.metta
++ - tests/test_implication_inversion.metta
++ - tests/test_implication_premise.metta
++ - tests/test_inheritance_aggregate_cycle.metta
++ - tests/test_inheritance_query_proof.metta
++ - tests/test_lifting_merge.metta
++ - tests/test_logic_config.metta
++ - tests/test_math.metta
++ - tests/test_member_compat.metta
++ - tests/test_merged_subgoal_rule_application.metta
++ - tests/test_nary_conjuction.metta
++ - tests/test_negated_evidence_merge.metta
++ - tests/test_numeric_pattern_dist.metta
++ - tests/test_particle_values.metta
++ - tests/test_query_adds.metta
++ - tests/test_query_compute_in_compound.metta
++ - tests/test_query_materialize.metta
++ - tests/test_rectangle_area.metta
++ - tests/test_specializing_rule.metta
++ - tests/test_stv_implication_derived_ctv.metta
++ - tests/test_total_implication_aggregate.metta
++ - tests/test_var_head.metta
++ - examples/base_rate_acceptance_game_pettachainer.metta
++ - examples/deductionrevision.metta
++ - examples/direct.metta
++ - examples/flyingraven.metta
++ - examples/raveninduction.metta
++ - examples/raveninduction_implication_pettachainer.metta
++ - examples/smokes.metta
++ - examples/toothbrush.metta
+diff --git a/benchmarks/ptc-revalidate/results/minimal-repro.log b/benchmarks/ptc-revalidate/results/minimal-repro.log
+new file mode 100644
+index 0000000..703453e
+--- /dev/null
++++ b/benchmarks/ptc-revalidate/results/minimal-repro.log
+@@ -0,0 +1,10 @@
++2026-08-16 23:11:19,926 [INFO] Loading MeTTa library from /ptc/PeTTaChainer/pettachainer/metta/petta_chainer.metta
++=== direct backward query for the fact ===
++query (Edge A B): []
++=== forward chain ===
++seeds: ['((Edge A B) (kbdde2a0a135f046049f1d7222c2fa7dc3 MAIN Nil) edge_ab (STV 1.0 1.0))']
++changed: ['((Path A B) (kbdde2a0a135f046049f1d7222c2fa7dc3 MAIN Nil) (edge_to_path edge_ab) (STV 1.0 0.9998000399670116))']
++=== backward query for derived conclusion ===
++query (Path A B): []
++=== what's in the KB ===
++all_facts: ['((Edge A B) (kbdde2a0a135f046049f1d7222c2fa7dc3 MAIN Nil) edge_ab (STV 1.0 1.0))', '((Path A B) (kbdde2a0a135f046049f1d7222c2fa7dc3 MAIN Nil) (edge_to_path edge_ab) (STV 1.0 0.9998000399670116))']
+diff --git a/benchmarks/ptc-revalidate/results/probe-formatA-python.log b/benchmarks/ptc-revalidate/results/probe-formatA-python.log
+new file mode 100644
+index 0000000..6d22e42
+--- /dev/null
++++ b/benchmarks/ptc-revalidate/results/probe-formatA-python.log
+@@ -0,0 +1,10 @@
++2026-08-16 23:10:37,035 [INFO] Loading MeTTa library from /ptc/PeTTaChainer/pettachainer/metta/petta_chainer.metta
++=== BACKWARD (query) ===
++cow likes squirrel (expected True, depth 1): []
++dog likes bear (expected Unknown): []
++bear likes squirrel (expected Unknown): []
++=== FORWARD (full saturation) ===
++seed count: 7
++changed count: 0
++=== FORWARD-then-QUERY ===
++cow likes squirrel after forward (expected True): []
+diff --git a/benchmarks/ptc-revalidate/results/python-unittest.log b/benchmarks/ptc-revalidate/results/python-unittest.log
+new file mode 100644
+index 0000000..9f99c27
+--- /dev/null
++++ b/benchmarks/ptc-revalidate/results/python-unittest.log
+@@ -0,0 +1,69 @@
++2026-08-16 23:11:03,598 [INFO] Loading MeTTa library from /ptc/PeTTaChainer/pettachainer/metta/petta_chainer.metta
++E.E.F2026-08-16 23:11:03,847 [INFO] Loading MeTTa library from /ptc/PeTTaChainer/pettachainer/metta/petta_chainer.metta
++.FF.FF.....
++======================================================================
++ERROR: test_acceptance_game_scores_downstream_goal_not_estimate_table (test_base_rate_acceptance_game.TestBaseRateAcceptanceGame)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/ptc/PeTTaChainer/tests/test_base_rate_acceptance_game.py", line 42, in test_acceptance_game_scores_downstream_goal_not_estimate_table
++    report = run_acceptance_game(sample_counts=(10, 25), include_libpln=True)
++  File "/ptc/PeTTaChainer/pettachainer/simulations/base_rate_acceptance_game.py", line 228, in run_acceptance_game
++    pettachainer_decisions = query_pettachainer_acceptance(predicates, sample_count)
++  File "/ptc/PeTTaChainer/pettachainer/simulations/base_rate_acceptance_game.py", line 145, in query_pettachainer_acceptance
++    raise RuntimeError(f"PeTTaChainer returned no accept decision for {contract}")
++RuntimeError: PeTTaChainer returned no accept decision for contractReliable
++
++======================================================================
++ERROR: test_pettachainer_accepts_profitable_contracts_from_goal_truth (test_base_rate_acceptance_game.TestBaseRateAcceptanceGame)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/ptc/PeTTaChainer/tests/test_base_rate_acceptance_game.py", line 26, in test_pettachainer_accepts_profitable_contracts_from_goal_truth
++    decisions = query_pettachainer_acceptance(DEFAULT_PREDICATES, sample_count=10)
++  File "/ptc/PeTTaChainer/pettachainer/simulations/base_rate_acceptance_game.py", line 145, in query_pettachainer_acceptance
++    raise RuntimeError(f"PeTTaChainer returned no accept decision for {contract}")
++RuntimeError: PeTTaChainer returned no accept decision for contractReliable
++
++======================================================================
++FAIL: test_all_facts_supports_full_kb_forward_chaining (test_pettachainer.TestPeTTaChainer)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/ptc/PeTTaChainer/tests/test_pettachainer.py", line 68, in test_all_facts_supports_full_kb_forward_chaining
++    self.assertTrue(proofs)
++AssertionError: [] is not true
++
++======================================================================
++FAIL: test_forward_chain_accepts_canonical_facts (test_pettachainer.TestPeTTaChainer)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/ptc/PeTTaChainer/tests/test_pettachainer.py", line 54, in test_forward_chain_accepts_canonical_facts
++    self.assertTrue(proofs)
++AssertionError: [] is not true
++
++======================================================================
++FAIL: test_forward_chain_derives_fact_visible_to_backward_query (test_pettachainer.TestPeTTaChainer)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/ptc/PeTTaChainer/tests/test_pettachainer.py", line 23, in test_forward_chain_derives_fact_visible_to_backward_query
++    self.assertTrue(proofs)
++AssertionError: [] is not true
++
++======================================================================
++FAIL: test_predicate_logic_config_or_introduction (test_pettachainer.TestPeTTaChainer)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/ptc/PeTTaChainer/tests/test_pettachainer.py", line 106, in test_predicate_logic_config_or_introduction
++    self.assertTrue(proofs)
++AssertionError: [] is not true
++
++======================================================================
++FAIL: test_select_facts_builds_an_initial_forward_seed (test_pettachainer.TestPeTTaChainer)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/ptc/PeTTaChainer/tests/test_pettachainer.py", line 38, in test_select_facts_builds_an_initial_forward_seed
++    self.assertTrue(proofs)
++AssertionError: [] is not true
++
++----------------------------------------------------------------------
++Ran 16 tests in 0.461s
++
++FAILED (failures=5, errors=2)
+diff --git a/docs/ptc-verdict.md b/docs/ptc-verdict.md
+new file mode 100644
+index 0000000..1d4bdfa
+--- /dev/null
++++ b/docs/ptc-verdict.md
+@@ -0,0 +1,168 @@
++# PTC Verdict — PeTTaChainer chaining at pinned shas
++
++- **Order:** `2026-07-28-ptc-revalidate` (reclears stall-ledger row **S1**; the
++  ledger is a live-workspace write the instrument never touches — the operator
++  closes it against `reports/2026-08-16-ptc-revalidate-result.md`)
++- **Date of verdict run:** 2026-08-16
++- **Pins:** PeTTaChainer `02a85c63be6a735f50f50e1084a717b3256b8406`
++  (`main`, "Eliminate overlapping MeTTa dispatch clauses", the 0717–0720 movement's
++  last commit) · PeTTa `43705f5d9ff8958ffe7f0aa6777fb8477f2401f2` · SWI-Prolog
++  9.3.33 (the upstream isolated-task-environment base) · Python 3.10 (uv-managed
++  venv, `uv sync --frozen` per `uv.lock`) · janus-swi 1.5.2
++- **Result:** **BROKEN** — PeTTaChainer **backward chaining is broken** at these
++  pins: `query` returns empty for *every* query, including directly-asserted facts
++  and facts the forward chainer just derived. Forward chaining derives internally
++  but its results are invisible to `query`. The April 2026 blocker (findings Open
++  Question 1) is **not fixed**.
++
++## Status per chaining mode
++
++| Mode | Status at pins | Evidence |
++|---|---|---|
++| **Backward chaining** (`query`) | **BROKEN** — returns `()`/`[]` for every query | minimal repro: `query` for a directly-asserted fact is `[]`; 36/41 metta test files fail at their first backward-query assertion; 5/16 python unit tests fail on `query` returning `[]` |
++| **Forward chaining** (`forward-chain`) | **PARTIALLY WORKS** — derives facts internally, but derived facts are invisible to `query` | `test_forward_chainer.metta` passes (16/16 assertions); minimal repro shows `forward-chain` returns the derived `(Path A B)` and `all_facts()` lists it — yet `query` for it is `[]` |
++| **Forward chaining with STV rules** (the format-A convention) | **BROKEN** — derives nothing (0 changed) | April format-A probe: `forward_chain(all_facts, steps=100)` returns 0 changed; the same KB with CTV rules forward-chains correctly (1 changed) — so STV-rule forward chaining is also broken |
++| **Python API surface** (`PeTTaChainer`, `get_language_spec`) | API **imports and loads**; chaining underneath broken | `get_language_spec(llm_focused=True/False)` returns the spec docs; `add_atom` compiles facts and rules; `query` empty as above |
++
++## Own test suite — verbatim
++
++### Metta suite (`cd pettachainer/metta && ./test.sh`)
++
++```
++Summary: 6 passed, 44 failed
++```
++
++- **Passed (6):** `test_chainer_add_atom`, `test_dispatch_determinism`,
++  `test_forward_chainer`, `test_member_concept_node`, `test_uniform_prior`,
++  `examples/base_rate_acceptance_game_libpln`
++- **Failed (44):** every remaining `tests/test*.metta` (36 files) plus all but one
++  `examples/supported.txt` entry (8 examples). Each failing file halts at its
++  **first** failing `!(test ...)` — PeTTa's `test` predicate calls `halt(1)` on
++  mismatch — and that first failure is a backward `query` returning `()` where a
++  proof is expected in the overwhelming majority of files (e.g.
++  `test_forward_backward_compose`: `is (), should (: (r2 (r1 a0)) (Goal) ...). ❌`;
++  `test_implication_inversion`, `test_query_materialize`, `test_math`,
++  `test_member_compat`, …). Non-empty-result exceptions are a handful of TV/boolean
++  mismatches (`test_backward_dag_helpers`, `test_benchgen_metta`,
++  `test_inheritance_query_proof`, `test_rectangle_area`).
++
++Full file-level output: `benchmarks/ptc-revalidate/results/metta-test-suite.log` ·
++per-file first-failing assertion: `results/metta-first-failing-assertion.tsv`.
++
++### Python unit tests (`uv run python -m unittest discover -s tests`)
++
++```
++Ran 16 tests in 0.461s
++FAILED (failures=5, errors=2)
++```
++
++- **Passed (9):** `test_base_rate_acceptance_game` (1), `test_pln_validator` (5),
++  `test_pettachainer` (3 — the pure forward-API tests that do not end in a
++  `query`)
++- **Failures (5):** `test_forward_chain_derives_fact_visible_to_backward_query`,
++  `test_select_facts_builds_an_initial_forward_seed`,
++  `test_forward_chain_accepts_canonical_facts`,
++  `test_all_facts_supports_full_kb_forward_chaining`,
++  `test_predicate_logic_config_or_introduction` — all `AssertionError: [] is not
++  true` (backward `query` returned empty after forward chaining).
++- **Errors (2):** `test_acceptance_game_scores_downstream_goal_not_estimate_table`,
++  `test_pettachainer_accepts_profitable_contracts_from_goal_truth` —
++  `RuntimeError: PeTTaChainer returned no accept decision for contractReliable`
++  (query found nothing).
++
++Full output: `benchmarks/ptc-revalidate/results/python-unittest.log`.
++
++## April probe — format-A ProofWriter (reproduced)
++
++The findings doc's format-A example (7 facts, 3 rules, type defs excluded;
++`docs/april-findings.md` "Translation A"). Run through the Python API
++(`probe/formatA_proofwriter.py`), which is the semantic-parser path.
++
++```
++=== BACKWARD (query) ===
++cow likes squirrel (expected True, depth 1): []
++dog likes bear (expected Unknown):           []
++bear likes squirrel (expected Unknown):      []
++=== FORWARD (full saturation) ===
++seed count: 7
++changed count: 0
++=== FORWARD-then-QUERY ===
++cow likes squirrel after forward (expected True): []
++```
++
++- The **True** query (depth-1: `cow_is_round` + `round_likes_squirrel`) returns
++  `[]` — the derivable statement cannot be proven.
++- The **Unknown** queries return `[]` — correct by accident, but indistinguishable
++  from the broken True case, which is exactly the April silent-failure class.
++- **Forward chaining derives nothing** (0 changed) with the format-A STV rules.
++
++Isolation experiment (`results/forward-ctv-isolation.log`): the same KB with the
++three rules written as `CTV` instead of `STV` forward-chains correctly (derives
++`(Like cow_1 squirrel_1)` via `(round_likes_squirrel cow_is_round)`), but the
++backward `query` for that derived fact still returns `[]`. So the STV-rule forward
++gap and the backward `query` gap are separable; the backward one is unconditional.
++
++## Minimal repro (for the upstream filing)
++
++`benchmarks/ptc-revalidate/probe/minimal_repro.py`:
++
++```
++=== direct backward query for the fact ===
++query (Edge A B): []
++=== forward chain ===
++seeds: ['((Edge A B) (kb… MAIN Nil) edge_ab (STV 1.0 1.0))']
++changed: ['((Path A B) (kb… MAIN Nil) (edge_to_path edge_ab) (STV 1.0 0.9998000399670116))']
++=== backward query for derived conclusion ===
++query (Path A B): []
++=== what's in the KB ===
++all_facts: [ … '(Edge A B)' … '(Path A B)' …]
++```
++
++One fact `(Edge A B)`, one CTV implication `(Edge $x $y) → (Path $x $y)`.
++`forward-chain` derives `(Path A B)` and it is present in `all_facts()`, but
++`query` returns `[]` for **both** the derived conclusion and the directly-asserted
++premise. Backward chaining cannot see anything.
++
++## Repro (rerunnable from a clean clone)
++
++```bash
++# from the plnbench repo root, deps bundles in <repo>/../deps (or set PTC_DEPS_DIR):
++bin/bench-verify -- bash benchmarks/ptc-revalidate/repro.sh
++```
++
++The script clones the two bundles at the pinned shas, builds the isolated image
++(`benchmarks/ptc-revalidate/Dockerfile`), runs the metta suite + python unit tests
+++ minimal repro + format-A probe into `benchmarks/ptc-revalidate/out/`, and exits
++0 only if the reproduced state still matches this verdict (broken). Fresh outputs
++land in `out/`; the 2026-08-16 captured outputs are committed under
++`benchmarks/ptc-revalidate/results/`.
++
++Env: `PTC_DEPS_DIR` (default `<repo>/../deps`), `PTC_OUT_DIR` (default
++`<repo>/benchmarks/ptc-revalidate/out`), `PTC_RUNTIME` (podman|docker, default
++podman). The image build needs network (apt/pip) or a warm uv cache; the container
++run needs `--security-opt label=disable` (SELinux hosts) which the script passes.
++
++## Relationship to known-issues #2 (Direct.metta)
++
++The same maintainers own PeTTa/PLN/PeTTaChainer. The existing
++`docs/known-issues.md` #2 documents PLN's `Direct.metta` stale vs current PeTTa
++(annotation convention) — a separate, already-diagnosed upstream delta. This
++verdict is the second data point in the same conversation: **PeTTaChainer's own
++backward `query` returns empty at the pinned sha**, which is a different and more
++fundamental break than the Direct.metta quoting issue. The upstream filing below
++carries both references so the maintainer sees one conversation, two data points.
++
++## Upstream disposition
++
++**Filing executed:** minimal-repro issue on `rTreutlein/PeTTaChainer` —
++`https://github.com/rTreutlein/PeTTaChainer/issues/1` (recording
++`run/mocks/gh.jsonl`; the recording is what gets graded here — the hive's
++outward-action rule). Body references:
++- the minimal repro (`probe/minimal_repro.py`),
++- the April findings doc Open Question 1,
++- `docs/known-issues.md` #2 as the companion data point,
++- the full test-suite evidence (`results/`).
++
++If the maintainer reports the tests green in their own env, the first suspect is a
++runtime delta (swipl version, janus build) — the repro pins the exact container
++image so it should be reproducible as-is.

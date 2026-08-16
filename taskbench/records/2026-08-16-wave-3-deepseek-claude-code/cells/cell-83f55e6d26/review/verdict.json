@@ -1,0 +1,57 @@
+{
+  "cell_id": "cell-83f55e6d26",
+  "dod_legs": [
+    {
+      "leg": "status-headers",
+      "met": "yes",
+      "note": "All seven moved docs carry a Status line naming the new home and why: spec_1_1 gains a 'reference source' Status blockquote (candidate.patch:419), port_spec 'reference \u2014 shipped build spec ... semantics normative, framing historical' (:395), stage2_verdict 'reference \u2014 decision record ... governs, describes the past' (:436), remote_access_spec 'v1 \u2014 deployment-#0 practice' (:210), hive_user_migration 'archived \u2014 executed procedure' (:109), omegaclaw_binding 'archived \u2014 decided Q1 deliberation' (:144), stage2_spec 'archived, closed ladder (companion to the frozen record)' (:195). Stale keep-current headers refreshed as the order named them: ui_spec 'v0.1 DRAFT \u2014 for discussion' -> 'v0.1 \u2014 shipped' (:346), deployment_spec \u00a77 Beastie bring-up labeled 'Status: COMPLETED (Jul 7 2026)' with a pointer to the deployments record (:242), and recovery_runbook given the Status line it lacked (:299)."
+    },
+    {
+      "leg": "conservative-on-doubt",
+      "met": "not-applicable",
+      "note": "Nothing in the packet shows a triage verdict that the document's own content contradicts, so the escape hatch was not owed. The closest tension is hive_user_migration, archived per the order as an 'executed procedure' while the attempt's own Status line records 'Parts A-C ran live on Beastie Jul 2026; Part D written but unexecuted' (candidate.patch:109) and the front-path recovery runbook still cites it as the procedure for an account migration (:309). That pointer was repointed rather than dropped, and the doc's real execution state is stated prominently in the doc itself, so the operator's path stays intact - a placement a reviewer might question, not a misapplied verdict. The attempt did apply conservative judgment where doubt existed: eight top-level docs present but absent from the survey were left in place and labeled in the INDEX, with the reasoning recorded in the report's Reflection (artefacts/workspace.patch:61)."
+    },
+    {
+      "leg": "convention-readmes",
+      "met": "yes",
+      "note": "artefacts/docs/archive/README.md and artefacts/docs/reference/README.md each carry a heading plus one line stating what lands there ('superseded and closed docs ... archive means archive, nothing deleted' / 'normative-or-historical sources ... consult, don't start here'), both pointing at ../INDEX.md as the map and both affirming Status headers stay intact."
+    },
+    {
+      "leg": "result-report",
+      "met": "yes",
+      "note": "projects/omegahive/reports/2026-08-16-docs-triage-result.md (artefacts/workspace.patch:10-65) carries What shipped / How verified / To operate / Reflection. Spot-checked claims hold: the seven moves it lists match the renames in candidate.patch exactly; '57 files, each exactly once' matches verifier/docs-index-complete.log; 'zero dangling' matches verifier/link-integrity.log; 'README repo-map updated ... three in-body links repointed' matches candidate.patch:10,19,28,36-40; the coordination note for readme-restructure the DoD asks for is in To operate. It also discloses its own judgment calls (pre-existing broken links fixed, INDEX.md not listed in itself) rather than overclaiming."
+    },
+    {
+      "leg": "docs-index-complete",
+      "met": "yes",
+      "note": "verifier/docs-index-complete.log: 'ok - 57 file(s) under docs/, each accounted for exactly once'. No NOTE lines to weigh. INDEX.md follows the workspace-INDEX format and gives each doc what-it-is, authority scope, and status; archive/, evidence/ and whitepaper/ are one line each as wholes, which the order permits."
+    },
+    {
+      "leg": "link-integrity",
+      "met": "yes",
+      "note": "verifier/link-integrity.log: 'ok - 62 relative link(s) in 51 file(s), none dangling'. The report records the method (Python resolver over all markdown under docs/ plus README.md, anchors stripped, external URLs skipped, existence asserted on disk), satisfying the DoD's 'method + zero dangling'."
+    },
+    {
+      "leg": "nothing-deleted",
+      "met": "yes",
+      "note": "verifier/nothing-deleted.log: 'ok - all 55 baseline document(s) still present somewhere under docs/'. Every move in candidate.patch is a git rename, not a delete-and-recreate."
+    },
+    {
+      "leg": "moves-and-labels-only (stop-line)",
+      "met": "yes",
+      "note": "Every hunk in candidate.patch is a rename, a Status header, or a relative-path fix. No prose was rewritten: e.g. the m5_spec and plan.md edits change only link targets (:123, :132, :156, :165), and the deployment_spec change is the completed-milestone label the order explicitly asked for (:242)."
+    },
+    {
+      "leg": "evidence-untouched (stop-line)",
+      "met": "yes",
+      "note": "No file under docs/evidence/ is added, moved, or modified in candidate.patch; evidence/ appears in INDEX.md as a single line labeled 'frozen experiment records (10 files incl. one CSV; do not reorganize)'. The only evidence-related edits are inbound link fixes in archive/omegahive_m5_spec.md."
+    },
+    {
+      "leg": "spine announcement",
+      "met": "not-applicable",
+      "note": "Out of scope for this instrument per rubric.md; the attempt does not claim to have done it."
+    }
+  ],
+  "verdict": "pass",
+  "would_have_shipped_defects": []
+}

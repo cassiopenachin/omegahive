@@ -1,0 +1,62 @@
+{
+  "cell_id": "cell-e92df96ecb",
+  "dod_legs": [
+    {
+      "leg": "repro-evidence",
+      "met": "yes",
+      "note": "The report names the 2026-07-27 collision ('create window failed: index 4 in use') and the state it strands (task owned on the board, clones+wrapper in place, no window, kickoff undelivered), and shows the after-state verified directly in-cell: `new-window -a` allocation against occupied indices / active-window-in-the-middle / renumber-windows off, plus the mock-tmux pane failure rendering the full recovery print. It states plainly that the pre-fix failure itself was NOT reproducible on this tmux (3.5a) because the old session-only form allocates the next free index here \u2014 the exact fallback the order's named risk authorises ('the report says what was asserted instead of faking coverage'), and the reproduce-in-the-drill-sandbox path needs the live stack + tmux server this instrument is barred from. Independently confirmed here: tmux 3.5a `new-window -a -t <session>` inserts after the active window and shifts the rest (indices 0-4 occupied, active w2 -> new window lands at 3, nothing clobbered), so the shipped mechanism is correct, and the plain form also succeeds on 3.5a, matching the report's non-reproduction claim."
+    },
+    {
+      "leg": "runbook-half-launch",
+      "met": "yes",
+      "note": "artefacts/workspace.patch:12-39 adds a 'Half-launch (window never created)' subsection to dead-worker recovery: how to recognise it (board seeded, task owned, no worker window, kickoff never delivered), that clones/wrapper/board are already in place so nothing is re-provisioned and no further emits are needed, the exact append-semantics command to finish by hand, and an explicit contrast with the dead-pane (`task.reassigned`) path \u2014 which was the ambiguity that made the original recovery archaeological. Re-running the launcher is additionally refused by the pre-existing assigned/in-flight guard (hive-launch:121-122)."
+    },
+    {
+      "leg": "name-collision-refusal",
+      "met": "yes",
+      "note": "hive-launch:135-141 keeps the name guard ahead of any provisioning or board write and now names the recovery path: 'the pane is the registry; if the old worker is dead, kill the pane and recover via task.reassigned (RUNBOOK) \u2014 never a second window for the same task'. It dies rather than creating a window."
+    },
+    {
+      "leg": "result-report",
+      "met": "yes",
+      "note": "projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md (artefacts/workspace.patch:44-172) carries What shipped / How verified / To operate / Reflection. Spot-checked claims hold against the diff: the `-a` change and guarded failure path (candidate.patch:86-96), the widened name-collision message (candidate.patch:15), the promised 'four PASSes' and 'eight PASSes' match the 4 and 8 new `check` calls (hive-tooling-drill.sh:354-357, 397-404), and the ordering choice (seed-before-pane retained, with rationale) is stated in To operate as scope item 3 requires. The report is explicit about what it did not run (the loop drill) and did not reproduce."
+    },
+    {
+      "leg": "bash-syntax",
+      "met": "yes",
+      "note": "verifier/bash-syntax.log is empty \u2014 no parse errors reported."
+    },
+    {
+      "leg": "shellcheck",
+      "met": "yes",
+      "note": "verifier/shellcheck.log is empty \u2014 clean on the loop scripts. The one drill construct that would otherwise trip SC2034 (HALF_RC consumed inside an eval'd check string) carries a scoped disable at hive-tooling-drill.sh:186 of the patch."
+    },
+    {
+      "leg": "no-event-model",
+      "met": "yes",
+      "note": "Not crossed. The diff touches only the tmux pane step, the name-collision message, and a new recovery-print function; emit calls, board guards and the adopt branch (hive-launch:96-130, 192-210) are untouched."
+    },
+    {
+      "leg": "no-registry-file",
+      "met": "yes",
+      "note": "Not crossed. The window name remains the sole registry (hive-launch:138-139). The half-launch path writes ~/work/<worker>/kickoff.txt, which is the filled kickoff text for a manual finish inside the worker's own work dir \u2014 it records no task-to-window mapping and is never read back by the tooling."
+    },
+    {
+      "leg": "no-tmux-conf-assumptions",
+      "met": "yes",
+      "note": "Not crossed. Allocation passes only session + window name and lets tmux choose the index via `-a`; no base-index or renumber-windows assumption. The drill's occupied-index fixture also selects windows by name (`select-window -t \"$OCC_SESSION:op3\"`) and asserts window names, not indices (hive-tooling-drill.sh:351-356)."
+    },
+    {
+      "leg": "drill-green-including-new-cases",
+      "met": "not-applicable",
+      "note": "Declared out of scope for this instrument by the rubric; the attempt does not claim to have run it and says so explicitly in How verified."
+    },
+    {
+      "leg": "announce-on-spine",
+      "met": "not-applicable",
+      "note": "Declared out of scope for this instrument; the report itself is written and graded."
+    }
+  ],
+  "verdict": "pass",
+  "would_have_shipped_defects": []
+}
