@@ -807,6 +807,26 @@ def aggregate_cmd(
     root = Path(path)
     c = _corpus(corpus)
     config = json.loads((root / "config.json").read_text())
+    # A gateway arm's strongest identity evidence is the receipts, and they do not exist yet
+    # when the batch writes its own aggregate — reconciliation runs after the last cell. So a
+    # re-render is where the headline can stop quoting the harness and start quoting the
+    # gateway. Injected rather than written into config.json: the config is the record's pins,
+    # not a scratchpad.
+    # The render-only keys live in the cells, not in config.json. Without this the re-render
+    # drops the first-shot column, the after-one-repair column and the spend table.
+    config = record.rehydrate_config_from_cells(root, config)
+
+    totals_file = root / "gateway-totals.json"
+    if totals_file.is_file():
+        try:
+            gw = json.loads(totals_file.read_text())
+        except json.JSONDecodeError:
+            gw = {}
+        if gw.get("resolved_models"):
+            config["gateway_resolved"] = {
+                "models": gw.get("resolved_models") or [],
+                "upstreams": gw.get("resolved_upstreams") or [],
+            }
     verdicts = []
     for cell in sorted((root / "cells").iterdir()):
         if not cell.is_dir():

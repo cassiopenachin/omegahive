@@ -1,8 +1,8 @@
 # Task-replay aggregate — wave-4-muse-claude-code (2026-08-16)
 
-Corpus `v0.1` (`sha256:6bdbb73352bc…`) · candidate **meta/meta/muse-spark-1.2@preset/omegahive-muse-spark-1-2** on `claude-code-2.1.233` · reviewer **opus**.
+Corpus `v0.1` (`sha256:6bdbb73352bc…`) · candidate **meta/muse-spark-1.2-20260805** on `claude-code-2.1.233` · reviewer **opus**.
 
-Requested as `--model meta/muse-spark-1.2@preset/omegahive-muse-spark-1-2`; the identifier above is what each run's own report said it resolved to. An alias is a request, not an identity.
+Requested as `--model meta/muse-spark-1.2@preset/omegahive-muse-spark-1-2`. The identifier above is from the gateway's own per-generation receipts served by Meta — not the harness's account of itself, and not the alias.
 
 **4/5 task-level verdicts green.**
 

@@ -2,7 +2,7 @@
 
 Corpus `v0.1` (`sha256:6bdbb73352bc…`) · candidate **anthropic/claude-haiku-4-5** on `claude-code-2.1.233` · reviewer **opus**.
 
-Requested as `--model claude-haiku-4-5`; the identifier above is what each run's own report said it resolved to. An alias is a request, not an identity.
+Requested as `--model claude-haiku-4-5`; the identifier above is what each run's own report said it resolved to. An alias is a request, not an identity. **Here the harness reported back exactly the alias it was given**, so this line is evidence that the launch was configured as intended and NOT evidence of which model served the calls. No gateway receipts accompany this record to settle it.
 
 **1/5 task-level verdicts green.**
 

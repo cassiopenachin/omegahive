@@ -2,7 +2,7 @@
 
 Corpus `v0.1` (`sha256:6bdbb73352bc…`) · candidate **openai/gpt-5.6-luna** on `codex-cli-0.147.0` · reviewer **opus**.
 
-Requested as `--model gpt-5.6-luna`; the identifier above is what each run's own report said it resolved to. An alias is a request, not an identity.
+Requested as `--model gpt-5.6-luna`; the identifier above is what each run's own report said it resolved to. An alias is a request, not an identity. **Here the harness reported back exactly the alias it was given**, so this line is evidence that the launch was configured as intended and NOT evidence of which model served the calls. No gateway receipts accompany this record to settle it.
 
 **2/5 task-level verdicts green.**
 
