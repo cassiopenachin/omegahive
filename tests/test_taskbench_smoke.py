@@ -182,3 +182,39 @@ def test_the_smoke_never_reads_a_real_repository(tmp_path):
     got = run_smoke("solver", agent(SOLVES), root=tmp_path, timeout_s=60)
     assert Path(got.argv[0]).name in ("python3", "harness")
     assert (tmp_path / "fixture").is_dir(), "everything happens under the disposable root"
+
+
+def test_the_smoke_gives_the_child_only_what_the_runner_would(tmp_path):
+    """It used to inherit the operator's whole shell, so it was not proving THE BUNDLE — and it
+    leaked ANTHROPIC_API_KEY into a subscription arm that must not see one, visible in the first
+    live smoke as Claude Code reporting an API key taking precedence over the claude.ai login."""
+    import os
+
+    os.environ["A_STRAY_OPERATOR_VARIABLE"] = "should-not-reach-the-child"
+    try:
+        got = run_smoke(
+            "envcheck",
+            ["python3", "-c",
+             "import os,pathlib;"
+             "pathlib.Path('answer.py').write_text('LEAKED=' + "
+             "repr('A_STRAY_OPERATOR_VARIABLE' in os.environ))"],
+            root=tmp_path, env={"DELIBERATE": "yes"}, timeout_s=60,
+        )
+        assert got.read_and_edited
+        assert "LEAKED=False" in (tmp_path / "fixture" / "answer.py").read_text()
+    finally:
+        os.environ.pop("A_STRAY_OPERATOR_VARIABLE", None)
+
+
+def test_the_smoke_still_supplies_path_and_a_home(tmp_path):
+    """Mirroring `run_cell`: PATH defaults from the parent, HOME falls back to the cell root."""
+    got = run_smoke(
+        "envcheck",
+        ["python3", "-c",
+         "import os,pathlib;"
+         "pathlib.Path('answer.py').write_text('OK=' + repr(bool(os.environ.get('PATH')) "
+         "and bool(os.environ.get('HOME'))))"],
+        root=tmp_path, timeout_s=60,
+    )
+    assert "OK=True" in (tmp_path / "fixture" / "answer.py").read_text()
+    assert got.read_and_edited

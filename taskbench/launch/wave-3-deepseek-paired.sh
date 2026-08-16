@@ -130,7 +130,7 @@ write_config() {
       # OpenRouter at all — a cell that would run a different model from the one it records.
       printf '  argv: ["%s", "--model", "%s", "--print", "--output-format", "json",\n' \
              "$CELL_CLAUDE" "$MODEL"
-      printf '         "--permission-mode", "auto"]\n' 
+      emit_claude_tool_grant 
       printf '  labels: {vendor: "%s", model: "%s", harness: "%s"}\n' \
              "$VENDOR" "$MODEL" "$CC_HARNESS"
       printf '  result_envelope: claude-code-json\n'
@@ -159,6 +159,12 @@ declare -A ARM_BASE=(
 run_arm_task() {
   local arm="$1" upto="$2"
   local base="${ARM_BASE[$arm]}" prev="${ARM_RECORD[$arm]}"
+  # On a continuation run this arm has no in-memory record yet, so pick up its own chain.
+  if [ "$prev" = "-" ]; then
+    local _rf _rc
+    read -r _rf _rc <<<"$(resume_target "$REPO_ROOT" "$base" "$RECORDS_DIR")"
+    [ "$_rf" != "-" ] && prev="$_rf"
+  fi
   local rid supersedes arm_work config
 
   read -r rid supersedes <<<"$(reserve_record "$REPO_ROOT" "$base" "$RECORDS_DIR")"
@@ -219,6 +225,20 @@ say "The precommitted cheapest/high-signal task runs first for BOTH arms. When t
 say "finishes, STOP AND LOOK before the other four. It is a pause point, never permission to"
 say "score a partial bundle as adequate."
 
+# The pause leg is the one where neither arm has a conclusive cell yet — the same rule as the
+# single-harness waves, with a PAIR as the unit rather than a cell, because pausing after one
+# arm would leave nothing to compare it against.
+PAUSING=yes
+for arm in reasonix claude-code; do
+  read -r _rf _rc <<<"$(resume_target "$REPO_ROOT" "${ARM_BASE[$arm]}" "$RECORDS_DIR")"
+  [ "$_rc" != "0" ] && PAUSING=no
+done
+readonly PAUSING
+if [ "$PAUSING" = yes ]; then
+  say ""
+  say "FIRST RUN: this does ONE matched pair and stops. Re-run to continue."
+fi
+
 cumulative=""
 overall=0
 for i in "${!TASK_ORDER[@]}"; do
@@ -231,11 +251,25 @@ for i in "${!TASK_ORDER[@]}"; do
   run_arm_task "$lead" "$cumulative"   || overall=$?
   run_arm_task "$follow" "$cumulative" || overall=$?
 
-  if [ "$i" -eq 0 ]; then
+  if [ "$i" -eq 0 ] && [ "$PAUSING" = yes ]; then
+    step "PAUSE POINT — one pair done, four pairs not started"
+    say "Both arms have completed ${TASK_ORDER[0]}. This is where the order asks you to stop;"
+    say "eight of the ten cells have not been spent."
     say ""
-    say "=== PAUSE POINT ==="
-    say "Both arms have completed ${TASK_ORDER[0]}. Read both records before continuing."
-    say "Continuing now runs the remaining four pairs."
+    say "  cd $REPO_ROOT"
+    say "  cat ${ARM_RECORD[reasonix]}/aggregate.md"
+    say "  cat ${ARM_RECORD[claude-code]}/aggregate.md"
+    say "  uv run --frozen taskbench gateway-totals ${ARM_RECORD[reasonix]}"
+    say "  uv run --frozen taskbench gateway-totals ${ARM_RECORD[claude-code]}"
+    say ""
+    say "The one thing to check before spending the other eight cells: BOTH arms resolved the"
+    say "same upstream. If they did not, the pair is not answering its question and every"
+    say "further cell is wasted — its two columns would differ in the model's silicon as well"
+    say "as in the harness."
+    say ""
+    say "To run the remaining four pairs, run this same command again. Completed cells are"
+    say "carried forward verbatim, not re-run."
+    exit 0
   fi
 done
 

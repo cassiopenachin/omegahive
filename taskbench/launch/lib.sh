@@ -68,6 +68,32 @@ resolver_bind() {
   fi
 }
 
+# The tool grant every Claude Code invocation in this study uses, and the reason it is not
+# `--permission-mode auto`.
+#
+# On Claude Code 2.1.231 — the build that produced the incumbent record — `auto` let a cell
+# read, edit and run: all five incumbent cells invoked bin/bench-verify and four had zero
+# permission denials. On 2.1.233 the SAME FLAG DENIES EDITS OUTRIGHT. A probe on the current
+# build read the fixture, worked out the correct answer, and was refused permission to write it,
+# twice, ending with "I need your permission to edit answer.py". `dontAsk` behaves the same way;
+# `acceptEdits` alone permits the edit but still denies Bash, so the candidate cannot run a
+# single verifier.
+#
+# A candidate that cannot write files is not a weaker candidate — it is a broken measurement.
+# The flag string is not the configuration; the effective capability is. Granting the tools
+# explicitly and accepting edits reproduces the incumbent's conditions with ZERO denials on the
+# current build, verified by running it rather than by reading release notes.
+#
+# ORDERING CONSTRAINT: `--allowedTools` is variadic. It must never be the last flag before the
+# kickoff the runner appends, or it swallows the prompt — observed as "Input must be provided
+# either through stdin or as a prompt argument when using --print". `--permission-mode` follows
+# it here for exactly that reason.
+emit_claude_tool_grant() {
+  printf '         "--allowedTools", "Bash", "Edit", "Write", "Read", "Glob", "Grep",\n'
+  printf '         "NotebookEdit", "TodoWrite", "MultiEdit",\n'
+  printf '         "--permission-mode", "acceptEdits"]\n'
+}
+
 # The reviewer is IDENTICAL across every bundle and identical to the incumbent's: one pinned
 # strong-model configuration, blinded, on the operator's Anthropic subscription. It never
 # reaches OpenRouter, never learns candidate identity, and is emitted by this one function so
@@ -79,7 +105,7 @@ emit_reviewer_block() {
   resolver="$(resolver_bind)"
   printf 'reviewer:\n'
   printf '  argv: ["%s", "--model", "opus", "--print", "--output-format", "json",\n' "$claude_bin"
-  printf '         "--permission-mode", "auto"]\n'
+  emit_claude_tool_grant
   printf '  labels: {vendor: "anthropic", model: "opus", harness: "%s"}\n' "$(claude_harness_version)"
   printf '  result_envelope: claude-code-json\n'
   printf '  env_passthrough: ["LANG", "TERM"]\n'

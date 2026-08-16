@@ -121,6 +121,20 @@ fi
 
 install_interrupt_trap "$RECORDS_DIR" "$RECORD_ID" "$WORK_ROOT"
 
+# THE PAUSE POINT, ENFORCED. The order makes the first task's completion an operator pause
+# point before the other four; printing that and then running all five made it advice, which is
+# not what a pause point is. So the first run does ONE cell and stops. Re-running the same
+# command carries it forward verbatim and runs the rest — the resume machinery already does
+# exactly this, so the pause costs no re-spend.
+if [ "$RESUME_COUNT" = "0" ] || [ "$RESUME_FROM" = "-" ]; then
+  TASKS="$FIRST_TASK"
+  PAUSING=yes
+else
+  TASKS="$FIRST_TASK,instrument-teeth,launch-pane-fix,ptc-revalidate,run-registration"
+  PAUSING=no
+fi
+readonly TASKS PAUSING
+
 step "The pause point: $FIRST_TASK first"
 say "Same fixed order as every other bundle. Stop and look when it finishes."
 
@@ -130,7 +144,7 @@ set +e
   args=(
     --config "$CONFIG" --record-id "$RECORD_ID" --work-root "$WORK_ROOT"
     --out "$RECORDS_DIR" --expect-corpus-hash "$EXPECT_CORPUS_HASH"
-    --tasks "$FIRST_TASK,instrument-teeth,launch-pane-fix,ptc-revalidate,run-registration"
+    --tasks "$TASKS"
   )
   [ "$SUPERSEDES" != "-" ] && args+=(--supersedes "$SUPERSEDES")
   [ "$RESUME_FROM" != "-" ] && args+=(--resume-from "$RESUME_FROM")
@@ -138,6 +152,24 @@ set +e
 )
 status=$?
 set -e
+
+RECORD_DIR="$RECORDS_DIR/$(date +%F)-$RECORD_ID"
+readonly RECORD_DIR
+if [ "$PAUSING" = yes ] && [ "$status" -eq 0 ]; then
+  step "PAUSE POINT — one cell done, four not started"
+  say "This is where the order asks you to stop and look. Nothing else has been spent."
+  say ""
+  say "  cd $REPO_ROOT"
+  say "  cat $RECORD_DIR/aggregate.md"
+  say "  cat $RECORD_DIR/cells/*/verdict.json"
+  say ""
+  say "Read the deterministic legs against the blinded review. If they disagree with each"
+  say "other, the instrument is telling you something before three more bundles are spent."
+  say ""
+  say "To run the remaining four, run this same command again. The completed cell is carried"
+  say "forward verbatim, not re-run — a cell that produced a verdict is never re-rolled."
+  exit 0
+fi
 
 report_status "$status" "$RECORDS_DIR/$(date +%F)-$RECORD_ID" "$WORK_ROOT" "$REPO_ROOT"
 exit "$status"

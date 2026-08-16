@@ -377,3 +377,84 @@ def test_every_launcher_stops_the_harness_updating_under_it(name):
     only claim that pair makes."""
     body = code(name) if name == "qualify-setup.sh" else code(name) + code("lib.sh")
     assert "DISABLE_AUTOUPDATER=1" in body, f"{name} must disable the auto-updater"
+
+
+# --- the pause point, enforced rather than printed --------------------------------------------
+
+
+@pytest.mark.parametrize("name", WAVES)
+def test_the_pause_point_actually_stops(name):
+    """It used to print 'STOP AND LOOK' and then run all five cells in one invocation, which
+    makes it advice. The order says the first task's COMPLETION IS an operator pause point."""
+    body = code(name)
+    assert "PAUSING" in body, f"{name} must decide whether this invocation is the pause leg"
+    assert "exit 0" in body, f"{name} must actually stop at the pause point"
+    assert "run this same command again" in body, (
+        "the operator must be told how to continue, since resume is what makes the pause free"
+    )
+
+
+@pytest.mark.parametrize("name", ["wave-1-haiku-claude-code.sh", "wave-2-luna-codex.sh",
+                                  "wave-4-muse-claude-code.sh"])
+def test_the_first_leg_runs_only_the_pause_point_task(name):
+    body = code(name)
+    assert 'TASKS="$FIRST_TASK"' in body, "the pause leg runs one cell, not five"
+    assert '--tasks "$TASKS"' in body
+    # The full list must still exist, for the continuation run.
+    assert "instrument-teeth,launch-pane-fix,ptc-revalidate,run-registration" in body
+
+
+def test_the_paired_wave_pauses_after_one_matched_pair_not_one_cell():
+    """A pair is the unit there: pausing after a single arm would leave nothing to compare."""
+    body = code("wave-3-deepseek-paired.sh")
+    assert 'if [ "$i" -eq 0 ] && [ "$PAUSING" = yes ]' in body
+    assert "one pair done, four pairs not started" in body
+    assert "same upstream" in body, (
+        "the pause must name the one check worth making before spending the other eight cells"
+    )
+
+
+def test_the_paired_wave_picks_up_each_arm_s_own_chain_on_a_continuation_run():
+    """Its arms accumulate separate records; a continuation starts with no in-memory state."""
+    body = code("wave-3-deepseek-paired.sh")
+    assert 'if [ "$prev" = "-" ]; then' in body
+    assert "resume_target" in body
+
+
+# --- the permission mode, which the harness redefined under us --------------------------------
+
+
+@pytest.mark.parametrize("name", ["wave-1-haiku-claude-code.sh", "wave-3-deepseek-paired.sh",
+                                  "wave-4-muse-claude-code.sh", "lib.sh"])
+def test_no_claude_invocation_uses_the_auto_permission_mode(name):
+    """On 2.1.231 `auto` let a cell read, edit and run — every incumbent cell invoked
+    bin/bench-verify. On 2.1.233 it denies edits outright, so a candidate cannot write a single
+    file. A candidate that cannot write is not a weaker candidate, it is a broken measurement."""
+    assert '"--permission-mode", "auto"' not in code(name)
+
+
+@pytest.mark.parametrize("name", ["wave-1-haiku-claude-code.sh", "wave-3-deepseek-paired.sh",
+                                  "wave-4-muse-claude-code.sh"])
+def test_every_claude_arm_uses_the_shared_tool_grant(name):
+    """One helper, so four launchers and the reviewer cannot drift into different capabilities —
+    which would be a confound sitting directly on top of the thing being measured."""
+    assert "emit_claude_tool_grant" in code(name)
+
+
+def test_the_tool_grant_permits_editing_and_running():
+    grant = code("lib.sh").split("emit_claude_tool_grant()")[1].split("}")[0]
+    for tool in ("Bash", "Edit", "Write", "Read"):
+        assert f'"{tool}"' in grant, f"{tool} must be granted or the cell cannot work"
+    assert '"acceptEdits"' in grant
+
+
+def test_the_variadic_flag_is_never_last_before_the_kickoff():
+    """`--allowedTools` is variadic and the runner appends the kickoff as the final argv element.
+    Put it last and it swallows the prompt: 'Input must be provided either through stdin or as a
+    prompt argument when using --print'. `--permission-mode` follows it for exactly that reason."""
+    grant = code("lib.sh").split("emit_claude_tool_grant()")[1].split("}")[0]
+    lines = [ln for ln in grant.splitlines() if "printf" in ln]
+    assert "--permission-mode" in lines[-1], (
+        "the last thing emitted must be a non-variadic flag and its value"
+    )
+    assert "--allowedTools" not in lines[-1]

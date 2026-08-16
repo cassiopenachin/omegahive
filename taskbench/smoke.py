@@ -163,8 +163,21 @@ def run_smoke(
     work = build_fixture(root)
     full_argv = [*argv, PROMPT]
 
-    child_env = dict(os.environ)
-    child_env.update(env or {})
+    # EXACTLY the environment the runner will give the real cell — not this shell's.
+    #
+    # It used to be `dict(os.environ)` plus the spec's env, which meant the smoke ran with
+    # whatever the operator happened to have exported. That is not a smaller problem than it
+    # sounds: the whole claim of this module is that it proves THE BUNDLE, and a bundle whose
+    # environment differs from the scored one is a different bundle. It also leaked
+    # `ANTHROPIC_API_KEY` into a subscription arm that must not see one — visible in the first
+    # live smoke as Claude Code warning that an API key was taking precedence over the
+    # claude.ai login.
+    #
+    # `run_cell` builds the child environment from `env_passthrough` plus `env` and nothing
+    # else; this mirrors that, including PATH's default and HOME falling back to the cell root.
+    child_env = dict(env or {})
+    child_env.setdefault("PATH", os.environ.get("PATH", "/usr/bin:/bin"))
+    child_env.setdefault("HOME", str(root))
     child_env["BENCH_CELL_ROOT"] = str(root)
     child_env.setdefault("GIT_TERMINAL_PROMPT", "0")
     (root / "run").mkdir(parents=True, exist_ok=True)
