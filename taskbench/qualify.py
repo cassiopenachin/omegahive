@@ -396,7 +396,7 @@ def validate_receipt_recorder(
     #: that record asynchronously and setup saw it absent through a twelve-second poll — but a
     #: caller that knows better (a test against a local gateway) must be able to say so, or the
     #: only end-to-end coverage this function can have costs four minutes per case.
-    fetch_attempts: int = 8,
+    fetch_attempts: int = 20,
     fetch_first_delay_s: float = 2.0,
 ) -> list[Check]:
     """The order's precondition for every gateway-billed arm, executed rather than asserted.

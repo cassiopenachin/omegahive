@@ -493,6 +493,34 @@ def matrix_cmd(
         print(text)
 
 
+@app.command("generation")
+def generation_cmd(
+    generation_id: str = typer.Argument(..., help="an OpenRouter generation id"),
+    attempts: int = typer.Option(1, "--attempts", help="1 asks once and reports what it got"),
+) -> None:
+    """Ask OpenRouter for one generation receipt, now.
+
+    Exists to settle one question a preflight cannot: when a receipt does not arrive inside the
+    wait, is it LATE or is it ABSENT? Those have different remedies — the first is a longer
+    poll, the second is a bundle that cannot prove its own accounting and is recorded
+    `unreachable`. Guessing between them is how a study acquires a cost column it cannot defend.
+    """
+    from .receipts import api_key_from_env, fetch_generation
+
+    got = fetch_generation(
+        generation_id, api_key_from_env(), attempts=attempts, first_delay_s=2.0
+    )
+    if not got.get("available"):
+        console.print(f"[bold]✗[/bold] no record: {got['missing_surface']}")
+        raise typer.Exit(code=1)
+    receipt = got["receipt"]
+    console.print(f"[bold]✓[/bold] record exists (after {got['attempts']} attempt(s))")
+    for key in ("model", "provider_name", "preset_id", "total_cost", "native_tokens_prompt",
+                "native_tokens_completion", "native_tokens_cached", "streamed", "cancelled"):
+        if key in receipt:
+            console.print(f"  {key}: {receipt[key]}")
+
+
 @app.command("gateway-totals")
 def gateway_totals_cmd(
     record: str = typer.Argument(..., help="record directory"),

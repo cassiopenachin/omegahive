@@ -456,3 +456,40 @@ def test_reconcile_stops_waiting_once_its_budget_is_spent():
     assert all("budget" in s for s in surfaces)
     assert all("never as absent" not in s for s in surfaces)
     assert "may well exist" in surfaces[0], "an unfetched receipt is not a missing one"
+
+
+def test_the_poll_gap_is_capped_so_a_long_wait_buys_many_chances():
+    """Uncapped doubling spends its budget asleep in one or two very long gaps, so a record
+    landing just after the last short attempt is missed by nearly the whole wait."""
+    slept: list[float] = []
+    state = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        state["n"] += 1
+        return httpx.Response(404, json={"error": "not yet"})
+
+    import taskbench.receipts as mod
+
+    real_sleep = mod.time.sleep
+    mod.time.sleep = slept.append  # type: ignore[assignment]
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            fetch_generation(
+                "gen-x", "sk", client=client, attempts=8, first_delay_s=2.0, max_delay_s=10.0
+            )
+    finally:
+        mod.time.sleep = real_sleep  # type: ignore[assignment]
+
+    assert max(slept) <= 10.0, "no single gap may exceed the cap"
+    assert slept == [2.0, 4.0, 8.0, 10.0, 10.0, 10.0, 10.0]
+
+
+def test_an_unfetched_receipt_says_late_or_absent_is_still_open():
+    """The remedies differ: a longer poll versus a bundle recorded `unreachable`. A message that
+    reads as 'absent' would let the second be chosen without evidence."""
+    with _generation_transport(misses=99) as client:
+        got = fetch_generation(
+            "gen-x", "sk", client=client, attempts=2, first_delay_s=0.001
+        )
+    assert "taskbench generation gen-x" in got["missing_surface"]
+    assert "late or absent" in got["missing_surface"]

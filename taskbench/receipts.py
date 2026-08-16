@@ -472,6 +472,12 @@ def fetch_generation(
     origin: str = OPENROUTER_ORIGIN,
     attempts: int = 8,
     first_delay_s: float = 2.0,
+    #: Ceiling on the gap between attempts. Uncapped doubling is the wrong shape for polling a
+    #: record that will appear at some unknown-but-bounded time: it spends most of its budget
+    #: asleep in one or two very long gaps, so a record that lands a minute after the last
+    #: short attempt is missed by nearly the whole wait. Capped, the same budget buys many more
+    #: chances to notice it.
+    max_delay_s: float = 30.0,
     client: httpx.Client | None = None,
 ) -> dict[str, Any]:
     """The authoritative record of one call, or an honest account of why there is none.
@@ -513,14 +519,17 @@ def fetch_generation(
                     break
             if attempt < attempts:
                 time.sleep(delay)
-                delay *= 2
+                delay = min(delay * 2, max_delay_s)
         return {
             "available": False,
             "attempts": attempts,
             "missing_surface": (
                 f"OpenRouter /generation did not return a record for {generation_id} "
-                f"(last: {last}). The gateway cost and resolved upstream for this call are "
-                "unknown; they are NOT recoverable from the harness's own accounting."
+                f"(last: {last}) across {attempts} attempts. The gateway cost and resolved "
+                "upstream for this call are unknown; they are NOT recoverable from the "
+                "harness's own accounting. Whether the record is late or absent is a question "
+                "this wait cannot answer — ask again later with "
+                f"`taskbench generation {generation_id}` before concluding it will never exist."
             ),
         }
     finally:
