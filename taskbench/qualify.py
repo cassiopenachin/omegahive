@@ -274,15 +274,27 @@ DISPOSITIONED = {
         "adds the qualify-preflight, qualify-smoke, run-gateway, gateway-totals and matrix "
         "commands; no existing command's behaviour is changed."
     ),
+    "taskbench/record.py": (
+        "`render_aggregate` names the candidate from the strongest evidence the record holds — "
+        "the gateway's per-generation receipts where they exist, the harness's own usage map "
+        "otherwise — and says which it used. It previously printed the harness's string under "
+        "the sentence 'what each run's own report said it resolved to', which for a gateway "
+        "arm is the alias the launch supplied: a request presented as a resolved identity. "
+        "Adds `rehydrate_config_from_cells`, which rebuilds the three render-only config keys "
+        "from the committed cells, so re-rendering an aggregate stops silently dropping the "
+        "first-shot column, the after-one-repair column and the spend table. **`validate_record` "
+        "and every writer are untouched** — the incumbent check this module relies on is "
+        "byte-identical to the pin. Nothing here changes what a cell is asked, how it is "
+        "graded, or what passes; only how a finished record describes itself."
+    ),
 }
 
 #: `preflight.py` and `record.py` were previously listed as dispositioned with the text
 #: "unchanged unless listed by the check below" — which checked nothing at all, because a
 #: dispositioned path is excluded from the undeclared-change list AND is not in the frozen set.
 #: A real edit to `record.py`, whose `validate_record` is what the incumbent check relies on,
-#: would have been reported as properly declared. They are simply absent from both lists now,
-#: so any change to either shows up as undeclared, which is what a disposition that means
-#: something looks like.
+#: would have been reported as properly declared. Both now carry a disposition that names the
+#: actual edit, so the entry is a statement someone can check rather than a blanket exemption.
 
 
 def _git(repo: Path, *args: str) -> tuple[int, str]:
