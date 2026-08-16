@@ -132,16 +132,40 @@ def test_no_expected_version_is_hardcoded_anywhere():
         )
 
 
+def _with_a_scored_record(tmp_path):
+    """A records dir containing one candidate batch, so drift has something to be about."""
+    records = tmp_path / "records"
+    (records / "2026-08-17-wave-1-haiku-claude-code" / "cells").mkdir(parents=True)
+    return records
+
+
 def test_a_first_run_establishes_the_builds_rather_than_comparing(tmp_path):
-    (check,) = qualify.check_harness_stability(tmp_path, which=("claude",))
+    (check,) = qualify.check_harness_stability(
+        tmp_path, which=("claude",), records_dir=_with_a_scored_record(tmp_path)
+    )
     assert check.ok
     assert "establishes the study's harness builds" in check.detail
 
 
 def test_the_same_build_twice_is_stable(tmp_path):
     qualify.write_report(check_harness_builds(which=("claude",)), tmp_path)
-    (check,) = qualify.check_harness_stability(tmp_path, which=("claude",))
+    (check,) = qualify.check_harness_stability(
+        tmp_path, which=("claude",), records_dir=_with_a_scored_record(tmp_path)
+    )
     assert check.ok, check.detail
+
+
+def test_drift_before_any_batch_has_run_is_adopted_not_refused(tmp_path):
+    """Refusing here would cost a run to learn that a build moved between two preflights,
+    neither of which scored anything — the same unhelpful refusal the version pin was."""
+    qualify.write_report(
+        [Check("harness/claude", True, "recorded", {"reported": "0.0.0-ancient"})], tmp_path
+    )
+    (check,) = qualify.check_harness_stability(
+        tmp_path, which=("claude",), records_dir=tmp_path / "no-records-here"
+    )
+    assert check.ok
+    assert "no candidate batch has run yet" in check.detail
 
 
 def test_a_harness_that_moved_since_the_last_preflight_refuses(tmp_path):
@@ -152,11 +176,15 @@ def test_a_harness_that_moved_since_the_last_preflight_refuses(tmp_path):
         [Check("harness/claude", True, "recorded", {"reported": "0.0.0-ancient (Claude Code)"})],
         tmp_path,
     )
-    (check,) = qualify.check_harness_stability(tmp_path, which=("claude",))
+    (check,) = qualify.check_harness_stability(
+        tmp_path, which=("claude",), records_dir=_with_a_scored_record(tmp_path)
+    )
     assert not check.ok
     assert "differ in two ways" in check.detail
     assert "DISABLE_AUTOUPDATER=1" in check.detail
     assert check.observed["builds"]["claude"]["was"] == "0.0.0-ancient (Claude Code)"
+    # It says WHY it refuses rather than adopting: cells exist that ran on the earlier build.
+    assert "candidate record(s) already exist" in check.detail
 
 
 def test_the_report_records_observations_not_just_verdicts(tmp_path):

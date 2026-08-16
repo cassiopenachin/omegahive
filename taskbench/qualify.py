@@ -49,6 +49,9 @@ EXPECT_CORPUS_HASH = "sha256:6bdbb73352bcf61bddef97ddd50c51d3dc1cdf283a42648ceb1
 #: The record the candidates are compared against.
 INCUMBENT_RECORD = "2026-08-13-incumbent-fidelity-v0-1-2"
 
+#: Where candidate records land. Read to answer one question: has anything been scored yet?
+TASKBENCH_ROOT_RECORDS = Path(__file__).resolve().parent / "records"
+
 #: How to ask each harness what it is. **No expected version.**
 #:
 #: There was one, and it was a mistake that cost a preflight run. Claude Code auto-updates; it
@@ -124,8 +127,15 @@ def check_harness_builds(which: tuple[str, ...] = ()) -> list[Check]:
     return checks
 
 
+def _candidate_records(records_dir: Path) -> list[str]:
+    """Records produced by a candidate batch, if any exist yet."""
+    if not records_dir.is_dir():
+        return []
+    return sorted(d.name for d in records_dir.iterdir() if d.is_dir() and "-wave-" in d.name)
+
+
 def check_harness_stability(
-    out_dir: Path, which: tuple[str, ...] = ()
+    out_dir: Path, which: tuple[str, ...] = (), *, records_dir: Path | None = None
 ) -> list[Check]:
     """Refuse if a harness moved since the build this study last recorded.
 
@@ -139,6 +149,24 @@ def check_harness_stability(
     current build as the study's build. Drift *within* a batch is what `DISABLE_AUTOUPDATER=1`
     in every launcher exists to prevent.
     """
+    # Drift only matters once there are CELLS that ran on the earlier build. Before any batch
+    # has run, adopting whatever is installed now is free and correct — and refusing would cost
+    # the operator a run to learn that a build moved between two preflights, neither of which
+    # produced a scored anything. That is the same shape of unhelpful refusal the version pin
+    # was, and it is not worth repeating one commit later.
+    records = _candidate_records(
+        records_dir if records_dir is not None else TASKBENCH_ROOT_RECORDS
+    )
+    if not records:
+        return [
+            Check(
+                "harness/stability", True,
+                "no candidate batch has run yet, so there is no cell tied to an earlier build; "
+                "this run adopts whatever is installed as the study's build.",
+                {"candidate_records": []},
+            )
+        ]
+
     path = out_dir / "qualify-preflight.json"
     if not path.is_file():
         return [
@@ -177,11 +205,12 @@ def check_harness_stability(
                 else f"a harness moved since the last preflight ({'; '.join(moved)}). The "
                 "matched pair's whole claim is that only the harness differs between its two "
                 "columns, so a build that changes part-way through makes them differ in two "
-                "ways with nothing in the record to show it. Re-run setup to adopt the current "
-                "build as the study's build, and export DISABLE_AUTOUPDATER=1 so it cannot move "
-                "again mid-batch."
+                "ways with nothing in the record to show it. "
+                f"{len(records)} candidate record(s) already exist on the earlier build, which "
+                "is why this refuses rather than simply adopting the new one. Export "
+                "DISABLE_AUTOUPDATER=1 and decide whether those records stand."
             ),
-            {"builds": seen},
+            {"builds": seen, "candidate_records": records},
         )
     ]
 
