@@ -677,13 +677,22 @@ board_json() {  # board_json  -> prints the board as a JSON array (or `[]`)
 # already validate theirs, and refuses rather than guessing. `[]` is a legitimate
 # answer; anything that is not a JSON array is an outage.
 board_json_strict() {  # board_json_strict <run>  -> prints the board array, or dies
-  local run="$1" out
-  if ! out=$( hive board-view "$run" --json 2>&1 ); then
-    printf '%s\n' "$out" >&2
+  local run="$1" out err
+  # Keep the machine-readable projection on stdout separate from runtime diagnostics.
+  # `podman compose` legitimately writes its external-provider banner to stderr even
+  # when the CLI succeeds; merging the streams turns a valid JSON array into invalid
+  # input and makes every launch refuse. Preserve stderr in a temporary file so a real
+  # failure still explains itself, but successful runtime noise never enters `out`.
+  err=$(mktemp "${TMPDIR:-/tmp}/hive-board-json.XXXXXX") \
+    || die "cannot create a temporary file for board-read diagnostics"
+  if ! out=$( hive board-view "$run" --json 2>"$err" ); then
+    cat "$err" >&2
+    rm -f "$err"
     die "cannot read the board for run '$run' — the cause is in the output above.
   Refusing to act on an unknown board state: an unreadable board is NOT an empty one,
   and treating it as empty is how a live task gets re-created from scratch."
   fi
+  rm -f "$err"
   if ! printf '%s' "$out" | jq -e 'type == "array"' >/dev/null 2>&1; then
     printf '%s\n' "$out" >&2
     die "the board read for run '$run' is not a JSON array (output above) — refusing to
