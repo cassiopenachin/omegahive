@@ -38,7 +38,7 @@ def code(name: str) -> str:
 WAVES = {
     "wave-1-haiku-claude-code.sh": "claude-haiku-4-5",
     "wave-2-luna-codex.sh": "gpt-5.6-luna",
-    "wave-3-deepseek-paired.sh": DEEPSEEK_PIN.request_string,
+    "wave-3-deepseek.sh": DEEPSEEK_PIN.request_string,
     "wave-4-muse-claude-code.sh": MUSE_PIN.request_string,
 }
 ALL_SCRIPTS = [*WAVES, "qualify-setup.sh", "cell-codex.sh", "cell-reasonix.sh",
@@ -156,46 +156,13 @@ def test_the_codex_wrapper_seeds_the_cell_home_with_auth_and_nothing_else():
     assert body.index('cp {} "$BENCH_CELL_ROOT') < body.index('rm -rf "$CELL_HOME"\n}')
 
 
-def test_the_paired_wave_freezes_its_schedule_before_any_result_exists():
-    body = (LAUNCH / "wave-3-deepseek-paired.sh").read_text()
-    assert "TASK_ORDER=(" in body and "ARM_ORDER=(" in body
-    assert "frozen-schedule.txt" in body
-    arms = body.split("ARM_ORDER=(")[1].split(")")[0].split()
-    assert arms == ["reasonix", "claude-code"], "the lead arm is fixed before results exist"
 
 
-def test_the_paired_wave_declares_the_whole_held_in_set_for_each_arm():
-    """Per-task interleaving would declare a subset per invocation, which preflight refuses —
-    the collision that made adjacent matched pairs unbuildable against the frozen pipeline."""
-    body = code("wave-3-deepseek-paired.sh")
-    assert 'ALL_TASKS="$(IFS=,; printf' in body
-    assert 'run_arm_task "$arm" "$ALL_TASKS"' in body
-    held_in = load_corpus(CORPUS_ROOT / "v0.1").catalog.held_in
-    declared = body.split("TASK_ORDER=(")[1].split(")")[0].split()
-    assert sorted(declared) == sorted(held_in)
-
-
-def test_the_paired_wave_states_the_adjacency_it_could_not_preserve():
-    """A confound that is named can be weighed; one left out of the launcher reads afterwards as
-    a property the study had."""
-    body = (LAUNCH / "wave-3-deepseek-paired.sh").read_text()
-    assert "ADJACENT MATCHED PAIRS" in body
-    assert "pipeline.py" in body, "the reason must name what would have to change"
-    assert "belongs" in body and "in the result beside the deltas" in body
-
-
-def test_the_paired_wave_signs_both_arms_in_one_command():
-    """Signing them separately would let one arm run under conditions the other did not."""
-    body = (LAUNCH / "wave-3-deepseek-paired.sh").read_text()
-    assert "wave-3a-deepseek-reasonix" in body and "wave-3b-deepseek-claude-code" in body
-    # Both arms are driven from one invocation: one loop over ARM_ORDER, not two commands.
-    assert 'for i in "${!ARM_ORDER[@]}"' in code("wave-3-deepseek-paired.sh")
-    assert code("wave-3-deepseek-paired.sh").count("run_arm_task") == 2  # definition + call
 
 
 def test_both_deepseek_arms_use_the_same_preset_and_upstream():
     """The pair's entire claim. Two presets would make it two unrelated runs."""
-    body = (LAUNCH / "wave-3-deepseek-paired.sh").read_text()
+    body = (LAUNCH / "wave-3-deepseek.sh").read_text()
     assert body.count(f'PRESET="{DEEPSEEK_PIN.slug}"') == 1
     assert "gmicloud/fp8" in body
     assert "--preset \"$PRESET\"" in body
@@ -263,7 +230,7 @@ def test_the_openrouter_claude_arms_go_through_the_bare_wrapper():
     wrapper = (LAUNCH / "cell-claude-openrouter.sh").read_text()
     assert "--bare" in wrapper
     assert "--strict-mcp-config" in wrapper
-    for name in ("wave-3-deepseek-paired.sh", "wave-4-muse-claude-code.sh"):
+    for name in ("wave-3-deepseek.sh", "wave-4-muse-claude-code.sh"):
         body = (LAUNCH / name).read_text()
         assert "cell-claude-openrouter.sh" in body, f"{name} must use the wrapper"
         assert "$CLAUDE_BIN" not in body, f"{name} must not invoke claude directly"
@@ -300,15 +267,6 @@ def test_the_reasonix_arm_switches_off_the_optional_subsystems_by_name():
     assert "--metrics" in body, "the harness-side token totals must be a recorded fact"
 
 
-def test_the_paired_wave_records_what_it_could_not_align():
-    """An irreducible difference that is not written down reads afterwards as one nobody
-    checked."""
-    body = (LAUNCH / "wave-3-deepseek-paired.sh").read_text()
-    assert "IRREDUCIBLE" in body
-    assert "not the same unit" in body
-    assert "harness default" in body.lower()
-    assert "system prompts" in body
-
 
 def test_neither_deepseek_arm_overrides_the_output_cap():
     """Aligned by both leaving it to the endpoint, which then decides identically for each.
@@ -331,12 +289,6 @@ def test_every_wave_smokes_the_bundle_before_it_spends(name):
         "a failed smoke must stop the batch"
     )
 
-
-def test_the_paired_wave_smokes_both_arms_before_either_spends():
-    """A pair in which only one arm can reach its model is not a pair."""
-    body = (LAUNCH / "wave-3-deepseek-paired.sh").read_text()
-    assert "for arm in reasonix claude-code" in body
-    assert "NEITHER arm runs" in body
 
 
 # --- regressions from the independent review -------------------------------------------------
@@ -366,7 +318,7 @@ def test_the_claude_wrapper_may_exec_because_it_has_no_cleanup_to_lose():
     assert "exec claude" in body
 
 
-@pytest.mark.parametrize("name", ["wave-3-deepseek-paired.sh", "wave-4-muse-claude-code.sh"])
+@pytest.mark.parametrize("name", ["wave-3-deepseek.sh", "wave-4-muse-claude-code.sh"])
 def test_the_json_flags_stay_where_preflight_can_see_them(name):
     """`preflight.check_agent_command` refuses a config declaring the claude-code-json envelope
     whose argv never asks for JSON. Hiding those flags inside the wrapper made preflight refuse
@@ -447,7 +399,7 @@ def test_the_advisory_pause_states_its_reason(name):
 # --- the permission mode, which the harness redefined under us --------------------------------
 
 
-@pytest.mark.parametrize("name", ["wave-1-haiku-claude-code.sh", "wave-3-deepseek-paired.sh",
+@pytest.mark.parametrize("name", ["wave-1-haiku-claude-code.sh", "wave-3-deepseek.sh",
                                   "wave-4-muse-claude-code.sh", "lib.sh"])
 def test_no_claude_invocation_uses_the_auto_permission_mode(name):
     """On 2.1.231 `auto` let a cell read, edit and run — every incumbent cell invoked
@@ -456,7 +408,7 @@ def test_no_claude_invocation_uses_the_auto_permission_mode(name):
     assert '"--permission-mode", "auto"' not in code(name)
 
 
-@pytest.mark.parametrize("name", ["wave-1-haiku-claude-code.sh", "wave-3-deepseek-paired.sh",
+@pytest.mark.parametrize("name", ["wave-1-haiku-claude-code.sh", "wave-3-deepseek.sh",
                                   "wave-4-muse-claude-code.sh"])
 def test_every_claude_arm_uses_the_shared_tool_grant(name):
     """One helper, so four launchers and the reviewer cannot drift into different capabilities —
@@ -493,3 +445,23 @@ def test_the_codex_wrapper_preserves_the_rollout_before_deleting_the_home():
         "the rollout must be copied out before the home is removed"
     )
     assert "taskbench.harness_model" in body
+
+
+def test_the_dropped_reasonix_arm_is_recorded_in_the_launcher_itself():
+    """The matched pair was the order's most-discussed arm. A launcher that simply stopped
+    mentioning it would let the result be read as though the pair had never been designed."""
+    body = (LAUNCH / "wave-3-deepseek.sh").read_text()
+    assert "DESIGNED AS A MATCHED PAIR AND IS NOT ONE" in body
+    assert "unanswered" in body, "the cost of dropping it must be stated, not implied"
+    assert "NOT evidence that Reasonix cannot drive DeepSeek" in body, (
+        "the claim must stay bounded to the one run that supports it"
+    )
+    assert "scoping decision" in body
+
+
+def test_wave_3_is_a_single_arm_on_the_pinned_deepseek_route():
+    body = code("wave-3-deepseek.sh")
+    assert "ARM_ORDER=(claude-code)" in body
+    assert "cell-reasonix.sh" not in body
+    assert "gmicloud/fp8" in body
+    assert DEEPSEEK_PIN.request_string in body

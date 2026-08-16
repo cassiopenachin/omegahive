@@ -1,0 +1,62 @@
+{
+  "cell_id": "cell-90638340fc",
+  "dod_legs": [
+    {
+      "leg": "one-parser",
+      "met": "yes",
+      "note": "hive-score's own regex block is deleted (candidate.patch:239-251) and replaced by a call to parse_predictions() defined once in scripts/hive-common.sh:245-268; hive-launch calls the same function (artefacts/scripts/hive-launch:65). Two implementations cannot drift because only one exists. The drill exercises the shared function directly on the malformed-dialect fixture and asserts both callers reach it (metrics-drill.log:91-93, 'shared parser sees malformed section' / 'launch and score call the shared parser'). The proof is thinner than DoD (c) asks for \u2014 it does not score a task off that same fixture and compare the scorer's verdict to the gate's \u2014 but the single-implementation requirement itself is met by construction."
+    },
+    {
+      "leg": "refuse-unparsed-not-absent",
+      "met": "yes",
+      "note": "Gate sits at hive-launch:65-84, before every board write: the first emit is at hive-launch:248/256 and the clones/wrapper at 217-236, all downstream. Section present + 0 of 3 fields parsed refuses with exit 1 after printing all four literal labels and the offending lines (hive-launch:68-79); --anyway (already parsed at hive-launch:26) overrides. Absent section leaves PREDICTIONS_SECTION=0 (hive-common.sh:247,250) so neither branch fires; a declared-unpredicted one-liner is excused at hive-launch:67; 1-2 of 3 warns and launches (hive-launch:82-83). Launch-side drill cases live in hive-tooling-drill.sh, which the rubric places out of scope."
+    },
+    {
+      "leg": "absent-vs-unparsed-distinct",
+      "met": "yes",
+      "note": "hive-score:288-295 emits 'unpredicted (section present, 0 of 3 fields parsed)' vs 'unpredicted (no `## Predictions` section)' off PREDICTIONS_SECTION; partial names the missed fields (hive-score:297-303). The drill adds the malformed-dialect order fixture (candidate.patch:148-157) but never scores a task against it, so only the absent string is exercised in calibration.md (metrics-drill.log:95 'gamma recorded as unpredicted', whose assertion matches the shared '^- coverage: unpredicted' prefix). Behaviour is correct and readable in a five-line case statement; the demonstration is weaker than DoD (d)'s 'two fixture tasks'."
+    },
+    {
+      "leg": "review-vocabulary",
+      "met": "yes",
+      "note": "hive-score:61-67 lowercases with tr and accepts only clean|'minor rework'|rework, dying with a message naming all three. Verified mechanically: metrics-drill.log:79 '--review accepts case-insensitively' (--review Rework stored as rework) and :94 'bogus review verdict refused', whose expected message is the literal 'clean | minor rework | rework'."
+    },
+    {
+      "leg": "close-ordering",
+      "met": "yes",
+      "note": "candidate.patch:9-25 appends the regeneration after the existing durable close and score block. hive-metrics runs inside an `if`, so errexit cannot fire; the failure branch writes a loud stderr complaint that states the close SUCCEEDED and is durable, names the recovery command, and does not exit non-zero, leaving hive-close's status 0. The injected-failure drill case would live in hive-tooling-drill.sh (out of scope here)."
+    },
+    {
+      "leg": "refuse-not-rebase",
+      "met": "yes",
+      "note": "hive-common.sh:233-236: the pull --rebase / re-push path is deleted outright; push failure now prints 'committed locally in $OPS_WS, NOT on the hub; resolve the shared metrics branch manually (fetch, reconcile, then push)' and returns 1 with the commit already made locally at :231. No rebase invocation remains in the helper. The drill assertion DoD (g) names was not added \u2014 the metrics drill has no push-failure case \u2014 but the behaviour is unambiguous in a four-line branch."
+    },
+    {
+      "leg": "named-risks-unscored",
+      "met": "yes",
+      "note": "No fourth field is scored: FIELDS still counts only effort/questions/review (hive-score:284-287, hive-common.sh:262-267). It is documented as required-but-unscored in the calibration.md header (candidate.patch:284-287), in the launch refusal message (hive-launch:74), and in the RUNBOOK (candidate.patch:305-306). metrics-drill.log:92 'shared parser keeps Named risks unscored'."
+    },
+    {
+      "leg": "drill-hygiene-reported",
+      "met": "yes",
+      "note": "Reported by name in the swept file's own header (candidate.patch:136-140): files read = hive-metrics-drill.sh and hive-tooling-drill.sh; EXIT-trap-before-isolation = none found (no isolation surface in this drill); `cmd | grep -q` SIGPIPE = the log_has helper was the one instance and already reads grep to EOF; 'No third defect class was folded.' Echoed in the result report's What shipped. No code fix was needed and none was made, which is consistent with the stated findings; the report's own restatement is thinner than the header."
+    },
+    {
+      "leg": "result-report",
+      "met": "yes",
+      "note": "workspace/projects/omegahive/reports/2026-07-29-instrument-teeth-result.md carries What shipped / How verified / To operate / Reflection. Its claims check out: the metrics drill and shellcheck claims match verifier/metrics-drill.log (106 PASS / 0 FAIL) and an empty verifier/shellcheck.log, and To operate names the pln recovery step the order requires (`hive-score <task> --project pln-benchmarks --again`). The spine announcement is out of scope per the rubric and is not claimed."
+    },
+    {
+      "leg": "shellcheck",
+      "met": "yes",
+      "note": "verifier/shellcheck.log is zero bytes \u2014 clean, including the new SC2034 suppression on parse_predictions' globals (hive-common.sh:244)."
+    },
+    {
+      "leg": "metrics-drill",
+      "met": "yes",
+      "note": "verifier/metrics-drill.log: 'PASS=106 FAIL=0 (no events issued; no run touched)', including the new shared-parser, Named-risks, and review-vocabulary cases, and with the stop-line block still green (fixture untouched, no emits, no git writes from the instruments)."
+    }
+  ],
+  "verdict": "pass",
+  "would_have_shipped_defects": []
+}

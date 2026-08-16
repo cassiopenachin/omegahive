@@ -1,0 +1,322 @@
+[
+  {
+    "cell_id": "cell-98773ea33b",
+    "first_passed": false,
+    "labels": {
+      "harness": "codex-cli-0.147.0",
+      "model": "gpt-5.6-luna",
+      "vendor": "openai"
+    },
+    "passed": false,
+    "remediated": true,
+    "resolved_model": "gpt-5.6-luna",
+    "spend": {
+      "candidate_attempt": {
+        "available": true,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 2942464,
+        "input_tokens": 3050052,
+        "output_tokens": 24020,
+        "usd": null
+      },
+      "candidate_remediation": {
+        "available": true,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 1132800,
+        "input_tokens": 1210514,
+        "output_tokens": 13533,
+        "usd": null
+      },
+      "note": "Per-leg list-price spend as each harness reported it. A leg reporting nothing is null, never zero. The generation/review split is what the all-in economics comparison needs; it is not computed here.",
+      "review": [
+        {
+          "available": true,
+          "cache_creation_input_tokens": 37021,
+          "cache_read_input_tokens": 237878,
+          "input_tokens": 13,
+          "output_tokens": 6638,
+          "usd": 0.656227
+        },
+        {
+          "available": true,
+          "cache_creation_input_tokens": 50444,
+          "cache_read_input_tokens": 432999,
+          "input_tokens": 19,
+          "output_tokens": 13435,
+          "usd": 1.0579725
+        }
+      ],
+      "total_usd_reported": 1.7142
+    },
+    "task_id": "docs-triage",
+    "usage": {
+      "available": true,
+      "reported": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 2942464,
+        "input_tokens": 3050052,
+        "output_tokens": 24020,
+        "reasoning_output_tokens": 4770
+      },
+      "source": "harness result envelope",
+      "total_cost_usd": null
+    },
+    "wall_ms": 615191
+  },
+  {
+    "cell_id": "cell-90638340fc",
+    "first_passed": false,
+    "labels": {
+      "harness": "codex-cli-0.147.0",
+      "model": "gpt-5.6-luna",
+      "vendor": "openai"
+    },
+    "passed": true,
+    "remediated": true,
+    "resolved_model": "gpt-5.6-luna",
+    "spend": {
+      "candidate_attempt": {
+        "available": true,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 2641408,
+        "input_tokens": 2744331,
+        "output_tokens": 15775,
+        "usd": null
+      },
+      "candidate_remediation": {
+        "available": true,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 570880,
+        "input_tokens": 615494,
+        "output_tokens": 6713,
+        "usd": null
+      },
+      "note": "Per-leg list-price spend as each harness reported it. A leg reporting nothing is null, never zero. The generation/review split is what the all-in economics comparison needs; it is not computed here.",
+      "review": [
+        {
+          "available": true,
+          "cache_creation_input_tokens": 62570,
+          "cache_read_input_tokens": 554579,
+          "input_tokens": 23,
+          "output_tokens": 14873,
+          "usd": 1.2759865
+        },
+        {
+          "available": true,
+          "cache_creation_input_tokens": 64872,
+          "cache_read_input_tokens": 442591,
+          "input_tokens": 17,
+          "output_tokens": 18995,
+          "usd": 1.3460325
+        }
+      ],
+      "total_usd_reported": 2.622
+    },
+    "task_id": "instrument-teeth",
+    "usage": {
+      "available": true,
+      "reported": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 2641408,
+        "input_tokens": 2744331,
+        "output_tokens": 15775,
+        "reasoning_output_tokens": 3491
+      },
+      "source": "harness result envelope",
+      "total_cost_usd": null
+    },
+    "wall_ms": 345126
+  },
+  {
+    "cell_id": "cell-dd5fbf69e1",
+    "first_passed": false,
+    "labels": {
+      "harness": "codex-cli-0.147.0",
+      "model": "gpt-5.6-luna",
+      "vendor": "openai"
+    },
+    "passed": true,
+    "remediated": true,
+    "resolved_model": "gpt-5.6-luna",
+    "spend": {
+      "candidate_attempt": {
+        "available": true,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 944640,
+        "input_tokens": 1013270,
+        "output_tokens": 10971,
+        "usd": null
+      },
+      "candidate_remediation": {
+        "available": true,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 737280,
+        "input_tokens": 792624,
+        "output_tokens": 7444,
+        "usd": null
+      },
+      "note": "Per-leg list-price spend as each harness reported it. A leg reporting nothing is null, never zero. The generation/review split is what the all-in economics comparison needs; it is not computed here.",
+      "review": [
+        {
+          "available": true,
+          "cache_creation_input_tokens": 28524,
+          "cache_read_input_tokens": 341620,
+          "input_tokens": 19,
+          "output_tokens": 6929,
+          "usd": 0.6304050000000001
+        },
+        {
+          "available": true,
+          "cache_creation_input_tokens": 51072,
+          "cache_read_input_tokens": 352404,
+          "input_tokens": 17,
+          "output_tokens": 19057,
+          "usd": 1.164507
+        }
+      ],
+      "total_usd_reported": 1.7949
+    },
+    "task_id": "launch-pane-fix",
+    "usage": {
+      "available": true,
+      "reported": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 944640,
+        "input_tokens": 1013270,
+        "output_tokens": 10971,
+        "reasoning_output_tokens": 3859
+      },
+      "source": "harness result envelope",
+      "total_cost_usd": null
+    },
+    "wall_ms": 229109
+  },
+  {
+    "cell_id": "cell-958d523a5e",
+    "first_passed": false,
+    "labels": {
+      "harness": "codex-cli-0.147.0",
+      "model": "gpt-5.6-luna",
+      "vendor": "openai"
+    },
+    "passed": false,
+    "remediated": true,
+    "resolved_model": "gpt-5.6-luna",
+    "spend": {
+      "candidate_attempt": {
+        "available": true,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 2195712,
+        "input_tokens": 2319829,
+        "output_tokens": 14184,
+        "usd": null
+      },
+      "candidate_remediation": {
+        "available": true,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 291840,
+        "input_tokens": 328349,
+        "output_tokens": 7161,
+        "usd": null
+      },
+      "note": "Per-leg list-price spend as each harness reported it. A leg reporting nothing is null, never zero. The generation/review split is what the all-in economics comparison needs; it is not computed here.",
+      "review": [
+        {
+          "available": true,
+          "cache_creation_input_tokens": 37362,
+          "cache_read_input_tokens": 290618,
+          "input_tokens": 18,
+          "output_tokens": 9050,
+          "usd": 0.746338
+        },
+        {
+          "available": true,
+          "cache_creation_input_tokens": 28707,
+          "cache_read_input_tokens": 349332,
+          "input_tokens": 21,
+          "output_tokens": 7671,
+          "usd": 0.654685
+        }
+      ],
+      "total_usd_reported": 1.401
+    },
+    "task_id": "ptc-revalidate",
+    "usage": {
+      "available": true,
+      "reported": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 2195712,
+        "input_tokens": 2319829,
+        "output_tokens": 14184,
+        "reasoning_output_tokens": 3950
+      },
+      "source": "harness result envelope",
+      "total_cost_usd": null
+    },
+    "wall_ms": 331141
+  },
+  {
+    "cell_id": "cell-126d2d7a96",
+    "first_passed": false,
+    "labels": {
+      "harness": "codex-cli-0.147.0",
+      "model": "gpt-5.6-luna",
+      "vendor": "openai"
+    },
+    "passed": false,
+    "remediated": true,
+    "resolved_model": "gpt-5.6-luna",
+    "spend": {
+      "candidate_attempt": {
+        "available": true,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 1157376,
+        "input_tokens": 1228848,
+        "output_tokens": 7689,
+        "usd": null
+      },
+      "candidate_remediation": {
+        "available": true,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 296960,
+        "input_tokens": 333878,
+        "output_tokens": 4214,
+        "usd": null
+      },
+      "note": "Per-leg list-price spend as each harness reported it. A leg reporting nothing is null, never zero. The generation/review split is what the all-in economics comparison needs; it is not computed here.",
+      "review": [
+        {
+          "available": true,
+          "cache_creation_input_tokens": 24435,
+          "cache_read_input_tokens": 267780,
+          "input_tokens": 17,
+          "output_tokens": 6834,
+          "usd": 0.5502499999999999
+        },
+        {
+          "available": true,
+          "cache_creation_input_tokens": 30362,
+          "cache_read_input_tokens": 357535,
+          "input_tokens": 23,
+          "output_tokens": 13549,
+          "usd": 0.8223024999999999
+        }
+      ],
+      "total_usd_reported": 1.3726
+    },
+    "task_id": "run-registration",
+    "usage": {
+      "available": true,
+      "reported": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 1157376,
+        "input_tokens": 1228848,
+        "output_tokens": 7689,
+        "reasoning_output_tokens": 1998
+      },
+      "source": "harness result envelope",
+      "total_cost_usd": null
+    },
+    "wall_ms": 176253
+  }
+]

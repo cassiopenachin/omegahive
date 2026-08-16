@@ -1,25 +1,28 @@
 #!/usr/bin/env bash
-# wave-3-deepseek-paired.sh — the matched DeepSeek pair: Reasonix and Claude Code, same model,
-# same gateway, same preset, same upstream. One command, no arguments, BOTH arms.
+# wave-3-deepseek.sh — DeepSeek v4 Flash through Claude Code, on the pinned GMICloud FP8 route.
+# One command, no arguments. Running it IS the approval for this batch's spend.
 #
-#   taskbench/launch/wave-3-deepseek-paired.sh
+# THIS WAS DESIGNED AS A MATCHED PAIR AND IS NOT ONE. The order's most-discussed arm held
+# model, provider, upstream, preset, task and kickoff fixed and changed only the harness, so the
+# difference between two columns would be the harness effect and nothing else. The second arm
+# was Reasonix, and it was dropped by operator decision on 2026-08-16 after a shakedown.
 #
-# Running this IS the operator's signature on both batches at once, which the order requires:
-# the two arms are one experiment, and signing them separately would let one run under
-# conditions the other did not.
+# What the shakedown showed, stated to the limit of what it supports: in ONE run, in the
+# configuration this study would have used, Reasonix made 84 gateway calls and ~473,000 input
+# tokens over ten minutes on a fixture Claude Code completed in 14, and never produced the
+# deliverable. The model answered throughout — 42,621 output tokens — so this was not an
+# unreachable route. It is ALSO NOT evidence that Reasonix cannot drive DeepSeek: n=1, and the
+# configuration carried this study's own five ablations plus a permission mode never tested for
+# that harness. The arm was dropped rather than debugged, which is a scoping decision and not a
+# verdict on a vendor's harness. The result report must say it that way.
 #
-# WHAT THIS ARM IS FOR. Every other bundle changes model and harness together. This one holds
-# model, provider, upstream, preset, task and kickoff fixed and changes ONLY the harness, so the
-# difference between the two columns is the harness effect and nothing else. That is the whole
-# design, and it is also the whole fragility: the moment the two arms resolve different
-# upstreams or different quantizations, the pair stops answering its question and becomes two
-# unrelated runs. Hence the preset re-check before every batch and every cell, fallback
-# disabled, and a per-generation receipt naming the upstream that actually served each call.
+# **The harness-effect question this v0 was built to answer is therefore unanswered**, and that
+# belongs in the result beside the numbers rather than in a footnote.
 #
-# WHAT IT DOES NOT ANSWER. Whether Claude Code's extra token spend "buys" outcomes in general.
-# Five tasks, one corpus, one sitting. The report may say only whether extra consumption
-# coincided with better outcomes HERE, and may not attribute a delta to prompt size, caching,
-# tool loop or compaction — the records cannot isolate those.
+# What remains, and what this bundle actually is: DeepSeek v4 Flash on one operator-owned preset
+# pinning `gmicloud/fp8` with provider fallback disabled, through Claude Code, with a
+# per-generation receipt naming the upstream that served every call — an ordinary fifth bundle,
+# comparable to Haiku, Luna and Muse on the same frozen corpus.
 
 set -euo pipefail
 
@@ -51,61 +54,38 @@ readonly UPSTREAM="gmicloud/fp8"
 # gateway conditions across the hour lands unevenly between the two columns. That loss belongs
 # in the result beside the deltas, not in a footnote.
 readonly TASK_ORDER=(docs-triage instrument-teeth launch-pane-fix ptc-revalidate run-registration)
-readonly ARM_ORDER=(reasonix claude-code)
+readonly ARM_ORDER=(claude-code)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 readonly REPO_ROOT
 readonly RECORDS_DIR="$REPO_ROOT/taskbench/records"
 readonly WORK_BASE="${TASKBENCH_WORK_BASE:-$HOME/work/taskbench}"
-readonly CELL_REASONIX="$REPO_ROOT/taskbench/launch/cell-reasonix.sh"
 readonly CELL_CLAUDE="$REPO_ROOT/taskbench/launch/cell-claude-openrouter.sh"
 
 step "The pair under test"
-need reasonix "arm A's harness"
-need claude   "arm B's harness, and the blinded reviewer"
+need claude   "this bundle's harness, and the blinded reviewer"
 need uv       "taskbench runs under uv"
 need bwrap    "the reviewer's cold-reader sandbox needs it"
 need git      "the materializer exports pre-task trees with it"
 
-[ -x "$CELL_REASONIX" ] || die "$CELL_REASONIX is missing or not executable"
 [ -x "$CELL_CLAUDE" ] || die "$CELL_CLAUDE is missing or not executable"
 [ -n "${OPENROUTER_API_KEY:-}" ] || die "OPENROUTER_API_KEY is not exported.
 
   It is the operator's secret and lives outside both repositories. Export it into this shell,
   then re-run. Nothing here reads a secrets file or writes the value anywhere."
 
-RX_HARNESS="$(reasonix_harness_version)";  readonly RX_HARNESS
-CC_HARNESS="$(claude_harness_version)";    readonly CC_HARNESS
+CC_HARNESS="$(claude_harness_version)"; readonly CC_HARNESS
 
 say "vendor:   $VENDOR"
 say "model:    $MODEL"
 say "gateway:  OpenRouter, Anthropic Messages skin, through the receipt recorder"
 say "preset:   $PRESET   (re-fetched and hashed before every batch and every cell)"
 say "upstream: $UPSTREAM only, provider fallback DISABLED"
-say "arm A:    Reasonix $RX_HARNESS"
-say "arm B:    Claude Code $CC_HARNESS"
+say "harness:  Claude Code $CC_HARNESS"
+say "NOTE:     the Reasonix arm was dropped on 2026-08-16; this is not a pair,"
+say "          and the harness-effect question is unanswered by this v0."
 say ""
-say "Both arms start from fresh harness state with optional web, MCP, memory, planner and"
-say "subagent behaviour off. Their different core system prompts, tool schemas and agent loops"
-say "REMAIN — that difference is the harness effect this pair exists to measure, not a"
-say "confound to be scrubbed."
-
-step "Settings, aligned where both harnesses expose them"
-say "Held identical, because both arms expose them:"
-say "  permission mode      auto"
-say "  optional subsystems  off — web, MCP, memory, planner, subagent, retrieval, compaction"
-say "  harness state        fresh per cell; no conversation carried between cells"
-say "  provider route       one preset, one upstream, fallback disabled"
-say "  output cap           left at the PROVIDER default for both; neither arm overrides it,"
-say "                       so the endpoint decides identically for each"
-say ""
-say "IRREDUCIBLE, and recorded rather than papered over:"
-say "  * Reasonix takes a named reasoning effort (--effort); Claude Code takes a thinking"
-say "    token budget. These are not the same unit and cannot be set to the same value, so"
-say "    BOTH ARE LEFT AT THEIR HARNESS DEFAULT and the difference is reported."
-say "  * Core system prompts, tool schemas and agent loops differ. That difference IS the"
-say "    harness effect this pair measures; scrubbing it would delete the experiment."
-say ""
+say "Fresh harness state per cell, with optional web, MCP, memory and subagent behaviour off."
 
 step "The frozen schedule"
 WORK_ROOT="$WORK_BASE/wave-3-deepseek-paired-$(date +%Y%m%d-%H%M%S)"
@@ -131,38 +111,27 @@ say ""
 say "schedule: $SCHEDULE   (written before the first call; the audit checks the records"
 say "          against it, so a reordering after the fact is visible)"
 
-# --- one arm's config -----------------------------------------------------------------------
+# --- the bundle's config ----------------------------------------------------------------------
 write_config() {
   local arm="$1" path="$2"
   {
-    printf '# Generated by wave-3-deepseek-paired.sh (arm: %s) — do not hand-edit.\n' "$arm"
+    printf '# Generated by wave-3-deepseek.sh (arm: %s) — do not hand-edit.\n' "$arm"
     printf 'agent:\n'
-    if [ "$arm" = "reasonix" ]; then
-      printf '  argv: ["%s"]\n' "$CELL_REASONIX"
-      printf '  labels: {vendor: "%s", model: "%s", harness: "%s"}\n' \
-             "$VENDOR" "$MODEL" "$RX_HARNESS"
-      printf '  result_envelope: reasonix-json\n'
-      printf '  env_passthrough: ["PATH", "LANG", "TERM", "XDG_RUNTIME_DIR", "OPENROUTER_API_KEY"]\n'
-      printf '  env:\n'
-      printf '    TASKBENCH_MODEL: "%s"\n' "$MODEL"
-      printf '    GIT_TERMINAL_PROMPT: "0"\n'
-    else
-      # Through the wrapper, not `claude` directly: `--bare` is what keeps this arm from
-      # satisfying itself with the operator's Anthropic OAuth subscription and never reaching
-      # OpenRouter at all — a cell that would run a different model from the one it records.
-      printf '  argv: ["%s", "--model", "%s", "--print", "--output-format", "json",\n' \
-             "$CELL_CLAUDE" "$MODEL"
-      emit_claude_tool_grant 
-      printf '  labels: {vendor: "%s", model: "%s", harness: "%s"}\n' \
-             "$VENDOR" "$MODEL" "$CC_HARNESS"
-      printf '  result_envelope: claude-code-json\n'
-      # Only the ONE operator secret crosses into the cell. The wrapper derives the
-      # harness-compatibility name from it inside that process and persists no duplicate,
-      # which is the condition the order attaches to that derivation.
-      printf '  env_passthrough: ["PATH", "LANG", "TERM", "XDG_RUNTIME_DIR", "OPENROUTER_API_KEY"]\n'
-      printf '  env:\n'
-      printf '    GIT_TERMINAL_PROMPT: "0"\n'
-    fi
+    # Through the wrapper, not `claude` directly: `--bare` is what keeps this bundle from
+    # satisfying itself with the operator's Anthropic OAuth subscription and never reaching
+    # OpenRouter at all — a cell that would run a different model from the one it records.
+    printf '  argv: ["%s", "--model", "%s", "--print", "--output-format", "json",\n' \
+           "$CELL_CLAUDE" "$MODEL"
+    emit_claude_tool_grant
+    printf '  labels: {vendor: "%s", model: "%s", harness: "%s"}\n' \
+           "$VENDOR" "$MODEL" "$CC_HARNESS"
+    printf '  result_envelope: claude-code-json\n'
+    # Only the ONE operator secret crosses into the cell. The wrapper derives the
+    # harness-compatibility name from it inside that process and persists no duplicate,
+    # which is the condition the order attaches to that derivation.
+    printf '  env_passthrough: ["PATH", "LANG", "TERM", "XDG_RUNTIME_DIR", "OPENROUTER_API_KEY"]\n'
+    printf '  env:\n'
+    printf '    GIT_TERMINAL_PROMPT: "0"\n'
     printf '  cwd: code\n'
     printf '  timeout_s: 7200\n'
     printf '  prompt_mode: argv\n'
@@ -171,11 +140,8 @@ write_config() {
   } > "$path"
 }
 
-declare -A ARM_RECORD=([reasonix]="-" [claude-code]="-")
-declare -A ARM_BASE=(
-  [reasonix]="wave-3a-deepseek-reasonix"
-  [claude-code]="wave-3b-deepseek-claude-code"
-)
+declare -A ARM_RECORD=([claude-code]="-")
+declare -A ARM_BASE=([claude-code]="wave-3-deepseek-claude-code")
 
 # --- run one arm's next task, resuming that arm's own chain ---------------------------------
 run_arm_task() {
@@ -233,9 +199,7 @@ for arm in reasonix claude-code; do
   set -e
   if [ "$smoke_status" -ne 0 ]; then
     say ""
-    say "NEITHER arm runs. Nothing was scored and nothing was spent on the matrix."
-    say "An unreachable arm is recorded as unreachable, with its failure boundary named — it"
-    say "is never rerouted through another provider, upstream or harness."
+    say "The batch does NOT run. Nothing was scored and nothing was spent on the matrix."
     exit "$smoke_status"
   fi
 done
@@ -253,26 +217,21 @@ readonly ALL_TASKS
 overall=0
 for i in "${!ARM_ORDER[@]}"; do
   arm="${ARM_ORDER[$i]}"
-  step "Arm $((i + 1))/2 — $arm, all five cells"
-  if [ "$i" -eq 0 ]; then
-    say "This arm leads. The other follows immediately, so the two batches are as close"
-    say "together in time as one command can make them."
-  fi
+  step "$arm — all five cells"
   run_arm_task "$arm" "$ALL_TASKS" || overall=$?
 done
 
 step "Whole-record gateway totals"
-for arm in reasonix claude-code; do
+for arm in "${ARM_ORDER[@]}"; do
   say ""
   say "$arm: ${ARM_RECORD[$arm]}"
   ( cd "$REPO_ROOT" && uv run --frozen taskbench gateway-totals "${ARM_RECORD[$arm]}" ) || true
 done
 
-report_status "$overall" "${ARM_RECORD[reasonix]} and ${ARM_RECORD[claude-code]}" \
-  "$WORK_ROOT" "$REPO_ROOT"
+report_status "$overall" "${ARM_RECORD[claude-code]}" "$WORK_ROOT" "$REPO_ROOT"
 
 say ""
-say "THE PAIRED TABLE. Build it from the two records' per-cell gateway receipts, never from"
-say "either harness's own cost field: Reasonix reports no gateway cost at all, and Claude"
-say "Code's is a local price-table figure labelled 'firstParty'. Neither is OpenRouter spend."
+say "SPEND comes from the per-cell gateway receipts, never from the harness's own cost field:"
+say "Claude Code reports a local price-table figure labelled 'firstParty', which is not"
+say "OpenRouter spend. There is no paired table — the second arm was dropped."
 exit "$overall"
