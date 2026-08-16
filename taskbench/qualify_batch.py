@@ -208,11 +208,10 @@ def refetch_missing_receipts(record_root: Path, api_key: str, **fetch_kwargs: An
 
 def _recount(calls: list[dict[str, Any]]) -> dict[str, Any]:
     """Re-total a leg after recovery, under the same all-or-nothing rule as `reconcile`."""
+    from .receipts import coverage
+
     receipted = [c for c in calls if (c.get("receipt") or {}).get("available")]
-    totals: dict[str, Any] = {
-        "calls_observed": len(calls),
-        "calls_with_receipt": len(receipted),
-    }
+    totals: dict[str, Any] = coverage(calls)
     if receipted:
         for key, field in (
             ("gateway_cost_usd", "total_cost"),
@@ -230,12 +229,12 @@ def _recount(calls: list[dict[str, Any]]) -> dict[str, Any]:
             ("preset_ids", "preset_id"),
         ):
             totals[key] = sorted({str(c["receipt"].get(field)) for c in receipted})
-    missing = len(calls) - len(receipted)
+    missing = totals["calls_missing_receipt"]
     if missing:
         totals["incomplete"] = (
-            f"{missing} of {len(calls)} observed call(s) still have no gateway receipt after a "
-            "post-batch re-ask. Every total above covers only the receipted calls and is a "
-            "floor, not a total."
+            f"{missing} of {len(calls)} observed call(s) were answered by the gateway and "
+            "still have no receipt after a post-batch re-ask. Every total above covers only "
+            "the receipted calls and is a floor, not a total."
         )
     return totals
 
@@ -265,6 +264,8 @@ def record_gateway_totals(record_root: Path) -> dict[str, Any]:
         "native_tokens_cached": 0,
         "calls_observed": 0,
         "calls_with_receipt": 0,
+        "calls_missing_receipt": 0,
+        "calls_without_generation": 0,
     }
     complete = True
     upstreams: set[str] = set()
@@ -298,6 +299,11 @@ def record_gateway_totals(record_root: Path) -> dict[str, Any]:
                     # same failure as a cost total quietly short, and the headline question this
                     # study answers is a token question.
                     complete = False
+            if leg_totals.get("calls_missing_receipt"):
+                # A leg the gateway answered and did not account for makes the record's
+                # coverage short, whatever its sums add up to. Without this the rollup could
+                # read `complete: true` over legs that individually say they are floors.
+                complete = False
             upstreams.update(leg_totals.get("resolved_upstreams") or [])
             models.update(leg_totals.get("resolved_models") or [])
         per_cell[cell.name] = legs

@@ -242,6 +242,51 @@ def test_a_receipt_that_was_merely_late_is_recovered_and_retotalled(tmp_path):
     assert rolled["totals"]["gateway_cost_usd"] == pytest.approx(0.15)
 
 
+def test_a_refused_call_does_not_make_the_record_incomplete(tmp_path):
+    """Wave 4 observed 119 calls, 5 of them 404s on an endpoint OpenRouter does not implement.
+    Reading those as unaccounted-for spend would mark a complete record as a floor."""
+    from taskbench.qualify_batch import _recount, record_gateway_totals
+
+    cell = tmp_path / "cells" / "cell-a"
+    cell.mkdir(parents=True)
+    calls = [
+        {"status": 200, "path": "/api/v1/messages", "generation_id": "gen-1", "receipt": {
+            "available": True, "total_cost": 0.10, "provider_name": "Meta", "model": "m",
+            "native_tokens_prompt": 100, "native_tokens_completion": 10,
+            "native_tokens_cached": 0, "native_tokens_reasoning": 0, "preset_id": "p"}},
+        {"status": 404, "path": "/api/v1/messages/count_tokens?beta=true",
+         "receipt": {"available": False, "missing_surface": "no id"}},
+    ]
+    (cell / "gateway-receipts-attempt.json").write_text(
+        json.dumps({"calls": calls, "totals": _recount(calls)})
+    )
+
+    rolled = record_gateway_totals(tmp_path)
+    assert rolled["complete"] is True
+    assert rolled["totals"]["calls_observed"] == 2
+    assert rolled["totals"]["calls_with_receipt"] == 1
+    assert rolled["totals"]["calls_without_generation"] == 1
+    assert rolled["totals"]["calls_missing_receipt"] == 0
+    assert rolled["totals"]["gateway_cost_usd"] == pytest.approx(0.10)
+
+
+def test_a_leg_that_says_it_is_a_floor_makes_the_whole_record_incomplete(tmp_path):
+    """The rollup sums per-leg totals; without this it could report `complete` over legs that
+    each say their own coverage is short."""
+    from taskbench.qualify_batch import record_gateway_totals
+
+    cell = tmp_path / "cells" / "cell-a"
+    cell.mkdir(parents=True)
+    (cell / "gateway-receipts-attempt.json").write_text(json.dumps({
+        "calls": [],
+        "totals": {"calls_observed": 2, "calls_with_receipt": 1, "calls_missing_receipt": 1,
+                   "calls_without_generation": 0, "gateway_cost_usd": 0.10,
+                   "native_tokens_prompt": 1, "native_tokens_completion": 1,
+                   "native_tokens_cached": 0, "native_tokens_reasoning": 0},
+    }))
+    assert record_gateway_totals(tmp_path)["complete"] is False
+
+
 def test_a_receipt_that_is_genuinely_absent_keeps_the_floor_label(tmp_path):
     from taskbench.qualify_batch import refetch_missing_receipts
 

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -241,6 +242,26 @@ def _extract_from_sse(body: bytes) -> dict[str, Any]:
     return out
 
 
+class _QuietServer(ThreadingHTTPServer):
+    """A keep-alive connection the harness closes without reusing is not an error.
+
+    Claude Code opens more pooled connections than it ends up needing and drops the spares.
+    `socketserver` prints a full traceback for each, and a batch produces dozens — into the
+    same stream a reader scans for the one traceback that would mean a lost call. Silencing
+    them is about keeping that signal readable; anything that is NOT an idle-connection reset
+    still gets the default report.
+
+    This cannot hide a dropped call: these fire while reading the request line, before any
+    request exists. A failure with a request behind it is recorded on the call itself as
+    `proxy_error`, which is a field of the record rather than a line of log.
+    """
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        if isinstance(sys.exc_info()[1], (ConnectionResetError, BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
+
+
 class _Handler(BaseHTTPRequestHandler):
     """One proxied hop. Streams both ways; keeps a copy; edits nothing."""
 
@@ -402,7 +423,7 @@ class ReceiptRecorder:
         # No global timeout on the read: an agent turn can think for minutes and a timeout here
         # would truncate a real response into a proxy error.
         self.client = httpx.Client(timeout=httpx.Timeout(30.0, read=None))
-        self._server = ThreadingHTTPServer((host, port), _Handler)
+        self._server = _QuietServer((host, port), _Handler)
         self._server.recorder = self  # type: ignore[attr-defined]
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 
@@ -562,6 +583,54 @@ RECEIPT_FIELDS = (
 )
 
 
+def coverage(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Split observed calls three ways, so a receipt gap is not confused with a call that
+    never produced a generation.
+
+    Claude Code probes `/messages/count_tokens` before a long prompt, and OpenRouter's
+    Anthropic skin does not implement it — the gateway answers 404. Nothing was generated,
+    nothing was billed, and no `/generation` record exists or ever will. Counting those as
+    missing receipts stamps a "these totals are a floor" caveat on a bundle whose accounting
+    is in fact complete, which teaches a reader to ignore the caveat when it matters.
+
+    The rule is mechanical rather than a path allowlist: **a call the gateway refused with a
+    known non-2xx status produced no generation.** Everything else with no receipt is a real
+    gap and stays one — that is the case where the money was spent and the accounting is
+    missing. An unknown status counts as a gap for the same reason: this function may only
+    ever excuse a call on positive evidence, never on the absence of it.
+    """
+    receipted = [r for r in rows if (r.get("receipt") or {}).get("available")]
+    rest = [r for r in rows if not (r.get("receipt") or {}).get("available")]
+
+    def answered(row: dict[str, Any]) -> bool:
+        status = row.get("status")
+        return not isinstance(status, int) or 200 <= status < 300
+
+    gaps = [r for r in rest if answered(r)]
+    refused = [r for r in rest if not answered(r)]
+
+    out: dict[str, Any] = {
+        "calls_observed": len(rows),
+        "calls_with_receipt": len(receipted),
+        "calls_missing_receipt": len(gaps),
+        "calls_without_generation": len(refused),
+    }
+    if refused:
+        by_kind: dict[str, int] = {}
+        for row in refused:
+            kind = f"{row.get('status')} {row.get('path')}"
+            by_kind[kind] = by_kind.get(kind, 0) + 1
+        out["without_generation_detail"] = {
+            "calls": dict(sorted(by_kind.items())),
+            "why_not_a_gap": (
+                "the gateway refused these, so no generation was created and no receipt "
+                "exists to fetch. They are reported rather than dropped, and they do not "
+                "make the totals a floor."
+            ),
+        }
+    return out
+
+
 def reconcile(
     calls: list[ObservedCall],
     api_key: str,
@@ -635,10 +704,7 @@ def reconcile(
             rows.append(row)
 
         receipted = [r for r in rows if r["receipt"].get("available")]
-        totals: dict[str, Any] = {
-            "calls_observed": len(rows),
-            "calls_with_receipt": len(receipted),
-        }
+        totals: dict[str, Any] = coverage(rows)
         if receipted:
             def total(key: str) -> Any:
                 values = [r["receipt"].get(key) for r in receipted]
@@ -662,11 +728,12 @@ def reconcile(
             totals["preset_ids"] = sorted(
                 {str(r["receipt"].get("preset_id")) for r in receipted}
             )
-        missing = len(rows) - len(receipted)
+        missing = totals["calls_missing_receipt"]
         if missing:
             totals["incomplete"] = (
-                f"{missing} of {len(rows)} observed call(s) have no gateway receipt. Every "
-                "total above covers only the receipted calls and is a floor, not a total."
+                f"{missing} of {len(rows)} observed call(s) were answered by the gateway and "
+                "have no receipt. Every total above covers only the receipted calls and is a "
+                "floor, not a total."
             )
         return {"calls": rows, "totals": totals}
     finally:

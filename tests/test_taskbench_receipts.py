@@ -11,6 +11,7 @@ becoming a zero.
 from __future__ import annotations
 
 import json
+import struct
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -298,15 +299,40 @@ def test_stop_reports_whether_it_managed_to_drain(upstream, tmp_path):
     assert rec.stop(drain_timeout=30) is True
 
 
+def test_a_dropped_idle_connection_does_not_print_a_traceback(upstream, tmp_path, capfd):
+    """A harness that opens more pooled connections than it uses drops the spares, and each
+    one otherwise prints a full traceback into the stream a reader scans for the traceback
+    that would mean a lost call."""
+    import socket
+
+    base, _ = upstream
+    rec = ReceiptRecorder(tmp_path / "q.jsonl", origin=base).start()
+    try:
+        host, port = rec._server.server_address[0], int(rec._server.server_address[1])
+        sock = socket.create_connection((str(host), port), timeout=5)
+        sock.setsockopt(  # RST rather than FIN, which is what a pooled-connection drop does
+            socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+        )
+        sock.close()
+        httpx.post(f"{rec.base_url}/v1/messages", json={"model": "m"}, timeout=30)
+        assert rec.drain(timeout=30)
+    finally:
+        rec.stop()
+
+    assert len(rec.calls) == 1, "the real call is still recorded"
+    assert "ConnectionResetError" not in capfd.readouterr().err
+
+
 def test_reconcile_totals_only_the_calls_that_have_receipts():
+    """A call the gateway ANSWERED and did not account for is the gap that makes a floor."""
     calls = [
         ObservedCall(
             seq=1, started_utc="t", finished_utc="t", duration_ms=1, method="POST",
             path="/v1/messages", status=200, streamed=False, generation_id="gen-abc123",
         ),
-        ObservedCall(  # no id: nothing to ask about
+        ObservedCall(  # answered, but the response carried no id: money spent, no accounting
             seq=2, started_utc="t", finished_utc="t", duration_ms=1, method="POST",
-            path="/v1/messages", status=500, streamed=False,
+            path="/v1/messages", status=200, streamed=False,
         ),
     ]
     with _generation_transport() as client:
@@ -314,10 +340,37 @@ def test_reconcile_totals_only_the_calls_that_have_receipts():
     totals = out["totals"]
     assert totals["calls_observed"] == 2
     assert totals["calls_with_receipt"] == 1
+    assert totals["calls_missing_receipt"] == 1
     assert totals["gateway_cost_usd"] == pytest.approx(0.000123)
     assert totals["resolved_upstreams"] == ["GMICloud"]
     assert totals["preset_ids"] == ["omegahive-deepseek-v4-flash-0731"]
     assert "floor, not a total" in totals["incomplete"]
+
+
+def test_a_call_the_gateway_refused_is_not_a_missing_receipt():
+    """Claude Code probes `/messages/count_tokens`, OpenRouter's Anthropic skin 404s it, and
+    nothing is generated or billed. Counting that as a receipt gap puts a floor caveat on a
+    bundle whose accounting is complete — which teaches a reader to ignore the caveat."""
+    calls = [
+        ObservedCall(
+            seq=1, started_utc="t", finished_utc="t", duration_ms=1, method="POST",
+            path="/v1/messages", status=200, streamed=False, generation_id="gen-abc123",
+        ),
+        ObservedCall(
+            seq=2, started_utc="t", finished_utc="t", duration_ms=1, method="POST",
+            path="/v1/messages/count_tokens?beta=true", status=404, streamed=False,
+        ),
+    ]
+    with _generation_transport() as client:
+        out = reconcile(calls, "sk-or-x", client=client, first_delay_s=0.001)
+    totals = out["totals"]
+    assert totals["calls_observed"] == 2, "the refused call is still reported, never dropped"
+    assert totals["calls_with_receipt"] == 1
+    assert totals["calls_missing_receipt"] == 0
+    assert totals["calls_without_generation"] == 1
+    assert "incomplete" not in totals, "complete accounting must not read as a floor"
+    detail = totals["without_generation_detail"]["calls"]
+    assert detail == {"404 /v1/messages/count_tokens?beta=true": 1}
 
 
 def test_a_field_missing_from_any_receipt_makes_its_total_unknown_not_partial():
