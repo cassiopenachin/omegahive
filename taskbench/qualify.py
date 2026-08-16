@@ -252,6 +252,13 @@ DISPOSITIONED = {
         "record fields, and `read1` so the recorded first-response timestamp means what it "
         "already claimed. No change to what a cell is asked, how it is graded, or what passes."
     ),
+    "taskbench/preflight.py": (
+        "`check_corpus` compares the held-in set as a SET rather than as an ordered list. The "
+        "guard is unchanged in strength — a launch that omits a task or names one the corpus "
+        "does not hold in is still refused, and now says which — but it no longer refuses a "
+        "batch for running the precommitted lead task first, which the order requires of every "
+        "bundle. No other check is touched."
+    ),
     "taskbench/cli.py": (
         "adds the qualify-preflight, qualify-smoke, run-gateway, gateway-totals and matrix "
         "commands; no existing command's behaviour is changed."

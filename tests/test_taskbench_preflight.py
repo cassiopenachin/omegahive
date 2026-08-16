@@ -224,3 +224,38 @@ def test_a_task_that_needs_no_database_is_not_gated_on_one(corpus, monkeypatch):
     corpus.manifests["greeting"].environment_needs = ["nothing"]
     monkeypatch.setenv(preflight.TEST_DSN_ENV, "postgresql://nobody@127.0.0.1:1/none")
     assert preflight.check_database_reachable(corpus, ["greeting"]) == []
+
+
+def test_the_held_in_check_is_about_membership_not_sequence(corpus):
+    """It refused two live launches for putting the precommitted lead task first — which the
+    order requires of every bundle — while reporting the identical five ids back with nothing
+    to show that only their order differed."""
+    from taskbench.preflight import check_corpus
+
+    reordered = list(reversed(list(corpus.catalog.held_in)))
+    assert check_corpus(
+        corpus, expect_hash=corpus.content_hash, expect_held_in=reordered
+    ) == []
+
+
+def test_a_narrowed_launch_is_still_refused_and_says_what_is_missing(corpus):
+    from taskbench.preflight import check_corpus
+
+    """The guard's real job, undiminished: a batch that quietly drops a task would score a
+    partial bundle as a whole one."""
+    held_in = list(corpus.catalog.held_in)
+    problems = check_corpus(
+        corpus, expect_hash=corpus.content_hash, expect_held_in=held_in[:-1]
+    )
+    assert problems and "would score a partial bundle" in problems[0]
+    assert held_in[-1] in problems[0]
+
+
+def test_a_launch_naming_an_unknown_task_is_still_refused(corpus):
+    from taskbench.preflight import check_corpus
+
+    problems = check_corpus(
+        corpus, expect_hash=corpus.content_hash,
+        expect_held_in=[*corpus.catalog.held_in, "not-a-corpus-task"],
+    )
+    assert problems and "the corpus does not hold in" in problems[0]

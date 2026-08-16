@@ -83,9 +83,26 @@ def check_corpus(corpus: LoadedCorpus, *, expect_hash: str, expect_held_in: list
             "The corpus moved: either restore it or increment the corpus version, because a "
             "record pinning a hash nobody can reproduce is not evidence."
         )
-    if list(corpus.catalog.held_in) != list(expect_held_in):
+    # Compared as SETS, which is what the message has always called them. The guard's job is
+    # to catch a corpus that moved and a launch that silently narrowed the study — a batch
+    # missing a task, or carrying one the corpus does not have. Execution ORDER is not part of
+    # that: the same five tasks in a different sequence are the same study.
+    #
+    # It used to compare ordered lists, which refused a launch for putting the precommitted
+    # cheapest/high-signal task first — something the order requires of every bundle. Two live
+    # refusals came from that, both reporting the identical five ids back to the operator with
+    # no indication that only their sequence differed.
+    missing = sorted(set(corpus.catalog.held_in) - set(expect_held_in))
+    extra = sorted(set(expect_held_in) - set(corpus.catalog.held_in))
+    if missing or extra:
+        detail = []
+        if missing:
+            detail.append(f"the launch omits {missing}, which would score a partial bundle")
+        if extra:
+            detail.append(f"the launch names {extra}, which the corpus does not hold in")
         problems.append(
-            f"held-in set is {corpus.catalog.held_in}, the launch expects {expect_held_in}"
+            f"held-in set is {sorted(corpus.catalog.held_in)}, the launch expects "
+            f"{sorted(expect_held_in)}: " + "; ".join(detail)
         )
     for tid in expect_held_in:
         if tid in corpus.catalog.held_out:

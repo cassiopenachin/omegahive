@@ -213,8 +213,12 @@ def test_no_path_is_dispositioned_into_being_unchecked():
             f"{path} carries a disposition that asserts nothing"
         )
         assert len(text) > 40, f"{path} needs a disposition that says what changed and why"
-    for absent in ("taskbench/preflight.py", "taskbench/record.py"):
-        assert absent not in qualify.DISPOSITIONED, (
-            f"{absent} must be in neither list, so any change to it surfaces as undeclared"
+    # `record.py` is unchanged and must stay in neither list, so any future edit to it —
+    # `validate_record` is what the incumbent check relies on — surfaces as undeclared.
+    assert "taskbench/record.py" not in qualify.DISPOSITIONED
+    assert "taskbench/record.py" not in qualify.SCORING_FROZEN
+    # A disposition must describe a change that was actually made, not reserve a slot.
+    for path, text in qualify.DISPOSITIONED.items():
+        assert any(word in text for word in ("adds", "compares", "additive", "no other")), (
+            f"{path}'s disposition does not say what changed"
         )
-        assert absent not in qualify.SCORING_FROZEN
