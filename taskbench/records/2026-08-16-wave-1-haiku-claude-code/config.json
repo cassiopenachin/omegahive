@@ -1,0 +1,71 @@
+{
+  "agent_labels": {
+    "harness": "claude-code-2.1.233",
+    "model": "claude-haiku-4-5",
+    "vendor": "anthropic"
+  },
+  "corpus_content_hash": "sha256:6bdbb73352bcf61bddef97ddd50c51d3dc1cdf283a42648ceb1086bab0a23085",
+  "corpus_file_hashes": {
+    "corpus.yaml": "sha256:de134fe366c865b80e346415b765a32413f19293bd69d138b958976748e228fb",
+    "grading/cli-qol.yaml": "sha256:886376ebacff2cc295c990a789374f6036974c12cdb1d3cc54b32f4011c5aa36",
+    "grading/docs-triage.yaml": "sha256:b2fb4c820b4876b2405514ea417f940ce541e0d8e860a9117fa3868579052b20",
+    "grading/instrument-teeth.yaml": "sha256:8105a11ee114a89d3b92130c26076545da6e1367aebf666d8b8cd8ea291b8a45",
+    "grading/launch-pane-fix.yaml": "sha256:43b31a7635fb2ba13838f10962b76708ae6ebb1b4998d173601482ddc2e04552",
+    "grading/notifier-deep-links.yaml": "sha256:e8a2b2338820a005d0133b2809224358b3dddc521a40a743f4679cd191701451",
+    "grading/port-sha-pin-fallback.yaml": "sha256:e96148ec0fab8ad0f37c927cd5e01487271f9d847e8fa9b580c497d76019609b",
+    "grading/ptc-revalidate.yaml": "sha256:52bb1c0b13d6eb8318d033fc57ddaa3d3af8abddae8e8ab77e29bceb3ad4e8f6",
+    "grading/run-registration.yaml": "sha256:15b0bc2be9592c0358b021ad9f2c7aeec52de17e5f38f94ac7a8dd90484fea50",
+    "mocks/gh": "sha256:ad6cc2574b8b2f8a4a6bb1ef63b4927d94de2b2d7ca0506bec75acc204d5721a",
+    "rubrics/cli-qol.md": "sha256:9c488855d2733cc9c745d2344c08e0f4a76d795638b4b05aec0f2722887f2004",
+    "rubrics/docs-triage.md": "sha256:48242f90bc21bb0d22c43df7de6ec745a155037d0e2b1576f459fff29eb554c4",
+    "rubrics/instrument-teeth.md": "sha256:908d1e96317057791da977d872a9b7a6a08403e55de3c29a7610f1af0ebe70f5",
+    "rubrics/launch-pane-fix.md": "sha256:fdc16dcb207208ef166ef84974713d82799f5c7bfac0498d928bec80e4fc60f3",
+    "rubrics/notifier-deep-links.md": "sha256:655f5a4ef1d7692fe092465d13870f0a1d490b738d3dbf643a1ce1d8b2d76e59",
+    "rubrics/port-sha-pin-fallback.md": "sha256:645d1bb245f9fdacca2b5d713f0edac2720c35e3cf220f1d989d597e9accd21b",
+    "rubrics/ptc-revalidate.md": "sha256:fd2d2b806eb5f1a0f345445f5fe5167915e07c6405d46e6cf648d263d4b046f9",
+    "rubrics/run-registration.md": "sha256:b302ac489d09d366c7691ec37fd112439f610142b7f7604e05f452dd8539b696",
+    "tasks/cli-qol.yaml": "sha256:1e532ee1e2b40d03ff53f3dc52544fcadd3bfad49f0b9c063d4c3e74f5eb02f2",
+    "tasks/docs-triage.yaml": "sha256:30c344c3a36432c5342ff1d6de97b6662cd3ad9916f67465913d5c05b6b5d376",
+    "tasks/instrument-teeth.yaml": "sha256:22bb9fdfa44a64f0de55eec6285cd28f4efe2232a2f0183615d7bfab0a4bbc05",
+    "tasks/launch-pane-fix.yaml": "sha256:0f1de9eea7ed2de867892d192e0151b3f82207dc2990352ff6a7b0c97e00dd34",
+    "tasks/notifier-deep-links.yaml": "sha256:60d590dbf3070e8f6b1234640a70d4189f9fffd64e2cb4de5397357674117f40",
+    "tasks/port-sha-pin-fallback.yaml": "sha256:c05095c67cfa103f3be216ab5ad8782b4a682d7a5c0b1e3fa50636b4d4a5d124",
+    "tasks/ptc-revalidate.yaml": "sha256:4835a2dbc8c83ca8bcedc9435dd866d5ea6bc756e417c10d2c29fb4c410e0cee",
+    "tasks/run-registration.yaml": "sha256:846be4745579cfca28a256ed256b1f4b63a5e6ee93e4446235e87ed15d6495ca",
+    "verifiers/docs_index_complete.py": "sha256:e2a56ab1b81cb4387e87ac90d1d2cd131adf5ecdcd6ddfc1088474909dd42ba0",
+    "verifiers/docs_nothing_deleted.py": "sha256:9c4c979c8a8cf226182bd353f07582981e4819710324f20c264215b6ca5bed45",
+    "verifiers/link_integrity.py": "sha256:b372e51a188873c7abed3df79a0dd69d89426eb9b5fc5d2b120a90ffc4f8dea6",
+    "verifiers/port_sha_resolver_property.py": "sha256:6cb6eabd7141fbfab9e44a2966326342e1fdbe047fbdac86a044e67dd6d4fc0a",
+    "verifiers/ptc_repro_present.py": "sha256:834de64849d1889bb8fbf6774b07af1e4711ac32fc7c5647d63e32531e12079f",
+    "verifiers/ptc_subjects_unpatched.py": "sha256:470c48bd2c2cd052123e76167bee88648e2cef11914f1d8d7e5e49481fd6d45a",
+    "verifiers/ptc_verdict_shape.py": "sha256:3c4f2d8378ecd1797bafd8b717ec55afa95d18667dafc209c22f846acafd5ee7",
+    "verifiers/run_registration_property.py": "sha256:70feeda87dc646dc2746fd831228b184eea4f2fe4bb00d6564c7d12e7f098368"
+  },
+  "corpus_version": "v0.1",
+  "date": "2026-08-16",
+  "held_in": [
+    "launch-pane-fix",
+    "instrument-teeth",
+    "docs-triage",
+    "run-registration",
+    "ptc-revalidate"
+  ],
+  "held_out": [
+    "cli-qol",
+    "notifier-deep-links",
+    "port-sha-pin-fallback"
+  ],
+  "host": {
+    "platform": "Linux-6.18.4-200.fc43.x86_64-x86_64-with-glibc2.42",
+    "python": "3.12.13"
+  },
+  "record_id": "wave-1-haiku-claude-code",
+  "reviewer_labels": {
+    "harness": "claude-code-2.1.233",
+    "model": "opus",
+    "vendor": "anthropic"
+  },
+  "runner_config_hash": "sha256:8c3141c50aeab89e0df95b5608a819d4c2ded47d57d091c27338a31bef8f30f7",
+  "supersedes": null,
+  "taskbench_code_sha": "b550b777bab2698fe2c1832f29c47d9d57b7fe73"
+}

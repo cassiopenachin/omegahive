@@ -158,19 +158,39 @@ def test_the_codex_wrapper_seeds_the_cell_home_with_auth_and_nothing_else():
 
 def test_the_paired_wave_freezes_its_schedule_before_any_result_exists():
     body = (LAUNCH / "wave-3-deepseek-paired.sh").read_text()
-    assert "TASK_ORDER=(" in body and "LEAD_ORDER=(" in body
+    assert "TASK_ORDER=(" in body and "ARM_ORDER=(" in body
     assert "frozen-schedule.txt" in body
-    # Alternating lead: neither harness is systematically first.
-    leads = body.split("LEAD_ORDER=(")[1].split(")")[0].split()
-    assert leads.count("reasonix") >= 2 and leads.count("claude-code") >= 2
-    assert leads[0] != leads[1], "the lead must alternate, not run in blocks"
+    arms = body.split("ARM_ORDER=(")[1].split(")")[0].split()
+    assert arms == ["reasonix", "claude-code"], "the lead arm is fixed before results exist"
+
+
+def test_the_paired_wave_declares_the_whole_held_in_set_for_each_arm():
+    """Per-task interleaving would declare a subset per invocation, which preflight refuses —
+    the collision that made adjacent matched pairs unbuildable against the frozen pipeline."""
+    body = code("wave-3-deepseek-paired.sh")
+    assert 'ALL_TASKS="$(IFS=,; printf' in body
+    assert 'run_arm_task "$arm" "$ALL_TASKS"' in body
+    held_in = load_corpus(CORPUS_ROOT / "v0.1").catalog.held_in
+    declared = body.split("TASK_ORDER=(")[1].split(")")[0].split()
+    assert sorted(declared) == sorted(held_in)
+
+
+def test_the_paired_wave_states_the_adjacency_it_could_not_preserve():
+    """A confound that is named can be weighed; one left out of the launcher reads afterwards as
+    a property the study had."""
+    body = (LAUNCH / "wave-3-deepseek-paired.sh").read_text()
+    assert "ADJACENT MATCHED PAIRS" in body
+    assert "pipeline.py" in body, "the reason must name what would have to change"
+    assert "belongs" in body and "in the result beside the deltas" in body
 
 
 def test_the_paired_wave_signs_both_arms_in_one_command():
     """Signing them separately would let one arm run under conditions the other did not."""
     body = (LAUNCH / "wave-3-deepseek-paired.sh").read_text()
     assert "wave-3a-deepseek-reasonix" in body and "wave-3b-deepseek-claude-code" in body
-    assert body.count("run_arm_task") >= 3
+    # Both arms are driven from one invocation: one loop over ARM_ORDER, not two commands.
+    assert 'for i in "${!ARM_ORDER[@]}"' in code("wave-3-deepseek-paired.sh")
+    assert code("wave-3-deepseek-paired.sh").count("run_arm_task") == 2  # definition + call
 
 
 def test_both_deepseek_arms_use_the_same_preset_and_upstream():

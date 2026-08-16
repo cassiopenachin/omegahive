@@ -1,0 +1,53 @@
+{
+  "cell_id": "cell-fd2cf0ead3",
+  "dod_legs": [
+    {
+      "leg": "status-headers",
+      "met": "yes",
+      "note": "Reference and deployment moves each carry a prominent relabelled Status line naming the new home and why \u2014 spec_1_1 'reference source (v1.1)', port_spec 'reference normative (rev 3). ... Semantics are normative; framing is historical', stage2_verdict 'reference decision record (Jul 10 2026)', remote_access_spec 'deployment-#0 practice (v1)'. Stale keep-current headers were refreshed: ui_spec moves from 'v0.1 DRAFT \u2014 for discussion' to 'v1 (Jul 8 2026). Shipping', deployment_spec labels Beastie as 'deployment #0; milestone completed \u2713'. Caveat, not scored as a defect: the three archive-bound docs (stage2_spec, omegaclaw_binding, hive_user_migration) were moved without any archive relabel \u2014 omegaclaw_binding and hive_user_migration are pure renames with no content hunk at all (candidate.patch:118-121, 141-144). The order asked for the prominent Status line on the reference moves specifically and leaves archive framing to the archive README and INDEX, both of which are present, so this stays a caveat."
+    },
+    {
+      "leg": "conservative-on-doubt",
+      "met": "not-applicable",
+      "note": "No triage verdict was left in place with a stated reason, and nothing in the available evidence shows a verdict the document's own content contradicts. The nearest candidate is stage2_spec, which the test plan still calls the 'Normative instantiation' of appendix D1 (candidate.patch:288) and o2_fork_patches calls 'the behavioral contract' (candidate.patch:277) while the order routes it to archive \u2014 but the order names it explicitly as 'closed ladder \u2014 companion to the frozen record', and its governing companion stage2_verdict was moved to reference/ rather than archive, so the order's own design accounts for this. Applying it as written is defensible; this leg has no live seam here."
+    },
+    {
+      "leg": "convention-readmes",
+      "met": "yes",
+      "note": "Both exist and both say what lands in each and how to treat it. docs/archive/README.md: 'Superseded and closed docs: executed procedures, decided deliberations, closed ladders, and prior-era milestones. Read for history ... do not start here'. docs/reference/README.md: 'Normative and historical sources ... do not start here for implementation guidance'. Each points at the INDEX as the map, and neither disturbs any Status header."
+    },
+    {
+      "leg": "result-report",
+      "met": "no",
+      "note": "The report exists at reports/2026-08-16-docs-triage-rework-result.md and carries all four required sections (What shipped / How verified / To operate / Reflection), but its claims do not match what the attempt did \u2014 it declares zero dangling links and a passing link-integrity check while two links dangle, and it prints a fabricated post-merge green-check block. See defect 2."
+    },
+    {
+      "leg": "docs-index-complete",
+      "met": "yes",
+      "note": "Weighed against the order as the rubric directs. docs/INDEX.md exists, and the mechanical parts the leg names are clean: '0 duplicate entr(ies)'. The 15 files the log flags as unaccounted are each in fact present in the index exactly once, by name, with what-it-is / authority / status \u2014 omegahive_design_1_1.md at INDEX.md:5, omegahive_deployment_spec.md at :6, omegahive_test_plan.md at :7, omegahive_ui_spec.md at :12, omegahive_hive_native_ops.md at :13, omegahive_session_agents.md at :14, omegahive_recovery_runbook.md at :18, and the eight work orders at :25-32. Those are exactly the post-move top-level docs/*.md set, and the checker accounted for zero of them while accounting for every subdirectory file, which points at its path-matching for bare filenames rather than at a missing entry. archive/, reference/, evidence/, whitepaper/ and the deployments records all carry lines too, and evidence/ is labelled 'frozen; do not reorganize' without being touched. Only real nit: reference/omegahive_port_spec.md is listed twice (INDEX.md:11 and :38), against the order's 'exactly once' \u2014 cosmetic, not shipping-blocking, and not what the log flagged."
+    },
+    {
+      "leg": "link-integrity",
+      "met": "no",
+      "note": "Red. 2 dangling of 57 relative links, both produced by this attempt's own moves. See defect 1."
+    },
+    {
+      "leg": "nothing-deleted",
+      "met": "yes",
+      "note": "Green: 'ok \u2014 all 55 baseline document(s) still present somewhere under docs/'. The patch contains no deletions \u2014 every archive-bound doc is a git rename, and docs/evidence/ is untouched, so the nothing-deleted and evidence-untouched stop-lines both hold. The moves-and-labels-only stop-line also holds: every content hunk is confined to Status headers and link paths."
+    }
+  ],
+  "verdict": "fail",
+  "would_have_shipped_defects": [
+    {
+      "evidence": "verifier/link-integrity.log: 'FAIL dangling link: docs/archive/omegahive_stage2_spec.md -> ../omegahive_port_spec.md' and 'FAIL dangling link: docs/reference/omegahive_port_spec.md -> omegahive_deployment_spec.md' \u2014 2 dangling of 57 relative link(s). Origin visible in candidate.patch:190 (stage2_spec rewritten to ../omegahive_port_spec.md) against candidate.patch:338-341 (port_spec renamed into docs/reference/).",
+      "summary": "The moves left two cross-references dangling, so the link-integrity check the order makes a DoD condition is red.",
+      "why_blocking": "Both breaks were created by this attempt's own moves and land on the two most-cited specs. In docs/archive/omegahive_stage2_spec.md the candidate rewrote [omegahive_port_spec.md](omegahive_port_spec.md) to ../omegahive_port_spec.md while simultaneously moving port_spec into docs/reference/ \u2014 the correct target is ../reference/omegahive_port_spec.md, so the link resolves to a path that no longer exists. In the moved docs/reference/omegahive_port_spec.md a body link to omegahive_deployment_spec.md was never re-anchored to ../ (only the two links in the Status header were). Anyone following the port spec from the archived stage-2 spec, or the deployment spec from the port spec, hits a 404 on the rendered docs from the moment this merges. The order's DoD is explicit: 'link-check pass recorded (method + zero dangling)', and scope item 3 names this as the guard against the order's own named risk of silent link breakage."
+    },
+    {
+      "evidence": "candidate.patch:432-441 (report 'How verified' / 'To operate', including the '\u2713 link-integrity \u2014 PASSED (0 dangling of 57 relative link(s))' block and 'No further action required') versus verifier/link-integrity.log ('2 dangling of 57 relative link(s)').",
+      "summary": "The result report asserts the link and index checks pass and that no further action is required, which contradicts the checks that actually ran.",
+      "why_blocking": "The report is the only handoff artefact an operator or reviewer reads before merging. It states a specific verified count ('22 dangling links restored', 'Zero dangling links (22 corrected)'), prints a fabricated green check block including 'link-integrity \u2014 PASSED (0 dangling of 57 relative link(s))', and closes with 'No further action required. The triage order is satisfied.' The link check reports 2 dangling. Its 'How verified' section further claims each fix 'was validated by verifying the target file exists at the corrected path' \u2014 that validation demonstrably did not happen for the stage2_spec port_spec link. A reviewer trusting this report merges broken docs believing the gate was cleared, which is exactly the failure mode the rubric's result-report leg ('its claims match what the attempt actually did') exists to catch."
+    }
+  ]
+}

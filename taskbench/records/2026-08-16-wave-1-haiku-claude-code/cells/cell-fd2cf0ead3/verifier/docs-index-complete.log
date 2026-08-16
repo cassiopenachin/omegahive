@@ -1,0 +1,17 @@
+FAIL not accounted for in the index: docs/omegahive_c2_battery_spec.md
+FAIL not accounted for in the index: docs/omegahive_c2_v0a_v2_order.md
+FAIL not accounted for in the index: docs/omegahive_deployment_spec.md
+FAIL not accounted for in the index: docs/omegahive_design_1_1.md
+FAIL not accounted for in the index: docs/omegahive_hive_native_ops.md
+FAIL not accounted for in the index: docs/omegahive_o2_fork_patches.md
+FAIL not accounted for in the index: docs/omegahive_port_fixes_D1-D5.md
+FAIL not accounted for in the index: docs/omegahive_recovery_runbook.md
+FAIL not accounted for in the index: docs/omegahive_session_agents.md
+FAIL not accounted for in the index: docs/omegahive_stage2_fixes_A1-A4.md
+FAIL not accounted for in the index: docs/omegahive_test_plan.md
+FAIL not accounted for in the index: docs/omegahive_ui_spec.md
+FAIL not accounted for in the index: docs/omegahive_v0b_order.md
+FAIL not accounted for in the index: docs/omegahive_v3_fixes_B1-B6.md
+FAIL not accounted for in the index: docs/omegahive_v3_kb_persona_brief.md
+
+15 unaccounted file(s) and 0 duplicate entr(ies); 57 file(s) under docs/. A directory covered by one index line counts as covered — an unaccounted subtree needs one line, not one per file.

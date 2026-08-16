@@ -32,10 +32,26 @@ readonly VENDOR="deepseek"
 readonly UPSTREAM="gmicloud/fp8"
 
 # THE FROZEN SCHEDULE. Written down here, before any result exists, and echoed into the work
-# root at launch so it is auditable afterwards. Alternating lead by task means neither harness
-# is systematically first, so neither systematically gets the colder cache or the busier hour.
+# root at launch so it is auditable afterwards.
+#
+# WHAT THIS IS NOT, and the reason is worth reading before trusting the deltas. The order asks
+# for the arms to run as ADJACENT MATCHED PAIRS with an alternating lead — arm A then arm B on
+# each task in turn — so that neither systematically gets the colder cache or the busier hour.
+# That cannot be built here: per-task interleaving means every invocation but the last declares
+# a subset of the held-in set, and `preflight.check_corpus` refuses a launch that does not
+# declare all five. That guard is the only thing standing between a partial bundle and a pass
+# rate that looks whole, so it is not something to relax for one wave's schedule; the clean
+# implementation needs `pipeline.run_batch` to stop after N cells, and `pipeline.py` is
+# byte-frozen to the pinned revision.
+#
+# So each arm runs its five cells as one ordinary batch, BACK TO BACK, in the lead order below.
+# What is preserved: same model, same preset, same upstream, fallback disabled, same tasks, same
+# kickoff, and a per-generation receipt naming the provider that served every call — which is
+# what the pair's claim actually rests on. What is lost: per-task adjacency, so a drift in
+# gateway conditions across the hour lands unevenly between the two columns. That loss belongs
+# in the result beside the deltas, not in a footnote.
 readonly TASK_ORDER=(docs-triage instrument-teeth launch-pane-fix ptc-revalidate run-registration)
-readonly LEAD_ORDER=(reasonix claude-code reasonix claude-code reasonix)
+readonly ARM_ORDER=(reasonix claude-code)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 readonly REPO_ROOT
@@ -100,9 +116,15 @@ readonly SCHEDULE
 {
   printf '# Frozen before any cell ran. Adjacent matched pairs, alternating lead by task.\n'
   printf '# preset=%s upstream=%s model=%s\n' "$PRESET" "$UPSTREAM" "$MODEL"
-  for i in "${!TASK_ORDER[@]}"; do
-    printf '%d %s lead=%s\n' "$((i + 1))" "${TASK_ORDER[$i]}" "${LEAD_ORDER[$i]}"
+  printf '# arms run as whole five-cell batches, back to back, in this order:\n'
+  for i in "${!ARM_ORDER[@]}"; do
+    printf '%d %s\n' "$((i + 1))" "${ARM_ORDER[$i]}"
   done
+  printf '# tasks, identical and in this order for both arms:\n'
+  for i in "${!TASK_ORDER[@]}"; do
+    printf '%d %s\n' "$((i + 1))" "${TASK_ORDER[$i]}"
+  done
+  printf '# NOT per-task adjacency: see the header of this launcher for why, and report it.\n' 
 } > "$SCHEDULE"
 cat "$SCHEDULE"
 say ""
@@ -225,52 +247,18 @@ say "The precommitted cheapest/high-signal task runs first for BOTH arms. When t
 say "finishes, STOP AND LOOK before the other four. It is a pause point, never permission to"
 say "score a partial bundle as adequate."
 
-# The pause leg is the one where neither arm has a conclusive cell yet — the same rule as the
-# single-harness waves, with a PAIR as the unit rather than a cell, because pausing after one
-# arm would leave nothing to compare it against.
-PAUSING=yes
-for arm in reasonix claude-code; do
-  read -r _rf _rc <<<"$(resume_target "$REPO_ROOT" "${ARM_BASE[$arm]}" "$RECORDS_DIR")"
-  [ "$_rc" != "0" ] && PAUSING=no
-done
-readonly PAUSING
-if [ "$PAUSING" = yes ]; then
-  say ""
-  say "FIRST RUN: this does ONE matched pair and stops. Re-run to continue."
-fi
+ALL_TASKS="$(IFS=,; printf '%s' "${TASK_ORDER[*]}")"
+readonly ALL_TASKS
 
-cumulative=""
 overall=0
-for i in "${!TASK_ORDER[@]}"; do
-  task="${TASK_ORDER[$i]}"
-  lead="${LEAD_ORDER[$i]}"
-  follow="reasonix"; [ "$lead" = "reasonix" ] && follow="claude-code"
-  cumulative="${cumulative:+$cumulative,}$task"
-
-  step "Pair $((i + 1))/5 — $task   (lead: $lead)"
-  run_arm_task "$lead" "$cumulative"   || overall=$?
-  run_arm_task "$follow" "$cumulative" || overall=$?
-
-  if [ "$i" -eq 0 ] && [ "$PAUSING" = yes ]; then
-    step "PAUSE POINT — one pair done, four pairs not started"
-    say "Both arms have completed ${TASK_ORDER[0]}. This is where the order asks you to stop;"
-    say "eight of the ten cells have not been spent."
-    say ""
-    say "  cd $REPO_ROOT"
-    say "  cat ${ARM_RECORD[reasonix]}/aggregate.md"
-    say "  cat ${ARM_RECORD[claude-code]}/aggregate.md"
-    say "  uv run --frozen taskbench gateway-totals ${ARM_RECORD[reasonix]}"
-    say "  uv run --frozen taskbench gateway-totals ${ARM_RECORD[claude-code]}"
-    say ""
-    say "The one thing to check before spending the other eight cells: BOTH arms resolved the"
-    say "same upstream. If they did not, the pair is not answering its question and every"
-    say "further cell is wasted — its two columns would differ in the model's silicon as well"
-    say "as in the harness."
-    say ""
-    say "To run the remaining four pairs, run this same command again. Completed cells are"
-    say "carried forward verbatim, not re-run."
-    exit 0
+for i in "${!ARM_ORDER[@]}"; do
+  arm="${ARM_ORDER[$i]}"
+  step "Arm $((i + 1))/2 — $arm, all five cells"
+  if [ "$i" -eq 0 ]; then
+    say "This arm leads. The other follows immediately, so the two batches are as close"
+    say "together in time as one command can make them."
   fi
+  run_arm_task "$arm" "$ALL_TASKS" || overall=$?
 done
 
 step "Whole-record gateway totals"
