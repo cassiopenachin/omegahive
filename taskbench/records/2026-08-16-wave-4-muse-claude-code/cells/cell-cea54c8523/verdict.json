@@ -1,0 +1,119 @@
+{
+  "because": "all legs green",
+  "cell_id": "cell-cea54c8523",
+  "deterministic": {
+    "checks": [
+      {
+        "detail": "ok",
+        "exit_code": 0,
+        "id": "pytest",
+        "output_tail": "...........................................................\nfold budget:    9996 events ->    143.3 ms (1666 tasks)\n\nfold budget:   99996 events ->     86.3 ms (16666 tasks)\n............. [ 17%]\n........................................................................ [ 35%]\n........................................................................ [ 53%]\n........................................................................ [ 70%]\n........................................................................ [ 88%]\n...............................................                          [100%]\n=============================== warnings summary ===============================\n.venv/lib64/python3.12/site-packages/fastapi/testclient.py:1\n  /home/cassio/work/taskbench/wave-4-muse-claude-code/cell-cea54c8523/code/.venv/lib64/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.\n    from starlette.testclient import TestClient as TestClient  # noqa\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n407 passed, 1 warning in 36.18s\nwarning: `VIRTUAL_ENV=/home/cassio/work/sess-hip1-bench-qualify-0814/omegahive/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead\n",
+        "passed": true
+      },
+      {
+        "detail": "ok",
+        "exit_code": 0,
+        "id": "ruff",
+        "output_tail": "All checks passed!\nwarning: `VIRTUAL_ENV=/home/cassio/work/sess-hip1-bench-qualify-0814/omegahive/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead\n",
+        "passed": true
+      },
+      {
+        "detail": "ok",
+        "exit_code": 0,
+        "id": "mypy",
+        "output_tail": "tests/test_port_properties.py:102: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]\ntests/test_port_properties.py:123: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]\ntests/test_port_properties.py:154: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]\ntests/test_port_properties.py:239: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]\ntests/test_port_properties.py:417: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]\nSuccess: no issues found in 149 source files\nwarning: `VIRTUAL_ENV=/home/cassio/work/sess-hip1-bench-qualify-0814/omegahive/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead\n",
+        "passed": true
+      },
+      {
+        "detail": "ok",
+        "exit_code": 0,
+        "id": "registration-property",
+        "output_tail": "ok \u2014 every registration property case holds\nwarning: `VIRTUAL_ENV=/home/cassio/work/sess-hip1-bench-qualify-0814/omegahive/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead\n",
+        "passed": true
+      }
+    ],
+    "excluded_legs": [
+      {
+        "executed_by": "operator",
+        "leg": "The `omegahive` row demonstrably exists in `runs`, with query evidence.",
+        "reason": "Requires a live-spine mutation or a merged-and-deployed image. Both are operator acts that post-date any worker's result, as the closed task's own report records; an offline replay cannot produce them."
+      },
+      {
+        "executed_by": "not-executed",
+        "leg": "Announce the result on the spine per WORKER.md.",
+        "reason": "A spine emit, which this instrument's own scope forbids. The report the order asks for IS written and graded \u2014 only the announcement is out of reach."
+      }
+    ],
+    "missing_artefacts": [],
+    "passed": true,
+    "stop_line_violations": [],
+    "untouched_required_changes": []
+  },
+  "inconclusive": false,
+  "passed": true,
+  "review": {
+    "defect_count": 0,
+    "passed": true,
+    "probe_ok": true,
+    "ran": true,
+    "reason": "",
+    "verdict": {
+      "cell_id": "cell-cea54c8523",
+      "dod_legs": [
+        {
+          "leg": "runbook-caveats",
+          "met": "yes",
+          "note": "Both restore steps drop the inert-bump caveat. Code repo: docs/omegahive_recovery_runbook.md step 3 now reads 'The bump requires a registered run ... Every run touched by an emit is now registered idempotently on its first event' (candidate.patch:15-22; artefacts/docs/omegahive_recovery_runbook.md:90-97) \u2014 a grep of that file for inert/unregistered/never opened/caveat returns only that rewritten line. Workspace: projects/omegahive/RUNBOOK.md restore step 3 loses 'Today the omegahive run is not registered ... the durable signal is inert' and the wiring note is demoted to a pre-fix backfill (artefacts/workspace.patch:12-33). The restart-every-client floor is retained in both as defense in depth, which the order permits."
+        },
+        {
+          "leg": "result-report",
+          "met": "yes",
+          "note": "projects/omegahive/reports/2026-07-21-run-registration-result.md carries What shipped / How verified / To operate / Reflection (artefacts/workspace.patch:37-112). 'To operate' states the wiring path taken (next-real-emit, Scope item 2 preferred) as the order requires. Claims match the attempt: the gateway change, the two doc edits, and 'no generation semantics, GENERATION_MISMATCH handling, cursor logic, or schema changed' all hold against candidate.patch; the report correctly does NOT claim the live omegahive row exists or that the live generation was bumped (workspace.patch:73, 109). One stale number, non-blocking and not credit-bearing: the report says 'uv run pytest -q \u2014 402 passed' (workspace.patch:71) while verifier/pytest.log:17 shows 407 passed \u2014 the baseline count, i.e. exactly the 5 added tests short. The substantive claim (suite green, no regressions) is true. The report also omits tests/test_run_registration.py from 'What shipped', an under-claim rather than a false claim; the tests are present in the patch."
+        },
+        {
+          "leg": "pytest",
+          "met": "yes",
+          "note": "verifier/pytest.log:17 \u2014 '407 passed, 1 warning in 36.18s'. No failures; the only warning is a pre-existing StarletteDeprecationWarning from a third-party import."
+        },
+        {
+          "leg": "ruff",
+          "met": "yes",
+          "note": "verifier/ruff.log \u2014 'All checks passed!'"
+        },
+        {
+          "leg": "mypy",
+          "met": "yes",
+          "note": "verifier/mypy.log \u2014 'Success: no issues found in 149 source files'. The annotation-unchecked notes are pre-existing untyped test bodies, not errors."
+        },
+        {
+          "leg": "registration-property",
+          "met": "yes",
+          "note": "verifier/registration-property.log \u2014 'ok \u2014 every registration property case holds', covering first emit registers, second emit is a no-op, replayed emit on a run with events but no registry row still registers, and a bump then succeeds. The implementation supports the replay case because self._store.open_run() sits inside the emit transaction BEFORE the idempotency early-return (artefacts/src/omegahive/gateway/gateway.py:96-108), and the candidate's own tests pin that ordering (candidate.patch:115-144)."
+        },
+        {
+          "leg": "no-generation-semantics",
+          "met": "yes",
+          "note": "Not crossed. The only source change is a six-line comment plus one self._store.open_run() call at the top of Gateway.emit's transaction (candidate.patch:30-42). Generation arithmetic, GENERATION_MISMATCH handling, cursor logic and schema are untouched; open_run is the pre-existing registration call, so no schema change beyond what it already does."
+        },
+        {
+          "leg": "never-bump-live",
+          "met": "yes",
+          "note": "Not crossed. The only bump_generation calls are in tests against scratch run ids generated per-test as f\"reg-{uuid4().hex[:10]}\" (candidate.patch:70-71, 163-179). No bump of run_id 'omegahive' appears anywhere in the patch, and the report explicitly records that the live generation was not bumped (artefacts/workspace.patch:73)."
+        },
+        {
+          "leg": "out-of-scope: omegahive row demonstrably exists in runs, with query evidence",
+          "met": "not-applicable",
+          "note": "Rubric places this out of reach of the producing process. The attempt does not falsely claim it \u2014 'To operate' gives the post-deploy verification query and states the row appears after the next real emit (artefacts/workspace.patch:77-91, 109)."
+        },
+        {
+          "leg": "out-of-scope: announce the result on the spine per WORKER.md",
+          "met": "not-applicable",
+          "note": "Rubric places the announcement out of reach; the report the order asks for is written and graded above. The attempt makes no claim to have announced."
+        }
+      ],
+      "verdict": "pass",
+      "would_have_shipped_defects": []
+    }
+  },
+  "task_id": "run-registration"
+}

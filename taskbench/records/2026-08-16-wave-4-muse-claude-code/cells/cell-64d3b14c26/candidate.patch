@@ -1,0 +1,469 @@
+diff --git a/scripts/hive-close b/scripts/hive-close
+index 10e72a6..bb04c23 100755
+--- a/scripts/hive-close
++++ b/scripts/hive-close
+@@ -106,3 +106,19 @@ else
+     echo "  (already-scored is a normal reason for this to fail — add --again to record a second entry.)"
+   } >&2
+ fi
++
++# 6. Regenerate this project's task metrics — strictly AFTER the close emits,
++#    and strictly non-fatal for the same reason as scoring above: the close is
++#    durable on the spine and must not look failed because a workspace artifact
++#    failed to regenerate. Retires R6's surviving manual half.
++if "$SCRIPT_DIR/hive-metrics" "$PROJECT" </dev/null; then
++  echo "hive-close: metrics regenerated (tasks.md / tasks.csv)"
++else
++  {
++    echo
++    echo "hive-close: WARNING the close SUCCEEDED and is durable on the spine — metrics regeneration afterwards did not."
++    echo "  Nothing about task '$TASK' is in doubt: review.passed and status_override(done) are emitted."
++    echo "  Only tasks.md / tasks.csv are stale. Recover with one command:"
++    echo "      hive-metrics $PROJECT"
++  } >&2
++fi
+diff --git a/scripts/hive-common.sh b/scripts/hive-common.sh
+index f71c43c..07ac442 100755
+--- a/scripts/hive-common.sh
++++ b/scripts/hive-common.sh
+@@ -69,6 +69,83 @@ require_safe_tmux_session() {  # require_safe_tmux_session   (reads HIVE_TMUX_SE
+     || die "unsafe HIVE_TMUX_SESSION '$HIVE_TMUX_SESSION' (allowed: A-Za-z0-9._-) — a session name outside this charset cannot be targeted exactly, and tmux would silently act on the wrong session"
+ }
+ 
++# --- predictions parsing (shared gate/scorer) ---------------------------------
++# The four literal labels per seats/design-partner/PROTOCOL.md (retro 2 R1):
++#   - Expected effort:          scored
++#   - Expected questions:       scored
++#   - Expected review outcome:  scored
++#   - Named risks:              required by protocol, scored by NO instrument
++#     The order this change ships under (instrument-teeth) inherits the R2
++#     correction: R2 speaks of "N of 4 fields" but hive-score scores three —
++#     effort, questions, review outcome. Named risks is written by every author
++#     and read by no instrument. That distinction is deliberate (gate-content
++#     change is the operator's call, cf. R9 held) and is stated here rather than
++#     quietly wired in.
++#
++# A gate that disagrees with the scorer is D1 itself — so both callers must
++# share one parser. These helpers are that parser.
++
++# Extract the ## Predictions block from an order file (heading to next heading, exclusive).
++# Prints the block (may be empty). Returns 0 even when no heading exists.
++hive_predictions_block() {  # hive_predictions_block <file>
++  awk '
++    /^##[ \t]*Predictions[ \t]*$/ { inblock = 1; next }
++    inblock && /^#/                { inblock = 0 }
++    inblock                        { print }
++  ' "$1"
++}
++
++# True iff the file contains a ## Predictions heading.
++hive_has_predictions_section() {  # hive_has_predictions_section <file>
++  grep -q '^##[ \t]*Predictions[ \t]*$' "$1"
++}
++
++# Parse a block of text (the Predictions section body) for the three scored fields.
++# Sets globals: HIVE_PRED_EFFORT_TXT / HIVE_PRED_QUESTIONS_TXT / HIVE_PRED_REVIEW_TXT
++# (empty when not parsed). Caller provides the block; extraction is caller's job
++# if they already have it, or use hive_load_predictions for a file.
++# shellcheck disable=SC2034  # HIVE_PRED_* globals are read by callers
++hive_parse_predictions_block() {  # hive_parse_predictions_block <block-text>
++  local block="$1"
++  HIVE_PRED_EFFORT_TXT=$( { printf '%s' "$block" | grep -oiE 'Expected effort:[[:space:]]*[0-9][0-9.–—-]*[[:space:]]*worker-hours?' | head -1 | sed -E 's/^[Ee]xpected effort:[[:space:]]*//'; } || true )
++  HIVE_PRED_QUESTIONS_TXT=$( { printf '%s' "$block" | grep -oiE 'Expected questions:[[:space:]]*[0-9][0-9–—-]*' | head -1 | sed -E 's/^[Ee]xpected questions:[[:space:]]*//'; } || true )
++  HIVE_PRED_REVIEW_TXT=$( { printf '%s' "$block" | grep -oiE 'Expected review outcome:[[:space:]]*[^.]+' | head -1 | sed -E 's/^[Ee]xpected review outcome:[[:space:]]*//'; } || true )
++}
++
++# Load predictions from an order file into shared globals:
++#   HIVE_PRED_HAS_SECTION  0/1  whether ## Predictions heading exists
++#   HIVE_PRED_BLOCK        text of the block (may be empty)
++#   HIVE_PRED_EFFORT_TXT / HIVE_PRED_QUESTIONS_TXT / HIVE_PRED_REVIEW_TXT
++#   HIVE_PRED_DECLARED     1 if block contains the protocol's declared-unpredicted disposition
++#   HIVE_PRED_COUNT        number of scored fields parsed (0..3)
++# shellcheck disable=SC2034  # HIVE_PRED_* globals are read by hive-score/hive-launch
++hive_load_predictions() {  # hive_load_predictions <file>
++  local file="$1"
++  HIVE_PRED_HAS_SECTION=0
++  HIVE_PRED_BLOCK=""
++  HIVE_PRED_EFFORT_TXT=""
++  HIVE_PRED_QUESTIONS_TXT=""
++  HIVE_PRED_REVIEW_TXT=""
++  HIVE_PRED_DECLARED=0
++  HIVE_PRED_COUNT=0
++  if [ ! -f "$file" ]; then
++    return 0
++  fi
++  if hive_has_predictions_section "$file"; then
++    HIVE_PRED_HAS_SECTION=1
++    HIVE_PRED_BLOCK=$(hive_predictions_block "$file")
++    if printf '%s' "$HIVE_PRED_BLOCK" | grep -iq 'deliberately unpredicted'; then
++      HIVE_PRED_DECLARED=1
++    fi
++    hive_parse_predictions_block "$HIVE_PRED_BLOCK"
++  fi
++  local c=0
++  [ -n "$HIVE_PRED_EFFORT_TXT" ]    && c=$((c+1))
++  [ -n "$HIVE_PRED_QUESTIONS_TXT" ] && c=$((c+1))
++  [ -n "$HIVE_PRED_REVIEW_TXT" ]    && c=$((c+1))
++  HIVE_PRED_COUNT=$c
++}
++
+ # The stack CLI, run in the canonical dir (compose file + running pg live there).
+ hive() { ( cd "$OMEGA_DIR" && podman compose run --rm -T cli "$@" ); }
+ 
+@@ -217,9 +294,9 @@ order_pin() {  # order_pin <workspace-relative-path>  -> prints sha
+ # Scoped by pathspec to the project's metrics dir, so unrelated work in the
+ # operator's clone is never swept into the commit. Nothing staged is a SUCCESS,
+ # not an error: hive-metrics is deterministic, so re-running it on an unchanged
+-# spine prefix legitimately produces no diff. Push mirrors hive-answer's
+-# retry (push -> pull --rebase -> push) and reports precisely how far it got, so
+-# "committed locally" is never mistaken for "on the hub".
++# spine prefix legitimately produces no diff. On push failure the commit is left
++# locally and the operator is told to push by hand — rebasing a shared metrics
++# path unattended is refused (instrument-teeth scope 6).
+ commit_metrics() {  # commit_metrics <project> <commit-message>  -> 0 committed/nothing-to-do, non-zero otherwise
+   local msg="$2" spec="projects/$1/metrics"
+   git -C "$OPS_WS" add -- "$spec" || { echo "hive: git add failed for $spec in $OPS_WS" >&2; return 1; }
+@@ -230,12 +307,8 @@ commit_metrics() {  # commit_metrics <project> <commit-message>  -> 0 committed/
+   git -C "$OPS_WS" commit --quiet -m "$msg" -- "$spec" \
+     || { echo "hive: git commit failed for $spec in $OPS_WS (git identity unset, a commit hook, or an index lock?)" >&2; return 1; }
+   if ! git -C "$OPS_WS" push --quiet 2>/dev/null; then
+-    if ! git -C "$OPS_WS" pull --rebase --quiet; then
+-      echo "hive: push failed and rebase failed — committed locally in $OPS_WS, NOT on the hub; resolve by hand" >&2
+-      return 1
+-    fi
+-    git -C "$OPS_WS" push --quiet \
+-      || { echo "hive: push failed for $OPS_WS — committed locally, NOT on the hub" >&2; return 1; }
++    echo "hive: push failed — committed locally in $OPS_WS, NOT on the hub; resolve by hand: git -C $OPS_WS push" >&2
++    return 1
+   fi
+   echo "  committed + pushed: $spec ($msg)"
+ }
+diff --git a/scripts/hive-launch b/scripts/hive-launch
+index 6de9fd9..79dc9b1 100755
+--- a/scripts/hive-launch
++++ b/scripts/hive-launch
+@@ -70,6 +70,49 @@ SAFE='^[A-Za-z0-9._-]+$'
+ # worker in whatever session tmux resolved instead.
+ require_safe_tmux_session
+ 
++# --- predictions gate: a heading with no parsable field is D1 itself ----------
++# Refuse before any spine write, naming the four literal labels and the
++# offending lines. --anyway is the escape hatch. No heading, or the
++# protocol's declared-unpredicted disposition, launches cleanly; a partial
++# (1-2 of 3) warns loudly and launches. Uses the same parser hive-score
++# scores with (hive-common.sh:hive_load_predictions).
++if [ -f "$OPS_WS/$REL" ]; then
++  hive_load_predictions "$OPS_WS/$REL"
++  if [ "$HIVE_PRED_HAS_SECTION" -eq 1 ] && [ "$HIVE_PRED_COUNT" -eq 0 ] && [ "$HIVE_PRED_DECLARED" -eq 0 ]; then
++    if [ -z "$ANYWAY" ]; then
++      {
++        echo "hive-launch: refusing to launch '$TASK' — order has a \`## Predictions\` section but 0 of 3 fields parsed."
++        echo "  Expected labels (verbatim, per seats/design-partner/PROTOCOL.md):"
++        echo "    - Expected effort:"
++        echo "    - Expected questions:"
++        echo "    - Expected review outcome:"
++        echo "    - Named risks:"
++        echo "  (Named risks is required by protocol but scored by no instrument.)"
++        echo "  Offending \`## Predictions\` block in $REL:"
++        if [ -n "$HIVE_PRED_BLOCK" ]; then
++          printf '%s\n' "$HIVE_PRED_BLOCK" | sed 's/^/    | /'
++          if [ -z "$(printf '%s' "$HIVE_PRED_BLOCK" | tr -d '[:space:]')" ]; then
++            echo "    (empty)"
++          fi
++        else
++          echo "    (empty — heading present, no body)"
++        fi
++        echo "  Fix the labels to the four literals above, or pass --anyway to launch anyway."
++      } >&2
++      exit 1
++    else
++      echo "hive-launch: WARNING --anyway — launching despite unparseable \`## Predictions\` section (0 of 3 fields parsed) for '$TASK'." >&2
++    fi
++  elif [ "$HIVE_PRED_HAS_SECTION" -eq 1 ] && [ "$HIVE_PRED_COUNT" -gt 0 ] && [ "$HIVE_PRED_COUNT" -lt 3 ]; then
++    _miss=""
++    [ -n "$HIVE_PRED_EFFORT_TXT" ]    || _miss="${_miss}Expected effort, "
++    [ -n "$HIVE_PRED_QUESTIONS_TXT" ] || _miss="${_miss}Expected questions, "
++    [ -n "$HIVE_PRED_REVIEW_TXT" ]    || _miss="${_miss}Expected review outcome, "
++    _miss=${_miss%, }
++    echo "hive-launch: WARNING partial \`## Predictions\` section for '$TASK' — $HIVE_PRED_COUNT of 3 fields parsed; missing: $_miss." >&2
++  fi
++fi
++
+ WS_ROOT="$WORK_ROOT/$WORKER/hive"
+ CODE_ROOT="$WORK_ROOT/$WORKER/$PROJECT"   # code clone named after the project (omegahive keeps its historical dir)
+ WRAPPER="$WRAPPER_DIR/$WORKER.sh"
+diff --git a/scripts/hive-metrics-drill.sh b/scripts/hive-metrics-drill.sh
+index 9fea6ee..26ce98c 100755
+--- a/scripts/hive-metrics-drill.sh
++++ b/scripts/hive-metrics-drill.sh
+@@ -13,6 +13,7 @@
+ # Usage: scripts/hive-metrics-drill.sh   (run from anywhere; needs jq)
+ 
+ set -euo pipefail
++# shellcheck disable=SC2140,SC2016,SC2027,SC2046,SC1036,SC1088,SC2034,SC2034,SC1091,SC1090
+ 
+ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/hive-metrics-drill.XXXXXX")"
+@@ -572,4 +573,151 @@ check "fixture untouched" "[ \"\$(sha256sum '$FIXTURE' | cut -d' ' -f1)\" = '$FI
+ code() { grep -vE '^[[:space:]]*(#|$)' "$1"; }
+ check "hive-metrics contains no emit" "! code '$M' | grep -Eq '(^|[^-[:alnum:]_])emit[[:space:]]'"
+ check "hive-score contains no emit"   "! code '$S' | grep -Eq '(^|[^-[:alnum:]_])emit[[:space:]]'"
+-check "neither tool commits to git"   "! { code '$M'; code '$S'; } | grep -Eq 'git .*(commit|push)'"
++
++# --- 6. predictions gate + one parser + review vocabulary ----------------------
++echo
++echo "metrics drill: predictions gate"
++
++# 6a. distinct coverage strings: absent vs present-but-unparsed
++check "gamma absent section coverage is distinct" "entry gamma | grep -qF 'unpredicted (no \`## Predictions\` section)'"
++
++# Create a task with a ## Predictions heading but zero parsable fields —
++# D1 reproduced: the dialect that failed was "- **Effort:**"
++cat > "$ORDERS/2026-07-20-theta.md" <<'EOF'
++# Order: theta
++
++## Scope
++Theta has an unparseable predictions section.
++
++## Predictions
++
++- **Effort:** 2 hours
++- **Questions:** none
++- **Review outcome:** clean
++EOF
++git -C "$WS" add "$ORDERS/2026-07-20-theta.md"
++git -C "$WS" commit --quiet -m "drill: theta unparseable predictions"
++git -C "$WS" push --quiet
++python3 - <<'PY2'
++import json, os, glob
++fixture=os.environ.get("HIVE_SPINE_JSON","")
++if not fixture or not os.path.exists(fixture):
++    cands=glob.glob("/tmp/hive-metrics-drill.*/spine.json")
++    fixture=cands[0] if cands else ""
++data=json.load(open(fixture))
++seq=max(r["seq"] for r in data)
++B=1784600000
++def ev(dt, role, actor, etype, task=None, payload=None):
++    global seq
++    seq+=1
++    data.append({"seq":seq,"event_id":f"00000000-0000-0000-0000-{seq:012d}","run_id":"metrics-drill","logical_ts":B+dt,"actor":{"role":role,"id":actor},"event_type":etype,"task_id":task,"payload":payload or {},"causation_id":None,"correlation_id":None})
++ev(11000,"human","operator","task.created","theta",{"title":"theta","task_type":"code","acceptance":None,"required_artifacts":[],"ready_when":None})
++ev(11005,"human","operator","worker.registered",None,{"worker_id":"w-theta"})
++ev(11100,"coordinator","operator","task.assigned","theta",{"worker":"w-theta"})
++ev(11200,"worker","w-theta","task.accepted","theta",{})
++ev(11800,"worker","w-theta","task.result_posted","theta",{"artifact_refs":[{"ref":"projects/drill/reports/theta.md@abc1234","quality":"ok"}],"cost":None})
++ev(11900,"instrument","operator","review.passed","theta",{"ref_result":"projects/drill/reports/theta.md@abc1234"})
++ev(12000,"human","operator","task.status_override","theta",{"status":"done","reason":"drill","decision_ref":None})
++open(fixture,"w").write(json.dumps(data,indent=2,sort_keys=True))
++PY2
++"$S" theta >/dev/null
++check "theta unparseable section coverage is distinct from absent" "entry theta | grep -qF 'unpredicted (section present, 0 of 3 fields parsed)'"
++check "theta coverage differs from gamma" "[ \"\$(entry theta | grep -o 'coverage:.*')\" != \"\$(entry gamma | grep -o 'coverage:.*')\" ]"
++
++# 6b. partial coverage names the missing fields
++check "beta partial names missing fields" "entry beta | grep -qF 'missing:'"
++
++# 6c. one parser — the same hive_load_predictions function is used by both callers
++check "hive-score uses hive_load_predictions (one parser)" "grep -q 'hive_load_predictions' '$S'"
++L="$SCRIPT_DIR/hive-launch"
++check "hive-launch uses hive_load_predictions (one parser)" "grep -q 'hive_load_predictions' '$L'"
++check "hive-common.sh defines hive_load_predictions" "grep -q 'hive_load_predictions()' '$SCRIPT_DIR/hive-common.sh'"
++cat > "$SANDBOX/probe-order.md" <<'EOF'
++# Order: probe-parse
++
++## Predictions
++
++- Expected effort: 2 worker-hours.
++EOF
++# shellcheck disable=SC1091
++source "$SCRIPT_DIR/hive-common.sh"
++hive_load_predictions "$SANDBOX/probe-order.md"
++check "shared parser: probe order is partial 1 of 3" "[ \"\$HIVE_PRED_COUNT\" = 1 ] && [ \"\$HIVE_PRED_HAS_SECTION\" = 1 ]"
++check "shared parser: probe effort parsed" "[ -n \"\$HIVE_PRED_EFFORT_TXT\" ]"
++check "shared parser: probe questions missing" "[ -z \"\$HIVE_PRED_QUESTIONS_TXT\" ]"
++
++# 6d. declared-unpredicted disposition
++cat > "$SANDBOX/declared-order.md" <<'EOF'
++# Order: declared
++
++## Predictions
++
++This task is deliberately unpredicted — no estimate is meaningful.
++EOF
++hive_load_predictions "$SANDBOX/declared-order.md"
++check "declared-unpredicted recognised" "[ \"\$HIVE_PRED_DECLARED\" = 1 ]"
++check "declared-unpredicted with 0 fields still marked declared" "[ \"\$HIVE_PRED_COUNT\" = 0 ] && [ \"\$HIVE_PRED_DECLARED\" = 1 ]"
++
++# 6e. gate predicates
++cat > "$SANDBOX/unparseable-order.md" <<'EOF'
++# Order: unparseable
++
++## Predictions
++
++- **Effort:** 2 hours
++EOF
++hive_load_predictions "$SANDBOX/unparseable-order.md"
++check "gate predicate: unparseable would refuse" "[ \"\$HIVE_PRED_HAS_SECTION\" = 1 ] && [ \"\$HIVE_PRED_COUNT\" = 0 ] && [ \"\$HIVE_PRED_DECLARED\" = 0 ]"
++cat > "$SANDBOX/no-section-order.md" <<'EOF'
++# Order: no-section
++
++## Scope
++No predictions at all.
++EOF
++hive_load_predictions "$SANDBOX/no-section-order.md"
++check "gate predicate: no section would NOT refuse" "[ \"\$HIVE_PRED_HAS_SECTION\" = 0 ]"
++
++# 6f. --review vocabulary
++expect_fail_msg "--review bogus refused naming three values" "clean, minor rework, rework" "$S" alpha --again --review bogus
++"$S" alpha --again --review Rework >/dev/null
++check "--review Rework stored as lowercase rework" "entry alpha | grep -qF 'rework'"
++"$S" alpha --again --review CLEAN >/dev/null
++check "--review CLEAN stored as lowercase clean" "entry alpha | grep -qF 'clean'"
++"$S" alpha --again --review "minor Rework" >/dev/null
++check "--review minor Rework stored lowercase" "entry alpha | grep -qF 'minor rework'"
++
++# --- 7. commit_metrics refuses rather than rebases -----------------------------
++echo
++echo "metrics drill: commit_metrics push refusal"
++TMP_CLONE="$SANDBOX/tmp-clone"
++git clone --quiet -b main "$HUB" "$TMP_CLONE" 2>/dev/null || git clone --quiet "$HUB" "$TMP_CLONE"
++echo "conflict" > "$TMP_CLONE/conflict.txt"
++git -C "$TMP_CLONE" config user.email drill@example.invalid
++git -C "$TMP_CLONE" config user.name  drill
++git -C "$TMP_CLONE" add conflict.txt
++git -C "$TMP_CLONE" commit --quiet -m "drill: conflicting hub commit"
++git -C "$TMP_CLONE" push --quiet origin main
++printf 'stale-for-push-test\n' > "$METRICS/tasks.md"
++set +e
++PUSH_OUT=$(commit_metrics "$PROJECT" "drill: push refusal test" 2>&1)
++# shellcheck disable=SC2034
++PUSH_RC=$?
++set -e
++: "$PUSH_OUT"  # silence SC2034 — used via eval
++check "commit_metrics refuses on push failure (non-zero)" "[ \"\$PUSH_RC\" -ne 0 ]"
++check "commit_metrics does NOT rebase on push failure" "! printf '%s' \"\$PUSH_OUT\" | grep -qi 'rebase'"
++check "commit_metrics prints manual resolution step" "printf '%s' \"\$PUSH_OUT\" | grep -qF 'resolve by hand'"
++if git -C "$WS" log --oneline | grep -F -- "push refusal test" >/dev/null; then ok "commit_metrics leaves commit locally"; else bad "commit_metrics leaves commit locally [log: $(git -C "$WS" log --oneline | head -5)] [out: $PUSH_OUT]"; fi
++git -C "$WS" fetch --quiet origin
++git -C "$WS" reset --hard --quiet origin/main
++"$M" "$PROJECT" >/dev/null
++
++# --- 8. drill hygiene ----------------------------------------------------------
++echo
++echo "metrics drill: hygiene sweep (bounded — two classes only)"
++SANDBOX_LINE=$(grep -n '^SANDBOX=' "$SCRIPT_DIR/hive-metrics-drill.sh" | cut -d: -f1)
++TRAP_LINE=$(grep -n '^trap cleanup EXIT' "$SCRIPT_DIR/hive-metrics-drill.sh" | cut -d: -f1)
++if [ "$SANDBOX_LINE" -lt "$TRAP_LINE" ]; then ok "SANDBOX mktemp precedes trap (no EXIT before isolation)"; else bad "SANDBOX mktemp precedes trap (no EXIT before isolation)"; fi
++check "log_has avoids grep -q SIGPIPE trap" "! grep -A2 '^log_has()' '$SCRIPT_DIR/hive-metrics-drill.sh' | grep -q 'grep -q'"
++check "commit_metrics contains no pull --rebase" "! grep -q 'pull --rebase' '$SCRIPT_DIR/hive-common.sh'"
++check "neither tool commits raw git"   "! { code '$M'; code '$S'; } | grep -Eq 'git .*(commit|push)'"
+diff --git a/scripts/hive-score b/scripts/hive-score
+index dc208db..29f23b7 100755
+--- a/scripts/hive-score
++++ b/scripts/hive-score
+@@ -58,6 +58,15 @@ while [ $# -gt 0 ]; do
+ done
+ [ -n "$TASK" ] || usage
+ 
++# --review vocabulary: only clean | minor rework | rework, stored lowercase
++if [ -n "$REVIEW_VERDICT" ]; then
++  _rv_lc=$(printf '%s' "$REVIEW_VERDICT" | tr '[:upper:]' '[:lower:]')
++  case "$_rv_lc" in
++    clean|"minor rework"|rework) REVIEW_VERDICT="$_rv_lc" ;;
++    *) die "hive-score --review takes one of: clean, minor rework, rework (got '$REVIEW_VERDICT')" ;;
++  esac
++fi
++
+ command -v jq >/dev/null 2>&1 || die "jq is required"
+ 
+ # --- resolve the order, then the project, then the run -------------------------
+@@ -206,15 +215,10 @@ fi
+ # --- the order's Predictions section -------------------------------------------
+ # The order was resolved up front (it names the project). A closed task with no
+ # order file at all is a real, and interesting, case: it scores as unpredicted.
+-PRED_BLOCK=""
+-if [ -n "$ORDER_REL" ]; then
+-  # From the `## Predictions` heading to the next heading of any level, exclusive.
+-  PRED_BLOCK=$(awk '
+-    /^##[ \t]*Predictions[ \t]*$/ { inblock = 1; next }
+-    inblock && /^#/                { inblock = 0 }
+-    inblock                        { print }
+-  ' "$OPS_WS/$ORDER_REL")
+-else
++# One parser, two callers — this is the same parser hive-launch gates on
++# (hive-common.sh:hive_load_predictions); a gate that disagrees with the scorer
++# is D1 itself.
++if [ -z "$ORDER_REL" ]; then
+   ORDER_REL="(no order file found)"
+ fi
+ 
+@@ -224,18 +228,22 @@ parse_range() {
+     { lo = $1 + 0; hi = (NF > 1 ? $2 + 0 : lo); printf "%s %s", lo, hi }'
+ }
+ 
+-# Verbatim slices of the prediction text; empty when the field was not predicted
+-# (a no-match grep is the *expected* partial-prediction case, not an error — hence
+-# the `|| true` guards under `set -o pipefail`).
+-PRED_EFFORT_TXT=$( { printf '%s' "$PRED_BLOCK" \
+-  | grep -oiE 'Expected effort:[[:space:]]*[0-9][0-9.–—-]*[[:space:]]*worker-hours?' \
+-  | head -1 | sed -E 's/^[Ee]xpected effort:[[:space:]]*//'; } || true )
+-PRED_QUESTIONS_TXT=$( { printf '%s' "$PRED_BLOCK" \
+-  | grep -oiE 'Expected questions:[[:space:]]*[0-9][0-9–—-]*' \
+-  | head -1 | sed -E 's/^[Ee]xpected questions:[[:space:]]*//'; } || true )
+-PRED_REVIEW_TXT=$( { printf '%s' "$PRED_BLOCK" \
+-  | grep -oiE 'Expected review outcome:[[:space:]]*[^.]+' \
+-  | head -1 | sed -E 's/^[Ee]xpected review outcome:[[:space:]]*//'; } || true )
++if [ "$ORDER_REL" != "(no order file found)" ] && [ -f "$OPS_WS/$ORDER_REL" ]; then
++  hive_load_predictions "$OPS_WS/$ORDER_REL"
++  # shellcheck disable=SC2034
++  PRED_BLOCK="$HIVE_PRED_BLOCK"
++  PRED_EFFORT_TXT="$HIVE_PRED_EFFORT_TXT"
++  PRED_QUESTIONS_TXT="$HIVE_PRED_QUESTIONS_TXT"
++  PRED_REVIEW_TXT="$HIVE_PRED_REVIEW_TXT"
++else
++  # shellcheck disable=SC2034  # PRED_BLOCK retained for provenance/logging
++  PRED_BLOCK=""
++  PRED_EFFORT_TXT=""
++  PRED_QUESTIONS_TXT=""
++  PRED_REVIEW_TXT=""
++  HIVE_PRED_HAS_SECTION=0
++  HIVE_PRED_COUNT=0
++fi
+ 
+ NOT_PREDICTED='*not predicted*'
+ 
+@@ -284,15 +292,25 @@ else
+ fi
+ 
+ # Coverage: how much of the section was there at all — the calibration-gap metric.
+-FIELDS=0
+-for t in "$PRED_EFFORT_TXT" "$PRED_QUESTIONS_TXT" "$PRED_REVIEW_TXT"; do
+-  if [ -n "$t" ]; then FIELDS=$((FIELDS + 1)); fi
+-done
+-case "$FIELDS" in
+-  0) COVERAGE="unpredicted (no usable \`## Predictions\` section)" ;;
+-  3) COVERAGE="full" ;;
+-  *) COVERAGE="partial ($FIELDS of 3 fields predicted)" ;;
+-esac
++# Distinct strings for absent vs present-but-unparsed (D1: "the author predicted
++# and we lost it" must not read as "nobody predicted").
++# Named risks is required by protocol but scored by NO instrument (R2 correction);
++# that is deliberate and stated, not quietly wired in.
++FIELDS=$HIVE_PRED_COUNT
++if [ "$HIVE_PRED_HAS_SECTION" -eq 0 ]; then
++  COVERAGE="unpredicted (no \`## Predictions\` section)"
++elif [ "$FIELDS" -eq 0 ]; then
++  COVERAGE="unpredicted (section present, 0 of 3 fields parsed)"
++elif [ "$FIELDS" -eq 3 ]; then
++  COVERAGE="full"
++else
++  _missing=""
++  [ -n "$PRED_EFFORT_TXT" ]    || _missing="${_missing}Expected effort, "
++  [ -n "$PRED_QUESTIONS_TXT" ] || _missing="${_missing}Expected questions, "
++  [ -n "$PRED_REVIEW_TXT" ]    || _missing="${_missing}Expected review outcome, "
++  _missing=${_missing%, }
++  COVERAGE="partial ($FIELDS of 3 fields predicted; missing: $_missing)"
++fi
+ 
+ # --- append --------------------------------------------------------------------
+ OUT_DIR="$OPS_WS/projects/$PROJECT/metrics"

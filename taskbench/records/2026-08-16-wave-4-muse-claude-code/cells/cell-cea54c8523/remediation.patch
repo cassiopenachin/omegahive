@@ -1,0 +1,180 @@
+diff --git a/docs/omegahive_recovery_runbook.md b/docs/omegahive_recovery_runbook.md
+index 51ff606..09927b4 100644
+--- a/docs/omegahive_recovery_runbook.md
++++ b/docs/omegahive_recovery_runbook.md
+@@ -87,12 +87,14 @@ silently skip events. Follow the ordering exactly.
+      ```sh
+      docker compose run --rm cli bump-generation --run-id <run>
+      ```
+-     The bump only works on a *registered* run; it refuses one that was never opened
+-     (`run not registered`). The durable `omegahive` project run is currently unregistered
+-     — the `hive emit` write path never opens runs — so the bump is inert until the run is
+-     registered out of band (`omegahive.port.open_run`). See the ops RUNBOOK for the
+-     one-liner; until then the restart floor below is the operative path.
+-   - **Restart *every* client** — the always-safe interim floor, independent of the token.
++     The bump requires a registered run (`run not registered` otherwise). Every run
++     touched by an emit is now registered idempotently on its first event — the write
++     path opens the run in the same transaction as the event insert (no-op when already
++     registered) — so `omegahive` carries a generation after its first emit and the bump
++     is live. Runs that pre-date this wiring and still lack a row can be registered once
++     out of band (`omegahive.port.open_run`); see the ops RUNBOOK for the one-liner.
++   - **Restart *every* client** — still do this; it is the always-safe floor independent
++     of the token and the defense in depth if a client missed the bump.
+ 4. **Restart** coordinators/workers; each re-snapshots through the port.
+ 
+ Verify a restore reproduces the board: deployment check 3 (`scripts/deploy_checks.sh`)
+diff --git a/src/omegahive/gateway/gateway.py b/src/omegahive/gateway/gateway.py
+index 9b81ce6..695a17a 100644
+--- a/src/omegahive/gateway/gateway.py
++++ b/src/omegahive/gateway/gateway.py
+@@ -94,6 +94,12 @@ class Gateway:
+         conn = self._store.conn
+         try:
+             with conn.transaction():
++                # 0. idempotent run registration — the durable generation token (§2).
++                # The emit path opens the run when absent in the SAME transaction as the
++                # event insert; no-op when already registered (ON CONFLICT DO NOTHING).
++                # Every run touched by an emit then carries a generation from its first
++                # event, so `bump-generation` is live without a separate provisioning step.
++                self._store.open_run()
+                 # 1. idempotency lookup FIRST — a replay returns the existing event
+                 # before any fold or gate, so a committed op is never re-gated.
+                 if idempotency_key is not None:
+diff --git a/tests/test_run_registration.py b/tests/test_run_registration.py
+new file mode 100644
+index 0000000..4149a74
+--- /dev/null
++++ b/tests/test_run_registration.py
+@@ -0,0 +1,132 @@
++"""The durable run registry — every emit carries a generation token (§2).
++
++The emit write path opens the run when absent in the same transaction as the
++event insert (ON CONFLICT DO NOTHING), so every run touched by an emit is
++registered with a generation from its first event and `bump-generation` is live
++without a separate provisioning step. The open sits BEFORE the idempotency
++early-return — a replay against a run that still has events but lost its
++registry row must still re-register (case 3 of the registration property).
++"""
++
++from __future__ import annotations
++
++from uuid import uuid4
++
++from omegahive.events.envelope import Actor
++
++PLANNER = Actor(role="planner", id="planner")
++HUMAN = Actor(role="human", id="operator")
++WORKER = Actor(role="worker", id="w1")
++
++
++def _fresh_run_id() -> str:
++    return f"reg-{uuid4().hex[:10]}"
++
++
++def test_first_emit_registers_run(make_gateway):
++    """An emit against a fresh scratch run id registers it with generation 1."""
++    run_id = _fresh_run_id()
++    gateway, store = make_gateway(run_id=run_id)
++    assert store.generation() is None
++    gateway.emit(
++        actor=HUMAN,
++        event_type="task.created",
++        payload={"title": "t", "task_type": "chore"},
++        task_id="t1",
++        idempotency_key=f"{run_id}-1",
++    )
++    assert store.generation() == 1
++
++
++def test_second_emit_is_registration_noop(make_gateway, conn):
++    """A second emit against the same run does not bump the generation or add a row."""
++    run_id = _fresh_run_id()
++    gateway, store = make_gateway(run_id=run_id)
++    gateway.emit(
++        actor=HUMAN,
++        event_type="task.created",
++        payload={"title": "t", "task_type": "chore"},
++        task_id="t1",
++        idempotency_key=f"{run_id}-1",
++    )
++    gen = store.generation()
++    assert gen == 1
++    gateway.emit(
++        actor=HUMAN,
++        event_type="task.created",
++        payload={"title": "t2", "task_type": "chore"},
++        task_id="t2",
++        idempotency_key=f"{run_id}-2",
++    )
++    assert store.generation() == gen
++    with conn.cursor() as cur:
++        cur.execute("SELECT count(*) FROM runs WHERE run_id = %s", (run_id,))
++        assert cur.fetchone()[0] == 1
++
++
++def test_replay_against_unregistered_run_still_registers(make_gateway):
++    """Events present but registry row removed — a replayed emit re-registers the run.
++
++    This pins placement of open_run BEFORE the idempotency early-return. If the
++    open were after the lookup, the replay would return the existing event without
++    ever registering and this fails.
++    """
++    run_id = _fresh_run_id()
++    key = f"{run_id}-replay"
++    gateway, store = make_gateway(run_id=run_id)
++    gateway.emit(
++        actor=HUMAN,
++        event_type="task.created",
++        payload={"title": "t", "task_type": "chore"},
++        task_id="t1",
++        idempotency_key=key,
++    )
++    assert store.generation() == 1
++    with store.conn.cursor() as cur:
++        cur.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
++    assert store.generation() is None
++    # same (actor, key) — dedup path, would early-return before a misplaced open_run
++    gateway.emit(
++        actor=HUMAN,
++        event_type="task.created",
++        payload={"title": "t", "task_type": "chore"},
++        task_id="t1",
++        idempotency_key=key,
++    )
++    assert store.generation() == 1
++
++
++def test_rejected_emit_still_registers_run(make_gateway):
++    """A run whose only emit was rejected still carries a generation (gateway.rejected)."""
++    run_id = _fresh_run_id()
++    gateway, store = make_gateway(run_id=run_id)
++    assert store.generation() is None
++    # worker cannot create tasks — NOT_AUTHORIZED, but the run must still register
++    gateway.emit(
++        actor=WORKER,
++        event_type="task.created",
++        payload={"title": "t", "task_type": "chore"},
++        task_id="t1",
++        idempotency_key=f"{run_id}-rej",
++    )
++    assert store.generation() == 1
++
++
++def test_bump_generation_succeeds_after_emit(make_gateway):
++    """A scratch run registered by emit can have its generation bumped."""
++    run_id = _fresh_run_id()
++    gateway, store = make_gateway(run_id=run_id)
++    gateway.emit(
++        actor=HUMAN,
++        event_type="task.created",
++        payload={"title": "t", "task_type": "chore"},
++        task_id="t1",
++        idempotency_key=f"{run_id}-1",
++    )
++    assert store.generation() == 1
++    store.bump_generation()
++    assert store.generation() == 2
++    # a second bump is a genuine second invalidation
++    store.bump_generation()
++    assert store.generation() == 3
++

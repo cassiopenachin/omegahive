@@ -200,8 +200,15 @@ def refetch_missing_receipts(record_root: Path, api_key: str, **fetch_kwargs: An
             call["receipt_raw"] = full
             changed = True
             recovered += 1
-        if changed:
-            doc["totals"] = _recount(doc["calls"])
+        # Recount unconditionally and rewrite when the answer moved, rather than only after a
+        # recovery. A leg's totals were written by whatever the counting rules were when the
+        # batch ran, and those rules get corrected — the count of refused-vs-missing calls did.
+        # Without this a fixed rule reaches new records only, and an old record keeps asserting
+        # a coverage number the code no longer stands behind, with no way to fix it short of
+        # re-running the batch. Nothing here re-reads the gateway; it re-reads the calls.
+        fresh = _recount(doc["calls"])
+        if changed or fresh != doc.get("totals"):
+            doc["totals"] = fresh
             path.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n")
     return recovered
 

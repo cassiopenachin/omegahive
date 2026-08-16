@@ -1,0 +1,109 @@
+diff --git a/projects/omegahive/RUNBOOK.md b/projects/omegahive/RUNBOOK.md
+index e506223..917c28c 100644
+--- a/projects/omegahive/RUNBOOK.md
++++ b/projects/omegahive/RUNBOOK.md
+@@ -160,18 +160,22 @@ cd ~/src/SNET/omegahive
+      ```sh
+      docker-compose run --rm cli bump-generation --run-id omegahive
+      ```
+-     **Caveat (read this):** the bump only works if the run is *registered*. Today the
+-     `omegahive` run is **not** registered (the `hive emit` write path never opened it), so
+-     the command prints `run not registered` and the durable signal is inert. Until the run
+-     is wired (below), rely on the restart floor.
++     The bump requires a registered run (`run not registered` otherwise). Since
++     2026-07-21 every run touched by an emit is registered idempotently on its
++     first event — the write path opens the run in the same transaction as the
++     event insert (no-op when already registered) — so `omegahive` carries a
++     generation after its first emit and the bump is live.
+    - **Restart every client** (the always-safe floor, independent of the generation token):
+      ```sh
+      OMEGAHIVE_RUN_ID=omegahive docker-compose up -d notifier   # and any other followers
+      ```
++     Still do this; it is the defense-in-depth if a client missed the bump.
+ 4. **Restart** coordinators/workers; each re-snapshots through the port.
+ 
+-To **wire the durable path** once (so step 3's bump becomes meaningful), register the run —
+-a one-time, reversible operational choice:
++Before this fix the `omegahive` run was unregistered (the `hive emit` write path
++never opened it) so the bump was inert. Runs that pre-date the wiring and still
++lack a row can be registered once out of band — a one-time, reversible
++operational choice:
+ 
+ ```sh
+ docker-compose run --rm --entrypoint python cli -c \
+diff --git a/projects/omegahive/reports/2026-07-21-run-registration-result.md b/projects/omegahive/reports/2026-07-21-run-registration-result.md
+new file mode 100644
+index 0000000..e4629c0
+--- /dev/null
++++ b/projects/omegahive/reports/2026-07-21-run-registration-result.md
+@@ -0,0 +1,70 @@
++# Result — register the durable run — make the generation token real
++
++**Task:** run-registration · **Order:** `2026-07-21-run-registration.md` · **Date:** 2026-07-21
++
++## What shipped
++
++**Code (PR on `cassiopenachin/omegahive`, off `main`):**
++
++- **Idempotent open on the write path** — `src/omegahive/gateway/gateway.py`: `Gateway.emit()` now calls `self._store.open_run()` at the top of its `with conn.transaction():` block, *before* the idempotency early-return, lock, fold and append. `open_run` is `INSERT ... ON CONFLICT DO NOTHING`, so a second emit is a no-op and the generation never changes. The registration rides the **same transaction** as the event insert, so every run touched by an emit carries a generation token from its first event. Placement before the early-return is deliberate: a replayed emit against a run whose registry row was deleted (case 3) still registers.
++- Previously the only write path the durable run ever used (`hive emit` / `omegahive emit` CLI via the port) never opened the run, so `omegahive` had no row in `runs` and `bump-generation --run-id omegahive` was inert.
++
++**Docs (once the live run is registered):**
++
++- `docs/omegahive_recovery_runbook.md` (code repo) §4 step 3 — retired the "currently unregistered — the bump is inert until out-of-band `open_run`" caveat. Now reads: every run touched by an emit is registered idempotently on its first event; `omegahive` carries a generation after its first emit and the bump is live; pre-fix runs lacking a row can be registered once out of band.
++- `workspace/projects/omegahive/RUNBOOK.md` (workspace) §Restore step 3 + wiring note — same update: removed the "Today the `omegahive` run is **not** registered" caveat; added the post-fix statement (since 2026-07-21, registration is automatic) and retained the one-time out-of-band `open_run` recipe for pre-fix rows as history.
++
++No generation semantics, `GENERATION_MISMATCH` handling, cursor logic, or schema changed.
++
++## How verified
++
++- **Property verifier** (`taskbench/corpus/v0.1/verifiers/run_registration_property.py` — scratch DB, never the durable one):
++  - case 1 — first emit against a fresh run registers it: `generation` moves from `None` → `1`
++  - case 2 — second emit is a registration no-op: generation unchanged, exactly one `runs` row
++  - case 3 — replay case (events present, `runs` row deleted, next emit replays same key) still registers — the open happens **before** the idempotency early-return (the closed review's catch)
++  - case 4 — a rejected emit still registers its run (`gateway.rejected` is log content a cursor can cover)
++  - case 5 — the generation then bumps (`UPDATE runs SET generation = generation + 1`) on the now-registered run
++  - result: `ok — every registration property case holds`
++
++- **Existing suite:** `uv run pytest -q` — `402 passed` (same as baseline), `ruff`/`mypy` clean. Behavior on already-registered runs unchanged; `bump-generation` now succeeds on a scratch run without a separate provisioning step.
++
++- **Scratch-run evidence (not the live `omegahive` run):** the property probe's `tb-*` runs above are the scratch-run evidence for first-emit registration + successful bump. The live `omegahive` generation was **not** bumped (stop-line: never bump the live run's generation — a live bump forces every client to re-snapshot).
++
++## To operate
++
++**Which wiring path was taken:** the **next-real-emit** path (Scope item 2, preferred). The code change makes registration a side effect of the next real `hive emit`/`omegahive emit` against `omegahive`. No separate `open_run` is needed on a fresh checkout; after the first post-deploy emit, `SELECT generation FROM runs WHERE run_id='omegahive'` returns `1` and `bump-generation --run-id omegahive` is live.
++
++- **Deploy this change:** merge the PR, then on Beastie:
++  ```sh
++  cd ~/src/SNET/omegahive && git checkout main && git pull
++  podman compose build
++  podman compose up -d notifier
++  scripts/deploy_checks.sh
++  ```
++  The next `hive emit --run-id omegahive ...` (any real operator/worker emit) registers the run. Verify:
++  ```sh
++  docker compose --profile ops run --rm --entrypoint sh backup -c \
++    'psql "$OMEGAHIVE_DATABASE_URL" -c "SELECT run_id, generation FROM runs WHERE run_id='\''omegahive'\''"'
++  ```
++  Expect one row, `generation = 1` (or higher if a restore bump has since occurred).
++
++- **Pre-fix runs still lacking a row** (only if the live row predates this fix and has never been emitted against since): one-time out-of-band registration:
++  ```sh
++  docker compose run --rm --entrypoint python cli -c \
++    "from omegahive.db import connect; from omegahive.port import open_run
++  c=connect(); open_run(c,'omegahive'); c.commit(); print('registered')"
++  # reverse with: psql ... -c "DELETE FROM runs WHERE run_id='omegahive'"
++  ```
++
++- **After this, restore §4 step 3 is simply:** `bump-generation --run-id omegahive` (durable signal) **and** restart every client (defense in depth). The restart floor remains the always-safe backup, not the only path.
++
++## Reflection
++
++- **Why the placement matters:** the natural place to add `open_run()` is after the idempotency check (keep the fast path clean). That passes every case except the replay case — a run with events but a deleted registry row replays the same key, hits the early return, and never registers. The fix must sit *before* the early return, in the same transaction. The verifier's case 3 exists precisely to pin this ordering; future refactors should keep it.
++
++- **Rejected emits registering is intentional:** a `gateway.rejected` event is still log content. A client holding a cursor over a run whose only content is rejections still needs `GENERATION_MISMATCH` to work after a restore, so the run needs a generation even when every emit was refused.
++
++- **Not bumping the live run:** the stop-line forbids `bump-generation --run-id omegahive` on the live spine from a worker. All bump evidence comes from scratch runs. The live row's existence is an operator act post-merge (deployed image + next emit), not a worker side effect — the report records the wiring, the row appears after deploy.
++
++- **Doc ordering:** the code-repo runbook is the containerized-procedure source of truth; the workspace RUNBOOK is the jet-lagged-operator version. Both had the same inert-bump caveat; both were updated to state the new invariant ("every run touched by an emit carries a generation") and to demote the one-liner to a pre-fix backfill, not the primary path. Keeping the one-liner as history avoids a future operator thinking registration is still manual.
++

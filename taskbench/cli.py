@@ -637,9 +637,18 @@ def gateway_totals_cmd(
         json.dumps(totals, indent=2, sort_keys=True) + "\n"
     )
     t = totals["totals"]
-    console.print(
-        f"{t['calls_observed']} call(s), {t['calls_with_receipt']} with a gateway receipt"
-    )
+    # Spell out where every observed call went. Printing only "N observed, M receipted" leaves
+    # the reader to subtract and then guess whether the difference is unaccounted-for spend or
+    # a call the gateway refused, which are opposite facts.
+    line = f"{t['calls_observed']} call(s), {t['calls_with_receipt']} with a gateway receipt"
+    if t.get("calls_without_generation"):
+        line += (
+            f", {t['calls_without_generation']} the gateway refused "
+            "(no generation, nothing billed)"
+        )
+    if t.get("calls_missing_receipt"):
+        line += f", [bold]{t['calls_missing_receipt']} answered and unaccounted for[/bold]"
+    console.print(line)
     console.print(
         f"cost ${t['gateway_cost_usd']:.6f} · prompt {t['native_tokens_prompt']} · "
         f"cached {t['native_tokens_cached']} · completion {t['native_tokens_completion']} · "

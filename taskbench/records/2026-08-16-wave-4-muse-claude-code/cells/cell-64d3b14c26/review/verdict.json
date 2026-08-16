@@ -1,0 +1,72 @@
+{
+  "cell_id": "cell-64d3b14c26",
+  "dod_legs": [
+    {
+      "leg": "one-parser",
+      "met": "yes",
+      "note": "hive-common.sh:83 defines hive_load_predictions (with hive_predictions_block / hive_has_predictions_section / hive_parse_predictions_block); hive-launch:82 and hive-score:232 both call it and read the same HIVE_PRED_* globals. The old inline regex block in hive-score was deleted (candidate.patch:407-415), so this is structurally one parser, not two that agree. Drill asserts it: 'hive-score uses hive_load_predictions', 'hive-launch uses hive_load_predictions', 'hive-common.sh defines hive_load_predictions', plus a probe order driven through the shared function (verifier/metrics-drill.log:114-119)."
+    },
+    {
+      "leg": "refuse-unparsed-not-absent",
+      "met": "yes",
+      "note": "hive-launch:76-115 gates on HAS_SECTION=1 && COUNT=0 && DECLARED=0, exiting 1 with the four literal labels and the offending block echoed. It sits after only read-only steps (arg parse, order resolution, project.conf load, charset/tmux-name guards) and before the throttle, board_status read, order_pin and every emit (hive-launch:118 onward) \u2014 so the refusal precedes any spine write. --anyway (parsed at hive-launch:26) is the escape hatch and warns instead. No section => HAS_SECTION=0, no refusal; 'deliberately unpredicted' sets HIVE_PRED_DECLARED=1 (hive-common.sh:98) and is exempted; 1-2 of 3 falls to the elif and warns loudly on stderr while launching. Drill predicates confirm both directions (verifier/metrics-drill.log:120-123)."
+    },
+    {
+      "leg": "absent-vs-unparsed-distinct",
+      "met": "yes",
+      "note": "hive-score:299-304 emits 'unpredicted (no `## Predictions` section)' vs 'unpredicted (section present, 0 of 3 fields parsed)'. Proven on two fixture tasks (gamma absent, theta carrying the `- **Effort:**` dialect that D1 diagnosed) and asserted to differ: verifier/metrics-drill.log:110-112. Partial names the missed fields (hive-score:305-312; log:113)."
+    },
+    {
+      "leg": "review-vocabulary",
+      "met": "yes",
+      "note": "hive-score:61-68 lowercases via tr and case-matches clean|\"minor rework\"|rework, storing the lowercased value; anything else dies with all three values named. Validation runs at arg-parse time, before jq/resolution/any file write. Drill: bogus refused naming three values, Rework->rework, CLEAN->clean, 'minor Rework'->'minor rework' (verifier/metrics-drill.log:124-127)."
+    },
+    {
+      "leg": "close-ordering",
+      "met": "yes",
+      "note": "candidate.patch:9-24 appends the hive-metrics call at the very end of hive-close, strictly after the review.passed / status_override(done) emits and after the existing scoring step. Failure takes the else branch: a stderr block stating the close SUCCEEDED and is durable, that only tasks.md/tasks.csv are stale, and the one recovery command. It is the last statement in the file and the group's exit status is the trailing echo's, so hive-close still exits 0 \u2014 a successful close never looks failed."
+    },
+    {
+      "leg": "refuse-not-rebase",
+      "met": "yes",
+      "note": "hive-common.sh:309-312: the push -> pull --rebase -> push retry is gone; on push failure it prints 'push failed \u2014 committed locally in $OPS_WS, NOT on the hub; resolve by hand: git -C $OPS_WS push' and returns 1, leaving the local commit. Drill exercises it against a genuinely diverged hub: non-zero, no 'rebase' in output, manual step printed, commit present in the local log (verifier/metrics-drill.log:130-133), plus a static 'commit_metrics contains no pull --rebase' check (log:138)."
+    },
+    {
+      "leg": "named-risks-unscored",
+      "met": "yes",
+      "note": "Still three scored fields \u2014 FIELDS is HIVE_PRED_COUNT over effort/questions/review only (hive-score:298), and no fourth regex was added. Documented as unscored on the surfaces this order touches: hive-common.sh:77-84 (the R2 'N of 4' correction stated in full), the launch refusal message itself ('Named risks is required by protocol but scored by no instrument', hive-launch:90), and the RUNBOOK launch entry (artefacts/workspace.patch:16-17). No prediction field added, removed, or newly scored."
+    },
+    {
+      "leg": "drill-hygiene-reported",
+      "met": "yes",
+      "note": "Bounded to the two named classes and reported by name in the result report item 7 (artefacts/workspace.patch:100): file read = hive-metrics-drill.sh; EXIT-trap-before-isolation \u2014 held (SANDBOX mktemp already precedes the trap); `cmd | grep -q` SIGPIPE under pipefail \u2014 held (log_has already avoids grep -q). Both findings are pinned as standing drill assertions (candidate.patch:354-357; verifier/metrics-drill.log:136-137). No rewrite, no new framework, no third class folded in."
+    },
+    {
+      "leg": "result-report",
+      "met": "yes",
+      "note": "projects/omegahive/reports/2026-08-16-instrument-teeth-result.md carries all four sections (artefacts/workspace.patch:71-131). Claims check out against the artefacts: the 126/0 drill count matches verifier/metrics-drill.log:141, shellcheck clean matches the empty verifier/shellcheck.log, and each of the seven scope items maps to code I read. 'To operate' names the required pln-benchmarks recovery step (`hive-score <task> --project pln-benchmarks --again`), which is also added to the RUNBOOK (artefacts/workspace.patch:62-66)."
+    },
+    {
+      "leg": "shellcheck",
+      "met": "yes",
+      "note": "verifier/shellcheck.log is empty \u2014 clean. RUNBOOK updated on all three operator surfaces the order names: launch refusal + --anyway, close now regenerating metrics, --review vocabulary (artefacts/workspace.patch:13-45), completing DoD (i)."
+    },
+    {
+      "leg": "metrics-drill",
+      "met": "yes",
+      "note": "verifier/metrics-drill.log:141 \u2014 PASS=126 FAIL=0, hermetic (no events issued, no run touched), including the five new sections: predictions gate, one-parser, review vocabulary, commit_metrics push refusal, hygiene sweep. Stop-line checks still green (log:105-107)."
+    },
+    {
+      "leg": "hive-tooling-drill green",
+      "met": "not-applicable",
+      "note": "Listed under the rubric's 'Out of scope here' \u2014 the loop drill emits scratch spine events and drives the operator's live tmux server. Not credited, not counted against."
+    },
+    {
+      "leg": "spine announcement per WORKER.md",
+      "met": "not-applicable",
+      "note": "Out of scope per the rubric \u2014 a spine emit this instrument forbids. The report itself is written and graded above."
+    }
+  ],
+  "verdict": "pass",
+  "would_have_shipped_defects": []
+}

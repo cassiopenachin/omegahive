@@ -242,6 +242,40 @@ def test_a_receipt_that_was_merely_late_is_recovered_and_retotalled(tmp_path):
     assert rolled["totals"]["gateway_cost_usd"] == pytest.approx(0.15)
 
 
+def test_a_corrected_counting_rule_reaches_a_record_that_already_ran(tmp_path):
+    """Wave 4's totals were written before refused calls were told apart from missing ones.
+    A rule fix that only reaches future records leaves finished ones asserting a coverage
+    number the code no longer stands behind."""
+    from taskbench.qualify_batch import refetch_missing_receipts
+
+    cell = tmp_path / "cells" / "cell-a"
+    cell.mkdir(parents=True)
+    path = cell / "gateway-receipts-attempt.json"
+    path.write_text(json.dumps({
+        "calls": [
+            {"status": 200, "path": "/api/v1/messages", "generation_id": "gen-1", "receipt": {
+                "available": True, "total_cost": 0.10, "provider_name": "Meta", "model": "m",
+                "native_tokens_prompt": 1, "native_tokens_completion": 1,
+                "native_tokens_cached": 0, "native_tokens_reasoning": 0, "preset_id": "p"}},
+            {"status": 404, "path": "/api/v1/messages/count_tokens",
+             "receipt": {"available": False, "missing_surface": "no id"}},
+        ],
+        # What the old rule wrote: the 404 counted against coverage.
+        "totals": {"calls_observed": 2, "calls_with_receipt": 1,
+                   "incomplete": "1 of 2 ... floor, not a total"},
+    }))
+
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda r: pytest.fail("must not re-read the gateway"))
+    ) as client:
+        assert refetch_missing_receipts(tmp_path, "sk-or-x", client=client) == 0
+
+    totals = json.loads(path.read_text())["totals"]
+    assert totals["calls_without_generation"] == 1
+    assert totals["calls_missing_receipt"] == 0
+    assert "incomplete" not in totals
+
+
 def test_a_refused_call_does_not_make_the_record_incomplete(tmp_path):
     """Wave 4 observed 119 calls, 5 of them 404s on an endpoint OpenRouter does not implement.
     Reading those as unaccounted-for spend would mark a complete record as a floor."""
