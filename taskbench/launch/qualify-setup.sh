@@ -26,6 +26,10 @@
 
 set -euo pipefail
 
+# The study's harness builds are established by this run. Stop the updater moving them out from
+# under it — and out from under every batch launcher, which sets the same variable.
+export DISABLE_AUTOUPDATER=1
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 readonly REPO_ROOT
 readonly OUT_DIR="${TASKBENCH_PREFLIGHT_OUT:-$HOME/work/taskbench/qualify-preflight}"

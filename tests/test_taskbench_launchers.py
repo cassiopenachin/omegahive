@@ -368,3 +368,12 @@ def test_codex_is_not_given_a_working_directory_the_runner_already_set():
     body = code("wave-2-luna-codex.sh")
     assert '"-C", "code"' not in body
     assert "cwd: code" in body
+
+
+@pytest.mark.parametrize("name", [*WAVES, "qualify-setup.sh"])
+def test_every_launcher_stops_the_harness_updating_under_it(name):
+    """A batch runs for hours and Claude Code updates itself. Between two cells that is a
+    recorded dimension changing silently; between the two arms of the matched pair it breaks the
+    only claim that pair makes."""
+    body = code(name) if name == "qualify-setup.sh" else code(name) + code("lib.sh")
+    assert "DISABLE_AUTOUPDATER=1" in body, f"{name} must disable the auto-updater"

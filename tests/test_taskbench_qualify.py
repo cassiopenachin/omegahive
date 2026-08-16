@@ -96,24 +96,67 @@ def test_the_incumbent_record_still_validates_under_the_running_code():
     assert check.ok, check.detail
 
 
-def test_a_missing_harness_is_a_named_refusal_not_a_crash():
+def test_a_readable_harness_passes_whatever_version_it_reports():
+    """The check that used to live here asserted a hardcoded version and refused the whole study
+    over a patch bump — Claude Code auto-updates, and the pinned 2.1.232 was never the
+    incumbent's build (2.1.231) in the first place. A check that asserts something the
+    environment actively contradicts is a tripwire pointed at the operator."""
     checks = check_harness_builds(which=("claude",))
     assert len(checks) == 1
     assert checks[0].name == "harness/claude"
-    # Whether it passes depends on the host; what must hold is that it answered with evidence.
-    assert checks[0].observed or "did not run" in checks[0].detail
+    if checks[0].observed["reported"] is not None:
+        assert checks[0].ok, "any readable build is acceptable; the point is that it is recorded"
+        assert "recorded as this batch's build" in checks[0].detail
 
 
-def test_a_moved_harness_build_says_why_it_matters():
-    original = dict(qualify.HARNESS_PINS)
+def test_an_unidentifiable_harness_still_refuses():
+    """What remains worth refusing: a cell that cannot say which build produced it."""
+    original = dict(qualify.HARNESS_PROBES)
     try:
-        qualify.HARNESS_PINS["claude"] = ("0.0.0-nope", ("claude", "--version"))
+        qualify.HARNESS_PROBES["claude"] = ("definitely-not-a-real-binary-xyz", "--version")
         (check,) = check_harness_builds(which=("claude",))
         assert not check.ok
-        assert "a different bundle" in check.detail
+        assert "unattributable" in check.detail
     finally:
-        qualify.HARNESS_PINS.clear()
-        qualify.HARNESS_PINS.update(original)
+        qualify.HARNESS_PROBES.clear()
+        qualify.HARNESS_PROBES.update(original)
+
+
+def test_no_expected_version_is_hardcoded_anywhere():
+    """The regression: a literal version in this module is a future refusal nobody wants."""
+    for name, argv in qualify.HARNESS_PROBES.items():
+        assert isinstance(argv, tuple), name
+        assert all(isinstance(a, str) for a in argv), name
+        assert not any(a[:1].isdigit() and "." in a for a in argv), (
+            f"{name} carries what looks like a pinned version: {argv}"
+        )
+
+
+def test_a_first_run_establishes_the_builds_rather_than_comparing(tmp_path):
+    (check,) = qualify.check_harness_stability(tmp_path, which=("claude",))
+    assert check.ok
+    assert "establishes the study's harness builds" in check.detail
+
+
+def test_the_same_build_twice_is_stable(tmp_path):
+    qualify.write_report(check_harness_builds(which=("claude",)), tmp_path)
+    (check,) = qualify.check_harness_stability(tmp_path, which=("claude",))
+    assert check.ok, check.detail
+
+
+def test_a_harness_that_moved_since_the_last_preflight_refuses(tmp_path):
+    """This is the drift that actually matters: the matched pair holds everything fixed except
+    the harness, so a build changing part-way through makes its two columns differ in two ways
+    with nothing in the record to show it."""
+    qualify.write_report(
+        [Check("harness/claude", True, "recorded", {"reported": "0.0.0-ancient (Claude Code)"})],
+        tmp_path,
+    )
+    (check,) = qualify.check_harness_stability(tmp_path, which=("claude",))
+    assert not check.ok
+    assert "differ in two ways" in check.detail
+    assert "DISABLE_AUTOUPDATER=1" in check.detail
+    assert check.observed["builds"]["claude"]["was"] == "0.0.0-ancient (Claude Code)"
 
 
 def test_the_report_records_observations_not_just_verdicts(tmp_path):

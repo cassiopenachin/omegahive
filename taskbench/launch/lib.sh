@@ -19,6 +19,13 @@ readonly EXPECT_CORPUS_HASH="sha256:6bdbb73352bcf61bddef97ddd50c51d3dc1cdf283a42
 # shellcheck disable=SC2034  # read by every launcher that sources this file
 readonly FIRST_TASK="docs-triage"
 
+# A batch runs for hours and Claude Code updates itself. If it does so between two cells — or,
+# worse, between the two arms of the matched DeepSeek pair — the harness differs in a second way
+# that no record would show, because the build is captured once at launch. Exported here so
+# every launcher that sources this file inherits it. `autoUpdatesChannel` only selects a channel;
+# this variable is the only thing that stops the updater outright.
+export DISABLE_AUTOUPDATER=1
+
 say()  { printf '%s\n' "$*"; }
 step() { printf '\n== %s\n' "$*"; }
 die()  { printf '\nREFUSED: %s\n' "$*" >&2; exit 3; }

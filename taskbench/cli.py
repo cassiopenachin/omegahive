@@ -652,6 +652,9 @@ def qualify_preflight_cmd(
         qualify.check_pinned_revision(repo)
         + qualify.check_corpus(repo)
         + qualify.check_incumbent_record(repo)
+        # Stability BEFORE builds, so a moved harness reads as drift rather than as a fresh
+        # reading that happens to differ from one nobody is looking at.
+        + qualify.check_harness_stability(out_dir)
         + qualify.check_harness_builds()
     )
 

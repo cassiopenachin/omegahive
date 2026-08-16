@@ -49,12 +49,26 @@ EXPECT_CORPUS_HASH = "sha256:6bdbb73352bcf61bddef97ddd50c51d3dc1cdf283a42648ceb1
 #: The record the candidates are compared against.
 INCUMBENT_RECORD = "2026-08-13-incumbent-fidelity-v0-1-2"
 
-#: Harness builds the setup round-trip pinned. A build that has moved under us is a recorded
-#: dimension of every bundle, so it is checked rather than read off and hoped about.
-HARNESS_PINS = {
-    "claude": ("2.1.232", ("claude", "--version")),
-    "codex": ("0.147.0", ("codex", "--version")),
-    "reasonix": ("1.25.2", ("reasonix", "--version")),
+#: How to ask each harness what it is. **No expected version.**
+#:
+#: There was one, and it was a mistake that cost a preflight run. Claude Code auto-updates; it
+#: moved 2.1.232 -> 2.1.233 between setup and launch and the preflight refused the whole study
+#: over a patch bump. Worse, the pinned 2.1.232 was never the incumbent's build — the incumbent
+#: ran on 2.1.231 — so it asserted parity with nothing, it was simply whatever happened to be
+#: installed the day setup ran.
+#:
+#: A check that asserts something the environment actively contradicts is not a safeguard. The
+#: order asks for the harness version to be RECORDED per batch, and lists corpus, rubric, pass
+#: rule, review/remediation method and reviewer *configuration* as what invalidates a candidate
+#: set — not a CLI patch level. So: read it, write it down, and refuse only when it cannot be
+#: read at all, because a cell with no harness version is genuinely unattributable.
+#:
+#: What still refuses is the build MOVING MID-STUDY, which is a different and real failure —
+#: see `check_harness_stability`.
+HARNESS_PROBES = {
+    "claude": ("claude", "--version"),
+    "codex": ("codex", "--version"),
+    "reasonix": ("reasonix", "--version"),
 }
 
 
@@ -82,37 +96,94 @@ def _version_of(argv: tuple[str, ...]) -> str | None:
 
 
 def check_harness_builds(which: tuple[str, ...] = ()) -> list[Check]:
-    """Each harness reports the build the study recorded, or says what it reports instead."""
+    """Read and record each harness's build. Refuses only if a harness cannot be identified.
+
+    The recorded value is what every cell's labels will carry, and that record is the point: a
+    result that cannot say which build produced it is unattributable, which is the gap this
+    instrument exists to close. Which specific build it is, is not this check's business.
+    """
     checks: list[Check] = []
-    for name, (expected, argv) in HARNESS_PINS.items():
+    for name, argv in HARNESS_PROBES.items():
         if which and name not in which:
             continue
         reported = _version_of(argv)
-        if reported is None:
-            checks.append(
-                Check(
-                    f"harness/{name}", False,
-                    f"`{' '.join(argv)}` did not run; the bundle cannot be attributed to a "
-                    "build, and a cell without a harness version is unattributable by design.",
-                )
-            )
-            continue
-        ok = expected in reported
         checks.append(
             Check(
-                f"harness/{name}", ok,
+                f"harness/{name}",
+                reported is not None,
                 (
-                    f"{name} reports {reported!r}, pinned at {expected}."
-                    if ok
-                    else f"{name} reports {reported!r} but the study pins {expected}. The "
-                    "harness is part of the bundle under test: a moved build is a different "
-                    "bundle, and silently scoring it as the pinned one is the attribution "
-                    "failure this instrument exists to close."
+                    f"{name} reports {reported!r}; recorded as this batch's build."
+                    if reported is not None
+                    else f"`{' '.join(argv)}` did not run, so this bundle cannot be attributed "
+                    "to a build at all. A cell without a harness version is unattributable by "
+                    "design, and that is what this refuses on — not on which version it is."
                 ),
-                {"reported": reported, "pinned": expected},
+                {"reported": reported},
             )
         )
     return checks
+
+
+def check_harness_stability(
+    out_dir: Path, which: tuple[str, ...] = ()
+) -> list[Check]:
+    """Refuse if a harness moved since the build this study last recorded.
+
+    This is the check that matters, and it is not about version numbers being tidy. The matched
+    DeepSeek pair holds model, provider, upstream, preset, task and kickoff fixed so that the
+    ONLY difference between its two columns is the harness. A harness that updates between the
+    two arms makes them differ in two ways — and nothing in the record would show it, because
+    the build is captured once per batch at launch.
+
+    So drift between sittings is a stop, with an obvious remedy: re-run setup, which adopts the
+    current build as the study's build. Drift *within* a batch is what `DISABLE_AUTOUPDATER=1`
+    in every launcher exists to prevent.
+    """
+    path = out_dir / "qualify-preflight.json"
+    if not path.is_file():
+        return [
+            Check(
+                "harness/stability", True,
+                "no earlier preflight to compare against; this run establishes the study's "
+                "harness builds.",
+            )
+        ]
+    try:
+        previous = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return [Check("harness/stability", True, "the earlier preflight record is unreadable.")]
+
+    recorded = {
+        c["name"].split("/", 1)[1]: (c.get("observed") or {}).get("reported")
+        for c in previous.get("checks", [])
+        if c["name"].startswith("harness/") and c["name"] != "harness/stability"
+    }
+    moved: list[str] = []
+    seen: dict[str, Any] = {}
+    for name, argv in HARNESS_PROBES.items():
+        if which and name not in which:
+            continue
+        now = _version_of(argv)
+        was = recorded.get(name)
+        seen[name] = {"was": was, "now": now}
+        if was and now and was != now:
+            moved.append(f"{name}: {was!r} -> {now!r}")
+    return [
+        Check(
+            "harness/stability", not moved,
+            (
+                "every harness is on the build this study recorded."
+                if not moved
+                else f"a harness moved since the last preflight ({'; '.join(moved)}). The "
+                "matched pair's whole claim is that only the harness differs between its two "
+                "columns, so a build that changes part-way through makes them differ in two "
+                "ways with nothing in the record to show it. Re-run setup to adopt the current "
+                "build as the study's build, and export DISABLE_AUTOUPDATER=1 so it cannot move "
+                "again mid-batch."
+            ),
+            {"builds": seen},
+        )
+    ]
 
 
 #: **Byte-identical to the pin, or the batch does not run.** This is the scored instrument: the
