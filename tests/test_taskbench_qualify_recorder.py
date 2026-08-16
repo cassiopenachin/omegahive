@@ -191,3 +191,78 @@ def test_skipping_the_recorder_still_runs_the_preset_and_endpoint_checks(gateway
     )
     assert not any(c.name.startswith("receipt/") for c in checks)
     assert fake.calls.count("POST /api/v1/messages") == 0
+
+
+# --- confirming a receipt that was late rather than absent -----------------------------------
+
+
+def _preflight_record(tmp_path, *, pending: str, slug: str) -> None:
+    from taskbench.qualify import Check, write_report
+
+    write_report(
+        [
+            Check("receipt/x/captured", True, "captured", {}),
+            Check(
+                f"receipt/{slug}/generation", False,
+                "OpenRouter /generation did not return a record",
+                {"pending_generation_id": pending, "pin_slug": slug},
+            ),
+        ],
+        tmp_path,
+    )
+
+
+def test_a_late_receipt_is_confirmed_with_one_read_and_the_record_is_updated(gateway, tmp_path):
+    """Observed live: a Muse receipt 404'd across the whole wait and existed on the first
+    attempt afterwards. Re-running the preflight to re-ask would charge four more probe calls."""
+    from taskbench.qualify import confirm_pending
+
+    origin, fake = gateway
+    _preflight_record(tmp_path, pending=GEN_ID, slug=DEEPSEEK_PIN.slug)
+    checks = confirm_pending(tmp_path, "sk-or-test", origin=origin)
+
+    (check,) = [c for c in checks if c.name.endswith("/generation")]
+    assert check.ok, check.detail
+    assert "LATE, not absent" in check.detail
+    assert fake.calls.count("GET /api/v1/generation") == 1, "one read, not a re-probe"
+    assert fake.calls.count("POST /api/v1/messages") == 0, "no model call is made"
+
+    doc = json.loads((tmp_path / "qualify-preflight.json").read_text())
+    entry = next(c for c in doc["checks"] if c["name"].endswith("/generation"))
+    assert entry["ok"] is True
+    assert entry["observed"]["confirmed_later"] is True
+    assert "confirmed_pending_utc" in doc
+
+
+def test_a_receipt_that_is_still_absent_is_not_confirmed(gateway, tmp_path):
+    from taskbench.qualify import confirm_pending
+
+    origin, fake = gateway
+    fake.generation_status = 404
+    _preflight_record(tmp_path, pending=GEN_ID, slug=DEEPSEEK_PIN.slug)
+    checks = confirm_pending(tmp_path, "sk-or-test", origin=origin)
+    assert not checks[0].ok
+    assert "still has no record" in checks[0].detail
+    doc = json.loads((tmp_path / "qualify-preflight.json").read_text())
+    assert next(c for c in doc["checks"] if c["name"].endswith("/generation"))["ok"] is False
+
+
+def test_confirmation_still_runs_the_identity_check(gateway, tmp_path):
+    """Two-step proof is still proof only if the second step checks what the first would have."""
+    from taskbench.qualify import confirm_pending
+
+    origin, fake = gateway
+    fake.receipt = {**RECEIPT, "provider_name": "DeepInfra"}
+    _preflight_record(tmp_path, pending=GEN_ID, slug=DEEPSEEK_PIN.slug)
+    checks = confirm_pending(tmp_path, "sk-or-test", origin=origin)
+    assert not checks[0].ok
+    assert "fallback the pin exists to prevent" in checks[0].detail
+
+
+def test_nothing_pending_is_reported_as_nothing_to_do(gateway, tmp_path):
+    from taskbench.qualify import Check, confirm_pending, write_report
+
+    origin, _ = gateway
+    write_report([Check("receipt/x/generation", True, "fine", {})], tmp_path)
+    checks = confirm_pending(tmp_path, "sk-or-test", origin=origin)
+    assert checks[0].ok and "nothing to confirm" in checks[0].detail

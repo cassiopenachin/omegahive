@@ -32,6 +32,7 @@ import httpx
 from . import openrouter as orouter
 from .receipts import (
     OPENROUTER_ORIGIN,
+    RECEIPT_FIELDS,
     ReceiptRecorder,
     fetch_generation,
     reconcile,
@@ -578,7 +579,18 @@ def validate_receipt_recorder(
                 else "; ".join(identity_problems)
                 or str(receipt.get("missing_surface", "no receipt"))
             ),
-            {"receipt": receipt, "totals": (reconciled or {}).get("totals")},
+            {
+                "receipt": receipt,
+                "totals": (reconciled or {}).get("totals"),
+                # Carried so a receipt that is merely LATE can be confirmed later with one
+                # cheap read, instead of re-running the whole preflight and paying for four
+                # more probe calls to ask the same question. Observed 2026-08-16: a Muse
+                # receipt 404'd across the wait and existed on the first attempt afterwards.
+                "pending_generation_id": (
+                    call.generation_id if call.generation_id and not got_receipt else None
+                ),
+                "pin_slug": pin.slug,
+            },
         )
     )
 
@@ -631,6 +643,86 @@ def run_gateway_preflight(
                 pin, api_key, out_dir=out_dir / pin.slug, origin=origin, **recorder_kwargs
             )
     return checks
+
+
+def confirm_pending(
+    out_dir: Path, api_key: str, *, origin: str = OPENROUTER_ORIGIN
+) -> list[Check]:
+    """Re-ask for any receipt the preflight left pending, and update its record in place.
+
+    OpenRouter writes generation records asynchronously and the delay is not bounded by
+    anything this code controls. A preflight that hard-fails on a late receipt and forces a
+    fresh run is charging the operator four more probe calls to re-ask a question the gateway
+    will answer for free — so a pending receipt is confirmable rather than only re-runnable.
+
+    This is not a weakened stop-line. The order requires the receipt to be PROVED before the
+    arm runs; proving it in two steps is still proving it, and the confirmation runs the same
+    identity check against the same pin. What it may not do is pass an arm whose receipt never
+    arrives, and it does not.
+    """
+    path = out_dir / "qualify-preflight.json"
+    if not path.is_file():
+        return [Check("confirm/record", False, f"no preflight record at {path}")]
+    doc = json.loads(path.read_text())
+    pins = {p.slug: p for p in (orouter.DEEPSEEK_PIN, orouter.MUSE_PIN)}
+
+    resolved: list[Check] = []
+    changed = False
+    for entry in doc.get("checks", []):
+        observed = entry.get("observed") or {}
+        pending = observed.get("pending_generation_id")
+        if entry.get("ok") or not pending:
+            continue
+        pin = pins.get(observed.get("pin_slug", ""))
+        if pin is None:
+            continue
+        fetched = fetch_generation(pending, api_key, origin=origin, attempts=1)
+        if not fetched.get("available"):
+            resolved.append(
+                Check(
+                    entry["name"], False,
+                    f"{pending} still has no record: {fetched['missing_surface']}",
+                    {"pending_generation_id": pending, "pin_slug": pin.slug},
+                )
+            )
+            continue
+        full = fetched["receipt"]
+        problems = orouter.check_resolved_identity(
+            pin.request_string,
+            resolved_model=full.get("model"),
+            resolved_upstream=full.get("provider_name"),
+            pin=pin,
+        )
+        check = Check(
+            entry["name"], not problems,
+            (
+                f"/generation returned the authoritative record on a later read: upstream "
+                f"{full.get('provider_name')!r}, model {full.get('model')!r}, cost "
+                f"{full.get('total_cost')}. The receipt was LATE, not absent."
+                if not problems
+                else "; ".join(problems)
+            ),
+            {
+                "receipt": {k: full.get(k) for k in RECEIPT_FIELDS if k in full},
+                "confirmed_later": True,
+                "pin_slug": pin.slug,
+            },
+        )
+        resolved.append(check)
+        if check.ok:
+            entry["ok"] = True
+            entry["detail"] = check.detail
+            entry["observed"] = check.to_json()["observed"]
+            changed = True
+
+    if changed:
+        doc["confirmed_pending_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        path.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n")
+    if not resolved:
+        resolved.append(
+            Check("confirm/pending", True, "no receipt was left pending; nothing to confirm.")
+        )
+    return resolved
 
 
 def write_report(checks: list[Check], out_dir: Path) -> Path:

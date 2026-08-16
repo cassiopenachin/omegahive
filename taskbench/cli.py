@@ -493,6 +493,33 @@ def matrix_cmd(
         print(text)
 
 
+@app.command("qualify-confirm")
+def qualify_confirm_cmd(
+    out: str = typer.Option(..., "--out", help="the preflight record directory"),
+) -> None:
+    """Confirm any receipt the preflight left pending, without re-running the probes.
+
+    OpenRouter writes generation records asynchronously with no bound this code controls, so a
+    receipt can be late rather than absent. Re-running the whole preflight to re-ask would
+    charge four more probe calls for a question the gateway now answers for free.
+    """
+    from . import qualify
+    from .receipts import api_key_from_env
+
+    checks = qualify.confirm_pending(Path(out), api_key_from_env())
+    for check in checks:
+        mark = "[bold]✓[/bold]" if check.ok else "[bold]✗[/bold]"
+        console.print(f"{mark} {check.name}: {check.detail}")
+    if any(not c.ok for c in checks):
+        console.print(
+            "\n[bold]STILL PENDING[/bold] — a receipt that never arrives is not a late one. "
+            "If it stays absent, that arm cannot prove its own accounting and is recorded "
+            "`unreachable`, never given a substitute measurement."
+        )
+        raise typer.Exit(code=3)
+    console.print(f"\nrecord updated: {Path(out) / 'qualify-preflight.json'}")
+
+
 @app.command("generation")
 def generation_cmd(
     generation_id: str = typer.Argument(..., help="an OpenRouter generation id"),
