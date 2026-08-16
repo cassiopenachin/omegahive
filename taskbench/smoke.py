@@ -164,7 +164,9 @@ def _tree_state(root: Path) -> dict[str, float]:
     }
 
 
-def _classify_failure(combined: str, *, responded: bool) -> tuple[str, str]:
+def _classify_failure(
+    combined: str, *, responded: bool, produced_stdout: bool = True, exit_code: int | None = None
+) -> tuple[str, str]:
     """Which *kind* of not-green this was — the distinction the five-minute pulse must support.
 
     Ordered by specificity. Authentication and routing are checked before the generic
@@ -184,6 +186,20 @@ def _classify_failure(combined: str, *, responded: bool) -> tuple[str, str]:
                    "traceback (most recent call last)", "panic:"):
         if needle in lowered:
             return "unreachable-harness-startup", f"the harness did not start ({needle!r})"
+    # A process that exited non-zero having written nothing to stdout and touched nothing has
+    # not "run and responded" — it refused. Counting its stderr as a response filed a wrapper
+    # that stopped instantly, with a one-line explanation, under `tool-loop-incomplete`: a
+    # reached bundle that fell short. That is the exact confusion this vocabulary exists to
+    # prevent, pointed the other way.
+    if exit_code not in (None, 0) and not produced_stdout:
+        return (
+            "unreachable-harness-startup",
+            "the harness exited "
+            f"{exit_code} without writing anything to stdout: it refused to start rather than "
+            f"attempting the task. What it said: {combined.strip().splitlines()[-1][:200]!r}"
+            if combined.strip()
+            else f"the harness exited {exit_code} silently without attempting the task",
+        )
     if not responded:
         return (
             "unreachable-no-progress",
@@ -205,10 +221,32 @@ def run_smoke(
     env: dict[str, str] | None = None,
     timeout_s: int = 900,
     pulse_at_s: int = 300,
+    gateway_pin: Any = None,
+    api_key: str | None = None,
 ) -> SmokeResult:
-    """Run one bundle's real argv against the fixture, with the order's five-minute pulse."""
+    """Run one bundle's real argv against the fixture, with the order's five-minute pulse.
+
+    `gateway_pin` turns this into the smoke the order actually requires of an OpenRouter arm:
+    "its smoke must expose the same server-returned usage and generation receipt, resolve exact
+    model plus [upstream], and verify the frozen preset hash". A receipt recorder is started for
+    the duration, `ANTHROPIC_BASE_URL` points the harness at it, and afterwards the call is
+    reconciled and its resolved identity checked against the pin.
+
+    Without it, a gateway arm could not smoke at all: the wrapper refuses when
+    `ANTHROPIC_BASE_URL` is unset, and the recorder used to exist only inside `run-gateway` —
+    which runs after the smoke. The refusal was correct and the sequencing was not.
+    """
     work = build_fixture(root)
     full_argv = [*argv, PROMPT]
+
+    # A gateway arm smokes THROUGH the recorder. Without this the wrapper refuses outright —
+    # it requires ANTHROPIC_BASE_URL — and the recorder used to exist only inside `run-gateway`,
+    # which runs after the smoke. The refusal was correct; the sequencing was not.
+    recorder = None
+    if gateway_pin is not None:
+        from .receipts import ReceiptRecorder
+
+        recorder = ReceiptRecorder(root / "smoke-gateway-calls.jsonl").start()
 
     # EXACTLY the environment the runner will give the real cell — not this shell's.
     #
@@ -223,6 +261,8 @@ def run_smoke(
     # `run_cell` builds the child environment from `env_passthrough` plus `env` and nothing
     # else; this mirrors that, including PATH's default and HOME falling back to the cell root.
     child_env = dict(env or {})
+    if recorder is not None:
+        child_env["ANTHROPIC_BASE_URL"] = recorder.base_url
     child_env.setdefault("PATH", os.environ.get("PATH", "/usr/bin:/bin"))
     child_env.setdefault("HOME", str(root))
     child_env["BENCH_CELL_ROOT"] = str(root)
@@ -246,6 +286,8 @@ def run_smoke(
         # A harness that is not installed, not executable, or not on PATH. This is the earliest
         # possible failure and it must be a named `unreachable`, not a traceback out of the
         # preflight — a smoke that crashes tells the operator nothing about which bundle broke.
+        if recorder is not None:
+            recorder.stop(drain_timeout=5)
         return SmokeResult(
             bundle=bundle,
             outcome="unreachable-harness-startup",
@@ -312,7 +354,12 @@ def run_smoke(
         # quietly and writes files has plainly started, and calling it `unreachable-no-progress`
         # would file a completed-but-wrong attempt under a setup failure — the exact confusion
         # this vocabulary exists to prevent. Any change under the fixture counts as evidence.
-        outcome, detail = _classify_failure(combined, responded=bool(out or err) or touched)
+        outcome, detail = _classify_failure(
+            combined,
+            responded=bool(out or err) or touched,
+            produced_stdout=bool(out),
+            exit_code=proc.returncode,
+        )
 
     # The mode assertion. A harness that silently ran in a weaker mode than it was asked for
     # produces cells whose denials look like model behaviour, so this is checked before the
@@ -339,6 +386,55 @@ def run_smoke(
                     "which reads as model behaviour rather than as setup. Fix the mode, not "
                     "the cells."
                 )
+
+    if recorder is not None:
+        from . import openrouter as orouter
+        from .receipts import reconcile
+
+        drained = recorder.stop(drain_timeout=60)
+        calls = list(recorder.calls)
+        extra["gateway_calls_observed"] = len(calls)
+        extra["recorder_drained"] = drained
+        if not calls:
+            outcome = "unreachable-routing"
+            detail = (
+                "the harness made no call through the receipt recorder, so it did not use "
+                "ANTHROPIC_BASE_URL — this bundle would have measured a different route from "
+                "the one its record claims."
+            )
+        elif api_key:
+            # The order requires a smoke to expose a server-returned generation receipt and
+            # resolve the exact model plus the pinned upstream. Anything less and the arm has
+            # no scoreable accounting, which is a stop rather than a caveat.
+            rec = reconcile(calls, api_key, attempts=20, first_delay_s=2.0, max_delay_s=30.0)
+            extra["gateway_totals"] = rec["totals"]
+            receipted = [c for c in rec["calls"] if c["receipt"].get("available")]
+            if not receipted:
+                outcome = "unreachable-routing"
+                detail = (
+                    "no call produced an OpenRouter generation receipt, so this arm cannot "
+                    "prove its own accounting. The order stops before the batch rather than "
+                    "leaving the token question to estimates."
+                )
+            else:
+                first = receipted[0]["receipt"]
+                problems = orouter.check_resolved_identity(
+                    gateway_pin.request_string,
+                    resolved_model=first.get("model"),
+                    resolved_upstream=first.get("provider_name"),
+                    pin=gateway_pin,
+                )
+                extra["resolved_model"] = first.get("model")
+                extra["resolved_upstream"] = first.get("provider_name")
+                if problems:
+                    outcome = "unreachable-routing"
+                    detail = "; ".join(problems)
+                elif outcome == "green":
+                    detail += (
+                        f" It reached {first.get('provider_name')} as "
+                        f"{first.get('model')}, with a server receipt for "
+                        f"{len(receipted)} of {len(calls)} call(s)."
+                    )
 
     return SmokeResult(
         bundle=bundle,

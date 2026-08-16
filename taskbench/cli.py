@@ -422,9 +422,27 @@ def qualify_smoke_cmd(
     env = {k: os.environ[k] for k in agent.env_passthrough if k in os.environ}
     env.update(agent.env)
 
+    # A model string carrying `@preset/` is a gateway arm: its smoke must run through the
+    # recorder and produce a receipt, which is what the order requires before its batch.
+    from . import openrouter as orouter
+
+    pin = None
+    key = None
+    requested = agent.labels.get("model", "")
+    for candidate in (orouter.DEEPSEEK_PIN, orouter.MUSE_PIN):
+        if candidate.slug in requested:
+            pin = candidate
+            break
+    if pin is not None:
+        from .receipts import api_key_from_env
+
+        key = api_key_from_env()
+        console.print(f"gateway arm: the smoke runs through the recorder, pinned to {pin.slug}")
+
     result = smoke_mod.run_smoke(
         bundle, list(agent.argv), root=Path(root), env=env,
         timeout_s=timeout_s, pulse_at_s=pulse_at_s,
+        gateway_pin=pin, api_key=key,
     )
     path = smoke_mod.write_smoke(result, Path(out))
     mark = "[bold]✓[/bold]" if result.outcome == "green" else "[bold]✗[/bold]"

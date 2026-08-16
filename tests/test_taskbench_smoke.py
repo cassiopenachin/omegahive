@@ -80,7 +80,10 @@ def test_a_bundle_that_only_talks_is_reached_but_incomplete(tmp_path):
     [
         (UNAUTHORIZED, "unreachable-authentication"),
         (NO_ROUTE, "unreachable-routing"),
-        (SILENT, "unreachable-no-progress"),
+        # A clean non-zero exit with no stdout is a REFUSAL, and distinguishable from a stall:
+        # it exited. `no-progress` is reserved for the case where a hung process and a slow one
+        # look identical, which this does not.
+        (SILENT, "unreachable-harness-startup"),
     ],
 )
 def test_each_pre_model_failure_gets_its_own_name(body, expected, tmp_path):
@@ -276,3 +279,30 @@ def test_a_matching_mode_is_recorded_and_does_not_fail(tmp_path, monkeypatch):
     )
     assert got.outcome == "green"
     assert got.extra["effective_permission_mode"] == "acceptEdits"
+
+
+def test_a_wrapper_that_refuses_at_startup_is_not_a_tool_loop_that_fell_short(tmp_path):
+    """Live case: the gateway wrapper refuses when ANTHROPIC_BASE_URL is unset, exits 1 in a
+    millisecond with one line on stderr and nothing on stdout. That was filed as
+    `tool-loop-incomplete` — a reached bundle that fell short — which is this vocabulary's own
+    confusion pointed the other way."""
+    got = run_smoke(
+        "refuser",
+        ["python3", "-c",
+         "import sys; print('BASE_URL must be set', file=sys.stderr); sys.exit(1)"],
+        root=tmp_path, timeout_s=60,
+    )
+    assert got.outcome == "unreachable-harness-startup"
+    assert "refused to start rather than attempting the task" in got.detail
+    assert "BASE_URL must be set" in got.detail
+
+
+def test_a_process_that_writes_to_stdout_then_fails_is_still_a_tool_loop_failure(tmp_path):
+    """The narrowing must not swallow the real case: a harness that ran, said things, and did
+    not finish is reached-but-incomplete, however it exits."""
+    got = run_smoke(
+        "talked-then-failed",
+        ["python3", "-c", "import sys; print('I looked at the files'); sys.exit(1)"],
+        root=tmp_path, timeout_s=60,
+    )
+    assert got.outcome == "tool-loop-incomplete"
