@@ -99,6 +99,21 @@ class BundleSummary:
     def reachable(self) -> bool:
         return self.unreachable_reason is None
 
+    @property
+    def served_model(self) -> str:
+        """What the gateway says served this bundle, falling back to what was requested.
+
+        `model` is the launch label, and for a gateway arm that is an alias with a preset
+        suffix — a route, not a model. Two bundles could carry different aliases pointing at
+        the same weights, or the same alias at different ones, and a comparison table printing
+        only the request cannot show either. Where receipts exist they are the answer; where
+        they do not, the request is marked as a request rather than promoted into a fact.
+        """
+        served = self.gateway_totals.get("resolved_models") or []
+        if served:
+            return ", ".join(str(m) for m in served)
+        return f"{self.model} *(requested)*"
+
     def count(self, which: str) -> int:
         if which == "first":
             return sum(1 for c in self.cells if c.first_passed and not c.inconclusive)
@@ -478,7 +493,7 @@ def render(
         if not bundle.reachable:
             cells = ["unreachable"] * len(tasks)
         out.append(
-            f"| {bundle.label} | {bundle.vendor} | `{bundle.model}` | {bundle.harness} | "
+            f"| {bundle.label} | {bundle.vendor} | {bundle.served_model} | {bundle.harness} | "
             + " | ".join(cells)
             + f" | {bundle.count('first')}/{bundle.denominator}"
             + f" | {bundle.count('final')}/{bundle.denominator} |"

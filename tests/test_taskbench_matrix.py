@@ -308,3 +308,26 @@ def test_a_record_with_no_cells_json_yields_an_empty_bundle_not_a_crash(tmp_path
     assert got.cells == []
     assert got.denominator == 0
     assert percent(got.count("final"), got.denominator) == "n/a"
+
+
+def test_the_table_names_the_model_the_gateway_served_not_the_alias():
+    """A gateway arm's launch label is an alias with a preset suffix — a route, not a model.
+    Printing it in a comparison table means two bundles could carry different aliases for the
+    same weights, or the same alias for different ones, and the table could show neither."""
+    bundle = BundleSummary(
+        label="muse", record="r", vendor="meta",
+        model="meta/muse-spark-1.2@preset/omegahive-muse-spark-1-2",
+        harness="claude-code", cells=[],
+        gateway_totals={"resolved_models": ["meta/muse-spark-1.2-20260805"]},
+    )
+    assert bundle.served_model == "meta/muse-spark-1.2-20260805"
+
+
+def test_without_receipts_the_request_is_labelled_as_a_request():
+    bundle = BundleSummary(
+        label="haiku", record="r", vendor="anthropic", model="claude-haiku-4-5",
+        harness="claude-code", cells=[],
+    )
+    assert bundle.served_model == "claude-haiku-4-5 *(requested)*", (
+        "a subscription arm has no receipt to settle identity, and the table must say so"
+    )
