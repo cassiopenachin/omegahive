@@ -9,3 +9,11 @@ build/
 # dev-default bind-mount target for `compose --profile ops run --rm backup` when
 # OMEGAHIVE_BACKUP_DIR is unset; production points that var outside the repo tree.
 backups/
+
+# Per-machine Claude Code state. Listed individually, not as `.claude/`, so that
+# shared project config (`.claude/settings.json`, agents, skills) stays committable:
+# settings.local.json holds one machine's permission grants, and worktrees/ is scratch
+# checkouts left behind by agent worktree isolation. Neither belongs on a public remote,
+# and both sit where a careless `git add -A` would sweep them in.
+.claude/settings.local.json
+.claude/worktrees/
