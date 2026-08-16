@@ -140,15 +140,20 @@ def test_the_codex_wrapper_seeds_the_cell_home_with_auth_and_nothing_else():
     only place Codex records which model it ran.
     """
     body = code("cell-codex.sh")
-    seeding = body.split("set +e")[0]  # everything before the harness is launched
-    assert "auth.json" in seeding
     assert "--ignore-user-config" in body
     assert "trap cleanup EXIT INT TERM" in body
-    for carried in ("sessions", "memories", "goals", "queue", "skills", "plugins"):
-        assert 'cp "$SOURCE_AUTH"' in seeding
-        assert f"/{carried}" not in seeding, (
-            f"the wrapper must not seed the cell home with {carried}"
-        )
+
+    # The behaviour, not a word: every copy whose DESTINATION is inside the cell home must be
+    # the credential. Anything else would be prior state seeded into a home whose whole purpose
+    # is to have none.
+    into_home = [
+        ln.strip() for ln in body.splitlines()
+        if ln.strip().startswith("cp ") and "$CELL_HOME" in ln.split("cp ", 1)[1].split()[-1]
+    ]
+    assert into_home == ['cp "$SOURCE_AUTH" "$CELL_HOME/auth.json"'], into_home
+
+    # And the reverse direction is required: the rollout leaves before the home is deleted.
+    assert body.index('cp {} "$BENCH_CELL_ROOT') < body.index('rm -rf "$CELL_HOME"\n}')
 
 
 def test_the_paired_wave_freezes_its_schedule_before_any_result_exists():
