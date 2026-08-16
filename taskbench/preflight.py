@@ -59,18 +59,45 @@ def check_not_canonical(repo_root: Path) -> list[str]:
     return []
 
 
+#: The study's own output. A record being written is not a modification to the instrument, and
+#: treating it as one serialises the whole study: while any batch is running, its record makes
+#: the tree dirty and every other batch's preflight refuses. That is not what this guard is for.
+RECORD_OUTPUT_PREFIX = "taskbench/records/"
+
+
 def check_checkout_clean(repo_root: Path) -> list[str]:
+    """The CODE must be clean, because the record pins its sha. Output written by a batch in
+    flight is exempt.
+
+    The distinction is the guard's whole point: an unclean tree makes the recorded harness sha a
+    lie about what ran. A record directory appearing under `taskbench/records/` says nothing
+    about the harness — and excluding it is what allows two batches to run at once, which the
+    unmodified check made impossible.
+    """
     out = subprocess.run(
-        ["git", "-C", str(repo_root), "status", "--porcelain"],
+        # `-uall` expands untracked directories to their files. Without it git collapses a
+        # wholly-untracked tree to a single `?? taskbench/` line, which no per-record exclusion
+        # can match — the exemption would silently not apply on exactly the checkouts that need
+        # it most.
+        ["git", "-C", str(repo_root), "status", "--porcelain", "-uall"],
         capture_output=True, text=True, check=False,
     )
     if out.returncode != 0:
         return [f"{repo_root} is not a git checkout"]
-    if out.stdout.strip():
-        n = len(out.stdout.strip().splitlines())
+    # NOT `out.stdout.strip().splitlines()`: porcelain lines are `XY<space><path>`, and for an
+    # unstaged modification XY is `_M`, so stripping the whole output eats the first line's
+    # leading space and shifts every path by one character — which turned `code.py` into
+    # `ode.py` in the refusal message.
+    dirty = [
+        line[3:] for line in out.stdout.splitlines()
+        if line.strip() and RECORD_OUTPUT_PREFIX not in line
+    ]
+    if dirty:
+        n = len(dirty)
         return [
-            f"{repo_root} has {n} uncommitted change(s). The record pins the harness sha, so "
-            "an unclean tree makes that pin a lie. Commit or stash first."
+            f"{repo_root} has {n} uncommitted change(s) outside {RECORD_OUTPUT_PREFIX}. The "
+            "record pins the harness sha, so an unclean tree makes that pin a lie. Commit or "
+            f"stash first. Changed: {dirty[:5]}"
         ]
     return []
 

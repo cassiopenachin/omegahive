@@ -264,7 +264,11 @@ DISPOSITIONED = {
         "guard is unchanged in strength — a launch that omits a task or names one the corpus "
         "does not hold in is still refused, and now says which — but it no longer refuses a "
         "batch for running the precommitted lead task first, which the order requires of every "
-        "bundle. No other check is touched."
+        "bundle. `check_checkout_clean` additionally exempts `taskbench/records/`: a record "
+        "being written by a batch in flight is the study's output, not a modification to the "
+        "instrument, and counting it made two batches unable to run at once. Both changes "
+        "narrow what a guard reacts to without narrowing what it protects; no other check is "
+        "touched."
     ),
     "taskbench/cli.py": (
         "adds the qualify-preflight, qualify-smoke, run-gateway, gateway-totals and matrix "

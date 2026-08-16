@@ -259,3 +259,28 @@ def test_a_launch_naming_an_unknown_task_is_still_refused(corpus):
         expect_held_in=[*corpus.catalog.held_in, "not-a-corpus-task"],
     )
     assert problems and "the corpus does not hold in" in problems[0]
+
+
+def test_a_batch_writing_its_record_does_not_block_another_batch(tmp_path):
+    """Records are the study's output. Counting them as an unclean instrument serialised the
+    whole study — while any batch ran, its record made the tree dirty and every other batch's
+    preflight refused. Found when a gateway shakedown was refused by wave 2's live record."""
+    import subprocess as sp
+
+    from taskbench.preflight import check_checkout_clean
+
+    repo = tmp_path / "repo"
+    (repo / "taskbench" / "records" / "2026-08-16-some-batch").mkdir(parents=True)
+    for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+        sp.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+    (repo / "code.py").write_text("x = 1\n")
+    sp.run(["git", "-C", str(repo), "add", "code.py"], check=True, capture_output=True)
+    sp.run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True, capture_output=True)
+
+    (repo / "taskbench" / "records" / "2026-08-16-some-batch" / "run.json").write_text("{}")
+    assert check_checkout_clean(repo) == [], "a live record must not block a batch"
+
+    # The guard's real job is untouched: changed CODE still refuses, and names what changed.
+    (repo / "code.py").write_text("x = 2\n")
+    problems = check_checkout_clean(repo)
+    assert problems and "code.py" in problems[0]
