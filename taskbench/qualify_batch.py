@@ -160,6 +160,86 @@ def reconcile_record(
     return summary
 
 
+def refetch_missing_receipts(record_root: Path, api_key: str, **fetch_kwargs: Any) -> int:
+    """Re-ask for any per-cell receipt still marked unavailable, and rewrite the file.
+
+    Necessary because OpenRouter writes generation records asynchronously and reconciliation
+    runs the moment the batch ends — so the last call of a leg routinely has no record yet.
+    Observed directly: a shakedown reconciled 13 of 14 calls, and the fourteenth existed on the
+    first attempt minutes later, with a real cost and the pinned upstream.
+
+    Left alone that is not a rounding error but a SYSTEMATIC undercount of about one call per
+    leg, landing on the token and cost comparison the matched pair exists to make. Re-asking is
+    one cheap read per missing call and turns a floor back into a total.
+
+    Returns how many were recovered.
+    """
+    from .receipts import RECEIPT_FIELDS, fetch_generation
+
+    recovered = 0
+    for path in sorted((record_root / "cells").glob("*/gateway-receipts-*.json")):
+        try:
+            doc = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        changed = False
+        for call in doc.get("calls", []):
+            receipt = call.get("receipt") or {}
+            gid = call.get("generation_id")
+            if receipt.get("available") or not gid:
+                continue
+            got = fetch_generation(gid, api_key, attempts=1, **fetch_kwargs)
+            if not got.get("available"):
+                continue
+            full = got["receipt"]
+            call["receipt"] = {
+                "available": True,
+                "recovered_after_the_batch": True,
+                **{k: full.get(k) for k in RECEIPT_FIELDS if k in full},
+            }
+            call["receipt_raw"] = full
+            changed = True
+            recovered += 1
+        if changed:
+            doc["totals"] = _recount(doc["calls"])
+            path.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n")
+    return recovered
+
+
+def _recount(calls: list[dict[str, Any]]) -> dict[str, Any]:
+    """Re-total a leg after recovery, under the same all-or-nothing rule as `reconcile`."""
+    receipted = [c for c in calls if (c.get("receipt") or {}).get("available")]
+    totals: dict[str, Any] = {
+        "calls_observed": len(calls),
+        "calls_with_receipt": len(receipted),
+    }
+    if receipted:
+        for key, field in (
+            ("gateway_cost_usd", "total_cost"),
+            ("native_tokens_prompt", "native_tokens_prompt"),
+            ("native_tokens_completion", "native_tokens_completion"),
+            ("native_tokens_reasoning", "native_tokens_reasoning"),
+            ("native_tokens_cached", "native_tokens_cached"),
+        ):
+            values = [c["receipt"].get(field) for c in receipted]
+            present = [v for v in values if isinstance(v, (int, float))]
+            totals[key] = sum(present) if len(present) == len(receipted) else None
+        for key, field in (
+            ("resolved_upstreams", "provider_name"),
+            ("resolved_models", "model"),
+            ("preset_ids", "preset_id"),
+        ):
+            totals[key] = sorted({str(c["receipt"].get(field)) for c in receipted})
+    missing = len(calls) - len(receipted)
+    if missing:
+        totals["incomplete"] = (
+            f"{missing} of {len(calls)} observed call(s) still have no gateway receipt after a "
+            "post-batch re-ask. Every total above covers only the receipted calls and is a "
+            "floor, not a total."
+        )
+    return totals
+
+
 def record_gateway_totals(record_root: Path) -> dict[str, Any]:
     """Roll the per-cell receipts up across a whole record, however many sittings built it.
 

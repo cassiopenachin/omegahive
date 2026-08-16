@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 
 import httpx
+import pytest
 from taskbench.qualify_batch import (
     LegWindow,
     attribute,
@@ -194,3 +195,66 @@ def test_a_cell_with_no_receipts_is_named_rather_than_counted_as_free(tmp_path):
     assert got["cells_without_receipts"]["cells"] == ["cell-a"]
     assert "not a cell that cost nothing" in got["cells_without_receipts"]["why_it_matters"]
     assert got["complete"] is False
+
+
+def test_a_receipt_that_was_merely_late_is_recovered_and_retotalled(tmp_path):
+    """OpenRouter writes generation records asynchronously and reconciliation runs the moment a
+    batch ends, so the last call of a leg routinely has none yet. Observed live: a shakedown
+    reconciled 13 of 14 and the fourteenth existed minutes later — a 6% cost undercount, and a
+    SYSTEMATIC one of about a call per leg, landing on the very comparison the pair exists to
+    make."""
+    from taskbench.qualify_batch import record_gateway_totals, refetch_missing_receipts
+
+    cell = tmp_path / "cells" / "cell-a"
+    cell.mkdir(parents=True)
+    (cell / "gateway-receipts-attempt.json").write_text(json.dumps({
+        "calls": [
+            {"generation_id": "gen-1", "receipt": {
+                "available": True, "total_cost": 0.10, "provider_name": "Meta",
+                "model": "m", "native_tokens_prompt": 100, "native_tokens_completion": 10,
+                "native_tokens_cached": 0, "native_tokens_reasoning": 0, "preset_id": "p"}},
+            {"generation_id": "gen-late", "receipt": {
+                "available": False, "missing_surface": "not there yet"}},
+        ],
+        "totals": {"calls_observed": 2, "calls_with_receipt": 1, "gateway_cost_usd": 0.10,
+                   "incomplete": "1 of 2 ... floor, not a total"},
+    }))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {
+            "id": "gen-late", "model": "m", "provider_name": "Meta", "preset_id": "p",
+            "total_cost": 0.05, "native_tokens_prompt": 50, "native_tokens_completion": 5,
+            "native_tokens_cached": 0, "native_tokens_reasoning": 0}})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        recovered = refetch_missing_receipts(tmp_path, "sk-or-x", client=client)
+    assert recovered == 1
+
+    doc = json.loads((cell / "gateway-receipts-attempt.json").read_text())
+    late = doc["calls"][1]["receipt"]
+    assert late["available"] and late["recovered_after_the_batch"] is True
+    assert doc["totals"]["calls_with_receipt"] == 2
+    assert doc["totals"]["gateway_cost_usd"] == pytest.approx(0.15)
+    assert "incomplete" not in doc["totals"], "a complete leg must stop calling itself a floor"
+
+    rolled = record_gateway_totals(tmp_path)
+    assert rolled["complete"] is True
+    assert rolled["totals"]["gateway_cost_usd"] == pytest.approx(0.15)
+
+
+def test_a_receipt_that_is_genuinely_absent_keeps_the_floor_label(tmp_path):
+    from taskbench.qualify_batch import refetch_missing_receipts
+
+    cell = tmp_path / "cells" / "cell-a"
+    cell.mkdir(parents=True)
+    (cell / "gateway-receipts-attempt.json").write_text(json.dumps({
+        "calls": [{"generation_id": "gen-gone",
+                   "receipt": {"available": False, "missing_surface": "nope"}}],
+        "totals": {"calls_observed": 1, "calls_with_receipt": 0},
+    }))
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda r: httpx.Response(404, json={}))
+    ) as client:
+        assert refetch_missing_receipts(tmp_path, "sk-or-x", client=client) == 0
+    doc = json.loads((cell / "gateway-receipts-attempt.json").read_text())
+    assert doc["calls"][0]["receipt"]["available"] is False

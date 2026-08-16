@@ -1,0 +1,113 @@
+{
+  "because": "review leg: 1 would-have-shipped defect(s)",
+  "cell_id": "cell-98773ea33b",
+  "deterministic": {
+    "checks": [
+      {
+        "detail": "ok",
+        "exit_code": 0,
+        "id": "docs-index-complete",
+        "output_tail": "ok \u2014 57 file(s) under docs/, each accounted for exactly once\n",
+        "passed": true
+      },
+      {
+        "detail": "ok",
+        "exit_code": 0,
+        "id": "link-integrity",
+        "output_tail": "ok \u2014 56 relative link(s) in 51 file(s), none dangling\n",
+        "passed": true
+      },
+      {
+        "detail": "ok",
+        "exit_code": 0,
+        "id": "nothing-deleted",
+        "output_tail": "ok \u2014 all 55 baseline document(s) still present somewhere under docs/\n",
+        "passed": true
+      }
+    ],
+    "excluded_legs": [
+      {
+        "executed_by": "not-executed",
+        "leg": "Announce the result on the spine per WORKER.md.",
+        "reason": "A spine emit, which this instrument's own scope forbids. The report the order asks for IS written and graded \u2014 only the announcement is out of reach."
+      }
+    ],
+    "missing_artefacts": [],
+    "passed": true,
+    "stop_line_violations": [],
+    "untouched_required_changes": []
+  },
+  "inconclusive": false,
+  "passed": false,
+  "review": {
+    "defect_count": 1,
+    "passed": false,
+    "probe_ok": true,
+    "ran": true,
+    "reason": "1 would-have-shipped defect(s)",
+    "verdict": {
+      "cell_id": "cell-98773ea33b",
+      "dod_legs": [
+        {
+          "leg": "status-headers",
+          "met": "yes",
+          "note": "All seven moved documents carry a prominent Status line naming the new home and why: archive/omegahive_hive_user_migration.md:+3, archive/omegahive_omegaclaw_binding.md (candidate.patch:165), archive/omegahive_stage2_spec.md (patch:216), deployments/omegahive_remote_access_spec.md (patch:231), reference/omegahive_port_spec.md (patch:391), reference/omegahive_spec_1_1.md (patch:415), reference/omegahive_stage2_verdict.md (patch:437). Stale kept-current headers refreshed as the order named them: ui_spec's \"v0.1 DRAFT\" replaced with shipped-v0.1 (patch:355), deployment_spec labels \u00a77 Beastie bring-up a completed milestone (patch:262), recovery_runbook gains a Status line (patch:308). One nit, not blocking: reference/omegahive_stage2_verdict.md:437 still cites its companion as `omegahive_stage2_spec.md` on the very Status line the attempt rewrote, though that spec now sits in docs/archive/; it is a backticked path rather than a markdown link, so it neither dangles mechanically nor misroutes a reader who consults the INDEX."
+        },
+        {
+          "leg": "conservative-on-doubt",
+          "met": "not-applicable",
+          "note": "Every triage verdict in the order was applied and none was left in place, which is the correct outcome only if no document's content contradicted its verdict. Nothing in the diff or the artefacts shows a contradicted verdict: the closest candidate, archiving stage2_spec while current test_plan \u00a7D1 still calls it the \"normative instantiation\" (patch:343), is exactly the disposition the order commanded \u2014 \"closed ladder \u2014 companion to the frozen record\" \u2014 and the attempt preserved the citation by repointing it to archive/. The order predicted 0-1 questions, so applying all verdicts is legitimate here."
+        },
+        {
+          "leg": "convention-readmes",
+          "met": "yes",
+          "note": "docs/archive/README.md and docs/reference/README.md both exist at two lines with Status headers intact and both defer to the INDEX as the map, matching the order's wording: archive is \"superseded or closed documents retained for history\", reference is \"normative-or-historical sources retained for consultation\" (artefacts/docs/archive/README.md:1-2, artefacts/docs/reference/README.md:1-2)."
+        },
+        {
+          "leg": "result-report",
+          "met": "no",
+          "note": "reports/2026-08-16-docs-triage-result.md carries all four required sections, but its claims describe a corrective link-fixing increment rather than the attempt, and its Reflection asserts the change is \"navigation and verification evidence only\" against a diff of seven moves, a new INDEX, two new READMEs and ten relabelled headers. See the defect entry."
+        },
+        {
+          "leg": "docs-index-complete",
+          "met": "yes",
+          "note": "verifier/docs-index-complete.log: \"ok \u2014 57 file(s) under docs/, each accounted for exactly once\", with no unaccounted-file NOTEs to weigh. The INDEX gives one line per doc with what it is, its authority scope and its status, and covers evidence/ as a whole (artefacts/docs/INDEX.md:26) per the order's explicit allowance, plus archive/ entries individually."
+        },
+        {
+          "leg": "link-integrity",
+          "met": "yes",
+          "note": "verifier/link-integrity.log: \"ok \u2014 56 relative link(s) in 51 file(s), none dangling\". The attempt chased references beyond docs/ into README.md (patch:10, 19, 28), ladder/README.md (patch:450) and ladder/report.py (patch:463), and fixed backticked non-link paths in recovery_runbook (patch:318) and hive_native_ops (patch:285). The report's own count of 58 links differs from the verifier's 56, a checker-scope difference that changes nothing about the green result."
+        },
+        {
+          "leg": "nothing-deleted",
+          "met": "yes",
+          "note": "verifier/nothing-deleted.log: \"ok \u2014 all 55 baseline document(s) still present somewhere under docs/\". All seven relocations are git renames with high similarity indices (93-99%), not delete-and-recreate."
+        },
+        {
+          "leg": "moves-and-labels-only",
+          "met": "yes",
+          "note": "Stop-line not crossed. Body edits are confined to Status headers and link repointing. The one prose change beyond a path \u2014 archive/omegahive_m5_spec.md (patch:144, 153), where two references to the never-existing omegahive_deferred_capability_coordination.md became plain deferred-work text \u2014 is a link fix to a pre-existing dangling target that could not be redirected because no such document exists at the baseline, it preserves the sentence's meaning, and the attempt disclosed it in the report."
+        },
+        {
+          "leg": "evidence-untouched",
+          "met": "yes",
+          "note": "Stop-line not crossed. No file under docs/evidence/ appears in the diff; the directory is labelled in the index as \"frozen experiment records and analyses; evidence only, not reorganized by this triage\" (artefacts/docs/INDEX.md:26)."
+        },
+        {
+          "leg": "spine-announcement",
+          "met": "not-applicable",
+          "note": "Out of scope per rubric \u2014 a spine emit this instrument forbids. Not marked down, and the attempt does not claim to have done it."
+        }
+      ],
+      "verdict": "fail",
+      "would_have_shipped_defects": [
+        {
+          "evidence": "candidate.patch:467-495 (reports/2026-08-16-docs-triage-result.md, the only report in the attempt) against candidate.patch:120-123, 154-157, 205-208, 220-223, 380-383, 404-407, 426-429 (seven renames) and candidate.patch:40-45, 100-107, 372-379 (INDEX.md and the two convention READMEs created)",
+          "summary": "The sole result report describes only a late link-fixing pass and affirmatively states the change is \"navigation and verification evidence only\", when the PR it accompanies moves seven documents, adds docs/INDEX.md and two convention READMEs, and relabels ten Status headers.",
+          "why_blocking": "The order's Definition of done requires a result report per WORKER.md, and that report is the durable record a reviewer or the next operator reads to learn what happened to docs/. Its \"What shipped\" names only cross-reference fixes and two removed dead links; nothing in it discloses that omegahive_spec_1_1, port_spec and stage2_verdict moved to docs/reference/, that hive_user_migration, omegaclaw_binding and stage2_spec moved to docs/archive/, that remote_access_spec moved to docs/deployments/, or that the INDEX and the archive/reference READMEs were created. The Reflection then makes the mismatch an affirmative false claim \u2014 \"This correction changes navigation and verification evidence only; the triage verdicts remain unchanged\" \u2014 where the diff is precisely the application of the triage verdicts. It also narrates \"The first pass\" as prior work, but no earlier report exists in the deliverable, so no record of the actual triage exists anywhere. A reviewer approving on the strength of this report would be approving a documentation reorganisation they were never told about, and readmes-restructure \u2014 which the order tells to reconcile pointers with whichever lands second \u2014 has no written record of which files moved where."
+        }
+      ]
+    }
+  },
+  "task_id": "docs-triage"
+}

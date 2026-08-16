@@ -596,6 +596,24 @@ def gateway_totals_cmd(
     if not root.is_dir():
         console.print(f"[bold]✗[/bold] {root} is not a record directory")
         raise typer.Exit(code=1)
+    # Re-ask for anything reconciliation was too early to see. OpenRouter writes generation
+    # records asynchronously, so the last call of a leg routinely has none when the batch ends.
+    from .receipts import api_key_from_env
+
+    try:
+        key = api_key_from_env()
+    except RuntimeError:
+        console.print(
+            "[bold]note[/bold] OPENROUTER_API_KEY is not set, so receipts missing at "
+            "reconciliation cannot be re-asked for; totals may be a floor."
+        )
+    else:
+        recovered = qualify_batch.refetch_missing_receipts(root, key)
+        if recovered:
+            console.print(
+                f"recovered {recovered} receipt(s) that were late rather than absent"
+            )
+
     totals = qualify_batch.record_gateway_totals(root)
     (root / "gateway-totals.json").write_text(
         json.dumps(totals, indent=2, sort_keys=True) + "\n"
