@@ -104,20 +104,21 @@ fi
 
 install_interrupt_trap "$RECORDS_DIR" "$RECORD_ID" "$WORK_ROOT"
 
-# THE PAUSE POINT, ENFORCED. The order makes the first task's completion an operator pause
-# point before the other four; printing that and then running all five made it advice, which is
-# not what a pause point is. So the first run does ONE cell and stops. Re-running the same
-# command carries it forward verbatim and runs the rest — the resume machinery already does
-# exactly this, so the pause costs no re-spend.
-if [ "$RESUME_COUNT" = "0" ] || [ "$RESUME_FROM" = "-" ]; then
-  TASKS="$FIRST_TASK"
-  PAUSING=yes
-else
-  TASKS="$FIRST_TASK,instrument-teeth,launch-pane-fix,ptc-revalidate,run-registration"
-  PAUSING=no
-fi
-readonly TASKS PAUSING
-
+# THE PAUSE POINT IS ADVISORY, and that is a limitation rather than a choice.
+#
+# Enforcing it would mean running one cell per invocation — but `preflight.check_corpus` is
+# passed the launch's task list as `expect_held_in` and refuses unless it equals the corpus's
+# whole held-in set. That guard is right: a launch that silently narrows the study is exactly
+# what it exists to catch, and narrowing `--tasks` to stage a pause trips it by design.
+#
+# Making the pause real needs the batch to declare all five and stop after the first, which is
+# `pipeline.run_batch` behaviour — and `pipeline.py` is byte-frozen to the pinned revision, so
+# changing it returns the whole study to incumbent fidelity. Not a trade worth making for a
+# pause the operator can take with Ctrl-C, whose interrupt guarantee is real: every completed
+# cell and raw log is kept, and re-running carries conclusive cells forward.
+#
+# What actually prevents a partial bundle being scored as adequate is the guard above, not this
+# message: a narrowed batch cannot even be declared, let alone graded.
 step "The pause point: $FIRST_TASK first"
 say "The precommitted cheapest/high-signal task runs first for every bundle. When it finishes,"
 say "STOP AND LOOK before the other four. Its completion is an operator pause point — it is"
@@ -131,7 +132,7 @@ set +e
   args=(
     --config "$CONFIG" --record-id "$RECORD_ID" --work-root "$WORK_ROOT"
     --out "$RECORDS_DIR" --expect-corpus-hash "$EXPECT_CORPUS_HASH"
-    --tasks "$TASKS"
+    --tasks "$FIRST_TASK,instrument-teeth,launch-pane-fix,ptc-revalidate,run-registration"
   )
   [ "$SUPERSEDES" != "-" ] && args+=(--supersedes "$SUPERSEDES")
   [ "$RESUME_FROM" != "-" ] && args+=(--resume-from "$RESUME_FROM")
@@ -139,25 +140,6 @@ set +e
 )
 status=$?
 set -e
-
-RECORD_DIR="$RECORDS_DIR/$(date +%F)-$RECORD_ID"
-readonly RECORD_DIR
-
-if [ "$PAUSING" = yes ] && [ "$status" -eq 0 ]; then
-  step "PAUSE POINT — one cell done, four not started"
-  say "This is where the order asks you to stop and look. Nothing else has been spent."
-  say ""
-  say "  cd $REPO_ROOT"
-  say "  cat $RECORD_DIR/aggregate.md"
-  say "  cat $RECORD_DIR/cells/*/verdict.json"
-  say ""
-  say "Read the deterministic legs against the blinded review. If they disagree with each"
-  say "other, the instrument is telling you something before three more bundles are spent."
-  say ""
-  say "To run the remaining four, run this same command again. The completed cell is carried"
-  say "forward verbatim, not re-run — a cell that produced a verdict is never re-rolled."
-  exit 0
-fi
 
 report_status "$status" "$RECORDS_DIR/$(date +%F)-$RECORD_ID" "$WORK_ROOT" "$REPO_ROOT"
 exit "$status"

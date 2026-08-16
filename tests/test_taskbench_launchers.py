@@ -392,46 +392,36 @@ def test_every_launcher_stops_the_harness_updating_under_it(name):
     assert "DISABLE_AUTOUPDATER=1" in body, f"{name} must disable the auto-updater"
 
 
-# --- the pause point, enforced rather than printed --------------------------------------------
-
-
-@pytest.mark.parametrize("name", WAVES)
-def test_the_pause_point_actually_stops(name):
-    """It used to print 'STOP AND LOOK' and then run all five cells in one invocation, which
-    makes it advice. The order says the first task's COMPLETION IS an operator pause point."""
-    body = code(name)
-    assert "PAUSING" in body, f"{name} must decide whether this invocation is the pause leg"
-    assert "exit 0" in body, f"{name} must actually stop at the pause point"
-    assert "run this same command again" in body, (
-        "the operator must be told how to continue, since resume is what makes the pause free"
-    )
+# --- the pause point, and why it is only advisory ---------------------------------------------
 
 
 @pytest.mark.parametrize("name", ["wave-1-haiku-claude-code.sh", "wave-2-luna-codex.sh",
                                   "wave-4-muse-claude-code.sh"])
-def test_the_first_leg_runs_only_the_pause_point_task(name):
-    body = code(name)
-    assert 'TASKS="$FIRST_TASK"' in body, "the pause leg runs one cell, not five"
-    assert '--tasks "$TASKS"' in body
-    # The full list must still exist, for the continuation run.
-    assert "instrument-teeth,launch-pane-fix,ptc-revalidate,run-registration" in body
+def test_a_wave_declares_the_whole_held_in_set(name):
+    """`preflight.check_corpus` receives the launch's task list as `expect_held_in` and refuses
+    unless it equals the corpus's held-in set. A launch that silently narrows the study is what
+    that guard exists to catch — and it is also why the pause cannot be staged as one cell per
+    invocation, which was tried and refused before a single model call."""
+    tasks_line = next(ln for ln in code(name).splitlines() if "--tasks" in ln)
+    # The lead task is referenced as $FIRST_TASK, stated once in lib.sh so the four launchers
+    # cannot drift into leading with different tasks.
+    first = code("lib.sh").split('FIRST_TASK="')[1].split('"')[0]
+    declared = tasks_line.replace("$FIRST_TASK", first)
+    for task in load_corpus(CORPUS_ROOT / "v0.1").catalog.held_in:
+        assert task in declared, (
+            f"{name} must declare {task}; a narrowed batch is refused by preflight"
+        )
 
 
-def test_the_paired_wave_pauses_after_one_matched_pair_not_one_cell():
-    """A pair is the unit there: pausing after a single arm would leave nothing to compare."""
-    body = code("wave-3-deepseek-paired.sh")
-    assert 'if [ "$i" -eq 0 ] && [ "$PAUSING" = yes ]' in body
-    assert "one pair done, four pairs not started" in body
-    assert "same upstream" in body, (
-        "the pause must name the one check worth making before spending the other eight cells"
-    )
-
-
-def test_the_paired_wave_picks_up_each_arm_s_own_chain_on_a_continuation_run():
-    """Its arms accumulate separate records; a continuation starts with no in-memory state."""
-    body = code("wave-3-deepseek-paired.sh")
-    assert 'if [ "$prev" = "-" ]; then' in body
-    assert "resume_target" in body
+@pytest.mark.parametrize("name", ["wave-1-haiku-claude-code.sh", "wave-2-luna-codex.sh",
+                                  "wave-4-muse-claude-code.sh"])
+def test_the_advisory_pause_states_its_reason(name):
+    """A limitation stated is one a reader can weigh; left implicit it reads as an oversight the
+    next time somebody trips over it."""
+    body = (LAUNCH / name).read_text()
+    assert "ADVISORY" in body
+    assert "pipeline.py" in body, "the reason must name what would have to change"
+    assert "Ctrl-C" in body, "and what the operator can do instead"
 
 
 # --- the permission mode, which the harness redefined under us --------------------------------

@@ -137,6 +137,7 @@ def test_non_streaming_call_is_recorded_with_identity_and_usage(recorder):
         headers={"Authorization": "Bearer sk-or-SECRET"},
         timeout=30,
     )
+    assert recorder.drain(timeout=30), "the call was still being written down"
     (call,) = recorder.calls
     assert call.generation_id == "gen-abc123"
     assert call.requested_model == "deepseek/deepseek-v4-flash-0731@preset/p"
@@ -198,6 +199,7 @@ def test_streaming_is_passed_through_and_usage_is_merged_across_events(recorder)
             chunks.append(chunk)
     assert b"".join(chunks) == SSE_STREAM
 
+    assert recorder.drain(timeout=30), "the call was still being written down"
     (call,) = recorder.calls
     assert call.streamed is True
     assert call.generation_id == "gen-stream1"
