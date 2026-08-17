@@ -255,9 +255,17 @@ QUALIFY_ADDITIVE = (
 #: operator surface only: nothing here decides a verdict.
 DISPOSITIONED = {
     "taskbench/runner.py": (
-        "additive diagnostics — the five-minute pulse, the actionability label, two new "
-        "record fields, and `read1` so the recorded first-response timestamp means what it "
-        "already claimed. No change to what a cell is asked, how it is graded, or what passes."
+        "additive diagnostics — the five-minute pulse, the actionability label, two new record "
+        "fields, and `read1` so the recorded first-response timestamp means what it already "
+        "claimed. Nothing changes what a cell is asked or how a completed cell is graded. "
+        "**One change is not additive and is scoring-relevant**: `TERMINAL_ERROR_PATTERNS` "
+        "narrowed `529` to `(?:HTTP|status|code)\\D{0,10}\\b529\\b`, because a diff hunk "
+        "header, a line number or a token count containing 529 was enough to mark a healthy run "
+        "terminal. `terminal_error` feeds frozen `grade.py`, which returns INCONCLUSIVE — so "
+        "this edit changes which cells are excluded from scoring, in the direction of excluding "
+        "fewer. The incumbent baseline was graded under the looser detector and all four "
+        "candidate waves under the narrower one; the harness streams needed to test the "
+        "counterfactual are not retained, so the difference is declared rather than measured."
     ),
     "taskbench/preflight.py": (
         "`check_corpus` compares the held-in set as a SET rather than as an ordered list. The "

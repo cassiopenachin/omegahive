@@ -129,6 +129,24 @@ emit_reviewer_block() {
   printf '    - "%s"\n' "$claude_home"
   printf '    - "%s"\n' "$(dirname "$claude_bin")"
   [ -n "$resolver" ] && printf '    - "%s"\n' "$resolver"
+  # KNOWN HOLE, found by independent audit on 2026-08-16 and NOT closed for this study.
+  #
+  # `$HOME/.claude` is bound read-write so Claude Code has its credentials and session state.
+  # It also contains `$HOME/.claude/projects/`, which holds the full transcripts of the sessions
+  # that ORIGINALLY SOLVED every held-in task, in directories named after those tasks. A reviewer
+  # that went looking could read them. The `probe.json` `solution_denied` assertion tests one
+  # planted operator-only file and says nothing about this tree, so the record's isolation claim
+  # is narrower than it reads.
+  #
+  # Not closed here because the order names reviewer CONFIGURATION as something that invalidates
+  # a candidate set: narrowing this bind after four bundles have been graded would make the fifth
+  # incomparable to them. The hole is uniform across all 25 cells including the incumbent's, so
+  # it does not favour any bundle, and no reviewer stdout was retained to show whether it was
+  # ever used — which is itself part of the finding.
+  #
+  # The fix belongs in the next study's setup, before any cell is graded: bind only the
+  # credential and settings files this harness actually needs, never the whole config directory,
+  # and retain reviewer stdout so the question is answerable from the record instead of by rerun.
   printf '  sandbox_rw_binds:\n'
   printf '    - "%s/.claude"\n' "$HOME"
   printf '    - "%s/.claude.json"\n' "$HOME"
