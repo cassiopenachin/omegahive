@@ -488,21 +488,23 @@ def test_the_matrix_command_runs_end_to_end_over_a_real_record():
     """A unit test of the screen's helpers passed while the CLI that feeds them raised
     AttributeError on the first real record: the corpus exposes `StopLine` objects and the
     wiring read them as dicts. Only an end-to-end invocation covers that seam."""
-    import subprocess
+    import sys
     import tempfile
+
+    from taskbench.cli import app
+    from typer.testing import CliRunner
 
     repo = LAUNCH.parents[1]
     record = repo / "taskbench/records/2026-08-13-incumbent-fidelity-v0-1-2"
     if not record.is_dir():
         pytest.skip("the incumbent baseline record is not in this clone")
+    assert sys.executable, "the running interpreter is the one under test"
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "matrix.md"
-        result = subprocess.run(
-            ["uv", "run", "--frozen", "taskbench", "matrix",
-             "--bundle", f"incumbent={record}", "--out", str(out)],
-            cwd=repo, capture_output=True, text=True, check=False,
+        result = CliRunner().invoke(
+            app, ["matrix", "--bundle", f"incumbent={record}", "--out", str(out)]
         )
-        assert result.returncode == 0, result.stdout + result.stderr
+        assert result.exit_code == 0, result.output + str(result.exception)
         text = out.read_text()
     assert "no stop-line failure" in text
     assert "not screened:" in text

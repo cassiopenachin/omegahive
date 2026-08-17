@@ -36,7 +36,10 @@ readonly CELL_HOME="$BENCH_CELL_ROOT/.codex-home"
 # home it is given, and that rollout is the only place it records which model it ran; deleting
 # the home wholesale threw that away and left every cell unattributable, which the record
 # validator then refused. So the rollout is preserved into the cell's run directory first.
-# shellcheck disable=SC2329  # invoked by the trap below
+# shellcheck disable=SC2317,SC2329  # reachable: the trap below invokes it. Two codes
+# because shellcheck renumbered this check — 0.11 reports SC2329, older builds (including
+# whatever ubuntu-latest ships in CI) report SC2317, and the suppression has to satisfy
+# both or the launcher test passes locally and fails on the runner.
 cleanup() {
   if [ -d "$CELL_HOME/sessions" ]; then
     mkdir -p "$BENCH_CELL_ROOT/run"

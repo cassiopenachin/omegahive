@@ -33,7 +33,10 @@ readonly CELL_HOME="$BENCH_CELL_ROOT/.reasonix-home"
 # the cell root, which is retained with the record. Verified: `bash -c 'trap "echo X" EXIT; exec
 # /bin/echo hi'` prints only `hi`. Running the harness as a child costs one shell process and is
 # the only way this guarantee holds.
-# shellcheck disable=SC2329  # invoked by the trap below
+# shellcheck disable=SC2317,SC2329  # reachable: the trap below invokes it. Two codes
+# because shellcheck renumbered this check — 0.11 reports SC2329, older builds (including
+# whatever ubuntu-latest ships in CI) report SC2317, and the suppression has to satisfy
+# both or the launcher test passes locally and fails on the runner.
 cleanup() { rm -rf "$CELL_HOME"; }
 trap cleanup EXIT INT TERM HUP
 

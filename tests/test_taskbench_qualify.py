@@ -178,10 +178,17 @@ def test_drift_before_any_batch_has_run_is_adopted_not_refused(tmp_path):
     assert "no candidate batch has run yet" in check.detail
 
 
-def test_a_harness_that_moved_since_the_last_preflight_refuses(tmp_path):
+def test_a_harness_that_moved_since_the_last_preflight_refuses(tmp_path, monkeypatch):
     """This is the drift that actually matters: the matched pair holds everything fixed except
     the harness, so a build changing part-way through makes its two columns differ in two ways
-    with nothing in the record to show it."""
+    with nothing in the record to show it.
+
+    The current build is injected rather than read off this machine. Reading it made the test
+    assert one thing where `claude` is installed and a different thing where it is not — it
+    passed on the developer host and failed on the CI runner, which is the same
+    environment-dependence this study kept finding in its own instrument.
+    """
+    monkeypatch.setattr(qualify, "_version_of", lambda argv: "9.9.9-brand-new (Claude Code)")
     qualify.write_report(
         [Check("harness/claude", True, "recorded", {"reported": "0.0.0-ancient (Claude Code)"})],
         tmp_path,
