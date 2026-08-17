@@ -1,0 +1,62 @@
+{
+  "cell_id": "cell-1df5867de0",
+  "dod_legs": [
+    {
+      "leg": "one-parser",
+      "met": "yes",
+      "note": "parse_predictions() is defined once in scripts/hive-common.sh:240-268 and is the only parser either caller uses: hive-launch:170 calls it, and hive-score:211 replaced its own inline awk/grep block with the same call (candidate.patch:197-212 deletes the duplicated regexes). This is literally one implementation, not two that agree, so the failure mode DoD (c) guards against is closed by construction. A launch-side drill case proving both callers agree would live in hive-tooling-drill.sh, which the rubric places out of scope."
+    },
+    {
+      "leg": "refuse-unparsed-not-absent",
+      "met": "yes",
+      "note": "hive-launch:171-179 refuses only when PRED_SECTION_PRESENT=1 and PRED_FIELDS=0 and the declared-unpredicted disposition is absent; the message names all four literal labels and prints the offending lines, and --anyway (parsed at hive-launch:26) bypasses it with a warning. The check sits at line 170, before the clones (202-203) and before every emit (233-243), so no spine write can precede a refusal. Absent section: PRED_SECTION_PRESENT=0, no branch taken. Partial (1-2 of 3): the elif at 177 warns and continues."
+    },
+    {
+      "leg": "absent-vs-unparsed-distinct",
+      "met": "yes",
+      "note": "hive-score:284 emits \"unpredicted (no `## Predictions` section)\" vs \"unpredicted (section present, 0 of 3 fields parsed)\", and the partial string at 291 names the missing fields. verifier/metrics-drill.log:92-94 shows both strings asserted on two distinct fixture tasks (gamma absent, eta present-unparsed), green."
+    },
+    {
+      "leg": "review-vocabulary",
+      "met": "yes",
+      "note": "hive-score:229-232 lowercases via tr then case-matches clean|'minor rework'|rework, dying with a message naming the three values; validation runs before the calibration append at 330. verifier/metrics-drill.log:95-96: 'bogus review verdict refused' and '--review Rework stores lowercase rework' both PASS."
+    },
+    {
+      "leg": "close-ordering",
+      "met": "yes",
+      "note": "candidate.patch:9-21 appends the hive-metrics regeneration after the existing close+score block at the end of scripts/hive-close, guarded as an `if` condition so errexit cannot fire; the failure branch prints 'the close SUCCEEDED, but task metrics regeneration failed' plus a recovery command to stderr and leaves the script exiting 0. RUNBOOK is updated to match (artefacts/workspace.patch, Close entry)."
+    },
+    {
+      "leg": "refuse-not-rebase",
+      "met": "yes",
+      "note": "hive-common.sh commit_metrics no longer contains pull --rebase (candidate.patch:41-49): on push failure it prints 'metrics push refused - committed locally ... NOT on the hub' plus the manual resolution step and returns 1. verifier/metrics-drill.log:108-110 proves it against a genuinely divergent upstream: refusal message asserted, the local commit survives, and its parent is unchanged (no rebase)."
+    },
+    {
+      "leg": "named-risks-unscored",
+      "met": "yes",
+      "note": "No fourth field is scored: FIELDS still counts only effort/questions/review (hive-score:279-282) and coverage strings still say 'of 3'. The RUNBOOK addition states it plainly - '`Named risks:` is required authoring prose but remains intentionally unscored' - and the refusal message still prints Named risks: as one of the four literal labels without gating on it."
+    },
+    {
+      "leg": "drill-hygiene-reported",
+      "met": "yes",
+      "note": "Report names the file read (scripts/hive-metrics-drill.sh) and both bounded classes with 'none found' stated for each, and a comment recording the two classes was added at the trap site. Non-blocking observation, not a defect: the file does contain the literal `cmd | grep -q` shape (candidate.patch:147, pre-existing; and one the attempt itself added at candidate.patch:160), which sits awkwardly beside both the '0 instances' wording and the new comment's 'never grep -q'. Those instances pipe a few lines from a local helper, so they cannot actually raise SIGPIPE, and no rewrite was in scope - the finding-level conclusion (nothing to fix) stands even though the wording overstates it."
+    },
+    {
+      "leg": "result-report",
+      "met": "yes",
+      "note": "projects/omegahive/reports/2026-07-29-instrument-teeth-result.md carries What shipped / How verified / To operate / Reflection. Its verification claims match verifier/: the metrics drill green with the absent-vs-unparsed, review-validation and push-refusal cases, and shellcheck clean. To operate names the exact recovery the order demanded, `hive-score <task> --project pln-benchmarks --again`. It does not claim the out-of-scope tooling-drill run or spine announcement."
+    },
+    {
+      "leg": "shellcheck",
+      "met": "yes",
+      "note": "verifier/shellcheck.log is empty - clean on the touched scripts."
+    },
+    {
+      "leg": "metrics-drill",
+      "met": "yes",
+      "note": "verifier/metrics-drill.log:118 - PASS=109 FAIL=0, including all five new cases (absent vs present-unparsed coverage strings, review validation, review lowercasing, push-refusal-without-rebase) and the unchanged stop-line checks (no events issued, no run touched)."
+    }
+  ],
+  "verdict": "pass",
+  "would_have_shipped_defects": []
+}

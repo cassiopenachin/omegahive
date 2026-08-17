@@ -15,6 +15,7 @@ thing this instrument cannot get back if it is spent.
 from __future__ import annotations
 
 import json
+import os
 from datetime import date as _date
 from pathlib import Path
 
@@ -303,6 +304,459 @@ def preflight_cmd(
     console.print("preflight: every precondition agrees")
 
 
+@app.command("run-gateway")
+def run_gateway_cmd(
+    config_path: str = typer.Option(..., "--config"),
+    record_id: str = typer.Option(..., "--record-id"),
+    preset: str = typer.Option(..., "--preset", help="preset slug this batch is pinned to"),
+    tasks: str | None = typer.Option(None, "--tasks"),
+    corpus: str | None = typer.Option(None, "--corpus"),
+    work_root: str = typer.Option(..., "--work-root"),
+    out: str = typer.Option("taskbench/records", "--out"),
+    supersedes: str | None = typer.Option(None, "--supersedes"),
+    expect_corpus_hash: str | None = typer.Option(None, "--expect-corpus-hash"),
+    resume_from: str | None = typer.Option(None, "--resume-from"),
+) -> None:
+    """Run a batch whose candidate reaches its model through OpenRouter, capturing receipts.
+
+    Identical to `run` except that a receipt recorder sits between the harness and the gateway
+    for the whole batch, and afterwards every observed call is attributed to the cell and leg
+    that made it. The scored pipeline is untouched; the recorder is a seam around it.
+
+    The preset and its endpoint are re-checked here, immediately before the batch — not only at
+    setup — because a preset is editable from a web page and a batch that trusted a check from
+    an hour ago would be measuring whatever the route is now.
+    """
+    from . import openrouter as orouter
+    from . import qualify, qualify_batch
+    from .receipts import ReceiptRecorder, api_key_from_env
+
+    pin = {p.slug: p for p in (orouter.DEEPSEEK_PIN, orouter.MUSE_PIN)}.get(preset)
+    if pin is None:
+        console.print(f"[bold]refused[/bold]: {preset!r} is not a pinned preset")
+        raise typer.Exit(code=2)
+
+    api_key = api_key_from_env()
+    gate = qualify.check_preset(pin, api_key) + qualify.check_endpoints(pin, api_key)
+    for check in gate:
+        console.print(("[bold]✓[/bold] " if check.ok else "[bold]✗[/bold] ") + check.detail)
+    if any(not c.ok for c in gate):
+        console.print(
+            "\n[bold]REFUSED[/bold] — the pinned route no longer holds. Nothing was called. A "
+            "changed preset, upstream or endpoint capability is a stop, not a reroute."
+        )
+        raise typer.Exit(code=3)
+
+    cfg = yaml.safe_load(Path(config_path).read_text())
+    Path(work_root).mkdir(parents=True, exist_ok=True)
+    recorder = ReceiptRecorder(Path(work_root) / "gateway-calls.jsonl").start()
+    console.print(f"receipt recorder listening on {recorder.base_url}")
+
+    batch_exit: typer.Exit | None = None
+    try:
+        cfg["agent"].setdefault("env", {}).update(qualify_batch.recorder_env(recorder))
+        cfg_path = Path(work_root) / "runner-config.resolved.yaml"
+        cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=False))
+        run_cmd(
+            config_path=str(cfg_path), record_id=record_id, tasks=tasks, corpus=corpus,
+            work_root=work_root, out=out, supersedes=supersedes,
+            expect_corpus_hash=expect_corpus_hash, resume_from=resume_from,
+            skip_preflight=False,
+        )
+    except typer.Exit as exc:
+        # A batch that stopped still spent money. Reconcile before propagating, or the record
+        # of what a failed batch cost would exist only in a JSONL nobody reads.
+        batch_exit = exc
+    finally:
+        if not recorder.stop(drain_timeout=120):
+            console.print(
+                "[bold]WARNING[/bold] the recorder did not finish writing every observed call; "
+                "the receipts below may omit one and must be read as a floor."
+            )
+
+    record_root = Path(out) / f"{_date.today().isoformat()}-{record_id}"
+    if recorder.calls:
+        summary = qualify_batch.reconcile_record(
+            record_root, recorder.out_path, api_key, calls=recorder.calls
+        )
+        console.print(f"gateway receipts: {record_root / 'gateway-receipts.json'}")
+        console.print(
+            f"{summary['calls_observed']} call(s) observed across "
+            f"{len(summary['legs'])} leg(s)"
+        )
+        if "unattributed" in summary:
+            console.print(
+                f"[bold]{summary['unattributed']['count']} call(s) could not be attributed"
+                "[/bold] to any leg and are excluded from every per-leg total; they are kept "
+                "in the record."
+            )
+    else:
+        console.print(
+            "the recorder observed no gateway calls. For an arm that is supposed to reach "
+            "OpenRouter, that means the harness did not use ANTHROPIC_BASE_URL — the batch "
+            "measured a different route from the one it recorded."
+        )
+    if batch_exit is not None:
+        raise batch_exit
+
+
+@app.command("qualify-smoke")
+def qualify_smoke_cmd(
+    config_path: str = typer.Option(..., "--config", help="the runner config the batch will use"),
+    bundle: str = typer.Option(..., "--bundle", help="label for the smoke record"),
+    root: str = typer.Option(..., "--root", help="disposable root for the fixture"),
+    out: str = typer.Option(..., "--out", help="where the smoke record is written"),
+    pulse_at_s: int = typer.Option(300, "--pulse-at-s"),
+    timeout_s: int = typer.Option(900, "--timeout-s"),
+) -> None:
+    """Prove one bundle's tool loop against a disposable fixture, before it spends.
+
+    Runs the *same* agent argv the batch will use, so it proves that bundle rather than a
+    reasonable-looking approximation of it. Exits 4 on any non-green outcome: a bundle that
+    cannot read, edit and run a three-file fixture has nothing to say about a real order.
+    """
+    from . import smoke as smoke_mod
+
+    cfg = yaml.safe_load(Path(config_path).read_text())
+    agent = AgentSpec.model_validate(cfg["agent"])
+    env = {k: os.environ[k] for k in agent.env_passthrough if k in os.environ}
+    env.update(agent.env)
+
+    # A model string carrying `@preset/` is a gateway arm: its smoke must run through the
+    # recorder and produce a receipt, which is what the order requires before its batch.
+    from . import openrouter as orouter
+
+    pin = None
+    key = None
+    requested = agent.labels.get("model", "")
+    for candidate in (orouter.DEEPSEEK_PIN, orouter.MUSE_PIN):
+        if candidate.slug in requested:
+            pin = candidate
+            break
+    if pin is not None:
+        from .receipts import api_key_from_env
+
+        key = api_key_from_env()
+        console.print(f"gateway arm: the smoke runs through the recorder, pinned to {pin.slug}")
+
+    result = smoke_mod.run_smoke(
+        bundle, list(agent.argv), root=Path(root), env=env,
+        timeout_s=timeout_s, pulse_at_s=pulse_at_s,
+        gateway_pin=pin, api_key=key,
+    )
+    path = smoke_mod.write_smoke(result, Path(out))
+    mark = "[bold]✓[/bold]" if result.outcome == "green" else "[bold]✗[/bold]"
+    console.print(f"{mark} {bundle}: {result.outcome} — {result.detail}")
+    if result.pulse:
+        console.print(
+            f"  five-minute pulse: {result.pulse['state']} — {result.pulse['observed']}"
+        )
+    console.print(f"  recorded: {path}")
+    if result.outcome != "green":
+        if result.outcome.startswith("unreachable-"):
+            console.print(
+                "\n[bold]UNREACHABLE[/bold] — this is a setup boundary, not a task failure and "
+                "not a broken benchmark. Record it as such; do NOT reroute this bundle through "
+                "another provider or harness."
+            )
+        raise typer.Exit(code=4)
+
+
+@app.command("matrix")
+def matrix_cmd(
+    bundle: list[str] = typer.Option(  # noqa: B008 — typer's option factory
+        ..., "--bundle", help="label=record-dir, repeatable; use label=UNREACHABLE:<reason>"
+    ),
+    out: str | None = typer.Option(None, "--out", help="write the markdown here"),
+) -> None:
+    """Render the candidate matrix across the incumbent and every candidate record.
+
+    Repeat `--bundle` once per arm, e.g.
+
+        --bundle incumbent=taskbench/records/2026-08-13-incumbent-fidelity-v0-1-2
+        --bundle haiku-claude-code=taskbench/records/2026-08-15-wave-1-haiku-claude-code
+        --bundle luna-codex=UNREACHABLE:the harness never authenticated
+
+    An `UNREACHABLE:` bundle is carried into the table with its reason rather than omitted: a
+    bundle that could not run is a result of this study, not an absence from it.
+    """
+    from . import matrix as mx
+
+    bundles = []
+    # The stop-line ids each task declares. The screen needs them because the machine check
+    # for a stop-line only fires on `forbidden_paths`, which three of the five held-in tasks do
+    # not declare at all — for those, the reviewer's leg of the same id is the only witness.
+    stop_line_ids = {
+        task_id: tuple(
+            str(sl.id) for sl in (m.stop_lines or []) if getattr(sl, "id", None)
+        )
+        for task_id, m in _corpus(None).manifests.items()
+    }
+
+    for spec in bundle:
+        label, _, target = spec.partition("=")
+        if not target:
+            console.print(f"[bold]✗[/bold] --bundle needs label=record-dir, got {spec!r}")
+            raise typer.Exit(code=2)
+        if target.startswith("UNREACHABLE:"):
+            bundles.append(
+                mx.BundleSummary(
+                    label=label, record="", vendor="unknown", model="unknown",
+                    harness="unknown", cells=[],
+                    unreachable_reason=target.split(":", 1)[1].strip(),
+                )
+            )
+            continue
+        root = Path(target)
+        if not root.is_dir():
+            console.print(f"[bold]✗[/bold] {root} is not a record directory")
+            raise typer.Exit(code=1)
+        bundles.append(mx.load_bundle(root, label=label, stop_line_ids=stop_line_ids))
+
+    text = mx.render(bundles)
+    if out:
+        Path(out).write_text(text)
+        console.print(f"wrote {out}")
+    else:
+        print(text)
+
+
+@app.command("preset-hash")
+def preset_hash_cmd(
+    slug: str = typer.Argument(..., help="preset slug, e.g. omegahive-muse-spark-1-2"),
+    version: int | None = typer.Option(None, "--version"),
+) -> None:
+    """Print the exact canonical bytes of a live preset and their SHA-256.
+
+    The rule made executable. Two pinned hashes were once computed under a rule nobody wrote
+    down; when a later re-fetch disagreed, there was no way to tell a changed preset from a
+    changed rule, and it cost three refused preflight runs. A pinned hash that cannot be
+    regenerated in one command is not a tripwire, it is a rumour.
+    """
+    from . import openrouter as orouter
+    from .receipts import api_key_from_env
+
+    fetched = orouter.fetch_preset(slug, api_key_from_env(), version=version)
+    console.print(f"slug:    {fetched.slug}")
+    console.print(f"version: {fetched.version}")
+    console.print(f"source:  {fetched.source_path}")
+    console.print("canonical bytes (this is what is hashed):")
+    print(fetched.canonical_json)
+    console.print(f"sha256:  {fetched.config_sha256}")
+    pin = {p.slug: p for p in (orouter.DEEPSEEK_PIN, orouter.MUSE_PIN)}.get(slug)
+    if pin:
+        agree = pin.config_sha256 == fetched.config_sha256
+        console.print(
+            ("[bold]✓[/bold] matches the pin" if agree else "[bold]✗[/bold] differs from the pin ")
+            + ("" if agree else f"({pin.config_sha256})")
+        )
+
+
+@app.command("qualify-confirm")
+def qualify_confirm_cmd(
+    out: str = typer.Option(..., "--out", help="the preflight record directory"),
+) -> None:
+    """Confirm any receipt the preflight left pending, without re-running the probes.
+
+    OpenRouter writes generation records asynchronously with no bound this code controls, so a
+    receipt can be late rather than absent. Re-running the whole preflight to re-ask would
+    charge four more probe calls for a question the gateway now answers for free.
+    """
+    from . import qualify
+    from .receipts import api_key_from_env
+
+    checks = qualify.confirm_pending(Path(out), api_key_from_env())
+    for check in checks:
+        mark = "[bold]✓[/bold]" if check.ok else "[bold]✗[/bold]"
+        console.print(f"{mark} {check.name}: {check.detail}")
+    if any(not c.ok for c in checks):
+        console.print(
+            "\n[bold]STILL PENDING[/bold] — a receipt that never arrives is not a late one. "
+            "If it stays absent, that arm cannot prove its own accounting and is recorded "
+            "`unreachable`, never given a substitute measurement."
+        )
+        raise typer.Exit(code=3)
+    console.print(f"\nrecord updated: {Path(out) / 'qualify-preflight.json'}")
+
+
+@app.command("generation")
+def generation_cmd(
+    generation_id: str = typer.Argument(..., help="an OpenRouter generation id"),
+    attempts: int = typer.Option(1, "--attempts", help="1 asks once and reports what it got"),
+) -> None:
+    """Ask OpenRouter for one generation receipt, now.
+
+    Exists to settle one question a preflight cannot: when a receipt does not arrive inside the
+    wait, is it LATE or is it ABSENT? Those have different remedies — the first is a longer
+    poll, the second is a bundle that cannot prove its own accounting and is recorded
+    `unreachable`. Guessing between them is how a study acquires a cost column it cannot defend.
+    """
+    from .receipts import api_key_from_env, fetch_generation
+
+    got = fetch_generation(
+        generation_id, api_key_from_env(), attempts=attempts, first_delay_s=2.0
+    )
+    if not got.get("available"):
+        console.print(f"[bold]✗[/bold] no record: {got['missing_surface']}")
+        raise typer.Exit(code=1)
+    receipt = got["receipt"]
+    console.print(f"[bold]✓[/bold] record exists (after {got['attempts']} attempt(s))")
+    for key in ("model", "provider_name", "preset_id", "total_cost", "native_tokens_prompt",
+                "native_tokens_completion", "native_tokens_cached", "streamed", "cancelled"):
+        if key in receipt:
+            console.print(f"  {key}: {receipt[key]}")
+
+
+@app.command("gateway-totals")
+def gateway_totals_cmd(
+    record: str = typer.Argument(..., help="record directory"),
+) -> None:
+    """Roll a record's per-cell gateway receipts up into whole-record totals.
+
+    Reads the per-cell files rather than the record-level one, because a record can be built
+    over several sittings — the paired DeepSeek batch runs one task at a time to keep its two
+    arms adjacent, and a resumed batch carries conclusive cells forward verbatim, receipts
+    included. Each sitting's recorder only ever saw its own calls.
+    """
+    from . import qualify_batch
+
+    root = Path(record)
+    if not root.is_dir():
+        console.print(f"[bold]✗[/bold] {root} is not a record directory")
+        raise typer.Exit(code=1)
+    # Re-ask for anything reconciliation was too early to see. OpenRouter writes generation
+    # records asynchronously, so the last call of a leg routinely has none when the batch ends.
+    from .receipts import api_key_from_env
+
+    try:
+        key = api_key_from_env()
+    except RuntimeError:
+        console.print(
+            "[bold]note[/bold] OPENROUTER_API_KEY is not set, so receipts missing at "
+            "reconciliation cannot be re-asked for; totals may be a floor."
+        )
+    else:
+        recovered = qualify_batch.refetch_missing_receipts(root, key)
+        if recovered:
+            console.print(
+                f"recovered {recovered} receipt(s) that were late rather than absent"
+            )
+
+    totals = qualify_batch.record_gateway_totals(root)
+    (root / "gateway-totals.json").write_text(
+        json.dumps(totals, indent=2, sort_keys=True) + "\n"
+    )
+    t = totals["totals"]
+    # Spell out where every observed call went. Printing only "N observed, M receipted" leaves
+    # the reader to subtract and then guess whether the difference is unaccounted-for spend or
+    # a call the gateway refused, which are opposite facts.
+    line = f"{t['calls_observed']} call(s), {t['calls_with_receipt']} with a gateway receipt"
+    if t.get("calls_without_generation"):
+        line += (
+            f", {t['calls_without_generation']} the gateway refused "
+            "(no generation, nothing billed)"
+        )
+    if t.get("calls_missing_receipt"):
+        line += f", [bold]{t['calls_missing_receipt']} answered and unaccounted for[/bold]"
+    console.print(line)
+    console.print(
+        f"cost ${t['gateway_cost_usd']:.6f} · prompt {t['native_tokens_prompt']} · "
+        f"cached {t['native_tokens_cached']} · completion {t['native_tokens_completion']} · "
+        f"reasoning {t['native_tokens_reasoning']}"
+    )
+    console.print(
+        f"upstreams {totals['resolved_upstreams']} · models {totals['resolved_models']}"
+    )
+    if not totals["complete"]:
+        console.print(
+            "[bold]INCOMPLETE[/bold] — these are a FLOOR, not totals. "
+            + str(totals.get("cells_without_receipts", {}).get("cells", ""))
+        )
+    console.print(f"written: {root / 'gateway-totals.json'}")
+
+
+@app.command("qualify-preflight")
+def qualify_preflight_cmd(
+    out: str = typer.Option(..., "--out", help="where the preflight record is written"),
+    skip_gateway: bool = typer.Option(
+        False, "--skip-gateway", help="local checks only; no OpenRouter call, no spend"
+    ),
+    skip_recorder: bool = typer.Option(
+        False,
+        "--skip-recorder",
+        help="check presets and endpoints but do not make the two validation calls",
+    ),
+    only: str | None = typer.Option(
+        None, "--only", help="one preset slug, when re-checking a single arm"
+    ),
+) -> None:
+    """Everything that must hold at the gateway before a candidate batch may spend.
+
+    Local checks are free. The gateway checks make exactly two tiny model calls per pinned
+    preset — one direct, one through the receipt recorder — because the order requires the
+    recorder to be *validated against a direct response plus a `/generation` receipt* before
+    any scored call, and that is not a claim that can be made by reading code.
+    """
+    from . import openrouter as orouter
+    from . import qualify
+    from .receipts import api_key_from_env
+
+    out_dir = Path(out)
+    repo = TASKBENCH_ROOT.parent
+    checks = (
+        qualify.check_pinned_revision(repo)
+        + qualify.check_corpus(repo)
+        + qualify.check_incumbent_record(repo)
+        # Stability BEFORE builds, so a moved harness reads as drift rather than as a fresh
+        # reading that happens to differ from one nobody is looking at.
+        + qualify.check_harness_stability(out_dir)
+        + qualify.check_harness_builds()
+    )
+
+    if not skip_gateway:
+        pins = tuple(
+            p for p in (orouter.DEEPSEEK_PIN, orouter.MUSE_PIN)
+            if only is None or p.slug == only
+        )
+        if not pins:
+            console.print(f"[bold]✗[/bold] no pinned preset matches --only {only!r}")
+            raise typer.Exit(code=3)
+        checks += qualify.run_gateway_preflight(
+            api_key_from_env(),
+            out_dir=out_dir,
+            pins=pins,
+            validate_recorder=not skip_recorder,
+        )
+
+    for check in checks:
+        mark = "[bold]✓[/bold]" if check.ok else "[bold]✗[/bold]"
+        console.print(f"{mark} {check.name}: {check.detail}")
+    path = qualify.write_report(checks, out_dir)
+    console.print(f"\nrecorded: {path}")
+
+    failed = [c.name for c in checks if not c.ok]
+    if failed:
+        console.print(f"\n[bold]REFUSED[/bold] — {len(failed)} check(s) disagree: {failed}")
+        console.print(
+            "No candidate batch may run against a route that cannot be proved. If the block is "
+            "a missing usage or receipt surface, the order's remedy is to stop and ask — never "
+            "to substitute a measurement proxy after scored calls begin."
+        )
+        raise typer.Exit(code=3)
+    if skip_gateway:
+        console.print(
+            "\nevery LOCAL precondition agrees. The gateway was not contacted, so no preset, "
+            "endpoint or receipt surface is proved — run without --skip-gateway before a batch."
+        )
+    elif skip_recorder:
+        console.print(
+            "\npresets and endpoints agree. The receipt recorder was NOT validated, so no "
+            "gateway-billed arm may run yet."
+        )
+    else:
+        console.print("\nevery precondition agrees; the pinned routes are proved")
+
+
 @app.command("resume-target")
 def resume_target_cmd(
     base: str = typer.Option(..., "--base"),
@@ -363,6 +817,26 @@ def aggregate_cmd(
     root = Path(path)
     c = _corpus(corpus)
     config = json.loads((root / "config.json").read_text())
+    # A gateway arm's strongest identity evidence is the receipts, and they do not exist yet
+    # when the batch writes its own aggregate — reconciliation runs after the last cell. So a
+    # re-render is where the headline can stop quoting the harness and start quoting the
+    # gateway. Injected rather than written into config.json: the config is the record's pins,
+    # not a scratchpad.
+    # The render-only keys live in the cells, not in config.json. Without this the re-render
+    # drops the first-shot column, the after-one-repair column and the spend table.
+    config = record.rehydrate_config_from_cells(root, config)
+
+    totals_file = root / "gateway-totals.json"
+    if totals_file.is_file():
+        try:
+            gw = json.loads(totals_file.read_text())
+        except json.JSONDecodeError:
+            gw = {}
+        if gw.get("resolved_models"):
+            config["gateway_resolved"] = {
+                "models": gw.get("resolved_models") or [],
+                "upstreams": gw.get("resolved_upstreams") or [],
+            }
     verdicts = []
     for cell in sorted((root / "cells").iterdir()):
         if not cell.is_dir():

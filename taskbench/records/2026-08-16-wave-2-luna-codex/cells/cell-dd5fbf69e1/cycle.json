@@ -1,0 +1,246 @@
+{
+  "final": {
+    "deterministic": {
+      "checks": [
+        {
+          "detail": "ok",
+          "exit_code": 0,
+          "id": "bash-syntax",
+          "output_tail": "",
+          "passed": true
+        },
+        {
+          "detail": "ok",
+          "exit_code": 0,
+          "id": "shellcheck",
+          "output_tail": "",
+          "passed": true
+        }
+      ],
+      "excluded_legs": [
+        {
+          "executed_by": "operator",
+          "leg": "`scripts/hive-tooling-drill.sh` green, including this task's new cases.",
+          "reason": "The loop drill emits scratch spine events, which this instrument's own scope forbids, and it drives tmux. At this task's baseline the drill predates the tmux isolation that the task itself introduces, so running it necessarily creates sessions on the operator's live tmux server \u2014 the server holding every worker pane. An offline evaluation instrument must not carry that blast radius. The operator runs the drill against a green cell."
+        },
+        {
+          "executed_by": "not-executed",
+          "leg": "Announce the result on the spine per WORKER.md.",
+          "reason": "A spine emit, which this instrument's own scope forbids. The report the order asks for IS written and graded \u2014 only the announcement is out of reach."
+        }
+      ],
+      "missing_artefacts": [],
+      "passed": true,
+      "stop_line_violations": [],
+      "untouched_required_changes": []
+    },
+    "review": {
+      "defect_count": 0,
+      "passed": true,
+      "probe_ok": true,
+      "ran": true,
+      "reason": "",
+      "verdict": {
+        "cell_id": "cell-dd5fbf69e1",
+        "dod_legs": [
+          {
+            "leg": "repro-evidence",
+            "met": "yes",
+            "note": "The report names the collision reproduced (explicit target 'session:4' after index 4 was occupied) and the state it strands (board assignment durable, clones + wrapper present, no pane), and describes the after-state (append/free-slot allocation of the task-named window with index 4 still occupied, plus the recovery print). The drill fixture that produces this is in the patch: hive-tooling-drill.sh:150-159 occupies index 4 and asserts the explicit re-target fails; :191-192 assert the task-named window was allocated anyway and the occupied index was left untouched. The report is explicit that the end-to-end drill could not be executed here ('stopped at tmux session creation with Operation not permitted ... before any drill assertion ran'), which is the order's own named-risk path ('the report says what was asserted instead of faking coverage') and matches the rubric's out-of-scope carve-out. Wording note only, not a defect: the first sentence of 'How verified' is past-tense in a way that reads as an observation, but the disclosure three sentences later removes any chance of a reader being misled."
+          },
+          {
+            "leg": "runbook-half-launch",
+            "met": "yes",
+            "note": "docs/omegahive_recovery_runbook.md gains section 1.1 'Half-launched task after a tmux window failure' (candidate.patch:9-27). Recognition: the stderr string 'window creation failed after board seeding', task confirmed 'assigned', clone + wrapper present, no pane. Why relaunch is wrong: 'Do not re-run hive-launch; it will refuse the already-assigned task and cannot repair this state' - accurate against hive-launch:121-122, which dies on assigned|blocked|in_progress. How to finish by hand: run the printed 'tmux new-window -a' (or the 'new-session' alternative), verify the window name, use the filled kickoff, emit task.accepted through the wrapper. It also draws the boundary against task.reassigned, which is the pre-existing dead-worker path."
+          },
+          {
+            "leg": "name-collision-refusal",
+            "met": "yes",
+            "note": "hive-launch:135-138 refuses a session window already named for the task and now names the recovery path: '... (the pane is the registry); recover via the existing pane or WORKER.md \u00a7Launch, never create a second window'. The guard sits before provisioning and before any board emit (clones start at :162-165), so the refusal creates neither a second window nor orphaned state. Covered by hive-tooling-drill.sh:403-407, which asserts both the message and that nothing was provisioned."
+          },
+          {
+            "leg": "collision-free-allocation",
+            "met": "yes",
+            "note": "hive-launch:253 now issues 'tmux new-window -a -t \"$HIVE_TMUX_SESSION\" -n \"$TASK\" ...' - the launcher supplies only the session and the window name, never an index. '-a' is documented append/free-slot semantics (inserts at the next index up, moving windows up if necessary), so it cannot raise 'index N in use'; this is the candidate form the order itself names. The no-session branch (:259) is unchanged new-session, which never targets an index."
+          },
+          {
+            "leg": "fail-safe-ordering",
+            "met": "yes",
+            "note": "Both window-creation calls are wrapped (hive-launch:252-264); on failure manual_recovery() prints to stderr the exact 'new-window -a' command (and a 'new-session' alternative), shell-quoted via printf %q including the multi-line kickoff, plus the remaining WORKER.md \u00a7Launch steps, the 'do not re-run hive-launch' instruction, and the full filled kickoff between BEGIN/END markers, then exits 1. Existing refusal paths are untouched. The order requires the ordering choice and rationale be stated in 'To operate'; the report does so (seed-then-pane retained deliberately, because the assignment is durable and the index is never chosen)."
+          },
+          {
+            "leg": "result-report",
+            "met": "yes",
+            "note": "projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md carries What shipped / How verified / To operate / Reflection. Its claims check out against the patch: '-a' allocation (hive-launch:253), fail-safe print retaining board/clones/wrapper (hive-launch:234-264), drill occupied-index reproduction (drill:150-159, 192), stranded-assigned check (drill:221), recovery-print checks (drill:222-223), and the fake-tmux PATH scoped to a single 'env' invocation (drill:216-219) so later tmux assertions at :403 use the real binary. It does not claim the drill ran or that the spine was announced."
+          },
+          {
+            "leg": "bash-syntax",
+            "met": "yes",
+            "note": "verifier/bash-syntax.log is empty (0 bytes) - the launcher parses."
+          },
+          {
+            "leg": "shellcheck",
+            "met": "yes",
+            "note": "verifier/shellcheck.log is empty (0 bytes) - shellcheck -x clean on the loop scripts."
+          },
+          {
+            "leg": "no-event-model",
+            "met": "yes",
+            "note": "Stop-line not crossed. The patch touches only docs/omegahive_recovery_runbook.md, the new report, scripts/hive-launch, and scripts/hive-tooling-drill.sh. No event-model, board-guard, or adopt-logic change: the emit block (hive-launch:186-207) and the create/adopt/refuse decision table (:113-130) are byte-identical to the baseline."
+          },
+          {
+            "leg": "no-registry-file",
+            "met": "yes",
+            "note": "Stop-line not crossed. No registry file is introduced; the window name remains the sole registry, read back via 'tmux list-windows -F #{window_name}' (hive-launch:136)."
+          },
+          {
+            "leg": "no-tmux-conf-assumptions",
+            "met": "yes",
+            "note": "Stop-line not crossed. Allocation is name-only: '-a' plus '-n \"$TASK\"' with no index, no reliance on base-index or renumber-windows. The drill's reproduction fixture deliberately targets a literal index 4 to recreate the old failure, but that is the bug being reproduced, not the shipped allocation path, and the shipped path holds under any config."
+          },
+          {
+            "leg": "drill-green",
+            "met": "not-applicable",
+            "note": "Out of scope per rubric - the drill emits scratch spine events and drives the operator's live tmux server. The new cases are present in the patch (occupied-index reproduction at drill:150-159 and 192; half-launch recovery at drill:199-223; name-collision refusal at drill:403-407), and the report does not claim the drill passed."
+          },
+          {
+            "leg": "spine-announce",
+            "met": "not-applicable",
+            "note": "Out of scope per rubric - a spine emit. The report itself is written and filed; only the announcement is out of reach, and the attempt does not claim to have made it."
+          }
+        ],
+        "verdict": "pass",
+        "would_have_shipped_defects": []
+      }
+    }
+  },
+  "first_pass": {
+    "deterministic": {
+      "checks": [
+        {
+          "detail": "ok",
+          "exit_code": 0,
+          "id": "bash-syntax",
+          "output_tail": "",
+          "passed": true
+        },
+        {
+          "detail": "ok",
+          "exit_code": 0,
+          "id": "shellcheck",
+          "output_tail": "",
+          "passed": true
+        }
+      ],
+      "excluded_legs": [
+        {
+          "executed_by": "operator",
+          "leg": "`scripts/hive-tooling-drill.sh` green, including this task's new cases.",
+          "reason": "The loop drill emits scratch spine events, which this instrument's own scope forbids, and it drives tmux. At this task's baseline the drill predates the tmux isolation that the task itself introduces, so running it necessarily creates sessions on the operator's live tmux server \u2014 the server holding every worker pane. An offline evaluation instrument must not carry that blast radius. The operator runs the drill against a green cell."
+        },
+        {
+          "executed_by": "not-executed",
+          "leg": "Announce the result on the spine per WORKER.md.",
+          "reason": "A spine emit, which this instrument's own scope forbids. The report the order asks for IS written and graded \u2014 only the announcement is out of reach."
+        }
+      ],
+      "missing_artefacts": [],
+      "passed": true,
+      "stop_line_violations": [],
+      "untouched_required_changes": []
+    },
+    "passed": false,
+    "review": {
+      "defect_count": 4,
+      "passed": false,
+      "probe_ok": true,
+      "ran": true,
+      "reason": "4 would-have-shipped defect(s)",
+      "verdict": {
+        "cell_id": "cell-dd5fbf69e1",
+        "dod_legs": [
+          {
+            "leg": "repro-evidence",
+            "met": "no",
+            "note": "No report of any kind was produced, so neither the reproduced collision and its stranded state nor the after-state allocation is recorded. The drill does encode a reproduction step (hive-tooling-drill.sh:151-158, explicit `-t session:4` target must fail), but that is code, not the reported evidence the leg asks for."
+          },
+          {
+            "leg": "runbook-half-launch",
+            "met": "no",
+            "note": "candidate.patch touches only scripts/hive-launch and scripts/hive-tooling-drill.sh; no dead-worker recovery documentation was changed."
+          },
+          {
+            "leg": "name-collision-refusal",
+            "met": "yes",
+            "note": "hive-launch:135-138 refuses before provisioning when a window already carries the task name, and the message now names the recovery path ('recover via the existing pane or WORKER.md \u00a7Launch, never create a second window'). A drill case was added at hive-tooling-drill.sh:399-407, though its setup is broken by the PATH leak noted above."
+          },
+          {
+            "leg": "result-report",
+            "met": "no",
+            "note": "No file under any reports directory exists in the diff or in artefacts/."
+          },
+          {
+            "leg": "bash-syntax",
+            "met": "yes",
+            "note": "verifier/bash-syntax.log is empty \u2014 the launcher parses."
+          },
+          {
+            "leg": "shellcheck",
+            "met": "yes",
+            "note": "verifier/shellcheck.log is empty \u2014 shellcheck -x clean on the loop scripts."
+          },
+          {
+            "leg": "no-event-model",
+            "met": "yes",
+            "note": "Stop-line not crossed: no event-model, board-guard, or adopt-logic changes; the adopt/refuse decision block (hive-launch:96-130) is untouched."
+          },
+          {
+            "leg": "no-registry-file",
+            "met": "yes",
+            "note": "Stop-line not crossed: the window name remains the registry; no registry file introduced."
+          },
+          {
+            "leg": "no-tmux-conf-assumptions",
+            "met": "yes",
+            "note": "Stop-line not crossed: allocation is `new-window -a -t <session> -n <task>` (hive-launch:253) \u2014 append semantics, no index derived and no base-index/renumber-windows assumption."
+          },
+          {
+            "leg": "drill-green",
+            "met": "not-applicable",
+            "note": "Out of scope per rubric \u2014 the drill drives tmux and emits scratch spine events, so it was not run here."
+          },
+          {
+            "leg": "spine-announcement",
+            "met": "not-applicable",
+            "note": "Out of scope per rubric \u2014 a spine emit is outside this instrument."
+          }
+        ],
+        "verdict": "fail",
+        "would_have_shipped_defects": [
+          {
+            "evidence": "candidate.patch touches only two files (candidate.patch:1 `scripts/hive-launch`, candidate.patch:57 `scripts/hive-tooling-drill.sh`); no reports/ file appears in the diff or in artefacts/ (artefacts/ contains scripts/hive-launch and scripts/hive-tooling-drill.sh only).",
+            "summary": "No result report was written \u2014 the DoD's report (What shipped / How verified / To operate / Reflection) and the reproduction evidence it must carry are entirely absent.",
+            "why_blocking": "The order makes the report a DoD leg and step 3 explicitly requires the ordering choice and its rationale be stated in **To operate**; step 1 requires the before/after reproduction evidence (the collision plus the state it stranded, then clean allocation and the recovery print) be reported. With no report, the operator reviewing this PR has no record of what was reproduced, no statement of whether reordering was chosen, and no operating guidance for the new failure path. The rubric puts only the spine *announcement* out of reach \u2014 the report itself is graded."
+          },
+          {
+            "evidence": "candidate.patch contains no hunk for any RUNBOOK file (only diffs at candidate.patch:1 and candidate.patch:57); the launcher's recovery text points at that path at artefacts/scripts/hive-launch:244.",
+            "summary": "RUNBOOK dead-worker recovery was not updated with the half-launched-task case.",
+            "why_blocking": "The order names this doc explicitly as a DoD leg because the operator-facing surface changed: an operator hitting a half-launch now sees a new stderr block, and the RUNBOOK is where they look to learn how to recognise the state, why re-running hive-launch is wrong, and how to finish by hand. The launcher's own print says 'Do not re-run hive-launch' and points at WORKER.md \u00a7Launch/task.reassigned, but the RUNBOOK section it defers to never gained the case \u2014 so the documented recovery path the message names does not exist."
+          },
+          {
+            "evidence": "artefacts/scripts/hive-tooling-drill.sh:220 greps 'Manual completion path'; the recovery heredoc at artefacts/scripts/hive-launch:235-250 contains no such string (grep for 'Manual completion' over hive-launch returns nothing).",
+            "summary": "The new drill assertion for the recovery print greps for a literal string the launcher never emits, so the half-launch case can never pass.",
+            "why_blocking": "The drill checks `grep -qF 'Manual completion path'` against the captured output, but the recovery block prints 'finish it manually:' and 'Filled kickoff:' \u2014 no such phrase anywhere in hive-launch. The one new assertion that is supposed to prove the fail-safe ordering works is a guaranteed red for the operator who runs the drill against this cell, and it does not in fact test the recovery print."
+          },
+          {
+            "evidence": "artefacts/scripts/hive-tooling-drill.sh:215-217 (assignment-only list \u2014 PATH persists in the current shell), consumed later at artefacts/scripts/hive-tooling-drill.sh:401-407.",
+            "summary": "The drill's fake-tmux injection leaks into the rest of the run: the `PATH=... RECOVERY_OUT=$(...)` assignment list has no command word, so PATH is modified in the drill's own shell permanently.",
+            "why_blocking": "After the half-launch block, every later `tmux` call in the drill resolves to the stub that fails on `new-window`. That breaks the very name-collision case this task adds \u2014 the drill's setup `tmux new-window -d -t \"$TMUX_SESSION\" -n drill-name-collision` never creates the window, so hive-launch has nothing to refuse and instead provisions clones and seeds the board, failing `check \"name collision provisioned nothing\"`. The operator running the drill gets a cascade of misleading reds downstream of the intended one."
+          }
+        ]
+      }
+    }
+  },
+  "remediated": true,
+  "remediation_reason": "first pass was red and the review produced findings to work from"
+}

@@ -1,0 +1,345 @@
+"""Run a gateway-billed batch with the receipt recorder attached, and attribute what it saw.
+
+Three of the five candidate arms reach their model through OpenRouter, and for those the
+scored accounting is the gateway's, not the harness's. This module is the seam that makes that
+possible **without touching the scored pipeline**: it starts one recorder for the batch, points
+the harness at it through `ANTHROPIC_BASE_URL`, runs the ordinary batch, and afterwards
+attributes each observed call to the cell and leg that was running when it happened.
+
+Attribution by time window rather than by per-cell instrumentation, deliberately. Cells run
+strictly sequentially and every leg already records `started_utc`/`finished_utc`, so the
+mapping is exact — and the alternative, threading a recorder through `pipeline.run_batch`,
+would edit the orchestration the order freezes. A study that had to modify its own scored
+instrument to measure itself would have to return to incumbent fidelity first.
+
+The reviewer is not affected: it is a pinned Anthropic subscription session that never goes
+through OpenRouter, so no review call appears in these receipts. Review spend is reported from
+its own leg, as it was for the incumbent.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from .receipts import ObservedCall, ReceiptRecorder, reconcile
+
+
+@dataclass(frozen=True)
+class LegWindow:
+    """One leg of one cell, and when it held the gateway."""
+
+    cell_id: str
+    task_id: str
+    leg: str
+    started_utc: str
+    finished_utc: str
+
+
+def attribute(
+    calls: list[ObservedCall], windows: list[LegWindow]
+) -> tuple[dict[str, list[ObservedCall]], list[ObservedCall]]:
+    """Map each observed call onto the leg that was running, keeping the leftovers visible.
+
+    Returns `(by_leg, unattributed)`. Unattributed calls are *returned*, never dropped: a call
+    that falls outside every window means either a leg that is not in the list or a clock that
+    disagrees, and both are things a reader must be told about rather than have silently
+    excluded from a cost total.
+    """
+    by_leg: dict[str, list[ObservedCall]] = {}
+    unattributed: list[ObservedCall] = []
+    for call in calls:
+        placed = False
+        for window in windows:
+            # Inclusive at both ends: a call that starts in the same second a leg starts belongs
+            # to it, and boundary seconds are common because both clocks are second-resolution.
+            if window.started_utc <= call.started_utc <= window.finished_utc:
+                by_leg.setdefault(f"{window.cell_id}/{window.leg}", []).append(call)
+                placed = True
+                break
+        if not placed:
+            unattributed.append(call)
+    return by_leg, unattributed
+
+
+def windows_from_record(record_root: Path) -> list[LegWindow]:
+    """Read every leg's window out of a finished record.
+
+    Only the legs that can reach the gateway are collected — the candidate's attempt and its
+    one remediation. The review leg runs on a different account through a different path and
+    contributes no OpenRouter calls by construction.
+    """
+    windows: list[LegWindow] = []
+    cells = record_root / "cells"
+    if not cells.is_dir():
+        return windows
+    for cell in sorted(cells.iterdir()):
+        if not cell.is_dir():
+            continue
+        for filename, leg in (("run.json", "attempt"), ("remediation-run.json", "remediation")):
+            path = cell / filename
+            if not path.is_file():
+                continue
+            try:
+                doc = json.loads(path.read_text())
+            except json.JSONDecodeError:
+                continue
+            started, finished = doc.get("started_utc"), doc.get("finished_utc")
+            if not started or not finished:
+                continue
+            windows.append(
+                LegWindow(
+                    cell_id=cell.name,
+                    task_id=str(doc.get("task_id", "")),
+                    leg=leg,
+                    started_utc=str(started),
+                    finished_utc=str(finished),
+                )
+            )
+    return windows
+
+
+def reconcile_record(
+    record_root: Path,
+    recorder_jsonl: Path,
+    api_key: str,
+    *,
+    calls: list[ObservedCall] | None = None,
+    **reconcile_kwargs: Any,
+) -> dict[str, Any]:
+    """Turn a batch's raw capture into per-leg gateway accounting, written beside the record.
+
+    Writes `gateway-receipts.json` into the record root and a per-cell copy into each cell, so
+    a cell remains readable on its own — the record's own idiom, where a cell carries everything
+    needed to weigh it.
+    """
+    from .receipts import load_calls
+
+    observed = calls if calls is not None else load_calls(recorder_jsonl)
+    windows = windows_from_record(record_root)
+    by_leg, unattributed = attribute(observed, windows)
+
+    per_leg: dict[str, Any] = {}
+    for leg_key, leg_calls in sorted(by_leg.items()):
+        per_leg[leg_key] = reconcile(leg_calls, api_key, **reconcile_kwargs)
+
+    summary: dict[str, Any] = {
+        "source": str(recorder_jsonl),
+        "calls_observed": len(observed),
+        "legs": per_leg,
+        "attribution": (
+            "each call is assigned to the leg whose start/finish window contains its start "
+            "timestamp; cells run sequentially, so the mapping is exact"
+        ),
+    }
+    if unattributed:
+        summary["unattributed"] = {
+            "count": len(unattributed),
+            "calls": [c.to_json() for c in unattributed],
+            "why_it_matters": (
+                "these calls fall outside every recorded leg window, so they are excluded from "
+                "every per-leg total above. They are kept here rather than dropped: a call the "
+                "accounting cannot place is a fact about the record, not a rounding error."
+            ),
+        }
+
+    record_root.mkdir(parents=True, exist_ok=True)
+    (record_root / "gateway-receipts.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n"
+    )
+    for leg_key, payload in per_leg.items():
+        cell_id = leg_key.split("/", 1)[0]
+        cell_dir = record_root / "cells" / cell_id
+        if cell_dir.is_dir():
+            leg = leg_key.split("/", 1)[1]
+            (cell_dir / f"gateway-receipts-{leg}.json").write_text(
+                json.dumps(payload, indent=2, sort_keys=True) + "\n"
+            )
+    return summary
+
+
+def refetch_missing_receipts(record_root: Path, api_key: str, **fetch_kwargs: Any) -> int:
+    """Re-ask for any per-cell receipt still marked unavailable, and rewrite the file.
+
+    Necessary because OpenRouter writes generation records asynchronously and reconciliation
+    runs the moment the batch ends — so the last call of a leg routinely has no record yet.
+    Observed directly: a shakedown reconciled 13 of 14 calls, and the fourteenth existed on the
+    first attempt minutes later, with a real cost and the pinned upstream.
+
+    Left alone that is not a rounding error but a SYSTEMATIC undercount of about one call per
+    leg, landing on the token and cost comparison the matched pair exists to make. Re-asking is
+    one cheap read per missing call and turns a floor back into a total.
+
+    Returns how many were recovered.
+    """
+    from .receipts import RECEIPT_FIELDS, fetch_generation
+
+    recovered = 0
+    for path in sorted((record_root / "cells").glob("*/gateway-receipts-*.json")):
+        try:
+            doc = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        changed = False
+        for call in doc.get("calls", []):
+            receipt = call.get("receipt") or {}
+            gid = call.get("generation_id")
+            if receipt.get("available") or not gid:
+                continue
+            got = fetch_generation(gid, api_key, attempts=1, **fetch_kwargs)
+            if not got.get("available"):
+                continue
+            full = got["receipt"]
+            call["receipt"] = {
+                "available": True,
+                "recovered_after_the_batch": True,
+                **{k: full.get(k) for k in RECEIPT_FIELDS if k in full},
+            }
+            call["receipt_raw"] = full
+            changed = True
+            recovered += 1
+        # Recount unconditionally and rewrite when the answer moved, rather than only after a
+        # recovery. A leg's totals were written by whatever the counting rules were when the
+        # batch ran, and those rules get corrected — the count of refused-vs-missing calls did.
+        # Without this a fixed rule reaches new records only, and an old record keeps asserting
+        # a coverage number the code no longer stands behind, with no way to fix it short of
+        # re-running the batch. Nothing here re-reads the gateway; it re-reads the calls.
+        fresh = _recount(doc["calls"])
+        if changed or fresh != doc.get("totals"):
+            doc["totals"] = fresh
+            path.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n")
+    return recovered
+
+
+def _recount(calls: list[dict[str, Any]]) -> dict[str, Any]:
+    """Re-total a leg after recovery, under the same all-or-nothing rule as `reconcile`."""
+    from .receipts import coverage
+
+    receipted = [c for c in calls if (c.get("receipt") or {}).get("available")]
+    totals: dict[str, Any] = coverage(calls)
+    if receipted:
+        for key, field in (
+            ("gateway_cost_usd", "total_cost"),
+            ("native_tokens_prompt", "native_tokens_prompt"),
+            ("native_tokens_completion", "native_tokens_completion"),
+            ("native_tokens_reasoning", "native_tokens_reasoning"),
+            ("native_tokens_cached", "native_tokens_cached"),
+        ):
+            values = [c["receipt"].get(field) for c in receipted]
+            present = [v for v in values if isinstance(v, (int, float))]
+            totals[key] = sum(present) if len(present) == len(receipted) else None
+        for key, field in (
+            ("resolved_upstreams", "provider_name"),
+            ("resolved_models", "model"),
+            ("preset_ids", "preset_id"),
+        ):
+            totals[key] = sorted({str(c["receipt"].get(field)) for c in receipted})
+    missing = totals["calls_missing_receipt"]
+    if missing:
+        totals["incomplete"] = (
+            f"{missing} of {len(calls)} observed call(s) were answered by the gateway and "
+            "still have no receipt after a post-batch re-ask. Every total above covers only "
+            "the receipted calls and is a floor, not a total."
+        )
+    return totals
+
+
+def record_gateway_totals(record_root: Path) -> dict[str, Any]:
+    """Roll the per-cell receipts up across a whole record, however many sittings built it.
+
+    Necessary because a record can be assembled over several invocations: the paired DeepSeek
+    batch runs one task at a time so the two arms stay adjacent, and a resumed batch carries
+    conclusive cells forward verbatim. Each invocation's recorder only ever sees its own calls,
+    so the record-level file `reconcile_record` writes covers that sitting alone. The per-cell
+    files are the complete truth — `carry_cell` copies a cell wholesale, receipts included — so
+    this sums those instead.
+
+    Every total is reported beside its coverage. A cell with no receipts file is named rather
+    than treated as costing nothing: a carried cell from before the recorder existed and a cell
+    that cost nothing are not the same fact.
+    """
+    cells_dir = record_root / "cells"
+    per_cell: dict[str, Any] = {}
+    missing: list[str] = []
+    totals = {
+        "gateway_cost_usd": 0.0,
+        "native_tokens_prompt": 0,
+        "native_tokens_completion": 0,
+        "native_tokens_reasoning": 0,
+        "native_tokens_cached": 0,
+        "calls_observed": 0,
+        "calls_with_receipt": 0,
+        "calls_missing_receipt": 0,
+        "calls_without_generation": 0,
+    }
+    complete = True
+    upstreams: set[str] = set()
+    models: set[str] = set()
+
+    for cell in sorted(cells_dir.iterdir()) if cells_dir.is_dir() else []:
+        if not cell.is_dir():
+            continue
+        files = sorted(cell.glob("gateway-receipts-*.json"))
+        if not files:
+            missing.append(cell.name)
+            continue
+        legs: dict[str, Any] = {}
+        for path in files:
+            leg = path.stem.replace("gateway-receipts-", "")
+            try:
+                doc = json.loads(path.read_text())
+            except json.JSONDecodeError:
+                complete = False
+                continue
+            leg_totals = doc.get("totals") or {}
+            legs[leg] = leg_totals
+            for key in list(totals):
+                value = leg_totals.get(key)
+                if isinstance(value, (int, float)):
+                    totals[key] += value
+                elif leg_totals.get("calls_with_receipt"):
+                    # `reconcile` returns None for any field missing from even one receipt, so a
+                    # leg that HAD receipts but no value for this key makes the sum a floor. This
+                    # covers every summed key, not just cost: a token total quietly short is the
+                    # same failure as a cost total quietly short, and the headline question this
+                    # study answers is a token question.
+                    complete = False
+            if leg_totals.get("calls_missing_receipt"):
+                # A leg the gateway answered and did not account for makes the record's
+                # coverage short, whatever its sums add up to. Without this the rollup could
+                # read `complete: true` over legs that individually say they are floors.
+                complete = False
+            upstreams.update(leg_totals.get("resolved_upstreams") or [])
+            models.update(leg_totals.get("resolved_models") or [])
+        per_cell[cell.name] = legs
+
+    out: dict[str, Any] = {
+        "record": str(record_root),
+        "per_cell": per_cell,
+        "totals": totals,
+        "resolved_upstreams": sorted(upstreams),
+        "resolved_models": sorted(models),
+        "complete": complete and not missing,
+    }
+    if missing:
+        out["cells_without_receipts"] = {
+            "cells": missing,
+            "why_it_matters": (
+                "these cells contribute nothing to the totals above. A cell with no receipts "
+                "file is not a cell that cost nothing — it is a cell whose gateway accounting "
+                "is absent, and the two must not be read the same way."
+            ),
+        }
+    return out
+
+
+def recorder_env(recorder: ReceiptRecorder) -> dict[str, str]:
+    """What a harness needs so its Anthropic-Messages traffic goes through the recorder.
+
+    `ANTHROPIC_BASE_URL` only. The credential is *not* set here — it reaches the harness through
+    the operator's environment via the spec's `env_passthrough`, exactly as it would without a
+    recorder, so this seam never becomes a place a key is written down.
+    """
+    return {"ANTHROPIC_BASE_URL": recorder.base_url}

@@ -1,0 +1,118 @@
+diff --git a/scripts/hive-launch b/scripts/hive-launch
+index cb9529c..665487a 100755
+--- a/scripts/hive-launch
++++ b/scripts/hive-launch
+@@ -229,12 +229,54 @@ KICK
+ # text is ever quoted onto a command line; the window runs the worker command with
+ # it as the initial prompt. The pane NAME is the registry — no registry file.
+ launch_cmd="$HIVE_WORKER_CMD \"\$HIVE_KICKOFF\""
++manual_completion() {
++  local tmux_error="$1"
++  cat >&2 <<RECOVERY
++hive-launch: window creation failed after spine seeding; the task is a half-launch.
++  tmux error: $tmux_error
++  Do not rerun hive-launch: the board is already assigned and the clones/wrapper exist.
++
++Manual completion (WORKER.md §Launch): create the named window, then give the worker
++the kickoff below. The worker must read WORKER.md, accept the task through its wrapper,
++and continue from the already provisioned clones.
++
++  session: $HIVE_TMUX_SESSION
++  window:  $TASK
++  cwd:     $WS_ROOT
++  wrapper: $WRAPPER
++  command: $launch_cmd
++
++----- filled kickoff -----
++$KICKOFF
++----- end kickoff -----
++
++Run the remaining window step from an attached tmux client (append/free-slot
++semantics; do not choose an index):
++
++  HIVE_KICKOFF=\$(cat <<'HIVE_KICKOFF_TEXT'
++$KICKOFF
++HIVE_KICKOFF_TEXT
++)
++  tmux new-window -a -t '$HIVE_TMUX_SESSION' -n '$TASK' -c '$WS_ROOT' \\
++    -e HIVE_KICKOFF="\$HIVE_KICKOFF" '$launch_cmd'
++RECOVERY
++}
++
+ if tmux has-session -t "$HIVE_TMUX_SESSION" 2>/dev/null; then
+-  tmux new-window -t "$HIVE_TMUX_SESSION" -n "$TASK" -c "$WS_ROOT" \
+-    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd"
++  # `-a` asks tmux to append after the target and select a free index. Supplying
++  # only the session still lets tmux resolve a concrete occupied index under
++  # some configurations; indices are not part of the task registry.
++  if ! TMUX_ERROR=$(tmux new-window -a -t "$HIVE_TMUX_SESSION" -n "$TASK" -c "$WS_ROOT" \
++    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd" 2>&1); then
++    manual_completion "$TMUX_ERROR"
++    exit 1
++  fi
+ else
+-  tmux new-session -d -s "$HIVE_TMUX_SESSION" -n "$TASK" -c "$WS_ROOT" \
+-    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd"
++  if ! TMUX_ERROR=$(tmux new-session -d -s "$HIVE_TMUX_SESSION" -n "$TASK" -c "$WS_ROOT" \
++    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd" 2>&1); then
++    manual_completion "$TMUX_ERROR"
++    exit 1
++  fi
+ fi
+ echo "  pane:   $HIVE_TMUX_SESSION:$TASK  (attach: tmux attach -t $HIVE_TMUX_SESSION)"
+ echo "hive-launch: done."
+diff --git a/scripts/hive-tooling-drill.sh b/scripts/hive-tooling-drill.sh
+index abe7595..6c3cad8 100755
+--- a/scripts/hive-tooling-drill.sh
++++ b/scripts/hive-tooling-drill.sh
+@@ -183,6 +183,50 @@ check "kickoff names the project run"           "grep -qF 'run: $ARUN' '$SANDBOX
+ check "board shows task assigned on the run"    "[ \"\$(bstatus '$ARUN' alpha-demo)\" = assigned ]"
+ check "durable omegahive run untouched by launch" "[ -z \"\$(bstatus omegahive alpha-demo)\" ]"
+ 
++echo
++echo "== occupied index: append allocation and half-launch recovery =="
++# Reproduce the old failure shape by occupying an explicit index. The task name
++# remains free, so a successful launch must append without disturbing this window.
++tmux new-window -d -t "$TMUX_SESSION:4" -n occupied-slot -c "$WS_ROOT"
++OORDER=$(add_order "$APROJ" "2026-07-13-occupied-index" "occupied index")
++OWORKER="sess-occupied-${STAMP}"
++"$SCRIPT_DIR/hive-launch" "$OORDER" --worker "$OWORKER" >/dev/null
++check "occupied index remains present" "tmux list-windows -t '$TMUX_SESSION' -F '#{window_name}' | grep -qxF occupied-slot"
++check "occupied index launch allocates the task window" "tmux list-windows -t '$TMUX_SESSION' -F '#{window_name}' | grep -qxF occupied-index"
++check "occupied index task is assigned" "[ \"\$(bstatus '$ARUN' occupied-index)\" = assigned ]"
++
++# Force only the post-seeding new-window call to fail while delegating all other
++# tmux operations to the real binary. This proves a seeded task prints its exact
++# manual completion path instead of silently leaving the operator to archaeology.
++TMUX_REAL=$(command -v tmux)
++TMUX_SHIM_DIR="$SANDBOX/tmux-shim"
++mkdir -p "$TMUX_SHIM_DIR"
++cat > "$TMUX_SHIM_DIR/tmux" <<EOF
++#!/usr/bin/env bash
++if [ "\$1" = new-window ]; then
++  echo "simulated occupied target" >&2
++  exit 1
++fi
++exec "$TMUX_REAL" "\$@"
++EOF
++chmod +x "$TMUX_SHIM_DIR/tmux"
++RORDER=$(add_order "$APROJ" "2026-07-13-half-launch" "half launch")
++RWORKER="sess-half-${STAMP}"
++RWRAP="$WRAPPERS/$RWORKER.sh"
++OLD_PATH="$PATH"
++export PATH="$TMUX_SHIM_DIR:$PATH"
++RECOVERY_OUT=""
++set +e
++RECOVERY_OUT=$("$SCRIPT_DIR/hive-launch" "$RORDER" --worker "$RWORKER" 2>&1)
++RECOVERY_RC=$?
++set -e
++export PATH="$OLD_PATH"
++export RECOVERY_OUT
++check "half-launch window failure is non-zero" "[ '$RECOVERY_RC' -ne 0 ]"
++check "half-launch prints filled kickoff" "printf '%s' \"\$RECOVERY_OUT\" | grep -qF -- '----- filled kickoff -----'"
++check "half-launch prints wrapper recovery path" "printf '%s' \"\$RECOVERY_OUT\" | grep -qF '$RWRAP'"
++check "half-launch remains assigned for manual finish" "[ \"\$(bstatus '$ARUN' half-launch)\" = assigned ]"
++
+ echo
+ echo "== project '$APROJ': accept -> block -> answer -> unblock -> result =="
+ "$AWRAP" --type task.accepted --task alpha-demo >/dev/null

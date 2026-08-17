@@ -1,0 +1,92 @@
+{
+  "argv": [
+    "/home/cassio/work/sess-hip1-bench-qualify-0814/omegahive/taskbench/launch/cell-codex.sh",
+    "-m",
+    "gpt-5.6-luna",
+    "-s",
+    "workspace-write"
+  ],
+  "cell_id": "cell-126d2d7a96",
+  "changed_files": [
+    "docs/omegahive_recovery_runbook.md",
+    "src/omegahive/gateway/gateway.py",
+    "tests/test_emit_cli.py"
+  ],
+  "diff": "diff --git a/docs/omegahive_recovery_runbook.md b/docs/omegahive_recovery_runbook.md\nindex 51ff606..398382d 100644\n--- a/docs/omegahive_recovery_runbook.md\n+++ b/docs/omegahive_recovery_runbook.md\n@@ -87,11 +87,11 @@ silently skip events. Follow the ordering exactly.\n      ```sh\n      docker compose run --rm cli bump-generation --run-id <run>\n      ```\n-     The bump only works on a *registered* run; it refuses one that was never opened\n-     (`run not registered`). The durable `omegahive` project run is currently unregistered\n-     \u2014 the `hive emit` write path never opens runs \u2014 so the bump is inert until the run is\n-     registered out of band (`omegahive.port.open_run`). See the ops RUNBOOK for the\n-     one-liner; until then the restart floor below is the operative path.\n+     The emit write path idempotently registers a run in the same transaction as its first\n+     write, so the durable `omegahive` run carries a generation token after the next real\n+     emit. The bump still refuses a run that has never been opened (`run not registered`);\n+     for a restored database with no event for the run, emit once before relying on the\n+     durable signal. The restart floor below remains safe in all cases.\n    - **Restart *every* client** \u2014 the always-safe interim floor, independent of the token.\n 4. **Restart** coordinators/workers; each re-snapshots through the port.\n \ndiff --git a/src/omegahive/gateway/gateway.py b/src/omegahive/gateway/gateway.py\nindex 9b81ce6..694297e 100644\n--- a/src/omegahive/gateway/gateway.py\n+++ b/src/omegahive/gateway/gateway.py\n@@ -94,22 +94,26 @@ class Gateway:\n         conn = self._store.conn\n         try:\n             with conn.transaction():\n-                # 1. idempotency lookup FIRST \u2014 a replay returns the existing event\n+                # 1. Register the run in this transaction. The idempotent insert means\n+                # every run touched by the write path carries a generation token,\n+                # including a replay of a legacy event whose registry row is absent.\n+                self._store.open_run()\n+                # 2. idempotency lookup \u2014 a replay returns the existing event\n                 # before any fold or gate, so a committed op is never re-gated.\n                 if idempotency_key is not None:\n                     existing = self._store.find_by_key(actor.id, idempotency_key)\n                     if existing is not None:\n                         return Accepted(existing)\n-                # 2. serialize per run: advisory lock keyed in Postgres (never Python hash()).\n+                # 3. serialize per run: advisory lock keyed in Postgres (never Python hash()).\n                 conn.execute(\"SELECT pg_advisory_xact_lock(hashtext(%s))\", (self._store.run_id,))\n-                # 3. fold + gate against the run prefix under the lock.\n+                # 4. fold + gate against the run prefix under the lock.\n                 board = fold(self._store.read_run())\n                 rej = self._gate(board, actor, event_type, payload, task_id)\n                 if rej is not None:\n                     rid = self._record_rejection(actor, event_type, task_id, payload, rej,\n                                                  logical_ts)\n                     return Rejected(rej.code, rej.reason, rid)\n-                # 4. accept: append the op (with its key).\n+                # 5. accept: append the op (with its key).\n                 ev = self._store.append(\n                     actor=actor, event_type=event_type, payload=payload, task_id=task_id,\n                     causation_id=causation_id, recipient=recipient, logical_ts=logical_ts,\ndiff --git a/tests/test_emit_cli.py b/tests/test_emit_cli.py\nindex daa5698..4be04ff 100644\n--- a/tests/test_emit_cli.py\n+++ b/tests/test_emit_cli.py\n@@ -35,6 +35,7 @@ def cli_db(monkeypatch):\n     try:\n         with c.transaction():\n             c.execute(\"DELETE FROM events WHERE run_id = %s\", (RUN,))\n+            c.execute(\"DELETE FROM runs WHERE run_id = %s\", (RUN,))\n     finally:\n         c.close()\n \n@@ -72,6 +73,16 @@ def test_round_trip_then_idempotent(cli_db):\n     assert \"already recorded\" in r2.output.lower()\n     assert len(_events(\"task.reported\")) == 1\n \n+    c = connect(TEST_DATABASE_URL)\n+    try:\n+        assert EventLog(c, LogicalClock(0), RUN).generation() == 1\n+    finally:\n+        c.close()\n+\n+    r3 = runner.invoke(cli.app, [\"bump-generation\", \"--run-id\", RUN])\n+    assert r3.exit_code == 0, r3.output\n+    assert \"1\" in r3.output and \"2\" in r3.output\n+\n \n def test_malformed_ref_exits_nonzero(cli_db):\n     r = _emit(\"--payload\", '{\"ref\": \"nope\", \"kind\": \"result\"}')\n",
+  "exit_code": 0,
+  "finished_utc": "2026-08-16T18:39:46Z",
+  "gateway_receipts": null,
+  "home_is_cell_root": true,
+  "labels": {
+    "harness": "codex-cli-0.147.0",
+    "model": "gpt-5.6-luna",
+    "vendor": "openai"
+  },
+  "outward_actions": {},
+  "progress": {
+    "exit": "2026-08-16T18:39:46Z",
+    "first_read": "unknown",
+    "first_response": "2026-08-16T18:36:50Z",
+    "first_verifier": "unknown",
+    "first_write": "2026-03-26T00:00:00Z",
+    "missing_surfaces": {
+      "first_read": "harness exposes no tool-call transcript; no read timestamp is observable",
+      "first_verifier": "candidate never invoked bin/bench-verify; a verifier it ran directly is invisible"
+    },
+    "sources": {
+      "exit": "runner wall clock at process reap",
+      "first_response": "timestamp of the first byte the agent wrote to stdout or stderr",
+      "first_write": "earliest mtime among files created or modified under code/ during the run"
+    },
+    "terminal_error": null
+  },
+  "pulse": null,
+  "resolved_identity": {
+    "available": true,
+    "cost_missing_surface": "this arm runs on a ChatGPT subscription; there is no per-run price to report and an estimate from a price table would not be one",
+    "how_primary_chosen": "codex reports one usage block per turn; the last is the total",
+    "is_error": false,
+    "num_turns": 1,
+    "provider": null,
+    "resolved_model": "gpt-5.6-luna",
+    "resolved_model_missing_surface": "codex exec --json reports no SERVER-resolved model id. The value above is the model Codex records having been configured with, read from its session rollout \u2014 a harness statement, not a gateway or API echo. Weigh it accordingly.",
+    "resolved_model_source": "codex session rollout",
+    "terminal_reason": null,
+    "thread_id": "01a00bdc-befb-70c2-87b8-bad4da965a4d",
+    "total_cost_usd": null,
+    "usage": {
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 1157376,
+      "input_tokens": 1228848,
+      "output_tokens": 7689,
+      "reasoning_output_tokens": 1998
+    },
+    "usage_raw": {
+      "cache_write_input_tokens": 0,
+      "cached_input_tokens": 1157376,
+      "input_tokens": 1228848,
+      "output_tokens": 7689,
+      "reasoning_output_tokens": 1998
+    }
+  },
+  "started_utc": "2026-08-16T18:36:50Z",
+  "stderr_path": "run/stderr.txt",
+  "stdout_path": "run/stdout.txt",
+  "task_id": "run-registration",
+  "timed_out": false,
+  "usage": {
+    "available": true,
+    "reported": {
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 1157376,
+      "input_tokens": 1228848,
+      "output_tokens": 7689,
+      "reasoning_output_tokens": 1998
+    },
+    "source": "harness result envelope",
+    "total_cost_usd": null
+  },
+  "wall_ms": 176253,
+  "workspace_changed_files": [],
+  "workspace_diff": ""
+}

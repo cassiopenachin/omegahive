@@ -1,0 +1,83 @@
+diff --git a/projects/omegahive/RUNBOOK.md b/projects/omegahive/RUNBOOK.md
+index 590fcd3..25b663d 100644
+--- a/projects/omegahive/RUNBOOK.md
++++ b/projects/omegahive/RUNBOOK.md
+@@ -7,29 +7,32 @@ loop — one command per judgment (OPERATIONS.md Phase 1). They wrap the raw `em
+ `report` primitives; the identities they assert (operator/coordinator/instrument) are the
+ blessed human-tier role-borrowing (decisions.md 2026-07-13).
+ 
+-- **Launch:** `hive-launch <order-file> [--worker <id>]` — the order file is named relative to
++- **Launch:** `hive-launch <order-file> [--worker <id>] [--anyway]` — the order file is named relative to
+   the workspace root (`projects/omegahive/orders/<file>`) or bare. It refuses a dirty or unpushed
+-  order (the pin must resolve on the hub, since the worker clones from the hub). It seeds the
+-  board, issues the worker's emit wrapper (`~/work/hive-wrappers/<worker>.sh` — the worker's whole
+-  write path, identity baked in), provisions the worker's clones under `~/work/<worker>/`, and
+-  opens a tmux window named after the task in the `hive` session running the session with the
+-  kickoff pre-filled. The pane name is the registry — there is no registry file. **The pane is
+-  autonomous:** the default worker command is `claude --permission-mode auto`, so a launched task
+-  starts working unattended instead of waiting on permission prompts for someone to attend the
+-  pane. The mode is WORKER.md's (§Launch) — the hard line stays this repo's committed deny pins,
+-  which are evaluated first in every mode; bypass mode is prohibited. Override the whole command
++  order (the pin must resolve on the hub, since the worker clones from the hub). **Predictions gate:**
++  if the order has a `## Predictions` section but it is unparseable (no fields parse to expected format),
++  launch refuses before any spine write, printing the four literal field labels and the offending lines.
++  Pass `--anyway` to launch anyway. (An order with no Predictions section at all, or a declared-unpredicted
++  disposition, launches without refusal.) It seeds the board, issues the worker's emit wrapper
++  (`~/work/hive-wrappers/<worker>.sh` — the worker's whole write path, identity baked in), provisions
++  the worker's clones under `~/work/<worker>/`, and opens a tmux window named after the task in the
++  `hive` session running the session with the kickoff pre-filled. The pane name is the registry — there
++  is no registry file. **The pane is autonomous:** the default worker command is `claude --permission-mode
++  auto`, so a launched task starts working unattended instead of waiting on permission prompts for someone
++  to attend the pane. The mode is WORKER.md's (§Launch) — the hard line stays this repo's committed deny
++  pins, which are evaluated first in every mode; bypass mode is prohibited. Override the whole command
+   string with `HIVE_WORKER_CMD` (project.conf or env) if the worker CLI's flag ever drifts.
+ - **Answer:** `hive-answer <task> "<text>"` — appends to the order's `## Answers` section, commits +
+   pushes, nudges the pane. One SSH-friendly line from the phone: `ssh beastie 'hive-answer port-sha "use event time"'`.
+ - **Close** (after merging the PR in the GitHub app, and — for service-touching tasks — deploying
+-  from main, below): `hive-close <task> [--reason <text>]` — verifies the board is `in_review`,
++  from main, below): `hive-close <task> [--reason <text>] [--no-score]` — verifies the board is `in_review`,
+   reads the result ref off the spine, emits `review.passed` + `status_override(done)`, then
+-  **scores the task** (`hive-score`) and commits + pushes the calibration entry — closing and
+-  recording are one act. `review.passed` here = "the operator read the result report"
+-  (OPERATIONS.md pain 6), not artifact correctness. The scoring step is strictly after the close
+-  emits and strictly non-fatal: if it fails, the close still stands and `hive-close` prints the
+-  single command to re-run. `--no-score` skips it. The human review verdict is not inferable from
+-  the spine, so add it afterwards: `hive-score <task> --review "<clean|minor rework|rework>" --again`.
++  **scores the task** (`hive-score`), commits + pushes the calibration entry, then **regenerates
++  metrics** (`hive-metrics`) — all three are one act. `review.passed` here = "the operator read the result
++  report" (OPERATIONS.md pain 6), not artifact correctness. Scoring and regeneration are strictly after
++  the close emits and strictly non-fatal: if either fails, the close still stands and `hive-close` prints
++  the single command to re-run. `--no-score` skips scoring. The human review verdict is not inferable
++  from the spine, so add it afterwards: `hive-score <task> --review "<clean|minor rework|rework>" --again`.
+ 
+ Run identity is a committed per-project fact (`projects/<name>/project.conf`: `RUN_ID`,
+ `CODE_REPO`); the deployment layer defaults to the operator-host layout and is env-overridable
+@@ -80,21 +83,21 @@ The hive runs many projects, one **run per project** (run id = project name; dec
+ 
+ ## Wave close: refresh the instruments (before the improver runs)
+ 
+-Each `hive-close` already scores its own task and commits the entry, so by the wave's end
+-`calibration.md` is current and pushed. Two things remain, run from the operator workspace clone
+-after the wave's **last** close:
++Each `hive-close` already scores its own task and regenerates `tasks.{md,csv}`, committing both
++along with the calibration entry, so by the wave's end the metrics are current and pushed. One thing
++remains for the human review verdicts (the one field the spine cannot infer), run from the operator
++workspace clone after the wave's **last** close:
+ 
+ ```bash
+-hive-metrics <project>                                            # regenerate + commit + push tasks.{md,csv}
+ hive-score <task> --review "<clean|minor rework|rework>" --again  # once per task closed this wave
+ #   the review verdict is the one field the spine cannot know (PR rework is not an event), so it is
+ #   supplied by hand; --again because the close already recorded an entry without it
+ #   inside any loop, append </dev/null to each call — the spine read consumes stdin
+ ```
+ 
+-Both tools commit and push what they regenerate (pathspec-scoped to
+-`projects/<project>/metrics/`), so there is no separate `git add`/`commit`/`push` step. That is
+-load-bearing rather than convenience: the improver reads **only committed instruments**, so an
++Both `hive-score` and `hive-close` (when it runs `hive-metrics`) commit and push what they regenerate
++(pathspec-scoped to `projects/<project>/metrics/`), so there is no separate `git add`/`commit`/`push` step.
++That is load-bearing rather than convenience: the improver reads **only committed instruments**, so an
+ uncommitted `calibration.md` is invisible to it — learned at retro 1, when three wave-1 scores sat
+ uncommitted on the operator clone (retro 2026-07-27 D5). `--no-commit` on either tool opts out.
+ 

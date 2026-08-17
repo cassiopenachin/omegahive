@@ -1,0 +1,159 @@
+diff --git a/scripts/hive-launch b/scripts/hive-launch
+index cb9529c..dca0f70 100755
+--- a/scripts/hive-launch
++++ b/scripts/hive-launch
+@@ -134,7 +134,7 @@ fi
+ [ ! -e "$CODE_ROOT" ] || die "$CODE_ROOT already exists; pick a fresh --worker id or clear it"
+ if tmux has-session -t "$HIVE_TMUX_SESSION" 2>/dev/null \
+    && tmux list-windows -t "$HIVE_TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qxF "$TASK"; then
+-  die "a tmux window named '$TASK' already exists in session '$HIVE_TMUX_SESSION' (the pane is the registry)"
++  die "a tmux window named '$TASK' already exists in session '$HIVE_TMUX_SESSION' — recover via task.reassigned (RUNBOOK §Dead worker recovery)"
+ fi
+ 
+ # --- pin the order and build the seed payloads --------------------------------
+@@ -186,27 +186,7 @@ echo "  wrapper: $WRAPPER"
+ assigned_payload=$(jq -cn --arg w "$WORKER" '{worker:$w}')
+ registered_payload=$(jq -cn --arg w "$WORKER" '{worker_id:$w}')
+ 
+-# Two seeding modes. Create: task.created -> ready, then register + assign.
+-# Adopt: the task is ALREADY `ready` (unowned) from its seeded task.created —
+-# re-emitting one would regress it, so we emit ONLY register + assign. Order
+-# matters in both: registered -> roster (assign's target must be registered),
+-# assigned -> owned.
+-if [ -n "$ADOPT" ]; then
+-  emit human "$OPERATOR_ACTOR" worker.registered              --payload "$registered_payload" >/dev/null
+-  emit coordinator "$OPERATOR_ACTOR" task.assigned --task "$TASK" --payload "$assigned_payload" >/dev/null
+-  echo "  adopted: existing ready task -> worker.registered + task.assigned (no task.created)"
+-  echo "  caveat: acceptance stays the seeded task.created pin, which may be STALE against $REL@$SHA at HEAD;"
+-  echo "          the worker reads the order at HEAD (WORKER.md), so this is protocol-consistent — just be aware."
+-else
+-  created_payload=$(jq -cn --arg t "$TITLE" --arg ty "$TASK_TYPE" --arg a "$ACCEPTANCE" \
+-    '{title:$t, task_type:$ty, acceptance:$a}')
+-  emit human "$OPERATOR_ACTOR" task.created     --task "$TASK" --payload "$created_payload"    >/dev/null
+-  emit human "$OPERATOR_ACTOR" worker.registered              --payload "$registered_payload" >/dev/null
+-  emit coordinator "$OPERATOR_ACTOR" task.assigned --task "$TASK" --payload "$assigned_payload" >/dev/null
+-  echo "  seeded: task.created + worker.registered + task.assigned"
+-fi
+-
+-# --- kickoff --------------------------------------------------------------------
++# --- kickoff template (used for tmux window) -----------------------------------
+ # The WORKER.md launch template with clone paths filled, plus the one line that
+ # points the worker at its wrapper: everywhere WORKER.md shows
+ # `hive emit --run-id $RUN --role worker --actor $WORKER ...`, the worker calls
+@@ -225,16 +205,60 @@ Container tooling is podman (not docker). Begin by reading both files, then emit
+ task.accepted and start.
+ KICK
+ 
+-# Open the pane. The kickoff travels as an env var (HIVE_KICKOFF) so no multi-line
+-# text is ever quoted onto a command line; the window runs the worker command with
+-# it as the initial prompt. The pane NAME is the registry — no registry file.
++# --- open the pane FIRST (before spine seeding) --------------------------------
++# Collision-free window allocation: create with -a (append/free-slot semantics)
++# before any board write. This ensures a failure here is clean (no orphaned board
++# state), and the append semantics avoid implicit index collisions. The pane name
++# is the task id; a name collision (task already assigned a window on this session)
++# is caught by the earlier guard and refuses here with an explicit error.
+ launch_cmd="$HIVE_WORKER_CMD \"\$HIVE_KICKOFF\""
+ if tmux has-session -t "$HIVE_TMUX_SESSION" 2>/dev/null; then
+-  tmux new-window -t "$HIVE_TMUX_SESSION" -n "$TASK" -c "$WS_ROOT" \
+-    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd"
++  tmux new-window -a -t "$HIVE_TMUX_SESSION" -n "$TASK" -c "$WS_ROOT" \
++    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd" || die "failed to create tmux window for task '$TASK' (check HIVE_TMUX_SESSION='$HIVE_TMUX_SESSION')"
+ else
+   tmux new-session -d -s "$HIVE_TMUX_SESSION" -n "$TASK" -c "$WS_ROOT" \
+-    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd"
++    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd" || die "failed to create tmux session '$HIVE_TMUX_SESSION' with window '$TASK'"
+ fi
+ echo "  pane:   $HIVE_TMUX_SESSION:$TASK  (attach: tmux attach -t $HIVE_TMUX_SESSION)"
++
++# --- spine seeding (after pane is live) ----------------------------------------
++# Two seeding modes. Create: task.created -> ready, then register + assign.
++# Adopt: the task is ALREADY `ready` (unowned) from its seeded task.created —
++# re-emitting one would regress it, so we emit ONLY register + assign. Order
++# matters in both: registered -> roster (assign's target must be registered),
++# assigned -> owned.
++#
++# If seeding fails AFTER the pane is live, the pane will be open with kickoff
++# displayed but the board will have no task — a half-launch. Print the recovery
++# path so the operator can manually finish or re-launch cleanly.
++
++# Set a trap to print recovery message if seeding fails before completion.
++# The trap will fire if emit calls die() (which calls exit).
++SEEDING_COMPLETE=0
++trap 'if [ "$SEEDING_COMPLETE" -eq 0 ]; then
++  echo "hive-launch: SEEDING FAILED — pane is live but board state is incomplete (half-launch)." >&2
++  echo "To recover, kill the pane and re-launch with a fresh --worker id:" >&2
++  echo "  tmux kill-window -t $HIVE_TMUX_SESSION:$TASK" >&2
++  echo "  $SCRIPT_DIR/hive-launch $REL --worker <fresh-id>" >&2
++  echo "Do NOT re-run the same worker id ($WORKER) — board state is unowned and can recover cleanly with a new session." >&2
++  echo "See RUNBOOK §Dead worker recovery / Half-launch for details." >&2
++fi' EXIT
++
++if [ -n "$ADOPT" ]; then
++  emit human "$OPERATOR_ACTOR" worker.registered              --payload "$registered_payload" >/dev/null
++  emit coordinator "$OPERATOR_ACTOR" task.assigned --task "$TASK" --payload "$assigned_payload" >/dev/null
++  echo "  adopted: existing ready task -> worker.registered + task.assigned (no task.created)"
++  echo "  caveat: acceptance stays the seeded task.created pin, which may be STALE against $REL@$SHA at HEAD;"
++  echo "          the worker reads the order at HEAD (WORKER.md), so this is protocol-consistent — just be aware."
++else
++  created_payload=$(jq -cn --arg t "$TITLE" --arg ty "$TASK_TYPE" --arg a "$ACCEPTANCE" \
++    '{title:$t, task_type:$ty, acceptance:$a}')
++  emit human "$OPERATOR_ACTOR" task.created     --task "$TASK" --payload "$created_payload"    >/dev/null
++  emit human "$OPERATOR_ACTOR" worker.registered              --payload "$registered_payload" >/dev/null
++  emit coordinator "$OPERATOR_ACTOR" task.assigned --task "$TASK" --payload "$assigned_payload" >/dev/null
++  echo "  seeded: task.created + worker.registered + task.assigned"
++fi
++
++SEEDING_COMPLETE=1
++
+ echo "hive-launch: done."
+diff --git a/scripts/hive-tooling-drill.sh b/scripts/hive-tooling-drill.sh
+index abe7595..ff0340f 100755
+--- a/scripts/hive-tooling-drill.sh
++++ b/scripts/hive-tooling-drill.sh
+@@ -357,6 +357,45 @@ expect_fail_msg "launch refuses a done task (not launchable)" "not launchable" \
+   "$SCRIPT_DIR/hive-launch" "$AORDER" --worker "sess-adopt-done-${STAMP}"
+ check "adopt refusal emitted no board state" "[ ! -e '$WORK/sess-adopt-done-${STAMP}' ]"
+ 
++echo
++echo "== collision-free window allocation with -a (append/free-slot semantics) =="
++# The original defect: implicit window index collision when multiple workers exist.
++# The fix: use new-window -a which appends to the end, avoiding explicit indices.
++# Pre-populate the session with extra windows to simulate an occupied index scenario.
++CORDER=$(add_order "$APROJ" "2026-07-13-drill-collision" "collision test")
++CWORKER="sess-collision-${STAMP}"
++CWRAP="$WRAPPERS/$CWORKER.sh"
++# Create dummy windows to force a collision if the launcher doesn't use -a.
++# Without -a, tmux would implicitly target an index that might be in use; with -a,
++# it appends safely.
++tmux new-window -t "$TMUX_SESSION" -n "dummy1" >/dev/null 2>&1 || true
++tmux new-window -t "$TMUX_SESSION" -n "dummy2" >/dev/null 2>&1 || true
++# Now launch into a session with occupied indices — this succeeds with -a,
++# would fail or misallocate without it.
++"$SCRIPT_DIR/hive-launch" "$CORDER" --worker "$CWORKER" >/dev/null
++check "collision-free: launch succeeds despite occupied indices" "[ \"\$(bstatus '$ARUN' drill-collision)\" = assigned ]"
++check "collision-free: task window created with correct name" "tmux list-windows -t '$TMUX_SESSION' -F '#{window_name}' | grep -qxF 'drill-collision'"
++check "collision-free: wrapper issued" "[ -x '$CWRAP' ]"
++check "collision-free: clones provisioned" "[ -d '$WORK/$CWORKER/hive/.git' ]"
++
++echo
++echo "== half-launch recovery: pane open before seeding, emit failure path =="
++# Half-launch: pane is created before spine seeding (new order after 2026-07-27 fix).
++# If seeding fails, the pane is live with kickoff but board state is incomplete.
++# The launcher must print the recovery path (kill pane + re-launch with fresh --worker).
++# Simulate by breaking the emit command and asserting the recovery print.
++HORDER=$(add_order "$APROJ" "2026-07-13-drill-half-launch" "half-launch test")
++HWORKER="sess-half-${STAMP}"
++# Simulate an emit failure by pointing CLI at a dead stack; this will fail after pane creation.
++HOUT=$( (
++  OMEGA_DIR="$SANDBOX/dead" "$SCRIPT_DIR/hive-launch" "$HORDER" --worker "$HWORKER" 2>&1 || true
++) | tee /tmp/half-launch-output.txt )
++check "half-launch: pane was created before emit failure" "tmux list-windows -t '$TMUX_SESSION' -F '#{window_name}' | grep -qxF 'drill-half-launch'"
++check "half-launch: recovery print names tmux kill command" "grep -qF 'tmux kill-window' /tmp/half-launch-output.txt"
++check "half-launch: recovery print cites fresh --worker" "grep -qF 'fresh --worker' /tmp/half-launch-output.txt"
++check "half-launch: recovery print names RUNBOOK" "grep -qF 'RUNBOOK' /tmp/half-launch-output.txt"
++check "half-launch: no board state for the half-launched task" "[ -z \"\$(bstatus '$ARUN' drill-half-launch)\" ]"
++
+ echo
+ echo "== refusal paths =="
+ # (a) dirty order — an uncommitted new order refuses at pin time.

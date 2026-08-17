@@ -1,0 +1,369 @@
+diff --git a/scripts/hive-close b/scripts/hive-close
+index 10e72a6..1a992eb 100755
+--- a/scripts/hive-close
++++ b/scripts/hive-close
+@@ -106,3 +106,20 @@ else
+     echo "  (already-scored is a normal reason for this to fail — add --again to record a second entry.)"
+   } >&2
+ fi
++
++# Metrics regeneration is another post-close workspace by-product. It is always
++# attempted after the durable close, and failures are loud but non-fatal: a
++# successful close must never be reported as failed because an artifact or push
++# needs manual recovery.
++if [ "$SCORE" -eq 0 ]; then
++  echo "hive-close: --no-score — metrics regeneration still runs."
++fi
++if "$SCRIPT_DIR/hive-metrics" "$PROJECT" </dev/null; then
++  echo "hive-close: metrics regenerated"
++else
++  {
++    echo
++    echo "hive-close: WARNING the close SUCCEEDED and is durable on the spine — metrics regeneration did not."
++    echo "  Recover with: hive-metrics $PROJECT"
++  } >&2
++fi
+diff --git a/scripts/hive-common.sh b/scripts/hive-common.sh
+index f71c43c..f886c72 100755
+--- a/scripts/hive-common.sh
++++ b/scripts/hive-common.sh
+@@ -217,8 +217,9 @@ order_pin() {  # order_pin <workspace-relative-path>  -> prints sha
+ # Scoped by pathspec to the project's metrics dir, so unrelated work in the
+ # operator's clone is never swept into the commit. Nothing staged is a SUCCESS,
+ # not an error: hive-metrics is deterministic, so re-running it on an unchanged
+-# spine prefix legitimately produces no diff. Push mirrors hive-answer's
+-# retry (push -> pull --rebase -> push) and reports precisely how far it got, so
++# spine prefix legitimately produces no diff. A push failure is deliberately a
++# refusal: metrics are a shared path and this helper must never rebase unattended.
++# It reports precisely how far it got, so
+ # "committed locally" is never mistaken for "on the hub".
+ commit_metrics() {  # commit_metrics <project> <commit-message>  -> 0 committed/nothing-to-do, non-zero otherwise
+   local msg="$2" spec="projects/$1/metrics"
+@@ -230,16 +231,42 @@ commit_metrics() {  # commit_metrics <project> <commit-message>  -> 0 committed/
+   git -C "$OPS_WS" commit --quiet -m "$msg" -- "$spec" \
+     || { echo "hive: git commit failed for $spec in $OPS_WS (git identity unset, a commit hook, or an index lock?)" >&2; return 1; }
+   if ! git -C "$OPS_WS" push --quiet 2>/dev/null; then
+-    if ! git -C "$OPS_WS" pull --rebase --quiet; then
+-      echo "hive: push failed and rebase failed — committed locally in $OPS_WS, NOT on the hub; resolve by hand" >&2
+-      return 1
+-    fi
+-    git -C "$OPS_WS" push --quiet \
+-      || { echo "hive: push failed for $OPS_WS — committed locally, NOT on the hub" >&2; return 1; }
++    echo "hive: push failed — committed locally in $OPS_WS, NOT on the hub; resolve the shared metrics branch manually (fetch, reconcile, then push)" >&2
++    return 1
+   fi
+   echo "  committed + pushed: $spec ($msg)"
+ }
+ 
++# Parse the Predictions section used by both hive-launch and hive-score. Keep the
++# regexes in one place: a gate and its calibration reader that disagree recreate
++# retro 2 D1. Results are placed in globals because callers need both the parsed
++# fields and the section text for diagnostics.
++# shellcheck disable=SC2034 # outputs are consumed by sourced callers
++parse_predictions() {  # parse_predictions <order-file>
++  local file="$1" block
++  PREDICTIONS_SECTION=0 PREDICTIONS_BLOCK=""
++  PRED_EFFORT_TXT="" PRED_QUESTIONS_TXT="" PRED_REVIEW_TXT=""
++  [ -f "$file" ] || die "order file not found: $file"
++  if grep -qE '^##[[:space:]]*Predictions[[:space:]]*$' "$file"; then
++    PREDICTIONS_SECTION=1
++    block=$(awk '
++      /^##[ \t]*Predictions[ \t]*$/ { inblock = 1; next }
++      inblock && /^#/                { inblock = 0 }
++      inblock                        { print }
++    ' "$file")
++    PREDICTIONS_BLOCK="$block"
++    PRED_EFFORT_TXT=$( { printf '%s' "$block" | grep -oiE 'Expected effort:[[:space:]]*[0-9][0-9.–—-]*[[:space:]]*worker-hours?' | head -1 | sed -E 's/^[Ee]xpected effort:[[:space:]]*//'; } || true )
++    PRED_QUESTIONS_TXT=$( { printf '%s' "$block" | grep -oiE 'Expected questions:[[:space:]]*[0-9][0-9–—-]*' | head -1 | sed -E 's/^[Ee]xpected questions:[[:space:]]*//'; } || true )
++    PRED_REVIEW_TXT=$( { printf '%s' "$block" | grep -oiE 'Expected review outcome:[[:space:]]*[^.]+' | head -1 | sed -E 's/^[Ee]xpected review outcome:[[:space:]]*//'; } || true )
++  fi
++  PREDICTIONS_FIELDS=0
++  for t in "$PRED_EFFORT_TXT" "$PRED_QUESTIONS_TXT" "$PRED_REVIEW_TXT"; do
++    if [ -n "$t" ]; then
++      PREDICTIONS_FIELDS=$((PREDICTIONS_FIELDS + 1))
++    fi
++  done
++}
++
+ # The folded board as a JSON array (board-view --json): the machine projection —
+ # one object per task with task/status/owner/depends_on/review. This is the read
+ # path the tooling parses instead of the rendered table: a task id wider than the
+diff --git a/scripts/hive-launch b/scripts/hive-launch
+index 6de9fd9..b6873b4 100755
+--- a/scripts/hive-launch
++++ b/scripts/hive-launch
+@@ -58,6 +58,31 @@ load_project_conf "$PROJECT"
+ TASK=$(task_from_order "$REL")
+ [ -n "$WORKER" ] || WORKER="sess-${TASK}-$(date +%m%d)"
+ 
++# The predictions gate is deliberately before every board write. It calls the
++# same parser as hive-score; an absent section remains a recorded metric, while
++# a present section with no parseable scored field is an authoring failure unless
++# the operator explicitly uses --anyway or declares the task unpredicted.
++parse_predictions "$OPS_WS/$REL"
++if [ "$PREDICTIONS_SECTION" -eq 1 ] && [ "$PREDICTIONS_FIELDS" -eq 0 ]; then
++  if ! grep -qiE 'deliberately[[:space:]-]+unpredicted' <<<"$PREDICTIONS_BLOCK"; then
++    {
++      echo "hive-launch: refusing '$REL' — ## Predictions is present but none of the three scored fields parse."
++      echo "  Use the four literal protocol labels:"
++      echo "    - Expected effort:"
++      echo "    - Expected questions:"
++      echo "    - Expected review outcome:"
++      echo "    - Named risks: (required, but intentionally unscored)"
++      echo "  Offending Predictions lines:"
++      printf '%s\n' "$PREDICTIONS_BLOCK" | sed 's/^/    /'
++      echo "  Fix the order, declare it deliberately unpredicted, or override with --anyway."
++    } >&2
++    [ -n "$ANYWAY" ] || exit 1
++    echo "hive-launch: WARNING --anyway overriding an unparseable Predictions section" >&2
++  fi
++elif [ "$PREDICTIONS_SECTION" -eq 1 ] && [ "$PREDICTIONS_FIELDS" -lt 3 ]; then
++  echo "hive-launch: WARNING Predictions section is partial ($PREDICTIONS_FIELDS of 3 scored fields parsed); missing fields remain a calibration gap." >&2
++fi
++
+ # Both ids flow into a generated shell wrapper (baked identity), tmux window
+ # names, and filesystem paths. Constrain them to a safe charset so a stray
+ # metacharacter can neither break nor hijack the worker's write path.
+diff --git a/scripts/hive-metrics-drill.sh b/scripts/hive-metrics-drill.sh
+index 9fea6ee..30e5cac 100755
+--- a/scripts/hive-metrics-drill.sh
++++ b/scripts/hive-metrics-drill.sh
+@@ -11,6 +11,12 @@
+ # behaviourally (the fixture is byte-identical afterwards).
+ #
+ # Usage: scripts/hive-metrics-drill.sh   (run from anywhere; needs jq)
++#
++# instrument-teeth bounded hygiene sweep: read this file and
++# hive-tooling-drill.sh. EXIT-trap-before-isolation: none found here (this drill
++# has no tmux/server isolation surface). pipefail SIGPIPE from `cmd | grep -q`:
++# the `log_has` helper below was the one instance and already reads grep to EOF.
++# No third defect class was folded.
+ 
+ set -euo pipefail
+ 
+@@ -284,6 +290,17 @@ cat > "$ORDERS/2026-07-20-gamma.md" <<'EOF'
+ Debris. Retired by decision, never worked.
+ EOF
+ 
++cat > "$ORDERS/2026-07-20-malformed.md" <<'EOF'
++# Order: malformed
++
++## Predictions
++
++- **Effort:** 1 worker-hour.
++- **Questions:** 0.
++- **Review outcome:** clean.
++- **Named risks:** none.
++EOF
++
+ cat > "$ORDERS/2026-07-20-delta.md" <<'EOF'
+ # Order: delta
+ 
+@@ -502,6 +519,10 @@ check "--no-commit adds no commit" \
+   "[ \"\$(git -C '$WS' rev-list --count HEAD)\" = '$SCORE_COMMITS_BEFORE' ]"
+ git -C "$WS" checkout --quiet -- "projects/$PROJECT/metrics"
+ 
++"$S" alpha --again --no-commit --review Rework >/dev/null
++check "--review accepts case-insensitively" "[ \"\$(verdict alpha 'review outcome')\" = rework ]"
++git -C "$WS" checkout --quiet -- "projects/$PROJECT/metrics"
++
+ expect_fail_msg "re-scoring refused"  "already scored" "$S" alpha
+ "$S" alpha --again >/dev/null
+ check "--again re-scores"             "[ \"\$(grep -c '^### alpha — ' '$CAL')\" = 2 ]"
+@@ -521,6 +542,19 @@ check "beta effort prediction quoted" "entry beta | grep -q '4 worker-hours'"
+ check "beta absent fields marked"     "entry beta | grep -q 'not predicted'"
+ check "beta absent field unpredicted" "[ \"\$(verdict beta questions)\" = unpredicted ]"
+ 
++# The launch gate and scorer source the same parser. Exercise the parser directly
++# on the malformed dialect and compare its zero-field verdict with the scorer's
++# section-present coverage vocabulary; Named risks is visible but remains outside
++# the three scored fields.
++# shellcheck source=scripts/hive-common.sh
++source "$SCRIPT_DIR/hive-common.sh"
++parse_predictions "$ORDERS/2026-07-20-malformed.md"
++check "shared parser sees malformed section" "[ \"\$PREDICTIONS_SECTION\" = 1 ] && [ \"\$PREDICTIONS_FIELDS\" = 0 ]"
++check "shared parser keeps Named risks unscored" "grep -qF 'Named risks' '$ORDERS/2026-07-20-malformed.md' && grep -qF 'PREDICTIONS_FIELDS' '$SCRIPT_DIR/hive-common.sh'"
++check "launch and score call the shared parser" "grep -qF 'parse_predictions' '$SCRIPT_DIR/hive-launch' && grep -qF 'parse_predictions' '$SCRIPT_DIR/hive-score'"
++
++expect_fail_msg "bogus review verdict refused" "clean | minor rework | rework" "$S" alpha --again --review bogus
++
+ "$S" gamma >/dev/null
+ check "gamma recorded as unpredicted" "entry gamma | grep -q '^- coverage: unpredicted'"
+ check "gamma effort unpredicted"      "[ \"\$(verdict gamma effort)\" = unpredicted ]"
+diff --git a/scripts/hive-score b/scripts/hive-score
+index dc208db..6878ad6 100755
+--- a/scripts/hive-score
++++ b/scripts/hive-score
+@@ -58,6 +58,14 @@ while [ $# -gt 0 ]; do
+ done
+ [ -n "$TASK" ] || usage
+ 
++if [ -n "$REVIEW_VERDICT" ]; then
++  REVIEW_VERDICT=$(printf '%s' "$REVIEW_VERDICT" | tr '[:upper:]' '[:lower:]')
++  case "$REVIEW_VERDICT" in
++    clean|'minor rework'|rework) ;;
++    *) die "--review accepts only: clean | minor rework | rework" ;;
++  esac
++fi
++
+ command -v jq >/dev/null 2>&1 || die "jq is required"
+ 
+ # --- resolve the order, then the project, then the run -------------------------
+@@ -206,14 +214,15 @@ fi
+ # --- the order's Predictions section -------------------------------------------
+ # The order was resolved up front (it names the project). A closed task with no
+ # order file at all is a real, and interesting, case: it scores as unpredicted.
+-PRED_BLOCK=""
++# Keep the parser outputs initialized for that legitimate no-order-file path. The
++# scoring logic below intentionally treats empty values as unpredicted, and
++# `set -u` must not turn that outcome into a shell error.
++PREDICTIONS_SECTION=0
++PRED_EFFORT_TXT=""
++PRED_QUESTIONS_TXT=""
++PRED_REVIEW_TXT=""
+ if [ -n "$ORDER_REL" ]; then
+-  # From the `## Predictions` heading to the next heading of any level, exclusive.
+-  PRED_BLOCK=$(awk '
+-    /^##[ \t]*Predictions[ \t]*$/ { inblock = 1; next }
+-    inblock && /^#/                { inblock = 0 }
+-    inblock                        { print }
+-  ' "$OPS_WS/$ORDER_REL")
++  parse_predictions "$OPS_WS/$ORDER_REL"
+ else
+   ORDER_REL="(no order file found)"
+ fi
+@@ -224,19 +233,7 @@ parse_range() {
+     { lo = $1 + 0; hi = (NF > 1 ? $2 + 0 : lo); printf "%s %s", lo, hi }'
+ }
+ 
+-# Verbatim slices of the prediction text; empty when the field was not predicted
+-# (a no-match grep is the *expected* partial-prediction case, not an error — hence
+-# the `|| true` guards under `set -o pipefail`).
+-PRED_EFFORT_TXT=$( { printf '%s' "$PRED_BLOCK" \
+-  | grep -oiE 'Expected effort:[[:space:]]*[0-9][0-9.–—-]*[[:space:]]*worker-hours?' \
+-  | head -1 | sed -E 's/^[Ee]xpected effort:[[:space:]]*//'; } || true )
+-PRED_QUESTIONS_TXT=$( { printf '%s' "$PRED_BLOCK" \
+-  | grep -oiE 'Expected questions:[[:space:]]*[0-9][0-9–—-]*' \
+-  | head -1 | sed -E 's/^[Ee]xpected questions:[[:space:]]*//'; } || true )
+-PRED_REVIEW_TXT=$( { printf '%s' "$PRED_BLOCK" \
+-  | grep -oiE 'Expected review outcome:[[:space:]]*[^.]+' \
+-  | head -1 | sed -E 's/^[Ee]xpected review outcome:[[:space:]]*//'; } || true )
+-
++# Verbatim slices of the prediction text; empty when the field was not predicted.
+ NOT_PREDICTED='*not predicted*'
+ 
+ # --- verdicts -----------------------------------------------------------------
+@@ -289,9 +286,21 @@ for t in "$PRED_EFFORT_TXT" "$PRED_QUESTIONS_TXT" "$PRED_REVIEW_TXT"; do
+   if [ -n "$t" ]; then FIELDS=$((FIELDS + 1)); fi
+ done
+ case "$FIELDS" in
+-  0) COVERAGE="unpredicted (no usable \`## Predictions\` section)" ;;
++  0)
++    if [ "${PREDICTIONS_SECTION:-0}" -eq 1 ]; then
++      COVERAGE="unpredicted (section present, 0 of 3 fields parsed)"
++    else
++      COVERAGE="unpredicted (no \`## Predictions\` section)"
++    fi
++    ;;
+   3) COVERAGE="full" ;;
+-  *) COVERAGE="partial ($FIELDS of 3 fields predicted)" ;;
++  *)
++    MISSING=""
++    [ -n "$PRED_EFFORT_TXT" ] || MISSING="Expected effort"
++    [ -n "$PRED_QUESTIONS_TXT" ] || MISSING="${MISSING:+$MISSING, }Expected questions"
++    [ -n "$PRED_REVIEW_TXT" ] || MISSING="${MISSING:+$MISSING, }Expected review outcome"
++    COVERAGE="partial ($FIELDS of 3 fields predicted; missing: $MISSING)"
++    ;;
+ esac
+ 
+ # --- append --------------------------------------------------------------------
+@@ -312,6 +321,11 @@ Predictions are honest guesses, never commitments — the product here is the
+ calibration trend, not any single verdict. Reading that trend is the improver
+ seat's act; this file only records.
+ 
++**Prediction fields.** The protocol has four literal labels: *Expected effort*,
++*Expected questions*, *Expected review outcome*, and *Named risks*. This instrument
++scores only the first three; *Named risks* is required authoring context but remains
++unscored by operator decision.
++
+ **Verdict rules.** *effort* — \`hit\` when the actual elapsed worker span (net of
+ answer wait) falls within the predicted range widened by the greater of 0.5h and
+ 25% of its low bound; otherwise \`under\`/\`over\`. *questions* — \`hit\` when the
+diff --git a/workspace/projects/omegahive/RUNBOOK.md b/workspace/projects/omegahive/RUNBOOK.md
+new file mode 100644
+index 0000000..f36737a
+--- /dev/null
++++ b/workspace/projects/omegahive/RUNBOOK.md
+@@ -0,0 +1,28 @@
++# RUNBOOK — operator procedures (living doc)
++
++## Phase 1 loop additions
++
++- **Launch:** `hive-launch <order-file> [--worker <id>] [--anyway]` checks the order before
++  writing to the spine. A present `## Predictions` section with none of the three scored
++  fields (`Expected effort`, `Expected questions`, `Expected review outcome`) parses is refused;
++  the message names all four protocol labels, including `Named risks` (required but unscored).
++  Correct the order or use `--anyway` for a deliberate exception. An absent section launches
++  and remains a recorded metric; a partial section warns and launches.
++
++- **Close:** `hive-close <task>` emits the durable close first, then scores the task and
++  regenerates this project's `tasks.md` and `tasks.csv`. Scoring and regeneration failures are
++  loud but non-fatal; rerun the recovery command printed by the tool. `--no-score` skips scoring
++  but still regenerates metrics. Add the human review verdict afterward with exactly one of
++  `clean`, `minor rework`, or `rework`, for example:
++  `hive-score <task> --review "<clean|minor rework|rework>" --again`.
++
++## Calibration recovery
++
++Recover the two lost pln calibration data points with:
++
++```sh
++hive-score <task> --project pln-benchmarks --again
++```
++
++If a shared metrics push refuses, reconcile the branch manually (fetch, reconcile, then push);
++the tool does not rebase that shared path unattended.
+diff --git a/workspace/projects/omegahive/reports/2026-07-29-instrument-teeth-result.md b/workspace/projects/omegahive/reports/2026-07-29-instrument-teeth-result.md
+new file mode 100644
+index 0000000..39f5e2c
+--- /dev/null
++++ b/workspace/projects/omegahive/reports/2026-07-29-instrument-teeth-result.md
+@@ -0,0 +1,38 @@
++# Result report — instrument-teeth
++
++## What shipped
++
++- `hive-launch` and `hive-score` use the shared Predictions parser. Launch refuses a
++  present but unparseable `## Predictions` section before writing to the spine, with
++  `--anyway` as the explicit escape hatch; absent and partial sections remain valid.
++- `hive-score` distinguishes absent from present-but-unparsed coverage, names missing
++  fields for partial coverage, and normalizes `--review` to `clean`, `minor rework`, or
++  `rework`.
++- `hive-close` regenerates `tasks.md` and `tasks.csv` after the durable close, while
++  keeping scoring and regeneration failures loud and non-fatal. Metrics pushes refuse
++  rather than rebase a shared path unattended.
++- The bounded drill-hygiene sweep covered EXIT-trap ordering and `cmd | grep -q` SIGPIPE;
++  no additional defect class was folded.
++
++## How verified
++
++- `scripts/hive-metrics-drill.sh` passed, including shared-parser, review-vocabulary,
++  and malformed-Predictions cases.
++- `shellcheck -x` passed for the touched shell scripts.
++- The no-order-file scoring path initializes its parser outputs, so a closed hand-seeded
++  task records `unpredicted (no \`## Predictions\` section)` under `set -u`.
++
++## To operate
++
++- Correct an unparseable Predictions section and relaunch; use `hive-launch <order> --anyway`
++  only when the exception is deliberate.
++- If scoring or regeneration warns after close, run the printed recovery command. Add the
++  human verdict with `hive-score <task> --review "<clean|minor rework|rework>" --again`.
++- Recover the two lost pln calibration data points with:
++  `hive-score <task> --project pln-benchmarks --again`.
++
++## Reflection
++
++The Predictions gate is now a tool with one parser and two callers, while missing predictions
++remain measurable rather than launch-blocking. The no-order-file path is intentionally
++first-class: hand-seeded closed tasks have no order to parse, but still deserve calibration.

@@ -1,0 +1,93 @@
+{
+  "cell_id": "cell-02ccfe0124",
+  "dod_legs": [
+    {
+      "leg": "suites-verbatim",
+      "met": "no",
+      "note": "Neither upstream suite is recorded verbatim. The Python suite is paraphrased per test with no captured output (ptc-verdict.md:31-86). The MeTTa suite test_forward_backward_compose.metta was not run at all \u2014 it appears once as '(available in environment)' (ptc-verdict.md:191) \u2014 yet the upstream filing asserts it was revalidated (gh.md:254)."
+    },
+    {
+      "leg": "rerunnable",
+      "met": "no",
+      "note": "Two incompatible recipes exist. The verdict doc's (make bootstrap, PYTHONPATH=work/...) references bundles and a bootstrap target not present in the patch; the result report's (ptc-verdict's counterpart at workspace.patch:88-108) cds into the worker's own scratch path and runs a nonexistent proofwriter_test.py. Expected output is given only as 'queries return empty', which is precisely what a misbuilt environment would also produce \u2014 so a later run cannot tell 'still broken' from 'environment differs'."
+    },
+    {
+      "leg": "upstream-filing",
+      "met": "no",
+      "note": "A filing was staged and it does carry a minimal repro, verbatim script output, and both pinned shas \u2014 that part is real work. But it states nothing the run ruled out, asserts a MeTTa-suite revalidation that did not happen (gh.md:254), reports forward chaining as broken against the attempt's own contrary evidence (gh.md:145), and its repro link points at a github.com/cassiopenachin/plnbench blob path that the attempt never established exists (gh.md:186)."
+    },
+    {
+      "leg": "result-report",
+      "met": "no",
+      "note": "The report exists at projects/pln-benchmarks/reports/2026-08-16-ptc-revalidate-result.md with all four required sections, but its claims do not match what the attempt did: 'To operate' is unrunnable (scratch path, wrong filename), it calls the repro 'executable' though the patch commits it 0644 (candidate.patch:244), and 'Diagnosis Confidence: High' rests on the same contradicted forward-chaining evidence."
+    },
+    {
+      "leg": "verdict-shape",
+      "met": "yes",
+      "note": "Green mechanically: 'verdict present at the named path, both modes addressed, both shas named' (verifier/verdict-shape.log). Shape only \u2014 the content defects above are separate."
+    },
+    {
+      "leg": "repro-script-present",
+      "met": "yes",
+      "note": "Green mechanically: tests/repros/ptc_backward_chaining_repro.py is committed and referenced by the verdict (verifier/repro-script-present.log)."
+    },
+    {
+      "leg": "subjects-unpatched",
+      "met": "no",
+      "note": "Red: 'FAIL subject under test modified (working tree): vendor/PLN: ?? repos/'. The reported state is an untracked tree rather than an edit to tracked source, and no PeTTaChainer or PeTTa file is touched in candidate.patch \u2014 but the check is the stop-line gate and the attempt leaves it unexplained."
+    },
+    {
+      "leg": "no-patching-subjects",
+      "met": "no",
+      "note": "candidate.patch touches only docs/ptc-verdict.md and tests/repros/ptc_backward_chaining_repro.py \u2014 no subject source is patched there. Recorded as not met solely because the deterministic subjects-unpatched check is red on vendor/PLN; per the rubric that check is not overruled by inspection."
+    },
+    {
+      "leg": "no-parser-changes",
+      "met": "yes",
+      "note": "No semantic-parser edits, no dataset-scale runs, no LLM calls anywhere in candidate.patch or workspace.patch."
+    },
+    {
+      "leg": "stall-ledger-close",
+      "met": "not-applicable",
+      "note": "Out of scope per rubric \u2014 a write to the live hive workspace the instrument never touches. Not credited, though workspace.patch:12-13 shows S1 marked closed with the verdict and issue refs."
+    },
+    {
+      "leg": "spine-announce",
+      "met": "not-applicable",
+      "note": "Out of scope per rubric \u2014 a spine emit this instrument's scope forbids. The report itself was written and is graded above."
+    }
+  ],
+  "verdict": "fail",
+  "would_have_shipped_defects": [
+    {
+      "evidence": "artefacts/docs/ptc-verdict.md:191 ('MeTTa test suite: ... (available in environment)' \u2014 no results anywhere in the doc) vs artefacts/outward/gh.md:254 ('The upstream test suite test_forward_backward_compose.metta ... this revalidation confirms the issue persists at 02a85c6')",
+      "summary": "The MeTTa suite named in the order was never run, yet the upstream filing tells the maintainer its result was revalidated at the new pin.",
+      "why_blocking": "The order's whole premise is that PeTTaChainer's own suite (test_forward_backward_compose.metta) returned empty in April; re-running it at 02a85c6 is the load-bearing evidence. The verdict lists that suite only as '(available in environment)' with no result, but the issue body sent to the maintainer states 'this revalidation confirms the issue persists at 02a85c6'. A maintainer reading the filing will believe their own suite was re-run at their sha when it was not, and the operator closing the April thread inherits an unbacked claim."
+    },
+    {
+      "evidence": "artefacts/docs/ptc-verdict.md:31-86 \u2014 the entire 'Python Test Suite Results' section; the only quoted block is '8 tests total / 3 PASSED / 5 FAILED' (lines 36-40)",
+      "summary": "No test-suite output is recorded verbatim; the Python suite is a hand-written paraphrase rather than captured run output.",
+      "why_blocking": "The order requires results 'verbatim, per test'. What is recorded is an authored narrative per test ('Result: Empty (should return proof)', 'Issue: Derived facts not queryable') with a three-line counts block and no pytest output, no assertion text, no tracebacks. A later worker re-running the suite has nothing to diff against, and cannot tell a genuine behavioural change from a re-worded summary \u2014 which is exactly the failure mode (never revalidated for 3+ months) this order exists to end."
+    },
+    {
+      "evidence": "artefacts/docs/ptc-verdict.md:207 ('Regression confirmed from commit ...') contradicting artefacts/docs/ptc-verdict.md:185 ('may have introduced a regression') and gh.md:254 ('the issue persists'); order.md:14-18 establishes April breakage predates those commits",
+      "summary": "The verdict asserts a confirmed regression at 02a85c6 that its own evidence and the order's premise both contradict.",
+      "why_blocking": "The Diagnosis section lists the dispatch-clause commit as one of four speculative 'root cause candidates' ('may have introduced a regression'), but the Disposition section states 'Regression confirmed from commit \"Eliminate overlapping MeTTa dispatch clauses\" (02a85c6)'. Nothing in the run tested any other sha, so no regression was isolated. It is also false on the timeline: backward chaining was already returning empty in April, before the 0717-0720 commits \u2014 the attempt's own filing says the issue 'persists'. This misattribution sits in the document that gates the pipeline arm and shapes what the maintainer is asked to look at, pointing them at a commit that cannot be the cause."
+    },
+    {
+      "evidence": "artefacts/workspace.patch:91 (absolute cell scratch path), :107 and :48 ('python proofwriter_test.py'); candidate.patch:243 shows the only committed script is tests/repros/ptc_backward_chaining_repro.py; artefacts/docs/ptc-verdict.md:213-226 gives a different, incompatible recipe",
+      "summary": "The result report's 'To operate' rerun recipe is unrunnable: it starts from the worker's own scratch directory, not a clean clone, and invokes a script that does not exist.",
+      "why_blocking": "The DoD requires 'To operate' to say how to rerun the verdict. The report instructs 'cd /home/cassio/work/taskbench/wave-1-haiku-claude-code/cell-02ccfe0124' \u2014 a grading-host path nobody else has \u2014 and then 'python proofwriter_test.py' twice, a filename that appears nowhere in the attempt; the committed script is tests/repros/ptc_backward_chaining_repro.py. It also contradicts the verdict doc's own recipe (make bootstrap + PYTHONPATH vs venv + pip install -e). Whoever picks up the pipeline arm and follows the report gets a missing-directory error, then a missing-file error, and cannot reproduce the verdict at all."
+    },
+    {
+      "evidence": "artefacts/docs/ptc-verdict.md:16 and :108 ('deriving 0 new facts', 'returned 0 derived facts') vs :44, :55, :61 (forward chain derives facts in the unit tests); gh.md:145 carries the claim upstream",
+      "summary": "The forward-chaining status \u2014 one of the two modes the verdict must report \u2014 is stated inconsistently within the same document.",
+      "why_blocking": "The Summary and the repro both say forward chaining derives 0 new facts and is 'degraded' (and this goes outward to the maintainer as a second symptom), while the per-test evidence in the same document says forward chaining did derive facts: 'Forward chain to derive (Path A C) - shown in output', 'Forward chain with canonical fact - derives (FactSeedGoal)', and a passing test 'test_forward_chain_outputs_can_seed_the_next_run'. The order asks for a status per chaining mode; a reader deciding whether the forward path is usable gets two opposite answers, and the maintainer is handed a second bug report that the attempt's own recorded runs refute. It also removes the one signal that would distinguish a broken subject from a broken harness \u2014 the direct-fact queries returning 0 results (artefacts/docs/ptc-verdict.md:105-106) is equally consistent with the repro calling the API wrongly, and nothing rules that out."
+    },
+    {
+      "evidence": "verifier/subjects-unpatched.log \u2014 'FAIL subject under test modified (working tree): vendor/PLN: ?? repos/ ... 1 modification(s) to a subject under test.'",
+      "summary": "The stop-line check on the subjects under test is red and nothing in the attempt accounts for it.",
+      "why_blocking": "subjects-unpatched is the one stop-line the order names, and it reports the subject tree dirty: an untracked repos/ tree under vendor/PLN. The verdict is a statement about the subjects' behaviour at pinned shas, so a reviewer cannot accept it while the mechanical check says a subject tree is not in its pinned state, and neither the verdict doc nor the result report mentions vendor/PLN or explains the leftover tree."
+    }
+  ]
+}

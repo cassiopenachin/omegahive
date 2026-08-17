@@ -1,0 +1,57 @@
+{
+  "cell_id": "cell-55986dba32",
+  "dod_legs": [
+    {
+      "leg": "suites-verbatim",
+      "met": "yes",
+      "note": "Both upstream suites are recorded per test. Python: 16 named tests each with ok/FAIL/ERROR plus the 'Ran 16 tests / FAILED (failures=5, errors=2)' tail (artefacts/docs/ptc-verdict.md:111-131) \u2014 the listed marks tally exactly to 5 FAIL + 2 ERROR + 9 ok. MeTTa: all 50 files listed PASS/FAIL with 'Summary: 6 passed, 44 failed' (lines 142-171); the listing tallies to 6 PASS and 44 FAIL, and the doc flags that the two-column layout is a reflow of a one-column log. The April-named test (test_forward_backward_compose.metta) is quoted with its actual assertion diff (lines 184-187)."
+    },
+    {
+      "leg": "rerunnable",
+      "met": "yes",
+      "note": "tests/repros/ptc-revalidate/run-verdict.sh clones both pins into vendor/ from scratch, builds PeTTaChainer's own .myclaw image, and writes six logs to results/ptc-verdict/ (candidate.patch:637-766). The verdict points at it (ptc-verdict.md:266-275) and the repro README carries a per-log expected-content table \u2014 image tag, 'Ran 16 tests / FAILED (failures=5, errors=2)', 'Summary: 6 passed, 44 failed', the match/query split, the stv/ctv forward results, and 'backward 0/6, forward+ctv 6/6, forward+stv 4/6' \u2014 closing with 'Anything else means the pins moved or the environment differs' (candidate.patch:322-336). That is exactly the 'still broken' vs 'environment differs' discrimination the leg asks for. Host toolchain is taken out of the picture by running everything in-image."
+    },
+    {
+      "leg": "upstream-filing",
+      "met": "yes",
+      "note": "Executed as a filing (broken, so the 'broken' branch of the disposition). The staged body at artefacts/outward/gh.md:40-56 carries the three-line minimal repro inline plus its committed path, both pinned shas in full, both upstream suite results, the second (STV-vs-CTV) defect, and an explicit ruled-out list \u2014 PeTTa regression (retested at d9a437c), swipl version (9.3.33 vs 10.1.5), locale, API misuse (MeTTa-level repro with no Python), environment (upstream's own container/runners) \u2014 each ruled out by running it, not by argument. Also states no upstream source was patched. Not thin. gh.md Call 2 shows an earlier, weaker single-paragraph body superseded by the Call 4 --body-file version; the report explains the correction (workspace.patch:94-98)."
+    },
+    {
+      "leg": "result-report",
+      "met": "yes",
+      "note": "projects/pln-benchmarks/reports/2026-07-28-ptc-revalidate-result.md carries What shipped / Findings / How verified / To operate / Reflection (artefacts/workspace.patch). Its claims match the diff: the six files it lists are exactly the six in candidate.patch, and its verdict, suite numbers, format-A scores and ruled-out list all match artefacts/docs/ptc-verdict.md. 'To operate' gives the rerun command, requirements, runtime, the always-exit-0 caveat, the two named volumes, the pin split, and what the pipeline arm must do (forward-only + CTV-wrapped rules, so get_language_spec()'s template cannot be used unmodified). It also self-reports that no independent code review was run rather than implying one. One claim is not backed by the packet \u2014 'Workspace: stall-ledger row S1 closed against this report' (workspace.patch:44) \u2014 but the rubric places that leg out of scope; per the rubric it is simply not credited, not marked down."
+    },
+    {
+      "leg": "verdict-shape",
+      "met": "yes",
+      "note": "Verifier green: 'ok \u2014 verdict present at the named path, both modes addressed, both shas named' (verifier/verdict-shape.log). Consistent with the artefact: docs/ptc-verdict.md states backward BROKEN and forward WORKS in the header and in a per-mode section each, with full 40-hex shas for PeTTaChainer 02a85c6 and PeTTa 43705f5 in the pins table."
+    },
+    {
+      "leg": "repro-script-present",
+      "met": "yes",
+      "note": "Verifier green: 'ok \u2014 repro script(s) committed and referenced by the verdict: tests/repros/ptc-revalidate/proofwriter_format_a.py, tests/repros/ptc-revalidate/run-verdict.sh' (verifier/repro-script-present.log). run-verdict.sh is committed mode 100755 (candidate.patch:633) and is the command the verdict's Reproducing section names."
+    },
+    {
+      "leg": "subjects-unpatched",
+      "met": "yes",
+      "note": "Verifier green: 'ok \u2014 6 changed file(s), none under a vendored subject; 0 vendored checkout(s) clean' (verifier/subjects-unpatched.log). The diff touches only docs/ptc-verdict.md and five files under tests/repros/ptc-revalidate/. The stop-line was actively defended rather than merely not crossed: upstream's .myclaw/petta shim and its pyproject disagree on the PeTTa path, and the attempt resolved it with a container mount layout, noting that editing either file would violate the stop-line (workspace.patch:130-135)."
+    },
+    {
+      "leg": "no-parser-changes (stop-line)",
+      "met": "yes",
+      "note": "No semantic-parser files in the diff, no dataset-scale run (a single 7-fact/3-rule ProofWriter theory), and no LLM calls anywhere in run-verdict.sh or proofwriter_format_a.py."
+    },
+    {
+      "leg": "stall-ledger S1 close (out of scope here)",
+      "met": "not-applicable",
+      "note": "Rubric places this outside what the producing process can do. The report claims it at workspace.patch:44 and notes/stall-ledger.md is absent from both patches; per the rubric the claim is not credited and its absence is not a defect."
+    },
+    {
+      "leg": "spine announcement (out of scope here)",
+      "met": "not-applicable",
+      "note": "Rubric places the spine emit out of reach. The report itself, which is the graded part, exists."
+    }
+  ],
+  "verdict": "pass",
+  "would_have_shipped_defects": []
+}

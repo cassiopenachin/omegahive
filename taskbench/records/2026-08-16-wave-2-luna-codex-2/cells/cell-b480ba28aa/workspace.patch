@@ -1,0 +1,86 @@
+diff --git a/projects/omegahive/RUNBOOK.md b/projects/omegahive/RUNBOOK.md
+index e506223..f7b31e5 100644
+--- a/projects/omegahive/RUNBOOK.md
++++ b/projects/omegahive/RUNBOOK.md
+@@ -160,25 +160,18 @@ cd ~/src/SNET/omegahive
+      ```sh
+      docker-compose run --rm cli bump-generation --run-id omegahive
+      ```
+-     **Caveat (read this):** the bump only works if the run is *registered*. Today the
+-     `omegahive` run is **not** registered (the `hive emit` write path never opened it), so
+-     the command prints `run not registered` and the durable signal is inert. Until the run
+-     is wired (below), rely on the restart floor.
++     The emit write path idempotently registers a run in the same transaction as its first
++     event. After the next real emit, `omegahive` carries a generation token and this bump
++     is the durable stale-cursor signal; an untouched run still prints `run not registered`.
+    - **Restart every client** (the always-safe floor, independent of the generation token):
+      ```sh
+      OMEGAHIVE_RUN_ID=omegahive docker-compose up -d notifier   # and any other followers
+      ```
+ 4. **Restart** coordinators/workers; each re-snapshots through the port.
+ 
+-To **wire the durable path** once (so step 3's bump becomes meaningful), register the run —
+-a one-time, reversible operational choice:
+-
+-```sh
+-docker-compose run --rm --entrypoint python cli -c \
+-  "from omegahive.db import connect; from omegahive.port import open_run
+-c=connect(); open_run(c,'omegahive'); c.commit(); print('registered')"
+-# reverse with:  psql ... -c \"DELETE FROM runs WHERE run_id='omegahive'\"
+-```
++The durable path is wired by the next real `hive emit`; no separate one-time registration
++command is required. The insert is idempotent, so already-registered runs behave exactly as
++before.
+ 
+ The restore mechanism itself is drilled — see the drill evidence
+ (`projects/omegahive/reports/2026-07-13-backups-restore-drill-evidence.md`): a dump of the
+diff --git a/projects/omegahive/reports/2026-08-16-run-registration-result.md b/projects/omegahive/reports/2026-08-16-run-registration-result.md
+new file mode 100644
+index 0000000..f827c10
+--- /dev/null
++++ b/projects/omegahive/reports/2026-08-16-run-registration-result.md
+@@ -0,0 +1,44 @@
++# Result — register the durable run
++
++**Task:** run-registration · **Date:** 2026-08-16
++
++## What shipped
++
++- The gateway write path now calls the existing idempotent `EventLog.open_run()` after
++  acquiring the per-run advisory lock and before folding/gating. The run registry insert is
++  therefore in the same transaction as the first accepted or recorded rejected event; the
++  idempotency lookup still returns before registration on a replay.
++- Added a regression for first-emit registration, same-key replay as a no-op, and a
++  successful generation bump on a fresh scratch run.
++- Updated `docs/omegahive_recovery_runbook.md` and
++  `projects/omegahive/RUNBOOK.md`: the inert-bump caveat is history, and the next real
++  `hive emit` is the documented registration path.
++
++## How verified
++
++- `../bin/bench-verify -- ruff check src/omegahive/gateway/gateway.py tests/test_write_path.py` — passed.
++- `../bin/bench-verify -- python -m compileall -q src tests` — passed.
++- The required wrapped pytest invocation reached collection but could not connect to the
++  configured test Postgres at `localhost:5432`; all 10 focused tests failed during fixture
++  setup with `psycopg.OperationalError`, before assertions. `uv` bootstrap also lacked the
++  cached `frozenlist` wheel and network DNS was unavailable.
++
++## To operate
++
++- No one-time `open_run` command is needed. After deployment, the next real emit for
++  `omegahive` creates its `runs` row transactionally; subsequent emits are unchanged.
++- After that emit, run the restore step `bump-generation --run-id omegahive` as documented
++  in the two runbooks. The live row/query evidence and spine announcement are operator
++  actions explicitly outside this worker's scope.
++- The code and workspace commits could not be created in this environment because both
++  repository `.git` directories are read-only; `git commit` failed creating
++  `code/.git/index.lock`. The working-tree edits remain present for an operator to commit.
++
++## Reflection
++
++- The narrowest safe placement is after `hashtext(run_id)` advisory locking: concurrent
++  first emits serialize, and a failed event transaction rolls back registration with it.
++- No generation semantics, mismatch handling, cursor logic, or schema were changed.
++- The order's live-run registration, query evidence, and announcement remain deliberately
++  unperformed: they require the operator's live spine mutation/emit, which the order marks
++  out of scope.

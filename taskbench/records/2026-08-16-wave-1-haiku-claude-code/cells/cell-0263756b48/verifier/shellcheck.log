@@ -1,0 +1,7 @@
+
+In scripts/hive-tooling-drill.sh line 390:
+HOUT=$( (
+^--^ SC2034 (warning): HOUT appears unused. Verify use (or export if used externally).
+
+For more information:
+  https://www.shellcheck.net/wiki/SC2034 -- HOUT appears unused. Verify use (...

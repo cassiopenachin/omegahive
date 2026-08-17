@@ -1,0 +1,58 @@
+{
+  "gh": [
+    {
+      "argv": [
+        "/home/cassio/work/taskbench/wave-4-muse-claude-code/cell-55986dba32/bin/gh",
+        "--version"
+      ],
+      "body": null,
+      "repo": "unknown/unknown",
+      "stdin": "",
+      "title": null
+    },
+    {
+      "argv": [
+        "/home/cassio/work/taskbench/wave-4-muse-claude-code/cell-55986dba32/bin/gh",
+        "issue",
+        "create",
+        "--repo",
+        "rTreutlein/PeTTaChainer",
+        "--title",
+        "Backward query returns empty for facts in KB at 02a85c6",
+        "--body",
+        "At PeTTaChainer 02a85c63be6a735f50f50e1084a717b3256b8406 with PeTTa 43705f5d9ff8958ffe7f0aa6777fb8477f2401f2, compileadd accepts a fact and match shows it in the KB, but query returns [] for the direct fact and every tested query. The upstream Python suite runs 16 tests with 5 failures and 2 errors; the MeTTa suite reports 6 passed and 44 failed. A three-line minimal repro is committed in plnbench tests/repros/ptc-revalidate/minimal_repro.metta. Forward chaining derives facts, but query cannot retrieve them. A second independent finding is that an Implication tagged with STV is inert while the CTV form used by the MeTTa tests fires. Reproduced in the upstream isolated environment with swipl 9.3.33, LC_ALL=C.UTF-8. No upstream source was patched."
+      ],
+      "body": "At PeTTaChainer 02a85c63be6a735f50f50e1084a717b3256b8406 with PeTTa 43705f5d9ff8958ffe7f0aa6777fb8477f2401f2, compileadd accepts a fact and match shows it in the KB, but query returns [] for the direct fact and every tested query. The upstream Python suite runs 16 tests with 5 failures and 2 errors; the MeTTa suite reports 6 passed and 44 failed. A three-line minimal repro is committed in plnbench tests/repros/ptc-revalidate/minimal_repro.metta. Forward chaining derives facts, but query cannot retrieve them. A second independent finding is that an Implication tagged with STV is inert while the CTV form used by the MeTTa tests fires. Reproduced in the upstream isolated environment with swipl 9.3.33, LC_ALL=C.UTF-8. No upstream source was patched.",
+      "repo": "rTreutlein/PeTTaChainer",
+      "stdin": "",
+      "title": "Backward query returns empty for facts in KB at 02a85c6"
+    },
+    {
+      "argv": [
+        "/home/cassio/work/taskbench/wave-4-muse-claude-code/cell-55986dba32/bin/gh",
+        "--version"
+      ],
+      "body": null,
+      "repo": "unknown/unknown",
+      "stdin": "",
+      "title": null
+    },
+    {
+      "argv": [
+        "/home/cassio/work/taskbench/wave-4-muse-claude-code/cell-55986dba32/bin/gh",
+        "issue",
+        "create",
+        "--repo",
+        "rTreutlein/PeTTaChainer",
+        "--title",
+        "Backward query returns empty for facts in KB at 02a85c6",
+        "--body-file",
+        "/tmp/gh_body.md"
+      ],
+      "body": "At PeTTaChainer 02a85c63be6a735f50f50e1084a717b3256b8406 with PeTTa 43705f5d9ff8958ffe7f0aa6777fb8477f2401f2, compileadd accepts a fact and match shows it in the KB, but query returns [] for every tested query including the direct fact at step budgets 1, 2, 4, 100 and 1000.\n\nMinimal repro (CWD = pettachainer/metta):\n```\n!(import! &self petta_chainer)\n!(compileadd mk (: f1 (Dog fido) (STV 1.0 1.0)))\n!(match &kb ($t (mk MAIN Nil) $prf $tv) ($t $prf $tv))   ; -> ((Dog fido) f1 (STV 1.0 1.0))\n!(query 100 mk (: $prf (Dog fido) $tv))                  ; -> nothing\n```\nCommitted in plnbench tests/repros/ptc-revalidate/minimal_repro.metta. Forward chaining with CTV-tagged Implications derives correctly but the derived fact is still not retrievable by query. Second defect: an Implication carrying (STV s c) is inert in either mode; CTV fires normally (tests/repros/ptc-revalidate/rule_tv_encoding.metta).\n\nUpstream suites verbatim in isolated container (PeTTaChainer .myclaw/Dockerfile, swipl 9.3.33, CPython 3.10.18, janus-swi 1.5.2, uv sync --frozen, LC_ALL=C.UTF-8):\n- Python: Ran 16 tests \u2014 FAILED (failures=5, errors=2), all on empty query\n- MeTTa: 6 passed, 44 failed \u2014 none of the 6 passing files calls query\n\nRuled out by running them: PeTTa regression (PeTTa@d9a437c same failure), SWI-Prolog version (9.3.33 vs 10.1.5), locale (LC_ALL=C.UTF-8), API misuse (MeTTa-level repro, no Python), environment (upstream own container and runners). No upstream source was patched. Repro: plnbench tests/repros/ptc-revalidate/run-verdict.sh (see docs/ptc-verdict.md).\n",
+      "repo": "rTreutlein/PeTTaChainer",
+      "stdin": "",
+      "title": "Backward query returns empty for facts in KB at 02a85c6"
+    }
+  ]
+}

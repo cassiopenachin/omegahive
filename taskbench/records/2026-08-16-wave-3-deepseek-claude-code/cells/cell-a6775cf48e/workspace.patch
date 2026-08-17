@@ -1,0 +1,121 @@
+diff --git a/projects/pln-benchmarks/reports/2026-08-16-ptc-revalidate-result.md b/projects/pln-benchmarks/reports/2026-08-16-ptc-revalidate-result.md
+new file mode 100644
+index 0000000..94bbbbd
+--- /dev/null
++++ b/projects/pln-benchmarks/reports/2026-08-16-ptc-revalidate-result.md
+@@ -0,0 +1,115 @@
++# Result — ptc-revalidate (2026-08-16)
++
++- **Order:** `orders/2026-07-28-ptc-revalidate.md` at HEAD
++- **Verdict:** `code/docs/ptc-verdict.md` (committed in the plnbench code repo)
++- **Bottom line:** **BROKEN** — PeTTaChainer backward chaining (`query`) returns
++  empty at the pinned shas for every query, including directly-asserted facts and
++  facts just derived by forward chaining. The April blocker (Open Question 1) is
++  **not fixed**. Forward chaining derives internally but is invisible to `query`;
++  STV-rule forward chaining (the format-A convention) derives nothing.
++
++## What shipped
++
++1. **Verdict doc** — `code/docs/ptc-verdict.md`: per-mode status, exact shas
++   (PeTTaChainer `02a85c6`, PeTTa `43705f5`, swipl 9.3.33), own-test-suite results
++   verbatim, April format-A probe reproduction, minimal repro, repro instructions,
++   and the known-issues #2 overlap note (one conversation, two data points).
++2. **Rerunnable repro arm** — `code/benchmarks/ptc-revalidate/`:
++   - `Dockerfile` — isolated env at the pins (swipl:9.3.33 + python/uv; layout
++     puts PeTTa at `/PeTTa` and PeTTaChainer at `/ptc/PeTTaChainer` so the
++     bundle's `uv.lock` path-source `../../PeTTa` resolves).
++   - `repro.sh` — clones the two deps bundles at pinned shas, builds the image,
++     runs the metta suite + python unit tests + minimal repro + format-A probe,
++     checks verdict markers; exit 0 = reproduced broken as documented.
++   - `probe/formatA_proofwriter.py` — the April format-A ProofWriter example
++     (7 facts, 3 rules, type defs excluded) through the Python API
++     (compileadd-equivalent `add_atom`), forward + backward.
++   - `probe/minimal_repro.py` — the minimal upstream-repro case.
++   - `results/` — verbatim captured outputs + `results/README.md`.
++3. **Result report** — this file.
++4. **Stall ledger S1 — report ref supplied for the operator's close.**
++   `notes/stall-ledger.md` is a live-workspace write the instrument never touches
++   (TASK.md); the operator closes row S1 against this report's ref.
++
++## How verified
++
++- **Environment build:** image built with podman (`--security-opt label=disable`
++  for SELinux); inside it `swipl --version` = SWI-Prolog 9.3.33, PeTTa and
++  PeTTaChainer at the pinned shas (verified via `git rev-parse HEAD` in the
++  container), `uv sync --frozen` clean.
++- **Own test suite — metta:** `cd pettachainer/metta && ./test.sh` →
++  `Summary: 6 passed, 44 failed`, full output in
++  `benchmarks/ptc-revalidate/results/metta-test-suite.log`; per-file first-failing
++  assertion in `results/metta-first-failing-assertion.tsv`. The dominant failure
++  class is a backward `query` returning `()` where a proof is expected (e.g.
++  `test_forward_backward_compose`: `is (), should (: (r2 (r1 a0)) (Goal) ...). ❌`).
++  PeTTa's `test` predicate halts at the first failure per file, so each file's
++  record stops at its first failing assertion.
++- **Own test suite — python:** `uv run python -m unittest discover -s tests` →
++  `FAILED (failures=5, errors=2)`; 9 pass. All 5 failures and both errors are the
++  same empty-`query` symptom. Full output in `results/python-unittest.log`.
++- **April probe:** `probe/formatA_proofwriter.py` reproduced the findings table:
++  True query → `[]`, Unknown queries → `[]`, full-saturation forward-chain → 0
++  changed. Isolation experiment (`results/forward-ctv-isolation.log`) confirmed
++  CTV rules forward-chain (derive `(Like cow_1 squirrel_1)`), but backward query
++  still `[]` — so the backward gap is unconditional, independent of rule type.
++- **Minimal repro:** one fact + one CTV implication; `forward-chain` derives
++  `(Path A B)`, `all_facts()` lists both the fact and the derivation, and `query`
++  returns `[]` for both. Log in `results/minimal-repro.log`.
++- **Review:** not run (per WORKER.md cost judgment — this is a verification task
++  with the diff being captured evidence + a repro script; the evidence is the
++  runtime's own output).
++
++## To operate
++
++Everything below is reproducible from a clean plnbench clone with the deps bundles
++at `<repo>/../deps` (override with `PTC_DEPS_DIR`).
++
++```bash
++# Full revalidation (builds image, runs suite + probes, checks verdict markers):
++#   exit 0  = reproduced broken as documented (the current verdict holds)
++#   exit 2  = behavior changed (verdict stale — re-investigate)
++#   exit 1  = build failure
++bin/bench-verify -- bash benchmarks/ptc-revalidate/repro.sh
++```
++
++Notes for the operator / pipeline arm:
++
++- **Runtime:** podman by default (`PTC_RUNTIME=docker` to switch). The container
++  run passes `--security-opt label=disable` for SELinux hosts; the image build
++  needs network for apt/pip unless the uv cache is warm.
++- **Fresh outputs** land in `benchmarks/ptc-revalidate/out/` (or `PTC_OUT_DIR`);
++  the 2026-08-16 captures are the committed `results/`.
++- **Pipeline arm (ROADMAP Goal 1) remains gated:** the semantic-parser's native
++  target (format A via `get_language_spec()`) is PeTTaChainer, and backward
++  chaining is broken at these pins. `get_language_spec` itself loads fine, but any
++  scored run that needs `query` will silently produce empty results — exactly the
++  April silent-failure class. Do not un-gate on this pin.
++- **Upstream filing executed:** minimal-repro issue on PeTTaChainer recorded for
++  the operator to send (hive outward-action rule); body references the minimal
++  repro, Open Question 1, and known-issues #2 as the companion data point. The
++  repro pins the exact container image, so it should be reproducible by the
++  maintainer as-is.
++- **Stall ledger:** S1 close is operator-side (live-workspace write, out of scope
++  for the instrument); this report is the ref the close points at.
++
++## Reflection
++
++- The April blocker was **reproduced, not fixed**: 44/50 metta suite files fail,
++  and the minimal repro collapses the whole backward gap to two atoms. The
++  `query` predicate is defined in the compiled query runtime but returns empty for
++  facts the KB provably contains (`all_facts()` shows them) — this is a runtime
++  bug in the backward chainer's fact lookup, not a config or encoding issue.
++- **STV-rule forward chaining is separately broken** (derives nothing on the
++  format-A KB), while CTV-rule forward chaining works — a useful decomposition
++  for the maintainer and a second data point beyond the April Open Question 1.
++- **Environment-build risk (the order's named seam) did not materialize** as a
++  blocker; the one real friction was SELinux (`label=disable`) which the repro
++  script now carries. The order's "worker-host toolchain" question did not arise.
++- The order said "deps per the repo CLAUDE.md: Python 3.12"; the upstream isolated
++  task env pins python 3.10 via `uv.lock`. I followed the upstream env (it IS the
++  intended path per the order) and recorded the exact versions — a divergence from
++  the letter of CLAUDE.md, but the correct instrument.
++- One honest caveat: the metta suite's per-file record is first-failure-truncated
++  by design (PeTTa `test` halts). The committed logs say so explicitly, so no
++  downstream reader can mistake "6 passed / 44 failed" for more than it is.

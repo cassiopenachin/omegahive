@@ -1,0 +1,363 @@
+diff --git a/scripts/hive-close b/scripts/hive-close
+index 10e72a6..c7d11f6 100755
+--- a/scripts/hive-close
++++ b/scripts/hive-close
+@@ -106,3 +106,20 @@ else
+     echo "  (already-scored is a normal reason for this to fail — add --again to record a second entry.)"
+   } >&2
+ fi
++
++# 6. Item 5: regenerate tasks.md/tasks.csv after scoring — non-fatal but loud.
++# Regeneration is a strictly AFTER-close operation, and strictly non-fatal: the close is
++# the governed act and it is already durable on the spine; metrics regeneration is a
++# workspace by-product. Ordering is absolute: a regeneration failure can never make a
++# completed close look failed, and can never prevent one. Failures are LOUD.
++if "$SCRIPT_DIR/hive-metrics" "$PROJECT" </dev/null; then
++  echo "hive-close: regenerated metrics (tasks.md/tasks.csv)"
++else
++  {
++    echo
++    echo "hive-close: WARNING the close SUCCEEDED and is durable on the spine — metrics regeneration afterwards did not."
++    echo "  Nothing about task '$TASK' is in doubt: review.passed and status_override(done) are emitted."
++    echo "  Only the metrics artifacts are stale. Recover with one command:"
++    echo "      hive-metrics $PROJECT"
++  } >&2
++fi
+diff --git a/scripts/hive-common.sh b/scripts/hive-common.sh
+index f71c43c..a0d6206 100755
+--- a/scripts/hive-common.sh
++++ b/scripts/hive-common.sh
+@@ -217,9 +217,8 @@ order_pin() {  # order_pin <workspace-relative-path>  -> prints sha
+ # Scoped by pathspec to the project's metrics dir, so unrelated work in the
+ # operator's clone is never swept into the commit. Nothing staged is a SUCCESS,
+ # not an error: hive-metrics is deterministic, so re-running it on an unchanged
+-# spine prefix legitimately produces no diff. Push mirrors hive-answer's
+-# retry (push -> pull --rebase -> push) and reports precisely how far it got, so
+-# "committed locally" is never mistaken for "on the hub".
++# spine prefix legitimately produces no diff. Item 6: on push failure, refuse rather
++# than rebase — commit locally, print the manual step, exit non-zero.
+ commit_metrics() {  # commit_metrics <project> <commit-message>  -> 0 committed/nothing-to-do, non-zero otherwise
+   local msg="$2" spec="projects/$1/metrics"
+   git -C "$OPS_WS" add -- "$spec" || { echo "hive: git add failed for $spec in $OPS_WS" >&2; return 1; }
+@@ -230,12 +229,15 @@ commit_metrics() {  # commit_metrics <project> <commit-message>  -> 0 committed/
+   git -C "$OPS_WS" commit --quiet -m "$msg" -- "$spec" \
+     || { echo "hive: git commit failed for $spec in $OPS_WS (git identity unset, a commit hook, or an index lock?)" >&2; return 1; }
+   if ! git -C "$OPS_WS" push --quiet 2>/dev/null; then
+-    if ! git -C "$OPS_WS" pull --rebase --quiet; then
+-      echo "hive: push failed and rebase failed — committed locally in $OPS_WS, NOT on the hub; resolve by hand" >&2
+-      return 1
+-    fi
+-    git -C "$OPS_WS" push --quiet \
+-      || { echo "hive: push failed for $OPS_WS — committed locally, NOT on the hub" >&2; return 1; }
++    {
++      echo "hive: push failed — committed locally in $OPS_WS, but NOT on the hub"
++      echo "  committed: $spec ($msg)"
++      echo "  resolve manually:"
++      echo "    cd $OPS_WS"
++      echo "    git pull  # fetch the upstream changes"
++      echo "    git push  # retry the push"
++    } >&2
++    return 1
+   fi
+   echo "  committed + pushed: $spec ($msg)"
+ }
+@@ -286,3 +288,44 @@ global_in_review() {  # global_in_review  -> prints "<run>: <task>" lines across
+       | jq -r --arg r "$r" '.[] | select(.status == "in_review") | "\($r): \(.task)"' 2>/dev/null
+   done
+ }
++
++# Parse an order file's Predictions section and extract the three prediction fields.
++# Returns JSON with keys: has_section, effort_txt, questions_txt, review_txt
++# (all strings; empty string means the field was not found).
++# Usage: parse_predictions_from_order_file <order-path>
++parse_predictions_from_order_file() {  # parse_predictions_from_order_file <path>  -> prints JSON
++  local path="$1"
++  [ -f "$path" ] || die "parse_predictions_from_order_file: file not found: $path"
++
++  local pred_block
++  pred_block=$(awk '
++    /^##[ \t]*Predictions[ \t]*$/ { inblock = 1; next }
++    inblock && /^#/                { inblock = 0 }
++    inblock                        { print }
++  ' "$path")
++
++  local has_section effort_txt questions_txt review_txt
++  if [ -n "$pred_block" ]; then
++    has_section="true"
++  else
++    has_section="false"
++    pred_block=""
++  fi
++
++  # Extract field values (empty string if not found, per hive-score logic)
++  effort_txt=$( { printf '%s' "$pred_block" \
++    | grep -oiE 'Expected effort:[[:space:]]*[0-9][0-9.–—-]*[[:space:]]*worker-hours?' \
++    | head -1 | sed -E 's/^[Ee]xpected effort:[[:space:]]*//'; } || true )
++
++  questions_txt=$( { printf '%s' "$pred_block" \
++    | grep -oiE 'Expected questions:[[:space:]]*[0-9][0-9–—-]*' \
++    | head -1 | sed -E 's/^[Ee]xpected questions:[[:space:]]*//'; } || true )
++
++  review_txt=$( { printf '%s' "$pred_block" \
++    | grep -oiE 'Expected review outcome:[[:space:]]*[^.]+' \
++    | head -1 | sed -E 's/^[Ee]xpected review outcome:[[:space:]]*//'; } || true )
++
++  # Return as JSON
++  jq -cn --arg hs "$has_section" --arg e "$effort_txt" --arg q "$questions_txt" --arg r "$review_txt" \
++    '{has_section:($hs=="true"), effort_txt:$e, questions_txt:$q, review_txt:$r}'
++}
+diff --git a/scripts/hive-launch b/scripts/hive-launch
+index 6de9fd9..d15998b 100755
+--- a/scripts/hive-launch
++++ b/scripts/hive-launch
+@@ -176,6 +176,46 @@ TITLE=$( { grep -m1 -E '^# ' "$OPS_WS/$REL" | sed -E 's/^# +//; s/^Order: *//';
+ [ -n "$TITLE" ] || TITLE="$TASK"
+ TASK_TYPE="task"   # advisory label only; not gated (events/types.py). Edit freely.
+ 
++# --- check predictions section (must be parseable, or explicitly unpredicted) -----
++# Item 1 of the order: refuse unparseable predictions sections, before any spine write.
++# Still allow: (a) no Predictions section at all, and (b) a declared-unpredicted disposition.
++if [ -z "$ANYWAY" ]; then
++  PRED_JSON=$(parse_predictions_from_order_file "$OPS_WS/$REL")
++  HAS_SECTION=$(printf '%s' "$PRED_JSON" | jq -r '.has_section')
++  E_TXT=$(printf '%s' "$PRED_JSON" | jq -r '.effort_txt // empty')
++  Q_TXT=$(printf '%s' "$PRED_JSON" | jq -r '.questions_txt // empty')
++  R_TXT=$(printf '%s' "$PRED_JSON" | jq -r '.review_txt // empty')
++
++  # Count how many fields were parsed
++  FIELDS=0
++  [ -z "$E_TXT" ] || FIELDS=$((FIELDS + 1))
++  [ -z "$Q_TXT" ] || FIELDS=$((FIELDS + 1))
++  [ -z "$R_TXT" ] || FIELDS=$((FIELDS + 1))
++
++  # Refuse only if section exists but 0 fields parsed (truly unparseable).
++  # Allow: no section, or a section with partial/full content.
++  if [ "$HAS_SECTION" = "true" ] && [ "$FIELDS" -eq 0 ]; then
++    {
++      echo "hive-launch: refusing to launch '$TASK' — the order's Predictions section is unparseable."
++      echo
++      echo "  Expected Predictions format (one or more of these three):"
++      echo "    - Expected effort: <number> worker-hours"
++      echo "    - Expected questions: <number>"
++      echo "    - Expected review outcome: clean | minor rework | rework"
++      echo
++      echo "  Offending section from $REL:"
++      awk '
++        /^##[ \t]*Predictions[ \t]*$/ { inblock = 1; next }
++        inblock && /^#/                { inblock = 0 }
++        inblock                        { print "    " $0 }
++      ' "$OPS_WS/$REL"
++      echo
++      echo "  To launch anyway, pass --anyway. To launch without predictions, remove the section entirely."
++    } >&2
++    exit 1
++  fi
++fi
++
+ echo "hive-launch: task=$TASK worker=$WORKER  project=$PROJECT${ADOPT:+  (adopting existing ready task)}"
+ echo "  order:  $REL@$SHA"
+ echo "  run:    $RUN"
+diff --git a/scripts/hive-metrics-drill.sh b/scripts/hive-metrics-drill.sh
+index 9fea6ee..8a61655 100755
+--- a/scripts/hive-metrics-drill.sh
++++ b/scripts/hive-metrics-drill.sh
+@@ -27,7 +27,7 @@ check(){ if eval "$2"; then ok "$1"; else bad "$1  [cond: $2]"; fi; }
+ expect_fail_msg(){
+   local d="$1" needle="$2"; shift 2; local out
+   if out=$("$@" 2>&1); then bad "$d (expected refusal, got success)"
+-  elif printf '%s' "$out" | grep -qF -- "$needle"; then ok "$d"
++  elif printf '%s' "$out" | grep -F -- "$needle" >/dev/null; then ok "$d"
+   else bad "$d (refused, but message missing '$needle'); got: $out"; fi
+ }
+ 
+@@ -326,7 +326,7 @@ check "the workspace was left clean"        "[ -z \"\$(git -C '$WS' status --por
+ NCOMMITS_BEFORE=$(git -C "$WS" rev-list --count HEAD)
+ # shellcheck disable=SC2034  # consumed by `check`, which evals its condition string
+ RERUN_OUT="$("$M" "$PROJECT")"
+-check "a no-change re-run says so"          "printf '%s' \"\$RERUN_OUT\" | grep -qF 'no change to commit'"
++check "a no-change re-run says so"          "printf '%s' \"\$RERUN_OUT\" | grep -F 'no change to commit' >/dev/null"
+ check "a no-change re-run adds no commit"   "[ \"\$(git -C '$WS' rev-list --count HEAD)\" = '$NCOMMITS_BEFORE' ]"
+ # --no-commit is the escape hatch: written, deliberately not recorded. Commit a
+ # deliberately stale artifact first, so a regeneration genuinely has a diff to
+@@ -435,10 +435,10 @@ check "--upto never commits the rewound artifact" \
+ # the wrong branch silently and no exit code ever notices.
+ # shellcheck disable=SC2034  # consumed by `check`, which evals its condition string
+ UPTO_OUT="$("$M" "$PROJECT" --upto "$((BETA_CLOSE_SEQ - 1))")"
+-check "--upto says why it did not commit"      "printf '%s' \"\$UPTO_OUT\" | grep -qF 'an --upto rebuild is an inspection'"
+-check "--upto does NOT advise committing it"   "! printf '%s' \"\$UPTO_OUT\" | grep -qF 'commit it yourself'"
+-check "--upto names the restore command"       "printf '%s' \"\$UPTO_OUT\" | grep -qF 'hive-metrics $PROJECT'"
+-check "--upto never leaks the seq into prose"  "! printf '%s' \"\$UPTO_OUT\" | grep -qE 'record[0-9]'"
++check "--upto says why it did not commit"      "printf '%s' \"\$UPTO_OUT\" | grep -F 'an --upto rebuild is an inspection' >/dev/null"
++check "--upto does NOT advise committing it"   "! printf '%s' \"\$UPTO_OUT\" | grep -F 'commit it yourself' >/dev/null"
++check "--upto names the restore command"       "printf '%s' \"\$UPTO_OUT\" | grep -F 'hive-metrics $PROJECT' >/dev/null"
++check "--upto never leaks the seq into prose"  "! printf '%s' \"\$UPTO_OUT\" | grep -E 'record[0-9]' >/dev/null"
+ "$M" "$PROJECT" >/dev/null   # restore the full artifact
+ 
+ # Without the fixture the tool goes to the real read path — which, with OMEGA_DIR
+@@ -478,14 +478,14 @@ verdict() { row "$1" "$2" | awk -F'|' '{ gsub(/^ +| +$/, "", $(NF-1)); print $(N
+ "$S" alpha >/dev/null
+ check "calibration.md written"        "[ -s '$CAL' ]"
+ check "alpha entry recorded"          "[ -n \"\$(entry alpha)\" ]"
+-check "alpha predicted effort quoted" "entry alpha | grep -q '1 worker-hour'"
+-check "alpha actual effort scored"    "entry alpha | grep -q '1.0h'"
++check "alpha predicted effort quoted" "entry alpha | grep '1 worker-hour' >/dev/null"
++check "alpha actual effort scored"    "entry alpha | grep '1.0h' >/dev/null"
+ # All three verdict branches are exercised across alpha/epsilon/zeta, so an
+ # inverted or short-circuited comparison cannot pass this drill.
+ check "alpha effort verdict = hit"    "[ \"\$(verdict alpha effort)\" = hit ]"
+ check "alpha questions verdict = hit" "[ \"\$(verdict alpha questions)\" = hit ]"
+-check "alpha review left unscored"    "verdict alpha 'review outcome' | grep -q '^unscored'"
+-check "alpha coverage full"           "entry alpha | grep -q '^- coverage: full$'"
++check "alpha review left unscored"    "verdict alpha 'review outcome' | grep '^unscored' >/dev/null"
++check "alpha coverage full"           "entry alpha | grep '^- coverage: full$' >/dev/null"
+ # Scoring records the score: the entry is committed and pushed as part of the same
+ # act, because the improver seat reads committed instruments and nothing else.
+ check "the score was committed"        "log_has '$WS' 'score: alpha on run metrics-drill' 'projects/$PROJECT/metrics'"
+@@ -508,21 +508,21 @@ check "--again re-scores"             "[ \"\$(grep -c '^### alpha — ' '$CAL')\
+ 
+ "$S" epsilon >/dev/null
+ check "epsilon effort verdict = over" "[ \"\$(verdict epsilon effort)\" = over ]"
+-check "epsilon scorable (task.failed closed it)" "entry epsilon | grep -q 'final status .failed.'"
++check "epsilon scorable (task.failed closed it)" "entry epsilon | grep 'final status .failed.' >/dev/null"
+ 
+ "$S" zeta >/dev/null
+ check "zeta effort verdict = under"      "[ \"\$(verdict zeta effort)\" = under ]"
+ check "zeta questions verdict = under"   "[ \"\$(verdict zeta questions)\" = under ]"
+-check "zeta predicted range quoted"      "entry zeta | grep -q '1-2'"
++check "zeta predicted range quoted"      "entry zeta | grep '1-2' >/dev/null"
+ 
+ "$S" beta >/dev/null
+-check "beta recorded as partial"      "entry beta | grep -q '^- coverage: partial'"
+-check "beta effort prediction quoted" "entry beta | grep -q '4 worker-hours'"
+-check "beta absent fields marked"     "entry beta | grep -q 'not predicted'"
++check "beta recorded as partial"      "entry beta | grep '^- coverage: partial' >/dev/null"
++check "beta effort prediction quoted" "entry beta | grep '4 worker-hours' >/dev/null"
++check "beta absent fields marked"     "entry beta | grep 'not predicted' >/dev/null"
+ check "beta absent field unpredicted" "[ \"\$(verdict beta questions)\" = unpredicted ]"
+ 
+ "$S" gamma >/dev/null
+-check "gamma recorded as unpredicted" "entry gamma | grep -q '^- coverage: unpredicted'"
++check "gamma recorded as unpredicted" "entry gamma | grep '^- coverage: unpredicted' >/dev/null"
+ check "gamma effort unpredicted"      "[ \"\$(verdict gamma effort)\" = unpredicted ]"
+ 
+ expect_fail_msg "scoring an open task refused" "not closed" "$S" delta
+@@ -552,8 +552,8 @@ check "no escaped calibration file written" "[ ! -e '$SANDBOX/../escaped' ]"
+ # Project identity comes from the committed conf, never from the project name:
+ # the scratch project is `drill` and its run is `metrics-drill`, so a tool that
+ # guessed the run from the name would have found no events at all.
+-check "run resolved from project.conf, not the name" "grep -qF '| Run | \`metrics-drill\`' '$MD'"
+-check "entries cite the conf's run"                  "entry alpha | grep -qF 'run \`metrics-drill\`'"
++check "run resolved from project.conf, not the name" "grep -F '| Run | \`metrics-drill\`' '$MD' >/dev/null"
++check "entries cite the conf's run"                  "entry alpha | grep -F 'run \`metrics-drill\`' >/dev/null"
+ # ...and HIVE_RUN_ID / --run still win over the conf (the documented escape hatch).
+ expect_fail_msg "--run overrides the conf" "no events for run 'other-run'" \
+   env -u HIVE_SPINE_JSON "$M" "$PROJECT" --run other-run
+diff --git a/scripts/hive-score b/scripts/hive-score
+index dc208db..ef26bb2 100755
+--- a/scripts/hive-score
++++ b/scripts/hive-score
+@@ -60,6 +60,18 @@ done
+ 
+ command -v jq >/dev/null 2>&1 || die "jq is required"
+ 
++# Item 4: validate --review verdict values (clean | minor rework | rework, case-insensitive, store lowercase)
++if [ -n "$REVIEW_VERDICT" ]; then
++  case "${REVIEW_VERDICT,,}" in
++    clean|"minor rework"|rework)
++      REVIEW_VERDICT="${REVIEW_VERDICT,,}"
++      ;;
++    *)
++      die "invalid --review value '$REVIEW_VERDICT'; must be one of: clean, minor rework, rework"
++      ;;
++  esac
++fi
++
+ # --- resolve the order, then the project, then the run -------------------------
+ # Order first, because the order's PATH is what names the project — the same
+ # inference hive-launch makes (projects/<name>/orders/<file>.md). find_order
+@@ -206,37 +218,27 @@ fi
+ # --- the order's Predictions section -------------------------------------------
+ # The order was resolved up front (it names the project). A closed task with no
+ # order file at all is a real, and interesting, case: it scores as unpredicted.
+-PRED_BLOCK=""
++# Item 3: distinguish absent section from unparsed (section present, 0 of 3 fields).
++PRED_JSON=""
++HAS_PRED_SECTION=false
+ if [ -n "$ORDER_REL" ]; then
+-  # From the `## Predictions` heading to the next heading of any level, exclusive.
+-  PRED_BLOCK=$(awk '
+-    /^##[ \t]*Predictions[ \t]*$/ { inblock = 1; next }
+-    inblock && /^#/                { inblock = 0 }
+-    inblock                        { print }
+-  ' "$OPS_WS/$ORDER_REL")
++  PRED_JSON=$(parse_predictions_from_order_file "$OPS_WS/$ORDER_REL")
++  HAS_PRED_SECTION=$(printf '%s' "$PRED_JSON" | jq -r '.has_section')
+ else
+   ORDER_REL="(no order file found)"
++  PRED_JSON=$(jq -cn '{has_section:false, effort_txt:"", questions_txt:"", review_txt:""}')
+ fi
+ 
++PRED_EFFORT_TXT=$(printf '%s' "$PRED_JSON" | jq -r '.effort_txt // empty')
++PRED_QUESTIONS_TXT=$(printf '%s' "$PRED_JSON" | jq -r '.questions_txt // empty')
++PRED_REVIEW_TXT=$(printf '%s' "$PRED_JSON" | jq -r '.review_txt // empty')
++
+ # parse_range <text> -> "lo hi"; accepts "2", "1-2", "1–2" (en dash), "1—2".
+ parse_range() {
+   printf '%s' "$1" | sed -E 's/[–—]/-/g' | awk -F- '
+     { lo = $1 + 0; hi = (NF > 1 ? $2 + 0 : lo); printf "%s %s", lo, hi }'
+ }
+ 
+-# Verbatim slices of the prediction text; empty when the field was not predicted
+-# (a no-match grep is the *expected* partial-prediction case, not an error — hence
+-# the `|| true` guards under `set -o pipefail`).
+-PRED_EFFORT_TXT=$( { printf '%s' "$PRED_BLOCK" \
+-  | grep -oiE 'Expected effort:[[:space:]]*[0-9][0-9.–—-]*[[:space:]]*worker-hours?' \
+-  | head -1 | sed -E 's/^[Ee]xpected effort:[[:space:]]*//'; } || true )
+-PRED_QUESTIONS_TXT=$( { printf '%s' "$PRED_BLOCK" \
+-  | grep -oiE 'Expected questions:[[:space:]]*[0-9][0-9–—-]*' \
+-  | head -1 | sed -E 's/^[Ee]xpected questions:[[:space:]]*//'; } || true )
+-PRED_REVIEW_TXT=$( { printf '%s' "$PRED_BLOCK" \
+-  | grep -oiE 'Expected review outcome:[[:space:]]*[^.]+' \
+-  | head -1 | sed -E 's/^[Ee]xpected review outcome:[[:space:]]*//'; } || true )
+-
+ NOT_PREDICTED='*not predicted*'
+ 
+ # --- verdicts -----------------------------------------------------------------
+@@ -284,15 +286,32 @@ else
+ fi
+ 
+ # Coverage: how much of the section was there at all — the calibration-gap metric.
++# Item 3: distinguish absent section from unparsed (section present, 0 of 3 fields).
+ FIELDS=0
++MISSING_FIELDS=""
+ for t in "$PRED_EFFORT_TXT" "$PRED_QUESTIONS_TXT" "$PRED_REVIEW_TXT"; do
+   if [ -n "$t" ]; then FIELDS=$((FIELDS + 1)); fi
+ done
+-case "$FIELDS" in
+-  0) COVERAGE="unpredicted (no usable \`## Predictions\` section)" ;;
+-  3) COVERAGE="full" ;;
+-  *) COVERAGE="partial ($FIELDS of 3 fields predicted)" ;;
+-esac
++if [ "$HAS_PRED_SECTION" = "true" ]; then
++  # Section exists; report coverage
++  case "$FIELDS" in
++    0) COVERAGE="unpredicted (section present, 0 of 3 fields parsed)"
++       MISSING_FIELDS=" (expected effort, expected questions, expected review outcome not found)" ;;
++    3) COVERAGE="full" ;;
++    *) case "$FIELDS" in
++         1) [ -z "$PRED_EFFORT_TXT" ] && MISSING_FIELDS=" (expected questions, expected review outcome)" \
++              || [ -z "$PRED_QUESTIONS_TXT" ] && MISSING_FIELDS=" (expected effort, expected review outcome)" \
++              || MISSING_FIELDS=" (expected effort, expected questions)" ;;
++         2) [ -z "$PRED_EFFORT_TXT" ] && MISSING_FIELDS=" (expected questions, expected review outcome)" \
++              || [ -z "$PRED_QUESTIONS_TXT" ] && MISSING_FIELDS=" (expected effort, expected review outcome)" \
++              || MISSING_FIELDS=" (expected effort, expected questions)" ;;
++       esac
++       COVERAGE="partial ($FIELDS of 3 fields predicted)$MISSING_FIELDS" ;;
++    esac
++else
++  # No section at all
++  COVERAGE="unpredicted (no \`## Predictions\` section)"
++fi
+ 
+ # --- append --------------------------------------------------------------------
+ OUT_DIR="$OPS_WS/projects/$PROJECT/metrics"

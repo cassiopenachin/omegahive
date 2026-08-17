@@ -1,0 +1,85 @@
+diff --git a/docs/omegahive_recovery_runbook.md b/docs/omegahive_recovery_runbook.md
+index 51ff606..398382d 100644
+--- a/docs/omegahive_recovery_runbook.md
++++ b/docs/omegahive_recovery_runbook.md
+@@ -87,11 +87,11 @@ silently skip events. Follow the ordering exactly.
+      ```sh
+      docker compose run --rm cli bump-generation --run-id <run>
+      ```
+-     The bump only works on a *registered* run; it refuses one that was never opened
+-     (`run not registered`). The durable `omegahive` project run is currently unregistered
+-     — the `hive emit` write path never opens runs — so the bump is inert until the run is
+-     registered out of band (`omegahive.port.open_run`). See the ops RUNBOOK for the
+-     one-liner; until then the restart floor below is the operative path.
++     The emit write path idempotently registers a run in the same transaction as its first
++     write, so the durable `omegahive` run carries a generation token after the next real
++     emit. The bump still refuses a run that has never been opened (`run not registered`);
++     for a restored database with no event for the run, emit once before relying on the
++     durable signal. The restart floor below remains safe in all cases.
+    - **Restart *every* client** — the always-safe interim floor, independent of the token.
+ 4. **Restart** coordinators/workers; each re-snapshots through the port.
+ 
+diff --git a/src/omegahive/gateway/gateway.py b/src/omegahive/gateway/gateway.py
+index 9b81ce6..694297e 100644
+--- a/src/omegahive/gateway/gateway.py
++++ b/src/omegahive/gateway/gateway.py
+@@ -94,22 +94,26 @@ class Gateway:
+         conn = self._store.conn
+         try:
+             with conn.transaction():
+-                # 1. idempotency lookup FIRST — a replay returns the existing event
++                # 1. Register the run in this transaction. The idempotent insert means
++                # every run touched by the write path carries a generation token,
++                # including a replay of a legacy event whose registry row is absent.
++                self._store.open_run()
++                # 2. idempotency lookup — a replay returns the existing event
+                 # before any fold or gate, so a committed op is never re-gated.
+                 if idempotency_key is not None:
+                     existing = self._store.find_by_key(actor.id, idempotency_key)
+                     if existing is not None:
+                         return Accepted(existing)
+-                # 2. serialize per run: advisory lock keyed in Postgres (never Python hash()).
++                # 3. serialize per run: advisory lock keyed in Postgres (never Python hash()).
+                 conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (self._store.run_id,))
+-                # 3. fold + gate against the run prefix under the lock.
++                # 4. fold + gate against the run prefix under the lock.
+                 board = fold(self._store.read_run())
+                 rej = self._gate(board, actor, event_type, payload, task_id)
+                 if rej is not None:
+                     rid = self._record_rejection(actor, event_type, task_id, payload, rej,
+                                                  logical_ts)
+                     return Rejected(rej.code, rej.reason, rid)
+-                # 4. accept: append the op (with its key).
++                # 5. accept: append the op (with its key).
+                 ev = self._store.append(
+                     actor=actor, event_type=event_type, payload=payload, task_id=task_id,
+                     causation_id=causation_id, recipient=recipient, logical_ts=logical_ts,
+diff --git a/tests/test_emit_cli.py b/tests/test_emit_cli.py
+index daa5698..4be04ff 100644
+--- a/tests/test_emit_cli.py
++++ b/tests/test_emit_cli.py
+@@ -35,6 +35,7 @@ def cli_db(monkeypatch):
+     try:
+         with c.transaction():
+             c.execute("DELETE FROM events WHERE run_id = %s", (RUN,))
++            c.execute("DELETE FROM runs WHERE run_id = %s", (RUN,))
+     finally:
+         c.close()
+ 
+@@ -72,6 +73,16 @@ def test_round_trip_then_idempotent(cli_db):
+     assert "already recorded" in r2.output.lower()
+     assert len(_events("task.reported")) == 1
+ 
++    c = connect(TEST_DATABASE_URL)
++    try:
++        assert EventLog(c, LogicalClock(0), RUN).generation() == 1
++    finally:
++        c.close()
++
++    r3 = runner.invoke(cli.app, ["bump-generation", "--run-id", RUN])
++    assert r3.exit_code == 0, r3.output
++    assert "1" in r3.output and "2" in r3.output
++
+ 
+ def test_malformed_ref_exits_nonzero(cli_db):
+     r = _emit("--payload", '{"ref": "nope", "kind": "result"}')

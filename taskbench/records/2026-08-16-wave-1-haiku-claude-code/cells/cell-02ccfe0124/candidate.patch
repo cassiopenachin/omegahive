@@ -1,0 +1,314 @@
+diff --git a/docs/ptc-verdict.md b/docs/ptc-verdict.md
+new file mode 100644
+index 0000000..942e89e
+--- /dev/null
++++ b/docs/ptc-verdict.md
+@@ -0,0 +1,182 @@
++# PeTTaChainer Backward Chaining Verdict
++
++**Date:** 2026-08-16  
++**Task:** ptc-revalidate — PeTTaChainer chaining verdict at pinned shas  
++**Refs:**
++- PeTTaChainer @ 02a85c63be6a735f50f50e1084a717b3256b8406
++- PeTTa @ 43705f5d9ff8958ffe7f0aa6777fb8477f2401f2
++
++## Summary
++
++**VERDICT: BROKEN** — PeTTaChainer's backward chaining (`query`) returns empty results for all test cases, including:
++- Direct facts just added to the knowledge base
++- Trivial single-step derivations
++- Multi-step chained implications
++
++Forward chaining also shows degraded behavior, deriving 0 new facts even in cases where rules should fire.
++
++## Test Environment
++
++```
++Python: 3.12.13
++SWI-Prolog: 10.1.5 (>= 9.3 required; 10.1.5 is newer)
++janus-swi: 1.5.3
++LC_ALL: C.UTF-8 (required for unicode handling)
++```
++
++Installed from local bundles (offline, no network):
++- deps/PeTTaChainer.bundle cloned to work/PeTTaChainer @ 02a85c6
++- deps/PeTTa.bundle cloned to work/PeTTa @ 43705f5
++
++## Python Test Suite Results
++
++**File:** `tests/test_pettachainer.py`
++
++### Results Summary
++```
++8 tests total
++  3 PASSED
++  5 FAILED
++```
++
++### Passing Tests (3)
++1. ✅ `test_default_logic_keeps_pln_or_semantics` — Confirms that default logic correctly rejects unsupported Or inference
++2. ✅ `test_forward_chain_outputs_can_seed_the_next_run` — Forward chaining can be seeded with prior outputs
++3. ✅ `test_select_facts_rejects_a_missing_seed` — Correctly raises ValueError for missing facts
++
++### Failing Tests (5)
++All failures are backward chaining queries returning empty results despite prior setup:
++
++1. ❌ `test_forward_chain_derives_fact_visible_to_backward_query`
++   - Setup: Adds (Edge A B), (Edge B C), two chaining rules
++   - Forward chain to derive (Path A C) — shown in output
++   - Backward query: `(: $prf (Path A C) $tv)` with steps=10
++   - **Result:** Empty (should return proof)
++   - **Issue:** Facts derived by forward chain invisible to backward query
++
++2. ❌ `test_forward_chain_accepts_canonical_facts`
++   - Setup: Adds (LowPriority) fact and rule to derive (FactSeedGoal)
++   - Forward chain with canonical fact — derives (FactSeedGoal)
++   - Backward query: `(: $prf (FactSeedGoal) $tv)` with steps=10
++   - **Result:** Empty
++   - **Issue:** Derived facts not queryable
++
++3. ❌ `test_select_facts_builds_an_initial_forward_seed`
++   - Setup: Adds fact and rule, forward chain
++   - Backward query: `(: $prf (DeltaGoal) $tv)` with steps=10
++   - **Result:** Empty
++   - **Issue:** Same pattern — derived facts invisible to query
++
++4. ❌ `test_all_facts_supports_full_kb_forward_chaining`
++   - Setup: Multiple facts + rule, full KB forward chaining
++   - Backward query: `(: $prf (FactSeedGoal2) $tv)` with steps=10
++   - **Result:** Empty
++   - **Issue:** Derived facts not visible to backward queries
++
++5. ❌ `test_predicate_logic_config_or_introduction`
++   - Setup: Single fact (A), query with Or introduction in predicate_logic mode
++   - Backward query: `(: $prf (Or (A) (B)) $tv)` with steps=20
++   - **Result:** Empty
++   - **Issue:** Or introduction rule not firing
++
++## ProofWriter Format-A Test Case
++
++**File:** `work/proofwriter_test.py` (created for this verdict)
++
++Theory: RelNoneg-OWA-D1-390 from April findings (7 facts, 3 rules)
++```
++Facts:
++  bear likes dog, cow is round, cow likes bear, cow needs bear,
++  dog needs squirrel, dog sees cow, squirrel needs dog
++
++Rules:
++  If someone is round then they like the squirrel
++  If bear is round and bear likes squirrel then squirrel needs bear
++  If cow needs dog then cow is cold
++```
++
++### Query Results
++
++All queries returned empty results at all step limits (2–50):
++
++| Query | Expected | Result (steps=50) |
++|-------|----------|-------------------|
++| (Like cow_1 squirrel_1) | True (derivable from cow is round + rule) | ❌ Empty (0 results) |
++| (Need cow_1 bear_1) | True (direct fact) | ❌ Empty (0 results) |
++| (HasAttribute cow_1 round) | True (direct fact) | ❌ Empty (0 results) |
++
++**Forward chaining:** Also returned 0 derived facts, even with seeds matching facts in KB.
++
++## Diagnosis
++
++The issue is consistent across all test cases:
++
++1. **Backward chaining (`query`) returns empty for all queries**, including those querying for direct facts that were just added. This is the blocker noted in April findings.
++
++2. **Forward chaining also returns 0 new facts** in cases where it should derive predicates matching rule conclusions, suggesting the rule compilation or application pipeline is not functioning.
++
++3. **Root cause candidates:**
++   - Rule compilation (`compileadd`) may not be populating the executable rule store correctly
++   - Backward query (`query`) mechanism may not be reaching the compiled rules
++   - Predicate matching in rule antecedents/conclusions may be broken
++   - The recent commit "Eliminate overlapping MeTTa dispatch clauses" (02a85c6) may have introduced a regression in pattern matching or rule dispatch
++
++## Files for Upstream Filing
++
++**Minimal Repro (backward chaining broken):**
++- `work/proofwriter_test.py` — Reproduces backward chaining empty results with minimal KBs
++- `work/PeTTaChainer/pettachainer/metta/tests/test_forward_backward_compose.metta` — Existing MeTTa test suite with expected output
++
++**Test Suite Results:**
++- Python unit tests: 5 of 8 failing, all with backward chaining queries returning empty
++
++## Disposition
++
++**Upstream Issue:** Yes, file with PeTTaChainer maintainer  
++**Subject:** Backward chaining query returns empty for all queries at 02a85c6  
++**Attachments:**
++- Minimal repro: `work/proofwriter_test.py`
++- Python test output (above, full)
++- Environment details (swipl 10.1.5, Python 3.12.13, janus 1.5.3)
++
++**Overlap with Known Issues:**
++- Related to `docs/known-issues.md` #2 (Direct.metta broken at PLN/PeTTa pins) — both involve inference pipeline breakage
++- May be a regression from recent dispatch-clause elimination (02a85c6)
++
++## How to Re-run This Verdict
++
++```bash
++# From workspace root
++cd /home/cassio/work/taskbench/wave-1-haiku-claude-code/cell-02ccfe0124
++
++# Clone dependencies from bundles (offline)
++mkdir -p work
++cd work
++git clone -b pinned ../deps/PeTTaChainer.bundle PeTTaChainer
++git clone -b pinned ../deps/PeTTa.bundle PeTTa
++
++# Set up Python environment
++cd PeTTaChainer
++python3.12 -m venv .venv
++source .venv/bin/activate
++pip install -e ../PeTTa
++pip install -e .
++pip install pytest
++
++# Run Python test suite
++export LC_ALL=C.UTF-8
++python -m pytest tests/test_pettachainer.py -v
++
++# Run ProofWriter repro
++cd ..
++python proofwriter_test.py
++```
++
++**Expected output:** Backward chaining queries return empty (BROKEN); forward chaining also degrades.
++
++## Impact on Pipeline
++
++**Blocker Status:** ACTIVE  
++The semantic-parser arm of the pipeline depends on PeTTaChainer's backward chaining via `get_language_spec()` format-A output. With backward chaining broken, the pipeline cannot execute.
++
++**Workaround:** Use lib_pln format-B with PLN.Query (forward-chaining NARS-style) — this works and is verified in `docs/april-findings.md` and core smoke tests.
+diff --git a/tests/repros/ptc_backward_chaining_repro.py b/tests/repros/ptc_backward_chaining_repro.py
+new file mode 100644
+index 0000000..6f16884
+--- /dev/null
++++ b/tests/repros/ptc_backward_chaining_repro.py
+@@ -0,0 +1,120 @@
++#!/usr/bin/env python3
++"""
++ProofWriter test case from April 2026 findings - reproduce the backward chaining issue.
++Format A: PeTTaChainer format with semantic-parser output.
++
++Theory (RelNoneg-OWA-D1-390):
++- The bear likes the dog.
++- The cow is round.
++- The cow likes the bear.
++- The cow needs the bear.
++- The dog needs the squirrel.
++- The dog sees the cow.
++- The squirrel needs the dog.
++- If someone is round then they like the squirrel.
++- If the bear is round and the bear likes the squirrel then the squirrel needs the bear.
++- If the cow needs the dog then the cow is cold.
++
++Query: The cow likes the squirrel. (Expected: True)
++Reasoning: cow is round (fact) + round->likes squirrel (rule) => cow likes squirrel
++"""
++
++import sys
++from pettachainer import PeTTaChainer
++
++def test_proofwriter():
++    handler = PeTTaChainer()
++
++    # Add facts
++    facts = [
++        ("(: bear_likes_dog      (Like bear_1 dog_1)         (STV 1.0 0.9))", "bear likes dog"),
++        ("(: cow_is_round        (HasAttribute cow_1 round)  (STV 1.0 0.9))", "cow is round"),
++        ("(: cow_likes_bear      (Like cow_1 bear_1)         (STV 1.0 0.9))", "cow likes bear"),
++        ("(: cow_needs_bear      (Need cow_1 bear_1)         (STV 1.0 0.9))", "cow needs bear"),
++        ("(: dog_needs_squirrel  (Need dog_1 squirrel_1)     (STV 1.0 0.9))", "dog needs squirrel"),
++        ("(: dog_sees_cow        (See dog_1 cow_1)           (STV 1.0 0.9))", "dog sees cow"),
++        ("(: squirrel_needs_dog  (Need squirrel_1 dog_1)     (STV 1.0 0.9))", "squirrel needs dog"),
++    ]
++
++    print("Adding facts...")
++    for fact_str, desc in facts:
++        print(f"  {desc}")
++        handler.add_atom(fact_str)
++
++    # Add rules
++    rules = [
++        ("(: round_likes_squirrel (Implication (Premises (HasAttribute $x round)) (Conclusions (Like $x squirrel_1))) (STV 1.0 0.9))",
++         "If someone is round then they like the squirrel"),
++        ("(: bear_round_squirrel_needs (Implication (Premises (HasAttribute bear_1 round) (Like bear_1 squirrel_1)) (Conclusions (Need squirrel_1 bear_1))) (STV 1.0 0.9))",
++         "If bear is round and bear likes squirrel then squirrel needs bear"),
++        ("(: cow_needs_dog_cold (Implication (Premises (Need cow_1 dog_1)) (Conclusions (HasAttribute cow_1 cold))) (STV 1.0 0.9))",
++         "If cow needs dog then cow is cold"),
++    ]
++
++    print("\nAdding rules...")
++    for rule_str, desc in rules:
++        print(f"  {desc}")
++        handler.add_atom(rule_str)
++
++    # Test queries - backward chaining
++    test_cases = [
++        ("(: $prf (Like cow_1 squirrel_1) $tv)", "The cow likes the squirrel", True),
++        ("(: $prf (Need cow_1 bear_1) $tv)", "The cow needs the bear", True),
++        ("(: $prf (HasAttribute cow_1 round) $tv)", "The cow is round", True),
++    ]
++
++    print("\n" + "="*60)
++    print("BACKWARD CHAINING TESTS (query)")
++    print("="*60)
++
++    all_passed = True
++    for query_str, description, expected_result in test_cases:
++        print(f"\nQuery: {description}")
++        print(f"  MeTTa: {query_str}")
++        print(f"  Expected: {'True (found result)' if expected_result else 'False (empty)'}")
++
++        # Try backward chaining with different step limits
++        for steps in [2, 5, 10, 20, 50]:
++            result = handler.query(query_str, steps=steps, timeout_sec=0)
++            status = "PASS" if result else "FAIL"
++            if not result and expected_result:
++                all_passed = False
++            print(f"    steps={steps:2d}: {status:4s} - {len(result)} results")
++            if result:
++                for r in result[:2]:  # Show first 2 results
++                    print(f"      {r}")
++                break  # Got a result, no need to try higher steps
++
++    # Try forward chaining first, then backward
++    print("\n" + "="*60)
++    print("FORWARD THEN BACKWARD CHAINING")
++    print("="*60)
++
++    print("\nForward chaining to derive facts...")
++    seeds = handler.select_facts(["(HasAttribute cow_1 round)"])
++    print(f"  Seeds: {seeds}")
++
++    changed = handler.forward_chain(seeds, steps=10)
++    print(f"  Derived facts after forward chaining: {len(changed)} new facts")
++    for fact in changed[:3]:
++        print(f"    {fact}")
++
++    print("\nNow trying backward query after forward chaining...")
++    result = handler.query("(: $prf (Like cow_1 squirrel_1) $tv)", steps=20, timeout_sec=0)
++    print(f"  Query result: {'PASS' if result else 'FAIL'} ({len(result)} results)")
++    if result:
++        for r in result[:2]:
++            print(f"    {r}")
++    else:
++        all_passed = False
++
++    print("\n" + "="*60)
++    if all_passed:
++        print("VERDICT: WORKING - Backward chaining returns results")
++        return 0
++    else:
++        print("VERDICT: BROKEN - Backward chaining returns empty results")
++        return 1
++
++if __name__ == "__main__":
++    sys.exit(test_proofwriter())

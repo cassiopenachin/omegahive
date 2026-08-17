@@ -1,0 +1,221 @@
+diff --git a/projects/omegahive/RUNBOOK.md b/projects/omegahive/RUNBOOK.md
+index 590fcd3..d065214 100644
+--- a/projects/omegahive/RUNBOOK.md
++++ b/projects/omegahive/RUNBOOK.md
+@@ -19,17 +19,30 @@ blessed human-tier role-borrowing (decisions.md 2026-07-13).
+   pane. The mode is WORKER.md's (§Launch) — the hard line stays this repo's committed deny pins,
+   which are evaluated first in every mode; bypass mode is prohibited. Override the whole command
+   string with `HIVE_WORKER_CMD` (project.conf or env) if the worker CLI's flag ever drifts.
++- **The predictions gate is the tool, not a reading.** Before anything is written to the board,
++  `hive-launch` parses the order's `## Predictions` section with the same parser `hive-score`
++  uses. An order whose section is present, carries no declared-unpredicted line, and parses none
++  of the three scored fields **refuses** — the message prints the four literal bullet labels
++  (`Expected effort:`, `Expected questions:`, `Expected review outcome:`, `Named risks:`) and the
++  offending lines. `--anyway` launches it deliberately unpredicted. An order with **no**
++  `## Predictions` section, and an order carrying the one-line `- Declared unpredicted: …`
++  disposition, launch cleanly with no refusal; a partial section (1–2 of 3) warns loudly and
++  launches. A re-worded label is the failure the gate exists to catch — the scorer records it
++  `unpredicted (section present, 0 of 3 fields parsed)`, not as an absent section.
+ - **Answer:** `hive-answer <task> "<text>"` — appends to the order's `## Answers` section, commits +
+   pushes, nudges the pane. One SSH-friendly line from the phone: `ssh beastie 'hive-answer port-sha "use event time"'`.
+ - **Close** (after merging the PR in the GitHub app, and — for service-touching tasks — deploying
+   from main, below): `hive-close <task> [--reason <text>]` — verifies the board is `in_review`,
+   reads the result ref off the spine, emits `review.passed` + `status_override(done)`, then
+   **scores the task** (`hive-score`) and commits + pushes the calibration entry — closing and
+-  recording are one act. `review.passed` here = "the operator read the result report"
+-  (OPERATIONS.md pain 6), not artifact correctness. The scoring step is strictly after the close
+-  emits and strictly non-fatal: if it fails, the close still stands and `hive-close` prints the
+-  single command to re-run. `--no-score` skips it. The human review verdict is not inferable from
+-  the spine, so add it afterwards: `hive-score <task> --review "<clean|minor rework|rework>" --again`.
++  recording are one act. It then **regenerates the project's `tasks.md`/`tasks.csv`** (`hive-metrics`)
++  and commits + pushes them, so the metrics artifact is current after every close. `review.passed`
++  here = "the operator read the result report" (OPERATIONS.md pain 6), not artifact correctness.
++  Both follow-ups are strictly after the close emits and strictly non-fatal: if either fails, the
++  close still stands and `hive-close` prints the single command to re-run. `--no-score` skips the
++  score. The human review verdict is not inferable from the spine, so add it afterwards:
++  `hive-score <task> --review "<clean|minor rework|rework>" --again` — the verdict must be one of
++  those three literal values (case-insensitive; stored lowercase).
+ 
+ Run identity is a committed per-project fact (`projects/<name>/project.conf`: `RUN_ID`,
+ `CODE_REPO`); the deployment layer defaults to the operator-host layout and is env-overridable
+@@ -80,23 +93,23 @@ The hive runs many projects, one **run per project** (run id = project name; dec
+ 
+ ## Wave close: refresh the instruments (before the improver runs)
+ 
+-Each `hive-close` already scores its own task and commits the entry, so by the wave's end
+-`calibration.md` is current and pushed. Two things remain, run from the operator workspace clone
+-after the wave's **last** close:
++Each `hive-close` already scores its own task and regenerates the project's `tasks.md`/`tasks.csv`,
++committing and pushing both, so by the wave's end `calibration.md` and the metrics artifact are
++current. One thing remains, run from the operator workspace clone after the wave's **last** close:
+ 
+ ```bash
+-hive-metrics <project>                                            # regenerate + commit + push tasks.{md,csv}
+ hive-score <task> --review "<clean|minor rework|rework>" --again  # once per task closed this wave
+ #   the review verdict is the one field the spine cannot know (PR rework is not an event), so it is
+ #   supplied by hand; --again because the close already recorded an entry without it
++#   --review accepts only the three literal values, case-insensitive, stored lowercase
+ #   inside any loop, append </dev/null to each call — the spine read consumes stdin
+ ```
+ 
+-Both tools commit and push what they regenerate (pathspec-scoped to
+-`projects/<project>/metrics/`), so there is no separate `git add`/`commit`/`push` step. That is
+-load-bearing rather than convenience: the improver reads **only committed instruments**, so an
+-uncommitted `calibration.md` is invisible to it — learned at retro 1, when three wave-1 scores sat
+-uncommitted on the operator clone (retro 2026-07-27 D5). `--no-commit` on either tool opts out.
++The tools commit and push what they write (pathspec-scoped to `projects/<project>/metrics/`), so
++there is no separate `git add`/`commit`/`push` step. That is load-bearing rather than convenience:
++the improver reads **only committed instruments**, so an uncommitted `calibration.md` is invisible
++to it — learned at retro 1, when three wave-1 scores sat uncommitted on the operator clone (retro
++2026-07-27 D5). `--no-commit` on either tool opts out.
+ 
+ Then the improver retro runs (`seats/improver/PROTOCOL.md`), and its committed repairs land
+ before the next wave's orders launch.
+diff --git a/projects/omegahive/reports/2026-08-16-instrument-teeth-result.md b/projects/omegahive/reports/2026-08-16-instrument-teeth-result.md
+new file mode 100644
+index 0000000..e172e63
+--- /dev/null
++++ b/projects/omegahive/reports/2026-08-16-instrument-teeth-result.md
+@@ -0,0 +1,142 @@
++# Result: instrument-teeth — the predictions gate becomes a tool, not a reading
++
++**Project:** omegahive · **Order:** `orders/2026-07-29-instrument-teeth.md` · **Closed:** 2026-08-16
++
++## What shipped
++
++One `scripts/` PR (six files) plus RUNBOOK touches. All six scope items landed; the
++drill-hygiene fold is the two named classes only.
++
++- **`scripts/hive-common.sh`** — the shared Predictions parser, factored here as the single
++  source of truth for an order's `## Predictions` section:
++  - `parse_predictions <order-file>` sets `PRED_HAS_SECTION` / `PRED_DECLARED` / `PRED_FIELDS` /
++    `PRED_MISSING` / `PRED_OFFENDING` / the three `*_TXT` verbatim values. It reads the file's
++    text only; it never writes to the order (stop-line: tooling never edits an order body).
++  - `assess_predictions <order-file>` prints `refuse` | `warn` | `allow` — the gate's teeth.
++  - `PRED_LABELS` — the four literal bullet labels, printed by a refusal. `Named risks:` is
++    **reported** (printed) but never **counted** among the three scored fields (R9 held; a
++    gate-content change is the operator's call, not a worker's).
++  - `commit_metrics` **refuses rather than rebases** on push failure (scope 6): the commit stays
++    local, the manual resolution step is printed (`git pull --rebase && git push`), and the caller
++    returns non-zero. The old `push → pull --rebase → push` retry is gone.
++- **`scripts/hive-launch`** — the predictions gate (scope 1 + 2). Before any spine write, the
++  launch calls `assess_predictions` on the pinned order. A `## Predictions` section that is
++  present, carries no declared-unpredicted line, and parses none of the three scored fields
++  **refuses** — the message names the four literal labels, prints the offending lines, and names
++  `--anyway` as the deliberate escape. An absent section and the declared-unpredicted one-liner
++  launch cleanly; a 1–2-of-3 partial warns loudly and launches. Same parser `hive-score` uses.
++- **`scripts/hive-score`** — the same shared parser (scope 2 + 3); its own regex set is deleted.
++  Coverage now records **four distinct strings**: `unpredicted (no \`## Predictions\` section)`,
++  `unpredicted (declared unpredicted in section)`, `unpredicted (section present, 0 of 3 fields
++  parsed)`, and `partial (N of 3 fields predicted; missing: <labels>)` — so "nobody predicted"
++  and "the author predicted and we lost it" can never be conflated again (D1). `--review`
++  validates (scope 4): only `clean | minor rework | rework`, case-insensitive, stored lowercase;
++  anything else refuses with a message naming the three values.
++- **`scripts/hive-close`** — regenerates the project's `tasks.md`/`tasks.csv` alongside the score
++  (scope 5), retiring R6's surviving manual half. Same ordering discipline as scoring: strictly
++  after the close emits, strictly non-fatal, loud with the exact command to re-run.
++- **`scripts/hive-metrics-drill.sh`** — the deterministic leg. New fixture tasks (`theta` — the
++  `- **Effort:**` dialect, closed; plus `declared` and `twothirds` orders), and new sections:
++  the parser/gate predicate (refuse/warn/allow per fixture), the one-parser proof (the gate and
++  `hive-score` agree on the same input — DoD (c)), the `--review` validation, and the
++  `commit_metrics` refuses-not-rebases injection. Drill-hygiene sweep applied (see **Reflection**).
++- **`scripts/hive-tooling-drill.sh`** — new lifecycle cases (executed elsewhere, where the live
++  stack and tmux exist): the launch gate (refuse before provisioning, `--anyway`, declared/no-
++  section allow, 2-of-3 loud warn), close-regenerates-metrics assertions on the alpha close, and
++  an injected metrics-regeneration failure proving the close stands with a loud complaint.
++- **`workspace/projects/omegahive/RUNBOOK.md`** — operator surface updated: the predictions gate
++  under Launch, the close's metrics regeneration and `--review` vocabulary under Close, and the
++  Wave-close checklist now omits the retired `hive-metrics <project>` step.
++
++## How verified
++
++- **Hermetic drill green:** `bin/bench-verify -- scripts/hive-metrics-drill.sh` → **131 PASS,
++  0 FAIL**, no events issued, fixture byte-identical afterwards. This is the deterministic leg
++  and it covers every DoD letter that can be covered without the live stack:
++  - (a) `theta` order → `assess_predictions` = `refuse`; the refusal's raw material
++    (`PRED_FIELDS=0`, all three missing labels, offending lines captured) asserted;
++  - (b) `gamma` (no section) and `declared` → `allow`; `beta`/`twothirds` → `warn`;
++  - (c) the one-parser proof: `hive-score theta` records `section present, 0 of 3 fields parsed`
++    — the same parse the gate refuses on;
++  - (d) `gamma` and `theta` scored as the two distinct coverage strings on the same fixture;
++  - (e) `--review Rework` stores `rework`; `--review bogus` refuses naming the three values;
++  - (g) `commit_metrics` push-refusal: non-zero exit, loud, names `pull --rebase &&`, the local
++    commit survives, no `rebase failed` tell, recoverable by a plain push.
++- **`shellcheck -x` clean** on all six touched scripts (`hive-common.sh`, `hive-launch`,
++  `hive-score`, `hive-close`, `hive-metrics-drill.sh`, `hive-tooling-drill.sh`).
++- **The tooling drill was not run here** — it needs the live stack and tmux, which the task brief
++  executes elsewhere. Its new cases are written to the same assertion style as the existing ones
++  and cover DoD (a)/(b)/(f) end-to-end: launch refusal before any board state, `--anyway` launch,
++  declared/no-section clean launches, 2-of-3 loud warning, close-regenerates-metrics committed +
++  pushed, and the injected metrics-failure close-still-stands case.
++- No independent review ran (one bounded pass was not directed by the order; the drill cases are
++  the reviewable substance, per the order's own note that DoD (c) is "how review sees it").
++
++## To operate
++
++The operator surface changed in three places; the RUNBOOK carries the prose, the commands are:
++
++- **Launch a deliberately-unpredicted order after a refusal:** the refusal prints the four literal
++  labels and the offending lines. Either fix the labels to the literal forms (`Expected effort:`,
++  `Expected questions:`, `Expected review outcome:`, `Named risks:`) or launch deliberately
++  unpredicted with `hive-launch <order> --worker <id> --anyway`. An order with **no**
++  `## Predictions` section, or with the `- Declared unpredicted: …` one-liner, needs no `--anyway`.
++- **Wave close:** `hive-close <task>` now scores **and** regenerates the project's
++  `tasks.md`/`tasks.csv` — no separate `hive-metrics <project>` step. The `--review` verdict
++  remains the one field the spine cannot know: `hive-score <task> --review "<clean|minor rework|rework>" --again`
++  (three literal values only, case-insensitive, stored lowercase).
++- **Recovery for the two closed pln tasks whose labels R3 relabelled** (the order's named
++  operating step): re-score each to recover the two lost calibration data points:
++  ```bash
++  hive-score ptc-revalidate --project pln-benchmarks --again
++  hive-score pw-libpln-slice  --project pln-benchmarks --again
++  ```
++  Append `</dev/null` inside any loop (the spine read consumes stdin).
++- **Metrics push failure** (a new refusal, scope 6): `commit_metrics` now commits locally and
++  **refuses** to auto-rebase. Resolve by hand: `git -C <ops-ws> pull --rebase && git -C <ops-ws> push`.
++
++## Reflection
++
++- **The prose half failed exactly as D1 predicted, and the code half now cannot.** The
++  `- **Effort:**` dialect order `projects/pln-benchmarks/orders/2026-07-29-pw-writeup.md` was
++  caught at the wave-3 cut by a human doing the same reading that failed in wave 2. This order
++  makes that reading a launch gate with its own escape hatch, so the next author who re-words a
++  label gets a refusal that names the literal labels and prints the offending lines — not a
++  quiet `unpredicted` at scoring time. The gate is deliberately narrower than "has a Predictions
++  heading": absent and declared-unpredicted sections are recorded metrics, not errors, and the
++  refusal is on unparseable only.
++- **One parser, proven rather than asserted.** The reviewer's question for scope 2 was whether
++  the launch gate and the scorer are one parser or two that currently agree. The drill answers it
++  with a single input (`theta`) driven through both callers: the gate refuses it, the scorer
++  records it as section-present-unparsed. There is one regex set in the codebase and it lives in
++  `hive-common.sh`.
++- **`Named risks:` stayed unscored and got documented instead.** The order inherited R2's "N of 4"
++  vs the instrument's "3 scored fields" correction; the parser prints `Named risks:` among the
++  four literal labels but never counts it. That distinction is now in the code comment, the
++  launch-refusal message, and the RUNBOOK.
++- **Drill-hygiene sweep (DoD h), by class:**
++  - **Class 1 — EXIT-trap-before-isolation ordering.** `hive-metrics-drill.sh`: **none found** —
++    the drill is hermetic (no tmux, no live stack), its only cleanup is `rm -rf $SANDBOX`, which
++    has no default-socket hazard, so there is no isolation primitive whose ordering could bite.
++    `hive-tooling-drill.sh` already carries the fix (tmux isolation precedes the trap).
++  - **Class 2 — `cmd | grep -q` SIGPIPE under `set -o pipefail`.** `hive-metrics-drill.sh`:
++    **22 instances fixed** — every `grep -q*` at the right end of a pipeline changed to
++    `grep ... >/dev/null`, so a match no longer SIGPIPEs the producer (the passing case is
++    exactly when `-q` exits early). No rewrite, no restructure, no new framework — the fixes are
++    the one-token kind the order's bound allows. The remaining `grep -q` calls in the file are
++    direct file greps (not pipelines) and are unaffected.
++  - **No third class was found.** The boundary the order set ("a third defect class found is a
++    finding for the report, not a scope expansion") did not fire.
++- **A coverage string changed by the order's own wording.** `hive-score` previously recorded
++  `unpredicted (no usable \`## Predictions\` section)`; the order specifies
++  `unpredicted (no \`## Predictions\` section)`. The word "usable" is gone, and the two distinct
++  strings now match the order byte for byte.
++- **`--review` validation closes a real wave-2 column.** Retro 1's instrument note said lowercase
++  only, but wave 2 produced `Rework`, `Clean`, and `minor rework` into the same column. The
++  validator is three literal values, case-insensitive, stored lowercase — the column can no
++  longer drift back.
++- **The close→metrics coupling's blast radius is contained, twice.** The score-failure case
++  (already drilled) and the metrics-failure case (new) both prove the same discipline: the close
++  emits first, the follow-ups are non-fatal, and a broken remote leaves a loud complaint naming
++  exactly one recovery command. That the metrics step was added at all raises `commit_metrics`
++  firing rate — which is precisely why scope 6 (refuse, never rebase) rode in the same PR.

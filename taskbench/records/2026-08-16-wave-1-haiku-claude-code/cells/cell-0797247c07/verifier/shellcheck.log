@@ -1,0 +1,7 @@
+
+In scripts/hive-metrics-drill.sh line 706:
+PRED_JSON2=$(SCRIPT_DIR="$SCRIPT_DIR" bash -c 'source "$SCRIPT_DIR/hive-common.sh"; parse_predictions_from_order_file "$1"' \
+^--------^ SC2034 (warning): PRED_JSON2 appears unused. Verify use (or export if used externally).
+
+For more information:
+  https://www.shellcheck.net/wiki/SC2034 -- PRED_JSON2 appears unused. Verify...

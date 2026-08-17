@@ -1,0 +1,2 @@
+ok — every registration property case holds
+warning: `VIRTUAL_ENV=/home/cassio/work/sess-hip1-bench-qualify-0814/omegahive/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead

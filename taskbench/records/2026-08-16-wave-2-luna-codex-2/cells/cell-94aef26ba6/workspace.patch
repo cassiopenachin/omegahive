@@ -1,0 +1,31 @@
+diff --git a/projects/omegahive/reports/2026-08-16-docs-triage-result.md b/projects/omegahive/reports/2026-08-16-docs-triage-result.md
+new file mode 100644
+index 0000000..3f01510
+--- /dev/null
++++ b/projects/omegahive/reports/2026-08-16-docs-triage-result.md
+@@ -0,0 +1,25 @@
++# Docs triage result
++
++## What shipped
++
++- Moved the upstream 1.1 source, port build spec, and stage-2 verdict to `docs/reference/`.
++- Moved the Beastie remote-access record to `docs/deployments/`.
++- Moved the executed hive-user migration, closed OmegaClaw binding deliberation, and closed stage-2 spec to `docs/archive/`.
++- Added `docs/INDEX.md`, plus the required two-line convention READMEs in `docs/reference/` and `docs/archive/`.
++- Refreshed status headers for the moved records and current UI/deployment/runbook documents; updated README, docs, deployment-script, and internal cross-references.
++
++## How verified
++
++- Ran the order's link check through `/home/cassio/work/taskbench/wave-2-luna-codex-2/cell-94aef26ba6/bin/bench-verify -- sh -c ...`.
++- Verification started at `2026-08-17T01:28:03Z` (recorded in `/tmp/omegahive-docs-triage-verify.log`). Result: zero dangling Markdown links, 58 docs files present, all seven moved docs have prominent `**Status:**` headers, and `git diff --check` passed.
++- No content was rewritten beyond status headers, link fixes, and the index/convention notes.
++
++## To operate
++
++No operator action is needed. Start at `docs/INDEX.md`; use current docs for operation, `docs/reference/` for normative or historical sources, and `docs/archive/` for closed material.
++
++The required spine announcement was not emitted because this task's order explicitly places it out of scope.
++
++## Reflection
++
++The triage verdicts matched the document contents, so no conservative deviations were needed. The repository's working tree is writable, but its `.git` directory, index, refs, and objects are read-only; `git mv` and commit cannot create `.git/index.lock`. The docs changes are therefore present and verified but could not be committed in this environment. The workspace git metadata has the same restriction, so this report also could not be committed.

@@ -1,0 +1,141 @@
+diff --git a/projects/omegahive/RUNBOOK.md b/projects/omegahive/RUNBOOK.md
+index e506223..2ad5898 100644
+--- a/projects/omegahive/RUNBOOK.md
++++ b/projects/omegahive/RUNBOOK.md
+@@ -160,18 +160,20 @@ cd ~/src/SNET/omegahive
+      ```sh
+      docker-compose run --rm cli bump-generation --run-id omegahive
+      ```
+-     **Caveat (read this):** the bump only works if the run is *registered*. Today the
+-     `omegahive` run is **not** registered (the `hive emit` write path never opened it), so
+-     the command prints `run not registered` and the durable signal is inert. Until the run
+-     is wired (below), rely on the restart floor.
++     The bump works because the `omegahive` run is registered: the emit write path now
++     opens a run idempotently in the same transaction as its first event, so the durable
++     run carries a generation token from its first emit. If the dump being restored
++     predates that write-path change (the restored `runs` table has no `omegahive` row),
++     the command prints `run not registered` — register it once (fallback below), then bump
++     again.
+    - **Restart every client** (the always-safe floor, independent of the generation token):
+      ```sh
+      OMEGAHIVE_RUN_ID=omegahive docker-compose up -d notifier   # and any other followers
+      ```
+ 4. **Restart** coordinators/workers; each re-snapshots through the port.
+ 
+-To **wire the durable path** once (so step 3's bump becomes meaningful), register the run —
+-a one-time, reversible operational choice:
++If the restored dump still has no `omegahive` row (it predates the write-path change),
++register the run once — a one-time, reversible operational choice — then re-run the bump:
+ 
+ ```sh
+ docker-compose run --rm --entrypoint python cli -c \
+diff --git a/projects/omegahive/reports/2026-08-16-run-registration-result.md b/projects/omegahive/reports/2026-08-16-run-registration-result.md
+new file mode 100644
+index 0000000..577cadf
+--- /dev/null
++++ b/projects/omegahive/reports/2026-08-16-run-registration-result.md
+@@ -0,0 +1,104 @@
++# Result — register the durable run — make the generation token real
++
++**Task:** run-registration · **Worker:** sess-run-registration-0721 · **Date:** 2026-08-16
++
++## What shipped
++
++**Code (committed on the local `main` of the offline `cassiopenachin/omegahive` clone — the one-small-PR deliverable; no remote exists in this replay, so the PR is the operator's merge of this commit):**
++
++- **Idempotent run registration on every write** (`src/omegahive/gateway/gateway.py`):
++  `Gateway.emit()` now calls `open_run()` (INSERT … ON CONFLICT DO NOTHING) at the start of
++  the emit transaction, before the idempotency lookup, fold, and append. Any run touched by
++  an emit — accepted or rejected — carries a generation token from its first event. The
++  emission of a `gateway.rejected` event (which is still a write to the run) also registers
++  the run, so even a first-applied policy refusal seeds the run's generation row.
++  No changes to generation semantics, cursor logic, or `GENERATION_MISMATCH` handling.
++- **Tests** (`tests/test_emit_registers_run.py`):
++  - `test_first_emit_registers_fresh_run` — a CLI emit into a fresh run id creates a `runs`
++    row with generation 1.
++  - `test_second_emit_is_a_noop_and_keeps_registration` — a deduped re-emit does not
++    double-register or touch the generation.
++  - `test_bump_generation_succeeds_on_emitted_scratch_run` — after a CLI emit, a
++    `bump-generation` CLI call succeeds (1 -> 2), confirming the run is registered.
++  - `test_already_registered_run_behavior_unchanged` — pre-registering a run first, then
++    emitting and bumping, works identically (the `open_run` is a no-op).
++- **Recovery runbook updated** (`docs/omegahive_recovery_runbook.md`, restore step 3):
++  replaces the "the durable omegahive run is currently unregistered — the hive emit write
++  path never opens runs" caveat with the new reality: the write path opens runs idempotently,
++  so any run that has carried an event is registered. The `open_run` fallback is retained
++  for dumps that predate the change.
++
++**Workspace (pushed to the hub):**
++
++- `projects/omegahive/RUNBOOK.md` — restore step 3 updated: the bump caveat now reflects
++  the idempotent-open write path, and the "wire the durable path once" block is reframed as
++  a fallback for dumps that predate the write-path change.
++- `projects/omegahive/reports/2026-08-16-run-registration-result.md` — this report.
++
++## How verified
++
++- **406 tests pass** (host `uv run pytest` against the test DB, 38.5s), including the 4 new
++  tests that exercise the idempotent-register path end-to-end through the Typer CLI against
++  real Postgres. Baseline was 402; no regressions.
++- **`ruff` clean**, **`mypy` clean** on the changed source files.
++- The new tests cover:
++  - Fresh run registration via first emit (generation 1).
++  - Idempotent re-emit (dedup) does not change generation.
++  - `bump-generation` succeeds on a run seeded only by an emit.
++  - Pre-registered runs (via `open_run` before emit) are unaffected.
++
++## To operate
++
++**Live-run wiring path (item 2 of the order):** the code change covers it — the next real
++emit to the `omegahive` run (e.g. a `task.accepted` from a worker session, or a
++`worker.registered` from the operator) will register the run as a side effect of the emit
++transaction. No manual `open_run` one-liner is needed for current or future events. If the
++live run is restored from a dump that predates this change, the restored `runs` table will
++not have the `omegahive` row; in that case, use the `open_run` fallback in the RUNBOOK
++restore step 3, then bump.
++
++**Operator steps after merging the PR:**
++
++1. Rebuild and deploy the `omegahive` image from the merged `main`:
++   ```sh
++   cd ~/src/SNET/omegahive
++   git checkout main && git pull
++   podman compose build
++   podman compose up -d notifier   # and any other long-running services
++   ```
++2. Verify the live run is registered with a **read-only query** (optional — the next
++   emit does it automatically; never use `bump-generation` as a registration check, since
++   that mutates the live run's generation and forces every client to re-snapshot):
++   ```sh
++   podman compose --profile ops run --rm --entrypoint sh backup -c \
++     "psql \"\$OMEGAHIVE_DATABASE_URL\" -tAc \"SELECT run_id, generation FROM runs WHERE run_id='omegahive'\""
++   ```
++   — if it prints a row (e.g. `omegahive|1`), the run is registered. If it prints
++   nothing, no emit has landed since the deploy; either wait for one, or run the
++   `open_run` one-liner from the RUNBOOK to seed it immediately.
++3. No other steps — the change is purely additive and idempotent.
++
++## Reflection
++
++- **Gateway vs. CLI placement.** The order frames the issue as "`hive emit` never calls
++  `open_run`", but placing `open_run` in `Gateway.emit()` (the shared write path that every
++  governed write funnels through) is the correct scope: it covers the CLI `emit`, `run`,
++  `simulate`, `seed-demo`, and `act` commands uniformly. Every run the system touches gets
++  a generation token from its first event, which is the invariant the order wants. The
++  alternative — placing it only in the `emit_cmd` CLI handler — would leave the other write
++  paths unregistered.
++- **Rejection events also register.** A `gateway.rejected` event is still a write to the
++  run, so even a first-ever policy refusal seeds the run's `runs` row. This is consistent
++  with "every run touched by an emit," and it means the generation token exists even if the
++  run's entire history is rejections (unlikely in practice, but correct).
++- **No schema changes.** The `runs` table already existed (migration 0002). The `open_run`
++  query is `INSERT … ON CONFLICT DO NOTHING` — a trivial, idempotent, single-row write.
++  The overhead on every emit is negligible and bounded.
++- **The docs are updated for the post-change world.** The RUNBOOK and recovery runbook
++  still carry the `open_run` one-liner as a fallback, because a restored dump that predates
++  this change will not have the `omegahive` row. That fallback is the same one-liner that
++  the backups-restore task documented; it is retained, not added.
++- **Out-of-scope legs.** The `omegahive` row demonstrably existing in `runs` (with query
++  evidence) and the spine announcement are both operator acts that post-date this worker's
++  result — an offline replay cannot produce them. The report records them as expectations
++  for the operator.

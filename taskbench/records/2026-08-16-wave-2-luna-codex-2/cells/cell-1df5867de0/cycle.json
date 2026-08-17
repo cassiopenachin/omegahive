@@ -1,0 +1,226 @@
+{
+  "final": {
+    "deterministic": {
+      "checks": [
+        {
+          "detail": "ok",
+          "exit_code": 0,
+          "id": "shellcheck",
+          "output_tail": "",
+          "passed": true
+        },
+        {
+          "detail": "ok",
+          "exit_code": 0,
+          "id": "metrics-drill",
+          "output_tail": "metrics drill: sandbox=/tmp/hive-metrics-drill.QN7DkZ\n\nmetrics drill: hive-metrics\n  PASS  tasks.md written\n  PASS  tasks.csv written\n  PASS  the artifacts were committed\n  PASS  the artifacts reached the upstream\n  PASS  the workspace was left clean\n  PASS  a no-change re-run says so\n  PASS  a no-change re-run adds no commit\n  PASS  --no-commit leaves the regenerated artifact uncommitted\n  PASS  the follow-up run recorded it after all\n  PASS  generated marker present\n  PASS  tasks.md ends with a newline\n  PASS  tasks.csv ends with a newline\n  PASS  alpha row present\n  PASS  gamma listed as retired\n  PASS  delta (in flight) not measured\n  PASS  delta listed as open, not measured\n  PASS  alpha launch latency 60s\n  PASS  alpha pickup 60s\n  PASS  alpha accept->result 3600s\n  PASS  alpha result->review 180s\n  PASS  alpha result->close 240s\n  PASS  alpha 0 questions\n  PASS  alpha shape=worked\n  PASS  beta blocked 600s\n  PASS  beta accept->result 3600s\n  PASS  beta net of blocked 3000s\n  PASS  beta 1 question\n  PASS  beta 3 rejections (coalesced)\n  PASS  beta 3 worker rejections\n  PASS  beta 1 reassignment\n  PASS  gamma shape=retired\n  PASS  gamma has no accept duration\n  PASS  epsilon measured (closed by task.failed)\n  PASS  epsilon final_status=failed\n  PASS  epsilon not listed as open\n  PASS  epsilon post-result block = 500s\n  PASS  epsilon net <= gross\n  PASS  zeta measured once\n  PASS  zeta closed at the second close\n  PASS  zeta final_status=done\n  PASS  zeta 3599s renders as 1h0m\n  PASS  no impossible clock strings\n  PASS  unattributed probe surfaced\n  PASS  pipe in a task id is escaped\n  PASS  no unescaped pipe in probe row\n  PASS  tasks.md regeneration is byte-identical\n  PASS  tasks.csv regeneration is byte-identical\n  PASS  artifact records its head seq\n  PASS  --upto head reproduces the artifact\n  PASS  --upto before beta close drops beta\n  PASS  --upto before beta close keeps alpha\n  PASS  --upto never commits the rewound artifact\n  PASS  --upto says why it did not commit\n  PASS  --upto does NOT advise committing it\n  PASS  --upto names the restore command\n  PASS  --upto never leaks the seq into prose\n  PASS  unreachable/empty run refused\n  PASS  --upto below the first seq refused\n  PASS  refused --upto left the artifact intact\n\nmetrics drill: hive-score\n  PASS  calibration.md written\n  PASS  alpha entry recorded\n  PASS  alpha predicted effort quoted\n  PASS  alpha actual effort scored\n  PASS  alpha effort verdict = hit\n  PASS  alpha questions verdict = hit\n  PASS  alpha review left unscored\n  PASS  alpha coverage full\n  PASS  the score was committed\n  PASS  the score reached the upstream\n  PASS  scoring left the workspace clean\n  PASS  the score commit touched only the metrics dir\n  PASS  --no-commit appends but does not commit\n  PASS  --no-commit adds no commit\n  PASS  re-scoring refused\n  PASS  --again re-scores\n  PASS  epsilon effort verdict = over\n  PASS  epsilon scorable (task.failed closed it)\n  PASS  zeta effort verdict = under\n  PASS  zeta questions verdict = under\n  PASS  zeta predicted range quoted\n  PASS  beta recorded as partial\n  PASS  beta effort prediction quoted\n  PASS  beta absent fields marked\n  PASS  beta absent field unpredicted\n  PASS  gamma recorded as unpredicted\n  PASS  gamma effort unpredicted\n  PASS  absent coverage names the missing section\n  PASS  present-unparsed coverage names the zero parsed fields\n  PASS  present-unparsed effort is unpredicted\n  PASS  bogus review verdict refused\n  PASS  --review Rework stores lowercase rework\n  PASS  scoring an open task refused\n  PASS  un-inferable project refused\n  PASS  scoring an unknown task refused\n  PASS  ambiguous order refused, not scored as unpredicted\n  PASS  traversal in --project refused\n  PASS  unknown --project refused\n  PASS  no escaped calibration file written\n  PASS  run resolved from project.conf, not the name\n  PASS  entries cite the conf's run\n  PASS  --run overrides the conf\n  PASS  project without a conf refused\n  PASS  metrics push failure refuses without rebase\n  PASS  push refusal leaves the local metrics commit\n  PASS  push refusal does not rebase the metrics commit\n\nmetrics drill: stop-lines\n  PASS  fixture untouched\n  PASS  hive-metrics contains no emit\n  PASS  hive-score contains no emit\n  PASS  neither tool commits to git\n\nmetrics drill: PASS=109  FAIL=0  (no events issued; no run touched)\n",
+          "passed": true
+        }
+      ],
+      "excluded_legs": [
+        {
+          "executed_by": "operator",
+          "leg": "`scripts/hive-tooling-drill.sh` green, including this task's new cases.",
+          "reason": "The loop drill emits scratch spine events, which this instrument's own scope forbids, and it drives tmux. At this task's baseline the drill predates the tmux isolation that the task itself introduces, so running it necessarily creates sessions on the operator's live tmux server \u2014 the server holding every worker pane. An offline evaluation instrument must not carry that blast radius. The operator runs the drill against a green cell."
+        },
+        {
+          "executed_by": "not-executed",
+          "leg": "Announce the result on the spine per WORKER.md.",
+          "reason": "A spine emit, which this instrument's own scope forbids. The report the order asks for IS written and graded \u2014 only the announcement is out of reach."
+        }
+      ],
+      "missing_artefacts": [],
+      "passed": true,
+      "stop_line_violations": [],
+      "untouched_required_changes": []
+    },
+    "review": {
+      "defect_count": 0,
+      "passed": true,
+      "probe_ok": true,
+      "ran": true,
+      "reason": "",
+      "verdict": {
+        "cell_id": "cell-1df5867de0",
+        "dod_legs": [
+          {
+            "leg": "one-parser",
+            "met": "yes",
+            "note": "parse_predictions() is defined once in scripts/hive-common.sh:240-268 and is the only parser either caller uses: hive-launch:170 calls it, and hive-score:211 replaced its own inline awk/grep block with the same call (candidate.patch:197-212 deletes the duplicated regexes). This is literally one implementation, not two that agree, so the failure mode DoD (c) guards against is closed by construction. A launch-side drill case proving both callers agree would live in hive-tooling-drill.sh, which the rubric places out of scope."
+          },
+          {
+            "leg": "refuse-unparsed-not-absent",
+            "met": "yes",
+            "note": "hive-launch:171-179 refuses only when PRED_SECTION_PRESENT=1 and PRED_FIELDS=0 and the declared-unpredicted disposition is absent; the message names all four literal labels and prints the offending lines, and --anyway (parsed at hive-launch:26) bypasses it with a warning. The check sits at line 170, before the clones (202-203) and before every emit (233-243), so no spine write can precede a refusal. Absent section: PRED_SECTION_PRESENT=0, no branch taken. Partial (1-2 of 3): the elif at 177 warns and continues."
+          },
+          {
+            "leg": "absent-vs-unparsed-distinct",
+            "met": "yes",
+            "note": "hive-score:284 emits \"unpredicted (no `## Predictions` section)\" vs \"unpredicted (section present, 0 of 3 fields parsed)\", and the partial string at 291 names the missing fields. verifier/metrics-drill.log:92-94 shows both strings asserted on two distinct fixture tasks (gamma absent, eta present-unparsed), green."
+          },
+          {
+            "leg": "review-vocabulary",
+            "met": "yes",
+            "note": "hive-score:229-232 lowercases via tr then case-matches clean|'minor rework'|rework, dying with a message naming the three values; validation runs before the calibration append at 330. verifier/metrics-drill.log:95-96: 'bogus review verdict refused' and '--review Rework stores lowercase rework' both PASS."
+          },
+          {
+            "leg": "close-ordering",
+            "met": "yes",
+            "note": "candidate.patch:9-21 appends the hive-metrics regeneration after the existing close+score block at the end of scripts/hive-close, guarded as an `if` condition so errexit cannot fire; the failure branch prints 'the close SUCCEEDED, but task metrics regeneration failed' plus a recovery command to stderr and leaves the script exiting 0. RUNBOOK is updated to match (artefacts/workspace.patch, Close entry)."
+          },
+          {
+            "leg": "refuse-not-rebase",
+            "met": "yes",
+            "note": "hive-common.sh commit_metrics no longer contains pull --rebase (candidate.patch:41-49): on push failure it prints 'metrics push refused - committed locally ... NOT on the hub' plus the manual resolution step and returns 1. verifier/metrics-drill.log:108-110 proves it against a genuinely divergent upstream: refusal message asserted, the local commit survives, and its parent is unchanged (no rebase)."
+          },
+          {
+            "leg": "named-risks-unscored",
+            "met": "yes",
+            "note": "No fourth field is scored: FIELDS still counts only effort/questions/review (hive-score:279-282) and coverage strings still say 'of 3'. The RUNBOOK addition states it plainly - '`Named risks:` is required authoring prose but remains intentionally unscored' - and the refusal message still prints Named risks: as one of the four literal labels without gating on it."
+          },
+          {
+            "leg": "drill-hygiene-reported",
+            "met": "yes",
+            "note": "Report names the file read (scripts/hive-metrics-drill.sh) and both bounded classes with 'none found' stated for each, and a comment recording the two classes was added at the trap site. Non-blocking observation, not a defect: the file does contain the literal `cmd | grep -q` shape (candidate.patch:147, pre-existing; and one the attempt itself added at candidate.patch:160), which sits awkwardly beside both the '0 instances' wording and the new comment's 'never grep -q'. Those instances pipe a few lines from a local helper, so they cannot actually raise SIGPIPE, and no rewrite was in scope - the finding-level conclusion (nothing to fix) stands even though the wording overstates it."
+          },
+          {
+            "leg": "result-report",
+            "met": "yes",
+            "note": "projects/omegahive/reports/2026-07-29-instrument-teeth-result.md carries What shipped / How verified / To operate / Reflection. Its verification claims match verifier/: the metrics drill green with the absent-vs-unparsed, review-validation and push-refusal cases, and shellcheck clean. To operate names the exact recovery the order demanded, `hive-score <task> --project pln-benchmarks --again`. It does not claim the out-of-scope tooling-drill run or spine announcement."
+          },
+          {
+            "leg": "shellcheck",
+            "met": "yes",
+            "note": "verifier/shellcheck.log is empty - clean on the touched scripts."
+          },
+          {
+            "leg": "metrics-drill",
+            "met": "yes",
+            "note": "verifier/metrics-drill.log:118 - PASS=109 FAIL=0, including all five new cases (absent vs present-unparsed coverage strings, review validation, review lowercasing, push-refusal-without-rebase) and the unchanged stop-line checks (no events issued, no run touched)."
+          }
+        ],
+        "verdict": "pass",
+        "would_have_shipped_defects": []
+      }
+    }
+  },
+  "first_pass": {
+    "deterministic": {
+      "checks": [
+        {
+          "detail": "ok",
+          "exit_code": 0,
+          "id": "shellcheck",
+          "output_tail": "",
+          "passed": true
+        },
+        {
+          "detail": "ok",
+          "exit_code": 0,
+          "id": "metrics-drill",
+          "output_tail": "metrics drill: sandbox=/tmp/hive-metrics-drill.tKrL9G\n\nmetrics drill: hive-metrics\n  PASS  tasks.md written\n  PASS  tasks.csv written\n  PASS  the artifacts were committed\n  PASS  the artifacts reached the upstream\n  PASS  the workspace was left clean\n  PASS  a no-change re-run says so\n  PASS  a no-change re-run adds no commit\n  PASS  --no-commit leaves the regenerated artifact uncommitted\n  PASS  the follow-up run recorded it after all\n  PASS  generated marker present\n  PASS  tasks.md ends with a newline\n  PASS  tasks.csv ends with a newline\n  PASS  alpha row present\n  PASS  gamma listed as retired\n  PASS  delta (in flight) not measured\n  PASS  delta listed as open, not measured\n  PASS  alpha launch latency 60s\n  PASS  alpha pickup 60s\n  PASS  alpha accept->result 3600s\n  PASS  alpha result->review 180s\n  PASS  alpha result->close 240s\n  PASS  alpha 0 questions\n  PASS  alpha shape=worked\n  PASS  beta blocked 600s\n  PASS  beta accept->result 3600s\n  PASS  beta net of blocked 3000s\n  PASS  beta 1 question\n  PASS  beta 3 rejections (coalesced)\n  PASS  beta 3 worker rejections\n  PASS  beta 1 reassignment\n  PASS  gamma shape=retired\n  PASS  gamma has no accept duration\n  PASS  epsilon measured (closed by task.failed)\n  PASS  epsilon final_status=failed\n  PASS  epsilon not listed as open\n  PASS  epsilon post-result block = 500s\n  PASS  epsilon net <= gross\n  PASS  zeta measured once\n  PASS  zeta closed at the second close\n  PASS  zeta final_status=done\n  PASS  zeta 3599s renders as 1h0m\n  PASS  no impossible clock strings\n  PASS  unattributed probe surfaced\n  PASS  pipe in a task id is escaped\n  PASS  no unescaped pipe in probe row\n  PASS  tasks.md regeneration is byte-identical\n  PASS  tasks.csv regeneration is byte-identical\n  PASS  artifact records its head seq\n  PASS  --upto head reproduces the artifact\n  PASS  --upto before beta close drops beta\n  PASS  --upto before beta close keeps alpha\n  PASS  --upto never commits the rewound artifact\n  PASS  --upto says why it did not commit\n  PASS  --upto does NOT advise committing it\n  PASS  --upto names the restore command\n  PASS  --upto never leaks the seq into prose\n  PASS  unreachable/empty run refused\n  PASS  --upto below the first seq refused\n  PASS  refused --upto left the artifact intact\n\nmetrics drill: hive-score\n  PASS  calibration.md written\n  PASS  alpha entry recorded\n  PASS  alpha predicted effort quoted\n  PASS  alpha actual effort scored\n  PASS  alpha effort verdict = hit\n  PASS  alpha questions verdict = hit\n  PASS  alpha review left unscored\n  PASS  alpha coverage full\n  PASS  the score was committed\n  PASS  the score reached the upstream\n  PASS  scoring left the workspace clean\n  PASS  the score commit touched only the metrics dir\n  PASS  --no-commit appends but does not commit\n  PASS  --no-commit adds no commit\n  PASS  re-scoring refused\n  PASS  --again re-scores\n  PASS  epsilon effort verdict = over\n  PASS  epsilon scorable (task.failed closed it)\n  PASS  zeta effort verdict = under\n  PASS  zeta questions verdict = under\n  PASS  zeta predicted range quoted\n  PASS  beta recorded as partial\n  PASS  beta effort prediction quoted\n  PASS  beta absent fields marked\n  PASS  beta absent field unpredicted\n  PASS  gamma recorded as unpredicted\n  PASS  gamma effort unpredicted\n  PASS  scoring an open task refused\n  PASS  un-inferable project refused\n  PASS  scoring an unknown task refused\n  PASS  ambiguous order refused, not scored as unpredicted\n  PASS  traversal in --project refused\n  PASS  unknown --project refused\n  PASS  no escaped calibration file written\n  PASS  run resolved from project.conf, not the name\n  PASS  entries cite the conf's run\n  PASS  --run overrides the conf\n  PASS  project without a conf refused\n\nmetrics drill: stop-lines\n  PASS  fixture untouched\n  PASS  hive-metrics contains no emit\n  PASS  hive-score contains no emit\n  PASS  neither tool commits to git\n\nmetrics drill: PASS=101  FAIL=0  (no events issued; no run touched)\n",
+          "passed": true
+        }
+      ],
+      "excluded_legs": [
+        {
+          "executed_by": "operator",
+          "leg": "`scripts/hive-tooling-drill.sh` green, including this task's new cases.",
+          "reason": "The loop drill emits scratch spine events, which this instrument's own scope forbids, and it drives tmux. At this task's baseline the drill predates the tmux isolation that the task itself introduces, so running it necessarily creates sessions on the operator's live tmux server \u2014 the server holding every worker pane. An offline evaluation instrument must not carry that blast radius. The operator runs the drill against a green cell."
+        },
+        {
+          "executed_by": "not-executed",
+          "leg": "Announce the result on the spine per WORKER.md.",
+          "reason": "A spine emit, which this instrument's own scope forbids. The report the order asks for IS written and graded \u2014 only the announcement is out of reach."
+        }
+      ],
+      "missing_artefacts": [],
+      "passed": true,
+      "stop_line_violations": [],
+      "untouched_required_changes": []
+    },
+    "passed": false,
+    "review": {
+      "defect_count": 2,
+      "passed": false,
+      "probe_ok": true,
+      "ran": true,
+      "reason": "2 would-have-shipped defect(s)",
+      "verdict": {
+        "cell_id": "cell-1df5867de0",
+        "dod_legs": [
+          {
+            "leg": "one-parser",
+            "met": "yes",
+            "note": "parse_predictions lives once in hive-common.sh:242-260 and is the sole caller path for both hive-launch:170 and hive-score:211; hive-score's duplicate regexes were deleted (candidate.patch:141-149). Structurally one implementation, so the two cannot drift. The drill case that would prove it belongs to the out-of-scope hive-tooling-drill.sh and is not counted against the attempt."
+          },
+          {
+            "leg": "refuse-unparsed-not-absent",
+            "met": "yes",
+            "note": "hive-launch:171-179 refuses only when PRED_SECTION_PRESENT=1 and PRED_FIELDS=0 and not declared-unpredicted, gated by the existing --anyway; it sits at line 170, before the clones (line 200+) and before every emit (line 232+), so the refusal precedes any spine write. Absent section and declared-unpredicted launch untouched; 1-2 of 3 warns and continues. The declared-unpredicted disposition is matched by the literal 'deliberately unpredicted' (hive-common.sh:251), which cannot be cross-checked against PROTOCOL.md from this packet \u2014 noted, not scored as a defect."
+          },
+          {
+            "leg": "absent-vs-unparsed-distinct",
+            "met": "yes",
+            "note": "hive-score:284 emits two different strings. Implemented in code; no fixture case locks it in (see defect 1)."
+          },
+          {
+            "leg": "review-vocabulary",
+            "met": "yes",
+            "note": "hive-score:229-232 lowercases via tr then accepts only clean|minor rework|rework, dying with a message naming all three. No drill case (see defect 1)."
+          },
+          {
+            "leg": "close-ordering",
+            "met": "yes",
+            "note": "candidate.patch:9-21 appends the hive-metrics call after the close emits and after the existing scoring block; the failure path is an else branch printing a WARNING that states the close SUCCEEDED and names the recovery command, and it returns 0, so a regeneration failure cannot make a good close look failed. hive-close itself is not in artefacts, so SCRIPT_DIR/PROJECT could only be checked against the surrounding diff context, where both are already in use."
+          },
+          {
+            "leg": "refuse-not-rebase",
+            "met": "yes",
+            "note": "hive-common.sh:232-236 \u2014 the pull --rebase / re-push pair is gone; push failure now prints the local-commit state plus the manual resolution step and returns 1. No drill assertion (see defect 1). The comment above it now reads as a dangling sentence (\"Push mirrors hive-answer's\" followed by the new paragraph, hive-common.sh:220-222) \u2014 cosmetic, not counted."
+          },
+          {
+            "leg": "named-risks-unscored",
+            "met": "yes",
+            "note": "Still three scored fields (hive-common.sh:256-259, hive-score:279-282); Named risks is named as required-but-unscored in hive-common.sh:240-241, in the launch refusal's label list (hive-launch:173) and in the RUNBOOK addition (workspace.patch:40-47). No prediction field added, removed or newly scored."
+          },
+          {
+            "leg": "drill-hygiene-reported",
+            "met": "no",
+            "note": "See defect 2 \u2014 no files-read list, no instance count, no 'none found'; the report's phrasing implies a fix the diff does not contain."
+          },
+          {
+            "leg": "result-report",
+            "met": "no",
+            "note": "The report exists at projects/omegahive/reports/2026-07-29-instrument-teeth-result.md with all four required headings, and To operate names the pln-benchmarks re-score recovery step. It fails the 'claims match what the attempt did' test on two counts: the hygiene-fold claim (defect 2) and How verified, which offers the 101-case drill run as verification of work none of those cases exercise."
+          },
+          {
+            "leg": "shellcheck",
+            "met": "yes",
+            "note": "verifier/shellcheck.log is empty \u2014 clean."
+          },
+          {
+            "leg": "metrics-drill",
+            "met": "no",
+            "note": "verifier/metrics-drill.log:110 reports PASS=101 FAIL=0, so the drill is green, but 'including the new cases' is unmet: candidate.patch adds no assertion to hive-metrics-drill.sh at all."
+          }
+        ],
+        "verdict": "fail",
+        "would_have_shipped_defects": [
+          {
+            "evidence": "candidate.patch:100-114 \u2014 the entire hive-metrics-drill.sh hunk is a comment, zero assertions; verifier/metrics-drill.log:64-102 (the hive-score section) contains no case for `--review Rework` storing `rework` or `--review bogus` refusing (DoD (e)), no two-fixture case showing `unpredicted (no \\`## Predictions\\` section)` distinct from `unpredicted (section present, 0 of 3 fields parsed)` (DoD (d)), and no case asserting commit_metrics refuses rather than rebases on push failure (DoD (g)). These are all hive-score/hive-metrics-side cases, i.e. the drill the rubric checks mechanically, not the out-of-scope hive-tooling-drill.sh.",
+            "summary": "No new drill cases were added anywhere: the only change to the in-scope hermetic drill is a four-line comment, so DoD (d), (e) and (g) ship as unverified behaviour.",
+            "why_blocking": "The order's DoD is \"drill green including the new cases\", and its whole thesis (retro 2 D6) is that a repair holds only where it becomes code or a checked moment. The operator merging this PR gets the new coverage strings, the --review vocabulary and the refuse-not-rebase change with nothing asserting them, so the next edit to hive-score's coverage case, its --review validation, or commit_metrics' push path regresses silently \u2014 exactly the D1 failure mode this order exists to close. The candidate's own report cites the 101 green cases as the verification of this work, but none of the 101 touch any behaviour it added."
+          },
+          {
+            "evidence": "artefacts/workspace.patch:76-78 (\"The metrics drill received the bounded hygiene fold: EXIT cleanup is installed before scratch isolation, and its log assertion avoids `grep -q` SIGPIPE under `pipefail`\") against candidate.patch:104-111, whose whole hive-metrics-drill.sh change is the added comment block; no file list, no instance count, and no \"none found\" statement appears anywhere in the report.",
+            "summary": "The drill-hygiene sweep is not reported in the form DoD (h) requires, and the result report asserts a fold that the diff does not contain.",
+            "why_blocking": "DoD (h) asks for files read, instances of the two classes found, and fixes made \u2014 or \"none found\", stated. The report instead says the drill \"received the bounded hygiene fold\", which reads to the reviewing operator as \"instances were found and fixed\"; the diff makes no code change to trap ordering and no change to any `grep -q`, only a comment. The operator therefore cannot tell whether hive-metrics-drill.sh was clean of both classes or whether findings were left unfixed, which is the one thing this bounded fold was supposed to establish."
+          }
+        ]
+      }
+    }
+  },
+  "remediated": true,
+  "remediation_reason": "first pass was red and the review produced findings to work from"
+}

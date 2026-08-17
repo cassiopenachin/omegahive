@@ -1,0 +1,216 @@
+{
+  "complete": true,
+  "per_cell": {
+    "cell-5692ca2c30": {
+      "attempt": {
+        "calls_missing_receipt": 0,
+        "calls_observed": 151,
+        "calls_with_receipt": 141,
+        "calls_without_generation": 10,
+        "gateway_cost_usd": 0.311890618,
+        "native_tokens_cached": 11334016,
+        "native_tokens_completion": 129525,
+        "native_tokens_prompt": 12521147,
+        "native_tokens_reasoning": 76738,
+        "preset_ids": [
+          "e2295f1c-bc2e-4368-b8ab-1c1069f615af"
+        ],
+        "resolved_models": [
+          "deepseek/deepseek-v4-flash-20260731"
+        ],
+        "resolved_upstreams": [
+          "GMICloud"
+        ],
+        "without_generation_detail": {
+          "calls": {
+            "400 /api/v1/messages?beta=true": 1,
+            "404 /api/v1/messages/count_tokens?beta=true": 9
+          },
+          "why_not_a_gap": "the gateway refused these, so no generation was created and no receipt exists to fetch. They are reported rather than dropped, and they do not make the totals a floor."
+        }
+      },
+      "remediation": {
+        "calls_missing_receipt": 0,
+        "calls_observed": 65,
+        "calls_with_receipt": 64,
+        "calls_without_generation": 1,
+        "gateway_cost_usd": 0.092821923,
+        "native_tokens_cached": 3264256,
+        "native_tokens_completion": 33372,
+        "native_tokens_prompt": 3649684,
+        "native_tokens_reasoning": 20383,
+        "preset_ids": [
+          "e2295f1c-bc2e-4368-b8ab-1c1069f615af"
+        ],
+        "resolved_models": [
+          "deepseek/deepseek-v4-flash-20260731"
+        ],
+        "resolved_upstreams": [
+          "GMICloud"
+        ],
+        "without_generation_detail": {
+          "calls": {
+            "400 /api/v1/messages?beta=true": 1
+          },
+          "why_not_a_gap": "the gateway refused these, so no generation was created and no receipt exists to fetch. They are reported rather than dropped, and they do not make the totals a floor."
+        }
+      }
+    },
+    "cell-81d201c206": {
+      "attempt": {
+        "calls_missing_receipt": 0,
+        "calls_observed": 65,
+        "calls_with_receipt": 64,
+        "calls_without_generation": 1,
+        "gateway_cost_usd": 0.09628854,
+        "native_tokens_cached": 3527552,
+        "native_tokens_completion": 31061,
+        "native_tokens_prompt": 3906212,
+        "native_tokens_reasoning": 16390,
+        "preset_ids": [
+          "e2295f1c-bc2e-4368-b8ab-1c1069f615af"
+        ],
+        "resolved_models": [
+          "deepseek/deepseek-v4-flash-20260731"
+        ],
+        "resolved_upstreams": [
+          "GMICloud"
+        ],
+        "without_generation_detail": {
+          "calls": {
+            "404 /api/v1/messages/count_tokens?beta=true": 1
+          },
+          "why_not_a_gap": "the gateway refused these, so no generation was created and no receipt exists to fetch. They are reported rather than dropped, and they do not make the totals a floor."
+        }
+      },
+      "remediation": {
+        "calls_missing_receipt": 0,
+        "calls_observed": 39,
+        "calls_with_receipt": 38,
+        "calls_without_generation": 1,
+        "gateway_cost_usd": 0.051555674,
+        "native_tokens_cached": 1332736,
+        "native_tokens_completion": 20376,
+        "native_tokens_prompt": 1639195,
+        "native_tokens_reasoning": 13053,
+        "preset_ids": [
+          "e2295f1c-bc2e-4368-b8ab-1c1069f615af"
+        ],
+        "resolved_models": [
+          "deepseek/deepseek-v4-flash-20260731"
+        ],
+        "resolved_upstreams": [
+          "GMICloud"
+        ],
+        "without_generation_detail": {
+          "calls": {
+            "400 /api/v1/messages?beta=true": 1
+          },
+          "why_not_a_gap": "the gateway refused these, so no generation was created and no receipt exists to fetch. They are reported rather than dropped, and they do not make the totals a floor."
+        }
+      }
+    },
+    "cell-83f55e6d26": {
+      "attempt": {
+        "calls_missing_receipt": 0,
+        "calls_observed": 119,
+        "calls_with_receipt": 118,
+        "calls_without_generation": 1,
+        "gateway_cost_usd": 0.201880817,
+        "native_tokens_cached": 8441728,
+        "native_tokens_completion": 63821,
+        "native_tokens_prompt": 9029084,
+        "native_tokens_reasoning": 36159,
+        "preset_ids": [
+          "e2295f1c-bc2e-4368-b8ab-1c1069f615af"
+        ],
+        "resolved_models": [
+          "deepseek/deepseek-v4-flash-20260731"
+        ],
+        "resolved_upstreams": [
+          "GMICloud"
+        ],
+        "without_generation_detail": {
+          "calls": {
+            "400 /api/v1/messages?beta=true": 1
+          },
+          "why_not_a_gap": "the gateway refused these, so no generation was created and no receipt exists to fetch. They are reported rather than dropped, and they do not make the totals a floor."
+        }
+      }
+    },
+    "cell-a6775cf48e": {
+      "attempt": {
+        "calls_missing_receipt": 0,
+        "calls_observed": 193,
+        "calls_with_receipt": 192,
+        "calls_without_generation": 1,
+        "gateway_cost_usd": 0.337600719,
+        "native_tokens_cached": 12521600,
+        "native_tokens_completion": 105804,
+        "native_tokens_prompt": 13824729,
+        "native_tokens_reasoning": 51410,
+        "preset_ids": [
+          "e2295f1c-bc2e-4368-b8ab-1c1069f615af"
+        ],
+        "resolved_models": [
+          "deepseek/deepseek-v4-flash-20260731"
+        ],
+        "resolved_upstreams": [
+          "GMICloud"
+        ],
+        "without_generation_detail": {
+          "calls": {
+            "404 /api/v1/messages/count_tokens?beta=true": 1
+          },
+          "why_not_a_gap": "the gateway refused these, so no generation was created and no receipt exists to fetch. They are reported rather than dropped, and they do not make the totals a floor."
+        }
+      }
+    },
+    "cell-e92df96ecb": {
+      "attempt": {
+        "calls_missing_receipt": 0,
+        "calls_observed": 82,
+        "calls_with_receipt": 81,
+        "calls_without_generation": 1,
+        "gateway_cost_usd": 0.186513367,
+        "native_tokens_cached": 7632768,
+        "native_tokens_completion": 99803,
+        "native_tokens_prompt": 8127006,
+        "native_tokens_reasoning": 71059,
+        "preset_ids": [
+          "e2295f1c-bc2e-4368-b8ab-1c1069f615af"
+        ],
+        "resolved_models": [
+          "deepseek/deepseek-v4-flash-20260731"
+        ],
+        "resolved_upstreams": [
+          "GMICloud"
+        ],
+        "without_generation_detail": {
+          "calls": {
+            "400 /api/v1/messages?beta=true": 1
+          },
+          "why_not_a_gap": "the gateway refused these, so no generation was created and no receipt exists to fetch. They are reported rather than dropped, and they do not make the totals a floor."
+        }
+      }
+    }
+  },
+  "record": "/home/cassio/work/sess-hip1-bench-qualify-0814/omegahive/taskbench/records/2026-08-16-wave-3-deepseek-claude-code",
+  "resolved_models": [
+    "deepseek/deepseek-v4-flash-20260731"
+  ],
+  "resolved_upstreams": [
+    "GMICloud"
+  ],
+  "totals": {
+    "calls_missing_receipt": 0,
+    "calls_observed": 714,
+    "calls_with_receipt": 698,
+    "calls_without_generation": 16,
+    "gateway_cost_usd": 1.2785516580000003,
+    "native_tokens_cached": 48054656,
+    "native_tokens_completion": 483762,
+    "native_tokens_prompt": 52697057,
+    "native_tokens_reasoning": 285192
+  }
+}

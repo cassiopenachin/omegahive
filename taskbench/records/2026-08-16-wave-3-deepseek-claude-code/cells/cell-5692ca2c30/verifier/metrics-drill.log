@@ -1,0 +1,144 @@
+metrics drill: sandbox=/tmp/hive-metrics-drill.1nPne3
+
+metrics drill: hive-metrics
+  PASS  tasks.md written
+  PASS  tasks.csv written
+  PASS  the artifacts were committed
+  PASS  the artifacts reached the upstream
+  PASS  the workspace was left clean
+  PASS  a no-change re-run says so
+  PASS  a no-change re-run adds no commit
+  PASS  --no-commit leaves the regenerated artifact uncommitted
+  PASS  the follow-up run recorded it after all
+  PASS  generated marker present
+  PASS  tasks.md ends with a newline
+  PASS  tasks.csv ends with a newline
+  PASS  alpha row present
+  PASS  gamma listed as retired
+  PASS  delta (in flight) not measured
+  PASS  delta listed as open, not measured
+  PASS  alpha launch latency 60s
+  PASS  alpha pickup 60s
+  PASS  alpha accept->result 3600s
+  PASS  alpha result->review 180s
+  PASS  alpha result->close 240s
+  PASS  alpha 0 questions
+  PASS  alpha shape=worked
+  PASS  beta blocked 600s
+  PASS  beta accept->result 3600s
+  PASS  beta net of blocked 3000s
+  PASS  beta 1 question
+  PASS  beta 3 rejections (coalesced)
+  PASS  beta 3 worker rejections
+  PASS  beta 1 reassignment
+  PASS  gamma shape=retired
+  PASS  gamma has no accept duration
+  PASS  epsilon measured (closed by task.failed)
+  PASS  epsilon final_status=failed
+  PASS  epsilon not listed as open
+  PASS  epsilon post-result block = 500s
+  PASS  epsilon net <= gross
+  PASS  zeta measured once
+  PASS  zeta closed at the second close
+  PASS  zeta final_status=done
+  PASS  zeta 3599s renders as 1h0m
+  PASS  no impossible clock strings
+  PASS  unattributed probe surfaced
+  PASS  pipe in a task id is escaped
+  PASS  no unescaped pipe in probe row
+  PASS  tasks.md regeneration is byte-identical
+  PASS  tasks.csv regeneration is byte-identical
+  PASS  artifact records its head seq
+  PASS  --upto head reproduces the artifact
+  PASS  --upto before beta close drops beta
+  PASS  --upto before beta close keeps alpha
+  PASS  --upto never commits the rewound artifact
+  PASS  --upto says why it did not commit
+  PASS  --upto does NOT advise committing it
+  PASS  --upto names the restore command
+  PASS  --upto never leaks the seq into prose
+  PASS  unreachable/empty run refused
+  PASS  --upto below the first seq refused
+  PASS  refused --upto left the artifact intact
+
+metrics drill: hive-score
+  PASS  calibration.md written
+  PASS  alpha entry recorded
+  PASS  alpha predicted effort quoted
+  PASS  alpha actual effort scored
+  PASS  alpha effort verdict = hit
+  PASS  alpha questions verdict = hit
+  PASS  alpha review left unscored
+  PASS  alpha coverage full
+  PASS  the score was committed
+  PASS  the score reached the upstream
+  PASS  scoring left the workspace clean
+  PASS  the score commit touched only the metrics dir
+  PASS  --no-commit appends but does not commit
+  PASS  --no-commit adds no commit
+  PASS  re-scoring refused
+  PASS  --again re-scores
+  PASS  --review bogus refuses, naming the three values
+  PASS  --review Rework stored lowercase 'rework'
+  PASS  --review Rework did not store the mixed-case spelling
+  PASS  epsilon effort verdict = over
+  PASS  epsilon scorable (task.failed closed it)
+  PASS  zeta effort verdict = under
+  PASS  zeta questions verdict = under
+  PASS  zeta predicted range quoted
+  PASS  beta recorded as partial
+  PASS  beta effort prediction quoted
+  PASS  beta absent fields marked
+  PASS  beta absent field unpredicted
+  PASS  gamma recorded as unpredicted
+  PASS  gamma effort unpredicted
+  PASS  gamma coverage is the section-absent string
+  PASS  gamma review stays unpredicted (no section, no verdict)
+  PASS  theta recorded as unpredicted
+  PASS  theta coverage is the section-present-unparsed string
+  PASS  theta effort unpredicted
+  PASS  theta questions unpredicted
+  PASS  theta review unpredicted
+  PASS  theta entry cites its order
+  PASS  scoring an open task refused
+  PASS  un-inferable project refused
+  PASS  scoring an unknown task refused
+  PASS  ambiguous order refused, not scored as unpredicted
+  PASS  traversal in --project refused
+  PASS  unknown --project refused
+  PASS  no escaped calibration file written
+  PASS  run resolved from project.conf, not the name
+  PASS  entries cite the conf's run
+  PASS  --run overrides the conf
+  PASS  project without a conf refused
+
+metrics drill: predictions parser + launch gate
+  PASS  alpha (full) -> allow
+  PASS  beta (1-of-3) -> warn
+  PASS  twothirds (2-of-3) -> warn
+  PASS  gamma (no section) -> allow
+  PASS  declared-unpredicted -> allow
+  PASS  theta (0-of-3 dialect) -> refuse
+  PASS  theta section is present
+  PASS  theta parsed 0 of 3 fields
+  PASS  theta missing lists all three scored labels
+  PASS  theta offending lines captured for the refusal
+  PASS  a declared-unpredicted section parses clean
+  PASS  gate and scorer agree on theta (one parser)
+
+metrics drill: commit_metrics refuses, never rebases
+  PASS  push refusal exits non-zero
+  PASS  the refusal is loud, not swallowed
+  PASS  the refusal names the manual resolution step
+  PASS  the local commit survived the refused push
+  PASS  no rebase was attempted (no 'rebase failed' tell)
+  PASS  the refused-push commit is recoverable by a plain push
+  PASS  the workspace is clean after the recovery push
+
+metrics drill: stop-lines
+  PASS  fixture untouched
+  PASS  hive-metrics contains no emit
+  PASS  hive-score contains no emit
+  PASS  neither tool commits to git
+
+metrics drill: PASS=131  FAIL=0  (no events issued; no run touched)

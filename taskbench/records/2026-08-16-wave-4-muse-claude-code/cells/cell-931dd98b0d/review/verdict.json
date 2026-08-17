@@ -1,0 +1,42 @@
+{
+  "cell_id": "cell-931dd98b0d",
+  "dod_legs": [
+    {
+      "leg": "status-headers",
+      "met": "yes",
+      "note": "All 15 moved docs carry a prominent Status line naming the new home and why: archive additions (candidate.patch:145, 160, 195, 230, 261, 278, 292, 307), reference additions (candidate.patch:432, 447, 464, 488, 503, 517), and the deployments move (candidate.patch:323, 'v1 \u2014 deployment-#0 practice record'). Stale keep-current headers refreshed as the order named them: ui_spec 'v0.1 DRAFT \u2014 for discussion' -> 'v0.1 \u2014 shipped' (candidate.patch:408), deployment_spec \u00a77 Beastie bring-up labeled a completed milestone (candidate.patch:343), recovery_runbook gained a Status line (candidate.patch:367). design_1_1/test_plan/hive_native_ops/session_agents left unrefreshed, consistent with 'refreshed where stale'."
+    },
+    {
+      "leg": "conservative-on-doubt",
+      "met": "not-applicable",
+      "note": "No surveyed verdict was contradicted by its document's content, so nothing had to be held back. The adjacent seam that did arise \u2014 8 top-level docs the survey never gave a verdict for (order says '~14', actual 22) \u2014 was not silently absorbed: each classification is evidenced and named in the report's dedicated section (artefacts/workspace.patch:34-41) and flagged as a reversible judgment call in To operate (artefacts/workspace.patch:59). Those moves are extra work inside the order's subject matter and cross no stop-line \u2014 nothing deleted, everything indexed."
+    },
+    {
+      "leg": "convention-readmes",
+      "met": "yes",
+      "note": "docs/archive/README.md (candidate.patch:120-122) and docs/reference/README.md (candidate.patch:418-420) both present, two lines each, stating what lands in each directory and deferring to per-file Status headers and docs/INDEX.md as the map \u2014 matching order \u00a74."
+    },
+    {
+      "leg": "result-report",
+      "met": "yes",
+      "note": "artefacts/workspace.patch adds projects/omegahive/reports/2026-07-29-docs-triage-result.md with What shipped / How verified / To operate / Reflection. Claims check out against the diff: 'Moved 15 files' with 6 reference / 1 deployments / 8 archive matches the patch exactly (15 renames, 6/1/8 by destination), and '33 files changed, 92 insertions / 34 deletions' reproduces exactly (33 diff blocks, 75 non-blank + 17 blank added lines, 34 deletions). Provenance is disclosed rather than hidden (artefacts/workspace.patch:22, applied via git am of a prior session executing the same order against the same baseline), and the out-of-scope spine emit is correctly named as not done (artefacts/workspace.patch:57)."
+    },
+    {
+      "leg": "docs-index-complete",
+      "met": "yes",
+      "note": "verifier/docs-index-complete.log: 'ok \u2014 57 file(s) under docs/, each accounted for exactly once'. No NOTE lines to weigh. INDEX uses directory-whole lines for archive/ (21), evidence/ (10) and whitepaper/ (8); the order explicitly permits this for archive/ and evidence/, and whitepaper/ is the same frozen-artifact case. Per-doc lines give what it is, authority scope and status as order \u00a72 requires."
+    },
+    {
+      "leg": "link-integrity",
+      "met": "yes",
+      "note": "verifier/link-integrity.log: 'ok \u2014 58 relative link(s) in 51 file(s), none dangling'. The patch shows the fix pass reaching beyond the moved files themselves into already-archived docs (candidate.patch:131, 174, 183, 207, 216, 243, 246) and into stale doc-path references in code (qual/__init__.py:1, ladder/README.md, ladder/report.py, deploy/hive-user/*.sh), with that out-of-docs spillover disclosed in To operate (artefacts/workspace.patch:60). README's repo-map section updated to point at docs/INDEX.md (candidate.patch:45-46) plus a coordination note for readme-restructure (artefacts/workspace.patch:58) \u2014 both halves of that DoD clause."
+    },
+    {
+      "leg": "nothing-deleted",
+      "met": "yes",
+      "note": "verifier/nothing-deleted.log: 'ok \u2014 all 55 baseline document(s) still present somewhere under docs/'. Every docs change is a rename or a Status/link edit; no deleted-file blocks in candidate.patch. docs/evidence/ is untouched (0 evidence/ files in the diff) and labeled in place in INDEX.md, so evidence-untouched holds. No content rewrites beyond Status headers and link fixes: the only in-body prose addition is the \u00a77 completed-milestone label the order itself asked for (candidate.patch:343)."
+    }
+  ],
+  "verdict": "pass",
+  "would_have_shipped_defects": []
+}

@@ -1,0 +1,57 @@
+{
+  "cell_id": "cell-b480ba28aa",
+  "dod_legs": [
+    {
+      "leg": "runbook-caveats",
+      "met": "yes",
+      "note": "Both restore steps lose the inert-bump caveat: docs/omegahive_recovery_runbook.md:90-93 (candidate.patch:9-17) now states the emit path registers the run in the same transaction as its first event, and the workspace projects/omegahive/RUNBOOK.md step 3 caveat plus the stale one-time open_run one-liner are replaced (artefacts/workspace.patch:12-36). Grep over the code-repo doc shows no surviving 'unregistered/inert' language."
+    },
+    {
+      "leg": "result-report",
+      "met": "yes",
+      "note": "projects/omegahive/reports/2026-08-16-run-registration-result.md (artefacts/workspace.patch:40-89) carries What shipped / How verified / To operate / Reflection. Claims match the diff: open_run() called after the advisory lock and before the idempotency lookup (gateway.py:97-108), a new write-path regression test, and both runbooks updated. 'To operate' states the path taken (registration as a side effect of the next real emit, no one-time command), as order item 2 requires. How verified honestly records that the worker's own pytest run could not reach Postgres, and the report explicitly disclaims the live-row/announcement legs rather than claiming them."
+    },
+    {
+      "leg": "pytest",
+      "met": "yes",
+      "note": "verifier/pytest.log: 403 passed, 1 warning in 38.54s \u2014 no regressions on already-registered runs."
+    },
+    {
+      "leg": "ruff",
+      "met": "yes",
+      "note": "verifier/ruff.log: All checks passed!"
+    },
+    {
+      "leg": "mypy",
+      "met": "yes",
+      "note": "verifier/mypy.log: Success: no issues found in 148 source files (only annotation-unchecked notes in tests)."
+    },
+    {
+      "leg": "registration-property",
+      "met": "yes",
+      "note": "verifier/registration-property.log: 'ok \u2014 every registration property case holds' \u2014 first emit registers, second is a no-op, a replayed emit repairs an events-only run with no registry row, and a subsequent bump succeeds. The candidate's own tests/test_write_path.py case covers first-emit registration, same-key replay no-op, and bump on the scratch run."
+    },
+    {
+      "leg": "no-generation-semantics (stop-line)",
+      "met": "yes",
+      "note": "Not crossed. The only src change is gateway.py's emit(): the advisory lock moves ahead of the idempotency lookup and open_run() is inserted. Lookup still precedes fold/gate, so \u00a73 lookup-before-gate holds; no GENERATION_MISMATCH, cursor, or schema code is touched."
+    },
+    {
+      "leg": "never-bump-live (stop-line)",
+      "met": "yes",
+      "note": "Not crossed. The only bump_generation() call is in the new test against run_id='fresh-scratch-run' (candidate.patch:90-91); no live-run bump appears in the patch or the report."
+    },
+    {
+      "leg": "live runs-row query evidence",
+      "met": "not-applicable",
+      "note": "Out of scope per rubric; the report correctly leaves it unperformed and attributes it to the operator."
+    },
+    {
+      "leg": "spine announcement per WORKER.md",
+      "met": "not-applicable",
+      "note": "Out of scope per rubric; the report does not claim it was done."
+    }
+  ],
+  "verdict": "pass",
+  "would_have_shipped_defects": []
+}

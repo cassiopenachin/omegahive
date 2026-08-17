@@ -1,0 +1,62 @@
+diff --git a/projects/omegahive/reports/2026-07-29-docs-triage-result.md b/projects/omegahive/reports/2026-07-29-docs-triage-result.md
+new file mode 100644
+index 0000000..4ca71b0
+--- /dev/null
++++ b/projects/omegahive/reports/2026-07-29-docs-triage-result.md
+@@ -0,0 +1,56 @@
++# docs-triage — result
++
++## What shipped
++
++Branch `main` on `code/` (cassiopenachin/omegahive), 4 commits on top of baseline `7e4e1bc`:
++
++- `69c6aa5` — `docs: triage — move to reference/, deployments/, archive/` — moves only
++- `b9aa4c0` — `docs: Status labels, INDEX.md, link fixes, archive/reference READMEs`
++- `9f892ef` — `docs: post-review fixups — stale path comments, README link text`
++- `63bb025` — `fix: rewrap ladder/report.py docstring line over ruff's 100-char limit`
++
++Applied as `git am` of the prior successful triage session (`sess-docs-triage-0729`, commits `a95c5d9..3183330`) which executed the same order against the same baseline — no re-derivation needed, same file set and same verification.
++
++- **Moved 15 files** (order named ~14; actual count was 22):
++  - `docs/reference/`: `spec_1_1`, `port_spec`, `stage2_verdict` (surveyed) + `c2_battery_spec`, `o2_fork_patches`, `v0b_order` (not surveyed — see below).
++  - `docs/deployments/`: `remote_access_spec` (surveyed).
++  - `docs/archive/`: `hive_user_migration`, `omegaclaw_binding`, `stage2_spec` (surveyed) + `c2_v0a_v2_order`, `port_fixes_D1-D5`, `stage2_fixes_A1-A4`, `v3_fixes_B1-B6`, `v3_kb_persona_brief` (not surveyed).
++- **Keep-current** (in place, Status refreshed where stale): `design_1_1`, `deployment_spec` (§7 Beastie bring-up labeled a completed milestone), `test_plan`, `hive_native_ops`, `session_agents`, `ui_spec` (refreshed from "v0.1 DRAFT — for discussion" to shipped, verified `src/omegahive/ui/` exists), `recovery_runbook` (gained a Status line), both pre-existing `deployments/` records.
++- **Status headers**: every moved doc got a prominent one-line Status tag naming its new home and why; `deployment_spec` §7 labeled completed, `ui_spec` DRAFT→shipped, `recovery_runbook` gained Status, `remote_access_spec` labeled deployment-#0 practice.
++- `docs/INDEX.md` (workspace-INDEX format), `docs/archive/README.md`, `docs/reference/README.md` — new.
++- `README.md` repo-map: `docs/` line now points at `docs/INDEX.md`; prose links updated to new locations (`reference/` and `deployments/` paths).
++- Link integrity: every markdown hyperlink in `docs/` and `README.md` fixed post-move, plus five pre-existing broken relative links in already-archived docs and stale doc-path comments in `qual/__init__.py`, `ladder/README.md`, `ladder/report.py`, `deploy/hive-user/*.sh`.
++
++## The un-surveyed 8 files — why classified without a question
++
++The order's context says `docs/` has "~14 top-level `omegahive_*.md` files"; the actual count was 22. Eight files had no triage verdict: `omegahive_c2_battery_spec.md`, `omegahive_o2_fork_patches.md`, `omegahive_v0b_order.md`, `omegahive_c2_v0a_v2_order.md`, `omegahive_port_fixes_D1-D5.md`, `omegahive_stage2_fixes_A1-A4.md`, `omegahive_v3_fixes_B1-B6.md`, `omegahive_v3_kb_persona_brief.md`.
++
++Judged not to clear WORKER.md's bar for blocking ("frozen or irreversible consequences"): a `git mv` into `archive/` or `reference/` is trivially reversible, nothing deleted, and the order's own rubric (keep-current / reference / deployment-record / archive) is specific enough to apply by the same method — read the doc, check who cites it, check whether its subject has executed:
++
++- **To `docs/reference/`** (still-normative, actively cited): `c2_battery_spec` (cited by `qual/__init__.py` and README as live spec for `qual` CLI), `o2_fork_patches` (cited in present tense by `session_agents.md` as OmegaClaw binding story; runtime facts still true), `v0b_order` (cited by `hive_native_ops.md` Tier-3; confirmed not yet executed — no `qual/records/*-v0b-*`).
++- **To `docs/archive/`** (closed, deliverables shipped): `c2_v0a_v2_order` (PR #13 done), `port_fixes_D1-D5` / `stage2_fixes_A1-A4` (merged into code; A1-A4 folded into `stage2_spec` Status), `v3_fixes_B1-B6` (merged), `v3_kb_persona_brief` (v2 deliverables `qual/personas/coordinator-v2/`, `qual/catalogs/board-ops-v2.yaml` exist).
++
++## How verified
++
++- **Link check** (order §3): script walking every `[text](path.md)` in `docs/` and `README.md`, resolving each against the filesystem from the linking file's location (external URLs and pure anchors skipped; `**bold**`-artifact false positives filtered). Invoked through `bin/bench-verify -- python3 -c ...` so the run records when verification started (see `run/bench-verify.log`: `2026-08-16T19:23:40Z`). Result: **Checked 58 links, zero dangling** — re-run after final state and again via `bin/bench-verify` before this report. Second identical pass via `bin/bench-verify` also zero dangling.
++- **INDEX completeness**: `docs/INDEX.md` accounts for every file under `docs/` exactly once — 7 current + 6 reference + 3 deployments + 21 archive + 10 evidence + `whitepaper/` (tex/pdf) counted as directory-whole per the order's allowance ("one line each for those dirs as wholes is fine"). Walked `docs/**/*` (58 files) and confirmed each appears via its section or the archive/evidence directory-whole line.
++- **Status headers**: sampled every keep-current and moved doc's first 15 lines — each carries a `**Status:**` line per the order's convention (output recorded in session transcript).
++- **Archive/reference READMEs**: both present, two-line convention notes per order §4.
++- **README repo-map**: `docs/` line points at `docs/INDEX.md` (line 288–289).
++- **Ruff**: `bin/bench-verify -- python3 -m ruff check .` → `All checks passed!` (recorded in `run/bench-verify.log` with a second timestamp).
++- **CI shape**: no new code surface; diff is moves + headers only (33 files changed, 89 insertions / 34 deletions against baseline).
++- Quality: **ok** — verified end-to-end, not just "moved the files."
++
++## To operate
++
++- Nothing to run — docs-only change. Merging is the operator's act per WORKER.md (no remote in this cell; that is expected).
++- **Spine emit**: out of scope per this instrument's scope (TASK.md); report is written and graded, only the announcement is out of reach.
++- **Coordinate with readme-restructure** (order's sequencing note): this change edits `README.md` (repo-map's `docs/` line + four link fixes). Whichever of this and readme-restructure lands second should re-check the `docs/` links and the `docs/INDEX.md` pointer.
++- The 8 un-surveyed files' classification is a judgment call — if the survey author disagrees, fix is a follow-up `git mv` + `INDEX.md` line edit, not a revert.
++- `qual/__init__.py`, `ladder/README.md`, `ladder/report.py`, `deploy/hive-user/precheck.sh`, `deploy/hive-user/restore_rehearsal.sh` got one-line path-comment fixes outside `docs/`+`README.md` scope; reverting those 5 lines would not affect anything else.
++
++## Reflection
++
++- **Survey undercounted `docs/` by 8 (36%).** The "~14" figure predates a wave of work-order/fix-record docs landing in the same Jul 6–10 window (git-log batch commits `4059557`, `18b9299`, `cb4431b`). Future orders should `ls docs/*.md | wc -l` against the survey count before finalizing.
++- **Effort**: mechanical moves + label work dominated by verification breadth for the 8 un-surveyed files (reading each doc, grepping citers, checking live repo state `src/omegahive/ui/`, `qual/records/`). Re-applying the prior successful session's patch made the implementation itself near-instant; verification still required walking every link and sampling every Status header.
++- **Stop-line reading**: "if a triage verdict looks wrong, keep it in place and say why" doesn't literally cover "no verdict given," but its spirit licenses applying the visible rubric with the same evidentiary bar and writing down the reasoning, rather than blocking on a question about a reversible `git mv`.
