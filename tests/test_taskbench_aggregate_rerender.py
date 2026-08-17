@@ -134,3 +134,25 @@ def test_no_resolution_at_all_says_so():
     identity = _headline_identity({}, {"vendor": "openai", "model": "gpt-5.6-luna"})
     assert identity.name == "openai/gpt-5.6-luna"
     assert "No resolved model id was reported" in identity.provenance
+
+
+def test_an_invalidated_record_is_not_resumed_from(tmp_path):
+    """The resume rule is reluctant on purpose — re-running a genuine red re-rolls the dice.
+    But when an audit finds the red was an instrument defect, that reluctance means every rerun
+    carries the defective cells forward and the batch re-runs nothing at all."""
+    from taskbench.record import INVALIDATED, resumable_cells
+
+    cell = tmp_path / "cells" / "cell-a"
+    cell.mkdir(parents=True)
+    (cell / "task.txt").write_text("docs-triage\nomegahive\ndocs-reorg\n")
+    (cell / "verdict.json").write_text(json.dumps({
+        "passed": False, "inconclusive": False,
+        "review": {"ran": True, "passed": False, "probe_ok": True, "reason": ""},
+    }))
+
+    assert list(resumable_cells(tmp_path)) == ["docs-triage"], "a genuine red is carried"
+
+    (tmp_path / INVALIDATED).write_text("the harness could not write the files it was graded on")
+    assert resumable_cells(tmp_path) == {}, (
+        "an invalidated record must yield nothing, or the rerun re-runs nothing"
+    )

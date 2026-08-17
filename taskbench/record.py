@@ -198,10 +198,26 @@ def cell_is_conclusive(cell: Path) -> bool:
     return True
 
 
+#: A record carrying this file is not resumed from. Its contents are the reason.
+INVALIDATED = "INVALIDATED.md"
+
+
 def resumable_cells(prior_record: str | Path) -> dict[str, Path]:
-    """task id → cell directory, for every cell in a prior record worth carrying forward."""
+    """task id → cell directory, for every cell in a prior record worth carrying forward.
+
+    A record marked `INVALIDATED.md` yields nothing. The resume rule is deliberately reluctant —
+    re-running a genuine red is re-rolling the dice for a better number — but that rule assumes
+    the red is a model result. When an audit finds an instrument defect that produced the red,
+    the same reluctance becomes a trap: every rerun carries the defective cells forward verbatim
+    and the batch re-runs nothing at all. The order contemplates exactly this ("a common
+    instrument defect invalidates and reruns"), and before this marker existed there was no way
+    to say so. The marker is a committed file naming the defect, not a flag on a command line,
+    because invalidating evidence is a decision that has to survive the session that made it.
+    """
     root = Path(prior_record)
     out: dict[str, Path] = {}
+    if (root / INVALIDATED).is_file():
+        return out
     cells = root / "cells"
     if not cells.is_dir():
         return out
