@@ -14,6 +14,7 @@ money.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import subprocess
@@ -24,6 +25,8 @@ import psycopg
 import pytest
 
 import scratch_db
+from harness_fixtures import descriptors_map, pins
+from omegahive.harness.plan import binding_metadata
 
 REPO = Path(__file__).resolve().parent.parent
 SUPERVISE = REPO / "scripts" / "hive-supervise"
@@ -42,6 +45,7 @@ CATALOG = {
             "billing_market": "subscription",
             "credential_pool": "fixture-pool",
             "adapter": "fake",
+            **pins(harness="fake"),
             "price_basis": {
                 "currency": "USD",
                 "per_mtok_input": 1.0,
@@ -87,6 +91,12 @@ def rig(tmp_path):
     db = _db_url()
     run_id = "e2e-" + uuid.uuid4().hex[:8]
 
+    # The permission boundary travels the same way a real launch sends it, and the
+    # fixture materializes it into the worker root exactly as `materialize_binding`
+    # does — so this test exercises the launcher-to-supervisor handshake rather than
+    # asserting that two pieces of code agree in a comment.
+    descriptors = descriptors_map(harness="fake")
+
     catalog_file = tmp_path / "routes.json"
     catalog_file.write_bytes(json.dumps(CATALOG).encode())
     binding_file = tmp_path / "binding.json"
@@ -114,6 +124,9 @@ def rig(tmp_path):
         "cwd": str(tmp_path),
         "session_id": str(uuid.uuid4()),
         "env": env,
+        "descriptors_b64": {
+            k: base64.b64encode(v).decode() for k, v in descriptors.items()
+        },
     }
 
     resolved = subprocess.run(
@@ -125,6 +138,14 @@ def rig(tmp_path):
     )
     assert resolved.returncode == 0, resolved.stdout + resolved.stderr
     plan = json.loads(resolved.stdout)
+
+    # Materialize the boundary into the worker root. The supervisor recomputes this
+    # file's digest before the child exists and refuses to start on a mismatch, so a
+    # fixture that skipped this step would be testing a launch that cannot happen.
+    config_rel = plan["binding"]["config_path"]
+    config_file = tmp_path / config_rel
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(plan["binding"]["config_content"])
 
     run_dir = tmp_path / "execution"
     run_dir.mkdir()
@@ -143,6 +164,7 @@ def rig(tmp_path):
     wrapper.chmod(0o755)
 
     return {
+        "config_file": config_file,
         "run_id": run_id,
         "run_dir": run_dir,
         "plan": plan,
@@ -207,6 +229,7 @@ def _approve_route(rig) -> None:
             "identity", "predicted_total_tokens", "price_basis",
         )
     }
+    payload["binding"] = binding_metadata(plan)
     env = dict(os.environ)
     env.update({"OMEGAHIVE_DATABASE_URL": rig["db"], "OMEGAHIVE_GATEWAY_DATABASE_URL": ""})
     proc = subprocess.run(
@@ -387,3 +410,282 @@ def test_kickoff_survives_as_one_argv_element(rig):
     assert argv.count(kickoff) == 1, (
         f"the kickoff must be exactly one argv element, unmodified; got {argv!r}"
     )
+
+
+# --- the permission boundary, across the launcher/supervisor seam -------------------
+
+
+def test_a_tampered_boundary_is_a_terminal_failure_with_no_started_fact(rig):
+    """Between materialization and launch, a clone step, a hook, or a hand edit could
+    change the file the child will read. The supervisor recomputes its digest against
+    the bytes on disk immediately before the child exists, so the drifted case is
+    recorded exactly as the failed version probe is: approved, never started, failed.
+
+    This is the difference between "a configuration was generated" and "the boundary
+    the operator approved is the one in force", which is the whole claim of this
+    milestone and must be checked rather than asserted.
+    """
+    _approve_route(rig)
+    doc = json.loads(rig["config_file"].read_text())
+    doc["permissions"]["deny"] = []          # the tamper: a boundary with nothing in it
+    rig["config_file"].write_text(json.dumps(doc, indent=2) + "\n")
+
+    proc = _run_supervisor(rig, "success")
+    assert proc.returncode == 1
+    assert "BOUNDARY VERIFICATION FAILED" in proc.stdout + proc.stderr
+
+    kinds = [e[0] for e in _events(rig)]
+    assert "execution.started" not in kinds, (
+        "a worker whose boundary does not verify must never be recorded as started"
+    )
+    finished = [e for e in _events(rig) if e[0] == "execution.finished"]
+    assert len(finished) == 1
+    payload = finished[0][3]
+    assert payload["outcome"] == "failure"
+    assert payload["outcome_certainty"] == "certain"
+    assert payload["usage"]["status"] == "unavailable"
+    assert "boundary" in payload["usage"]["reason"]
+
+
+def test_a_missing_boundary_file_is_a_terminal_failure_too(rig):
+    """Absent and drifted are the same answer. A file that was never written is not a
+    permissive default.
+
+    The assertion is on the SPINE, not on a substring of the output. An earlier version
+    asserted `"missing" in proc.stdout + proc.stderr` and could not fail: pytest's own
+    `tmp_path` contains the test's name, which contains the word — so the test stayed
+    green with the fail-closed branch disabled. Proven by mutation.
+    """
+    _approve_route(rig)
+    rig["config_file"].unlink()
+    proc = _run_supervisor(rig, "success")
+    assert proc.returncode == 1
+    assert "BOUNDARY VERIFICATION FAILED" in proc.stdout + proc.stderr
+
+    kinds = [e[0] for e in _events(rig)]
+    assert "execution.started" not in kinds
+    finished = [e for e in _events(rig) if e[0] == "execution.finished"]
+    assert len(finished) == 1
+    assert finished[0][3]["outcome"] == "failure"
+    assert "boundary" in finished[0][3]["usage"]["reason"]
+
+
+def test_an_empty_binding_block_is_the_same_absence_wearing_a_key(rig):
+    """`"binding": {}` used to verify clean: no config_path so the digest branch is
+    skipped, no required_flags so the argv loop never runs, and the function returns
+    success. A present block must carry something that could fail."""
+    _approve_route(rig)
+    plan_path = rig["run_dir"] / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["binding"] = {}
+    plan_path.write_text(json.dumps(plan))
+
+    proc = _run_supervisor(rig, "success")
+    assert proc.returncode == 1
+    assert "nothing in it can be verified" in proc.stdout + proc.stderr
+    assert "execution.started" not in [e[0] for e in _events(rig)]
+
+
+def test_a_pair_flag_missing_from_the_argv_is_caught_too(rig):
+    """The lone-switch branch had a test; the pair branch did not, and it is the branch
+    every shipped descriptor actually uses."""
+    _approve_route(rig)
+    plan_path = rig["run_dir"] / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["binding"]["required_flags"].append(["--setting-sources", "a-value-nobody-passes"])
+    plan_path.write_text(json.dumps(plan))
+
+    proc = _run_supervisor(rig, "success")
+    assert proc.returncode == 1
+    assert "a-value-nobody-passes" in proc.stdout + proc.stderr
+    assert "execution.started" not in [e[0] for e in _events(rig)]
+
+
+def test_the_run_dir_and_plan_are_not_world_readable(tmp_path):
+    """The plan is the root of trust for the boundary check — the supervisor compares the
+    file on disk to the plan's own digest and execs the plan's own argv. It was written
+    at the default umask while the boundary it anchors was carefully chmod 0600."""
+    import re
+
+    launcher = (REPO / "scripts" / "hive-launch").read_text()
+    assert re.search(r'chmod 0600 "\$EXEC_DIR/plan\.json"', launcher)
+    assert re.search(r'chmod 0700 "\$EXEC_DIR"', launcher)
+
+
+def test_the_started_fact_carries_the_boundary_that_was_verified(rig):
+    _approve_route(rig)
+    assert _run_supervisor(rig, "success").returncode == 0
+    started = [e for e in _events(rig) if e[0] == "execution.started"]
+    assert len(started) == 1
+    binding = started[0][3]["binding"]
+    plan = json.loads((rig["run_dir"] / "plan.json").read_text())
+    assert binding["config_digest"] == plan["binding"]["config_digest"]
+    assert binding["binding_digest"] == plan["binding"]["binding_digest"]
+    assert set(binding["mechanisms"]) == {"P1", "P2", "P3", "P4"}
+    # The materialized file itself is never on the spine.
+    assert "config_content" not in binding
+    assert "permissions" not in json.dumps(binding)
+
+
+def test_materialize_binding_writes_the_exact_bytes_the_digest_is_over(rig, tmp_path):
+    """The shell writer, exercised as shell.
+
+    A `$(jq -r ...)` round trip strips the config's trailing newline and adds one back,
+    which changes the bytes and therefore the digest — a real defect this helper had
+    until its own read-back check caught it. The read-back is why the bug was loud; this
+    test is why it stays fixed.
+    """
+    root = tmp_path / "materialize-root"
+    root.mkdir()
+    plan = json.dumps(json.loads((rig["run_dir"] / "plan.json").read_text()))
+    proc = subprocess.run(
+        [
+            "bash", "-c",
+            f'set -euo pipefail; source "{REPO}/scripts/hive-common.sh"; '
+            f'materialize_binding "$1" "$2"',
+            "bash", plan, str(root),
+        ],
+        capture_output=True, text=True, cwd=str(REPO), timeout=60,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    written = root / ".claude" / "settings.local.json"
+    assert written.read_text() == json.loads(plan)["binding"]["config_content"]
+    assert oct(written.stat().st_mode)[-3:] == "600"
+
+
+def test_materialize_binding_refuses_a_path_outside_the_worker_root(rig, tmp_path):
+    """A descriptor is code, but the config path travels through JSON. An absolute or
+    traversing path would let a boundary be written over something that is not the
+    worker's own root — including the operator's global configuration."""
+    plan = json.loads((rig["run_dir"] / "plan.json").read_text())
+    for evil in ("/etc/claude-code/managed-settings.json", "../../.claude/settings.json"):
+        plan["binding"]["config_path"] = evil
+        proc = subprocess.run(
+            [
+                "bash", "-c",
+                f'set -euo pipefail; source "{REPO}/scripts/hive-common.sh"; '
+                f'materialize_binding "$1" "$2"',
+                "bash", json.dumps(plan), str(tmp_path / "root"),
+            ],
+            capture_output=True, text=True, cwd=str(REPO), timeout=60,
+        )
+        assert proc.returncode != 0, evil
+        assert "outside the worker root" in proc.stderr
+
+
+def test_unb64_round_trips_without_a_help_parsing_guard():
+    """The portability probe must not be a `--help | grep -q` under pipefail.
+
+    That shape is the SIGPIPE class this repository's own drill audit classified as a
+    defect: `grep -q` exits at the first match, the writer takes EPIPE, and the guard
+    fails exactly when the pattern matches — here selecting the BSD flag on a GNU host,
+    which would break every descriptor read. Asserted behaviourally (a round trip) and
+    structurally (the source carries no such guard), because the behavioural half passes
+    by luck on a host whose --help output is small enough to finish first.
+    """
+    payload = b'{"deny": ["Bash(*sudo *)"], "nested": {"n": 1}}'
+    encoded = base64.b64encode(payload).decode()
+    proc = subprocess.run(
+        ["bash", "-c",
+         f'set -euo pipefail; source "{REPO}/scripts/hive-common.sh"; unb64'],
+        input=encoded, capture_output=True, text=True, cwd=str(REPO), timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == payload.decode()
+
+    source = (REPO / "scripts" / "hive-common.sh").read_text()
+    body = source.split("unb64() {", 1)[1].split("\n}", 1)[0]
+    # Comments in this function NAME the hazard on purpose; the assertion is about the
+    # code, so strip them rather than have the explanation trip the check.
+    code = "\n".join(
+        line for line in body.splitlines() if not line.strip().startswith("#")
+    )
+    assert "--help" not in code, "unb64 must probe by behaviour, not by parsing --help"
+    assert "grep -q" not in code
+
+
+def test_the_launchers_jq_projection_matches_binding_metadata(rig):
+    """One boundary projection, three implementations — held together by a test.
+
+    `hive-launch` builds the `route_approved` payload's `binding` block with jq,
+    `hive-supervise` builds the `started` one the same way, and `binding_metadata` in
+    plan.py is the Python statement of the same rule. Nothing forces them to agree, and
+    a drift would put a differently-shaped boundary on one of the two facts while every
+    Python test stayed green. This extracts the jq expression from the launcher itself
+    rather than restating it, so a change there is caught here.
+    """
+    plan = json.loads((rig["run_dir"] / "plan.json").read_text())
+    launcher = (REPO / "scripts" / "hive-launch").read_text()
+    # The expression as the launcher actually spells it, lifted from the source.
+    marker = "binding: (.binding | {"
+    assert marker in launcher, "hive-launch no longer projects the binding block with jq"
+    start = launcher.index(marker) + len("binding: (")
+    depth, i = 0, start
+    while i < len(launcher):
+        if launcher[i] == "(":
+            depth += 1
+        elif launcher[i] == ")":
+            if depth == 0:
+                break
+            depth -= 1
+        i += 1
+    expr = launcher[start:i]
+
+    proc = subprocess.run(
+        ["jq", "-S", "-c", expr],
+        input=json.dumps(plan), capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    from_jq = json.loads(proc.stdout)
+    from_python = binding_metadata(plan)
+    assert from_jq == from_python, (
+        "hive-launch's jq projection and binding_metadata disagree about the boundary "
+        "block; one of the two facts would carry a different shape"
+    )
+    # And the invariant both must hold: no file contents, no settings values.
+    assert "config_content" not in from_jq
+    assert "permissions" not in json.dumps(from_jq)
+
+
+def test_a_lone_switch_required_flag_verifies_rather_than_failing_every_launch(rig):
+    """A required flag can be a pair or a lone switch, and the supervisor must know which.
+
+    Read as a pair, a lone switch makes the check look for a following EMPTY argv
+    element, which never exists — so every launch under such a descriptor would fail
+    boundary verification and record a terminal failure with no started fact. Codex's
+    shipped descriptor already carries `--ignore-user-config`, so this is not
+    hypothetical; it is one credential away from being live.
+    """
+    _approve_route(rig)
+    plan_path = rig["run_dir"] / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    # Add a lone switch the argv already carries, and one it does not.
+    plan["binding"]["required_flags"].append(["--model"])          # present in the argv
+    plan_path.write_text(json.dumps(plan))
+    assert _run_supervisor(rig, "success").returncode == 0, "a satisfied lone switch must verify"
+
+    plan["binding"]["required_flags"].append(["--a-switch-nobody-passes"])
+    plan_path.write_text(json.dumps(plan))
+    for stale in ("finished.json", "started.json"):
+        (rig["run_dir"] / stale).unlink(missing_ok=True)
+    proc = _run_supervisor(rig, "success")
+    assert proc.returncode == 1
+    assert "--a-switch-nobody-passes" in proc.stdout + proc.stderr
+
+
+def test_a_harness_series_change_stops_the_launch_with_no_started_fact(rig):
+    """A boundary's proof is a point measurement against one build. Driving it through
+    the real supervisor rather than the pure function, because the comparison can only
+    happen where the version is probed — beside the child, not in the resolver."""
+    _approve_route(rig)
+    plan_path = rig["run_dir"] / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["binding"]["proven_harness_version"] = "1.0.0"   # the fixture reports otherwise
+    plan_path.write_text(json.dumps(plan))
+
+    proc = _run_supervisor(rig, "success")
+    assert proc.returncode == 1
+    assert "BOUNDARY EVIDENCE IS STALE" in proc.stdout + proc.stderr
+    assert "execution.started" not in [e[0] for e in _events(rig)]
+    finished = [e for e in _events(rig) if e[0] == "execution.finished"]
+    assert finished and finished[0][3]["outcome"] == "failure"

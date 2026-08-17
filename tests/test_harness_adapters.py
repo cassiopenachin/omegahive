@@ -20,10 +20,12 @@ boundary and never re-enters as a shell command string.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from harness_fixtures import descriptor, pins
 from omegahive.harness.adapters import (
     BASE_ENV_ALLOWLIST,
     Adapter,
@@ -34,9 +36,16 @@ from omegahive.harness.adapters import (
     _clean_env,
     get_adapter,
 )
+from omegahive.harness.bindings import HarnessBinding
 from omegahive.harness.records import RefusalError, RouteEntry
 
 SESSION_ID = "0f9c9a6e-0000-4000-8000-000000000001"
+
+# The descriptor every adapter builds against here. Its required flags are what the
+# adapters must place in argv, so a build that forgets them shows up as a diff in the
+# vector rather than as a comment nobody reads.
+BINDING = HarnessBinding(**descriptor())
+
 KICKOFF = "you are worker w1;\nread WORKER.md; $(whoami) `id`"
 
 # A parent environment shaped like a real operator shell: three benign allowlisted
@@ -63,6 +72,7 @@ def route(**over: Any) -> RouteEntry:
         "billing_market": "subscription",
         "credential_pool": "pool-a",
         "adapter": "claude-code",
+        **pins(),
     }
     fields.update(over)
     return RouteEntry(**fields)
@@ -113,7 +123,7 @@ def test_unknown_adapter_fails_closed(name: str):
 # --- ClaudeCodeAdapter argv -------------------------------------------------
 
 def test_claude_code_argv_carries_the_pinned_model_and_session():
-    plan = ClaudeCodeAdapter().build(route(model="claude-haiku-4-5-20251001"), ctx())
+    plan = ClaudeCodeAdapter().build(route(model="claude-haiku-4-5-20251001"), ctx(), BINDING)
     argv = plan.argv
     assert argv[0] == "claude"
     assert argv[argv.index("--model") + 1] == "claude-haiku-4-5-20251001"
@@ -124,7 +134,7 @@ def test_claude_code_argv_carries_the_pinned_model_and_session():
 
 
 def test_claude_code_declares_its_evidence_surfaces():
-    plan = ClaudeCodeAdapter().build(route(), ctx())
+    plan = ClaudeCodeAdapter().build(route(), ctx(), BINDING)
     assert plan.version_argv == ["claude", "--version"]
     assert plan.proves_model is True
     assert plan.proves_usage is True
@@ -138,19 +148,19 @@ def test_claude_code_declares_its_evidence_surfaces():
 
 @pytest.mark.parametrize("name", sorted(CREDENTIALS))
 def test_claude_code_env_drops_every_credential_and_unlisted_var(name: str):
-    plan = ClaudeCodeAdapter().build(route(), ctx(parent_env=dict(DIRTY_ENV)))
+    plan = ClaudeCodeAdapter().build(route(), ctx(parent_env=dict(DIRTY_ENV)), BINDING)
     assert name not in plan.env, f"{name} reached the worker environment"
     assert CREDENTIALS[name] not in plan.env.values(), f"{name}'s VALUE reached the worker"
 
 
 def test_claude_code_env_keeps_the_benign_allowlisted_vars():
-    plan = ClaudeCodeAdapter().build(route(), ctx(parent_env=dict(DIRTY_ENV)))
+    plan = ClaudeCodeAdapter().build(route(), ctx(parent_env=dict(DIRTY_ENV)), BINDING)
     assert plan.env == BENIGN, f"unexpected environment: {sorted(plan.env)}"
 
 
 @pytest.mark.parametrize("adapter", [ClaudeCodeAdapter(), CodexAdapter()])
 def test_every_adapter_builds_from_the_allowlist_not_the_parent(adapter: Adapter):
-    plan = adapter.build(route(), ctx(parent_env=dict(DIRTY_ENV)))
+    plan = adapter.build(route(), ctx(parent_env=dict(DIRTY_ENV)), BINDING)
     assert set(plan.env) <= BASE_ENV_ALLOWLIST | {"CLAUDE_CONFIG_DIR", "CODEX_HOME"}
     assert not set(plan.env) & set(CREDENTIALS)
 
@@ -182,13 +192,13 @@ def test_clean_env_drops_a_credential_shaped_name_even_if_allowlisted():
 
 def test_claude_config_dir_passes_through_and_becomes_a_usage_hint():
     parent = {**BENIGN, "CLAUDE_CONFIG_DIR": "/srv/state/claude"}
-    plan = ClaudeCodeAdapter().build(route(), ctx(parent_env=parent))
+    plan = ClaudeCodeAdapter().build(route(), ctx(parent_env=parent), BINDING)
     assert plan.env["CLAUDE_CONFIG_DIR"] == "/srv/state/claude"
     assert plan.usage_hint["config_dir"] == "/srv/state/claude"
 
 
 def test_no_config_dir_hint_when_the_var_is_absent():
-    plan = ClaudeCodeAdapter().build(route(), ctx(parent_env=dict(BENIGN)))
+    plan = ClaudeCodeAdapter().build(route(), ctx(parent_env=dict(BENIGN)), BINDING)
     assert "CLAUDE_CONFIG_DIR" not in plan.env
     assert "config_dir" not in plan.usage_hint
 
@@ -196,7 +206,7 @@ def test_no_config_dir_hint_when_the_var_is_absent():
 # --- CodexAdapter: honest about what it cannot prove ------------------------
 
 def test_codex_proves_nothing_and_says_why():
-    plan = CodexAdapter().build(route(adapter="codex", harness="codex"), ctx())
+    plan = CodexAdapter().build(route(adapter="codex", harness="codex"), ctx(), BINDING)
     assert plan.proves_model is False
     assert plan.proves_usage is False
     assert plan.usage_extractor == "none"
@@ -209,7 +219,7 @@ def test_codex_proves_nothing_and_says_why():
 
 def test_codex_env_admits_codex_home_only():
     parent = {**BENIGN, "CODEX_HOME": "/srv/state/codex", "CLAUDE_CONFIG_DIR": "/srv/claude"}
-    plan = CodexAdapter().build(route(), ctx(parent_env=parent))
+    plan = CodexAdapter().build(route(), ctx(parent_env=parent), BINDING)
     assert plan.env["CODEX_HOME"] == "/srv/state/codex"
     assert "CLAUDE_CONFIG_DIR" not in plan.env
 
@@ -218,7 +228,7 @@ def test_codex_env_admits_codex_home_only():
 
 def test_fake_adapter_refuses_without_its_fixture_variable():
     with pytest.raises(RefusalError) as exc:
-        FakeAdapter().build(route(adapter="fake"), ctx(parent_env=dict(BENIGN)))
+        FakeAdapter().build(route(adapter="fake"), ctx(parent_env=dict(BENIGN)), BINDING)
     assert exc.value.code == "ADAPTER_UNCONFIGURED"
     assert "HIVE_FAKE_HARNESS" in exc.value.message
 
@@ -230,7 +240,7 @@ def test_fake_adapter_builds_when_configured():
         "HIVE_FAKE_BEHAVIOUR": "success",
         "HIVE_FAKE_USAGE_FILE": "/tmp/usage.jsonl",
     }
-    plan = FakeAdapter().build(route(adapter="fake"), ctx(parent_env=parent))
+    plan = FakeAdapter().build(route(adapter="fake"), ctx(parent_env=parent), BINDING)
     assert plan.argv[0] == "/srv/fixtures/fake_harness.sh"
     assert plan.argv[plan.argv.index("--session-id") + 1] == SESSION_ID
     assert plan.argv[-1] == KICKOFF
@@ -258,3 +268,51 @@ def test_parse_version_takes_the_first_token_of_the_first_non_empty_line(
     output: str, expected: str
 ):
     assert ClaudeCodeAdapter().parse_version(output) == expected
+
+
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        ("2.1.232 (Claude Code)\n", "2.1.232"),
+        # The case this rule exists for: the probe merges stderr so a harness that
+        # cannot start can say why, and an unrelated warning then lands first.
+        # Observed 2026-08-14 — a real preflight reported `harness: sh:`.
+        ("/bin/sh: warning: setlocale: LC_ALL: cannot change locale\n2.1.232 (Claude Code)\n",
+         "2.1.232"),
+        ("\n\nbash: warning: something\n  3.0.1-beta\n", "3.0.1-beta"),
+        # No line starts with a digit: fall back rather than record nothing.
+        ("fake-harness 9.9.9\n", "fake-harness"),
+        ("", ""),
+    ],
+)
+def test_parse_version_prefers_a_version_shaped_token_over_a_stderr_warning(output, expected):
+    assert ClaudeCodeAdapter().parse_version(output) == expected
+
+
+def test_the_shell_version_parser_agrees_with_the_python_one():
+    """Two implementations of one rule, held together by a test rather than a comment.
+
+    The shell twin is what actually runs (hive-supervise reads the probe), so a drift
+    between them would put a wrong `harness_version` on the spine while the Python tests
+    stayed green.
+    """
+    import shutil
+    import subprocess
+
+    if shutil.which("bash") is None:  # pragma: no cover - bash is present everywhere here
+        pytest.skip("bash not available")
+    repo = Path(__file__).resolve().parents[1]
+    cases = [
+        "2.1.232 (Claude Code)\n",
+        "/bin/sh: warning: setlocale: LC_ALL: cannot change locale\n2.1.232 (Claude Code)\n",
+        "\n\nbash: warning: something\n  3.0.1-beta\n",
+        "fake-harness 9.9.9\n",
+    ]
+    for output in cases:
+        proc = subprocess.run(
+            ["bash", "-c",
+             f'set -euo pipefail; source "{repo}/scripts/hive-common.sh"; harness_version_from'],
+            input=output, capture_output=True, text=True, cwd=str(repo), timeout=60,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.strip() == ClaudeCodeAdapter().parse_version(output), output

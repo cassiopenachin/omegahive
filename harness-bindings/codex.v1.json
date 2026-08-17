@@ -1,0 +1,187 @@
+{
+  "schema_version": 1,
+  "binding_id": "codex.v1",
+  "harness": "codex",
+  "captured_at": "2026-08-14",
+  "config_path": null,
+  "config_format": "none",
+  "subcommand": [
+    "exec"
+  ],
+  "required_flags": [
+    [
+      "--sandbox",
+      "workspace-write"
+    ],
+    [
+      "--ignore-user-config"
+    ]
+  ],
+  "command_mode_flag": "--sandbox",
+  "forbidden_argv_tokens": [
+    "danger-full-access",
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--dangerously-bypass-hook-trust",
+    "--approve-for-me"
+  ],
+  "known_command_modes": [
+    "read-only",
+    "workspace-write",
+    "danger-full-access"
+  ],
+  "safe_command_modes": [
+    "read-only",
+    "workspace-write"
+  ],
+  "status": "declared",
+  "verification": null,
+  "note": "DECLARED, NOT PROVEN - and therefore not launchable; every route naming this descriptor refuses at preflight with HARNESS_BINDING_UNPROVEN. WHAT BLOCKS IT, exactly: `codex-cli 0.147.0` IS installed on deployment #0 as of 2026-08-14 (it was not when worker-harness-core wrote its report on 2026-08-13, and its arrival mid-task is why this file was rewritten), but `codex login status` reports NOT LOGGED IN. No model call is possible, so nothing can be proven through the real agent loop. That is one operator act away, not a redesign. The argv begins `codex exec`: `--ignore-user-config` exits 2 on bare `codex` and is valid only under the subcommand, so the first draft of this binding described an argv that could not have started the harness at all - found by a cross-vendor review running inside Codex itself, which is the one place that error was cheap to see. EVERYTHING BELOW IS OBSERVED against the installed binary, not copied from documentation - see docs/evidence/harness_binding_probe_codex_2026_08_14.md, which records ten command evaluations run for zero tokens through Codex's own offline evaluator. An earlier draft named `--ask-for-approval never`, which does not exist on `codex exec` in this build, and asserted that Codex has no per-command allow/deny list at all. BOTH WERE WRONG AND ARE WITHDRAWN, which is exactly the class of error a `declared` status exists to keep suspect. Codex has an execpolicy system: Starlark `.rules` files carrying prefix_rule(pattern, decision) with decision in allow/forbidden/prompt, discovered at $CODEX_HOME/rules/*.rules, and `codex execpolicy check` evaluates them offline with no auth and no model. Measured: a forbidden rule returns `forbidden` for sudo, sudoedit, systemctl, tailscale, podman kill, tmux kill-server, curl and /usr/bin/curl, and `allow` for git status, with `ls` falling through unmatched. That vocabulary is argv-token based rather than string based, so it neither needs the leading-wildcard workaround the Claude Code row needs nor pays that row's over-match cost. WHAT REMAINS UNPROVEN is that the running agent honours any of it.",
+  "classes": [
+    {
+      "policy_class": "P1",
+      "title": "the access layer is never touched from a worker",
+      "mechanisms": [
+        {
+          "kind": "settings-deny",
+          "rules": [
+            "prefix_rule(pattern = [\"sudo\"], decision = \"forbidden\")",
+            "prefix_rule(pattern = [\"sudoedit\"], decision = \"forbidden\")",
+            "prefix_rule(pattern = [\"pkexec\"], decision = \"forbidden\")",
+            "prefix_rule(pattern = [\"systemctl\"], decision = \"forbidden\")",
+            "prefix_rule(pattern = [\"tailscale\"], decision = \"forbidden\")"
+          ],
+          "detail": "OBSERVED to evaluate to `forbidden` through `codex execpolicy check`, offline and free. The rules go in a generated per-execution $CODEX_HOME/rules/*.rules, which is user scope and therefore always loaded - the project scope is gated on a trust entry and is the wrong shape for a launcher. NOT materialized by this build: there is no codex renderer, and config_format is `none` for that reason"
+        },
+        {
+          "kind": "sandbox-flag",
+          "rules": [
+            "--sandbox workspace-write"
+          ],
+          "detail": "OBSERVED as a flag with exactly the three values in known_command_modes. DECLARED, UNMEASURED: that the sandbox refuses a privileged operation. `codex sandbox --permission-profile <name> <cmd>` runs a command under it with no model call, so this is free to measure once a permission profile exists"
+        },
+        {
+          "kind": "launch-flag",
+          "rules": [
+            "--ignore-user-config"
+          ],
+          "detail": "OBSERVED: `Do not load $CODEX_HOME/config.toml; auth still uses CODEX_HOME`. Codex's analogue of --setting-sources. Note the interaction: with a GENERATED per-execution CODEX_HOME the operator's own config is excluded by construction and this flag would exclude the launcher's too, so a real Codex binding uses one or the other, not both"
+        }
+      ],
+      "probes": [
+        {
+          "id": "codex-p1-sandbox-argv",
+          "kind": "argv-flag",
+          "argv": [
+            "--sandbox",
+            "workspace-write"
+          ],
+          "expect": "present"
+        },
+        {
+          "id": "codex-p1-deny-enforced",
+          "kind": "deny-enforced",
+          "command": "sudo -n true",
+          "expect": "denied",
+          "note": "cannot be run: present but not authenticated. The rule it would exercise already evaluates to `forbidden` offline (see the evidence file); what is missing is proof that the agent loop consults the evaluator"
+        }
+      ],
+      "residual": "Unmeasured at the agent loop. Also note what Codex's own injected prompt says about its matcher: commands are split at shell operators and each segment matched independently, and segments using redirection, substitution, env-var prefixes or wildcards are NOT matched against rules at all. That is a wider hole than the Claude Code row's, and it is the vendor's documented behaviour rather than an inference."
+    },
+    {
+      "policy_class": "P2",
+      "title": "secrets are never read, never printed, never committed",
+      "mechanisms": [
+        {
+          "kind": "env-allowlist",
+          "rules": [],
+          "detail": "ENFORCEABLE, PROVEN, AND NOT VENDOR-DEPENDENT: the child's environment is constructed by this launcher's own adapter from an allowlist and credential-shaped names are refused there. This half binds on Codex exactly as on Claude Code, because the launcher owns it. Codex additionally exposes [shell_environment_policy] with inherit = core|all|none plus include_only/exclude, which would let the same rule be stated twice; it is not used here"
+        },
+        {
+          "kind": "instruction",
+          "rules": [],
+          "detail": "WORKER.md plus review, for the printing surface no matcher expresses"
+        }
+      ],
+      "probes": [
+        {
+          "id": "codex-p2-env-absent",
+          "kind": "env-absent",
+          "sentinel_name": "HIVE_PROBE_SENTINEL_TOKEN",
+          "expect": "absent"
+        }
+      ],
+      "residual": "THE GAP, and it is narrower and better understood than the first draft claimed. RETRACTED: the claim that Codex has no per-path read denial. A permission profile's [permissions.<name>.filesystem] table maps a path or glob to read/write/none/deny, which is the shape P2 needs. NOT REPRODUCED HERE: that table's behaviour. It is reported as validated under --strict-config by a local inspection, and my own attempt to reproduce it used `codex --strict-config exec --help`, which short-circuits before the config loads and returned 0 for a config containing a deliberately invalid key - so that attempt proved nothing and is recorded as inconclusive rather than as confirmation. What binds today is the environment half. Note also that execpolicy rules gate commands and network egress only; there is no read primitive there."
+    },
+    {
+      "policy_class": "P3",
+      "title": "the durable stack is never mutated, and shared infrastructure is never destroyed",
+      "mechanisms": [
+        {
+          "kind": "settings-deny",
+          "rules": [
+            "prefix_rule(pattern = [\"podman\", [\"stop\", \"rm\", \"rmi\", \"kill\", \"system\", \"prune\"]], decision = \"forbidden\")",
+            "prefix_rule(pattern = [\"tmux\", \"kill-server\"], decision = \"forbidden\")"
+          ],
+          "detail": "OBSERVED to evaluate to `forbidden`. The vocabulary is worth noting against the Claude Code row: one rule with a token alternation covers six podman subcommands, matched POSITIONALLY, so it can be neither evaded by whitespace nor triggered by a command that merely mentions the token - the over-match that cost a commit on the other harness does not exist here"
+        },
+        {
+          "kind": "sandbox-flag",
+          "rules": [
+            "--sandbox workspace-write"
+          ],
+          "detail": "DECLARED: writes outside the workspace root denied at the OS layer, which would cover the runtime and multiplexer sockets. UNMEASURED on this host"
+        }
+      ],
+      "probes": [
+        {
+          "id": "codex-p3-deny-enforced",
+          "kind": "deny-enforced",
+          "command": "tmux kill-server",
+          "expect": "denied",
+          "note": "cannot be run: not authenticated. Unlike the Claude Code row this probe does NOT need a harmless canary form, because the evaluator is offline - `codex execpolicy check` answers it without executing anything"
+        }
+      ],
+      "residual": "Unmeasured at the agent loop; the sandbox half is inference from documented behaviour."
+    },
+    {
+      "policy_class": "P4",
+      "title": "the network is reached through named tools, not raw fetches",
+      "mechanisms": [
+        {
+          "kind": "settings-deny",
+          "rules": [
+            "prefix_rule(pattern = [\"curl\"], decision = \"forbidden\")",
+            "prefix_rule(pattern = [\"wget\"], decision = \"forbidden\")",
+            "host_executable(name = \"curl\", paths = [\"/usr/bin/curl\"])"
+          ],
+          "detail": "OBSERVED to evaluate to `forbidden`, INCLUDING for the absolute path /usr/bin/curl once host_executable resolves it - the evasion that needed a leading-wildcard workaround on the other harness"
+        },
+        {
+          "kind": "sandbox-flag",
+          "rules": [
+            "--sandbox workspace-write"
+          ],
+          "detail": "DECLARED: network documented as off by default under this mode, which would close P4 structurally. UNMEASURED"
+        }
+      ],
+      "probes": [
+        {
+          "id": "codex-p4-deny-enforced",
+          "kind": "deny-enforced",
+          "command": "curl -sS https://example.invalid",
+          "expect": "denied",
+          "note": "cannot be run: not authenticated"
+        },
+        {
+          "id": "codex-p4-allow-executes",
+          "kind": "allow-executes",
+          "command": "git --version",
+          "expect": "executed",
+          "note": "the positive control; evaluates to `allow` offline",
+          "expect_output": "git version"
+        }
+      ],
+      "residual": "If the sandbox turns network off wholesale, the POSITIVE half needs measuring: git over https and package installs must still work or the route is bound and useless. Codex also exposes network_rule (host + protocol + decision, no wildcards) and an allowed-domains surface, so the answer is likely partial rather than binary - which is precisely what a probe run settles and no document can."
+    }
+  ]
+}
