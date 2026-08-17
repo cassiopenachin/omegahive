@@ -331,3 +331,52 @@ def test_without_receipts_the_request_is_labelled_as_a_request():
     assert bundle.served_model == "claude-haiku-4-5 *(requested)*", (
         "a subscription arm has no receipt to settle identity, and the table must say so"
     )
+
+
+def _red_cell(root, name, task, *, det_passed, review_passed, pulse=None):
+    cell = root / "cells" / name
+    (cell / "review").mkdir(parents=True)
+    (cell / "task.txt").write_text(f"{task}\nomegahive\ndocs-reorg\n")
+    (cell / "verdict.json").write_text(json.dumps({
+        "task_id": task, "cell_id": name, "passed": False, "inconclusive": False,
+        "deterministic": {"passed": det_passed}, "review": {"passed": review_passed},
+    }))
+    (cell / "cycle.json").write_text(json.dumps({"remediated": False}))
+    (cell / "run.json").write_text(json.dumps({
+        "finished_utc": "2026-08-16T20:00:00Z", "progress": {}, "pulse": pulse,
+    }))
+    (cell / "review" / "verdict.json").write_text(
+        json.dumps({"finished_utc": "2026-08-16T20:30:00Z"})
+    )
+    return cell
+
+
+def test_a_red_is_dated_to_when_it_became_knowable_not_when_it_started_going_wrong(tmp_path):
+    """The order requires time-to-actionable-red. Its whole discipline is that a gate failure is
+    actionable the moment gates run, while a defect only a strong reviewer can see is not
+    actionable until that reviewer has spoken — a different operational price for the same red."""
+    from taskbench.matrix import _actionable_red
+
+    gate = _red_cell(tmp_path, "cell-a", "docs-triage", det_passed=False, review_passed=False)
+    verdict = json.loads((gate / "verdict.json").read_text())
+    run = json.loads((gate / "run.json").read_text())
+    assert _actionable_red(gate, verdict, run)["how_early"] == "at process exit"
+
+    judged = _red_cell(tmp_path, "cell-b", "run-registration", det_passed=True,
+                       review_passed=False)
+    verdict = json.loads((judged / "verdict.json").read_text())
+    run = json.loads((judged / "run.json").read_text())
+    later = _actionable_red(judged, verdict, run)
+    assert later["how_early"] == "at review completion"
+    assert later["utc"] == "2026-08-16T20:30:00Z", "dated to the review, not the run"
+
+
+def test_a_green_cell_has_no_actionable_red(tmp_path):
+    from taskbench.matrix import _actionable_red
+
+    cell = tmp_path / "cells" / "cell-a"
+    (cell / "review").mkdir(parents=True)
+    assert _actionable_red(cell, {"passed": True}, {}) is None
+    assert _actionable_red(cell, {"passed": False, "inconclusive": True}, {}) is None, (
+        "a cell the environment killed is not a model result and has no red to date"
+    )

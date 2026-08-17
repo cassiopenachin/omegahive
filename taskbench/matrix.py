@@ -140,6 +140,29 @@ def _read_json(path: Path) -> dict[str, Any]:
         return {}
 
 
+def _actionable_red(cell_dir: Path, verdict: dict[str, Any], run: dict[str, Any]) -> dict | None:
+    """When this cell's final red first became objectively actionable, or None if it is green.
+
+    Computed here rather than written at run time because it is a RETROSPECTIVE label: two of
+    its three bases are only knowable once the gates have run and the review has returned, so a
+    field written by the runner could never carry the answer. Records already on disk get the
+    label the same way records written tomorrow will.
+    """
+    from .runner import earliest_actionable_red
+
+    if verdict.get("passed") or verdict.get("inconclusive"):
+        return None
+    review_verdict = _read_json(cell_dir / "review" / "verdict.json")
+    return earliest_actionable_red(
+        pulse=run.get("pulse"),
+        progress=run.get("progress") or {},
+        finished_utc=str(run.get("finished_utc") or ""),
+        deterministic_failed=not (verdict.get("deterministic") or {}).get("passed"),
+        review_failed=not (verdict.get("review") or {}).get("passed"),
+        review_finished_utc=review_verdict.get("finished_utc"),
+    )
+
+
 def load_bundle(
     record_root: str | Path, *, label: str, unreachable_reason: str | None = None
 ) -> BundleSummary:
@@ -181,6 +204,7 @@ def load_bundle(
                 usage=row.get("usage") or {},
                 gateway=gateway,
                 pulse=run.get("pulse"),
+                actionable_red=_actionable_red(cell_dir, verdict, run),
                 stop_line_violations=list(
                     (verdict.get("deterministic") or {}).get("stop_line_violations") or []
                 ),
@@ -574,6 +598,36 @@ def render(
         "Reported separately from final accuracy: early escalation value matters even when two "
         "bundles reach the same pass count. A cell with no pulse finished inside the window — "
         "an absence of data, not a snapshot that saw nothing.",
+        "",
+        "## Time to actionable red",
+        "",
+        "When each final red first became objectively actionable. Retrospective and deliberately "
+        "conservative: a patch heading somewhere wrong at minute five is not *knowable* as wrong "
+        "at minute five, and crediting it would turn this into a second, worse pass rate.",
+        "",
+        "| bundle | final reds | at the pulse | at process exit | at review completion |",
+        "|---|---|---|---|---|",
+    ]
+    for bundle in bundles:
+        reds = [c for c in bundle.cells if c.actionable_red]
+        at_pulse = sum(
+            1 for c in reds if "snapshot" in (c.actionable_red or {}).get("how_early", "")
+        )
+        at_exit = sum(
+            1 for c in reds if (c.actionable_red or {}).get("how_early") == "at process exit"
+        )
+        at_review = sum(
+            1 for c in reds if (c.actionable_red or {}).get("how_early") == "at review completion"
+        )
+        out.append(
+            f"| {bundle.label} | {len(reds)} | {at_pulse} | {at_exit} | {at_review} |"
+        )
+    out += [
+        "",
+        "**A red found at process exit cost only its generation leg. A red found at review "
+        "completion cost the review leg too, before anyone could know it was red.** Those are "
+        "different operational prices for the same verdict, and the split is the point of this "
+        "table.",
         "",
         "## What this table is not",
         "",

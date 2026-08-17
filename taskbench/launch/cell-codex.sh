@@ -62,11 +62,25 @@ chmod 600 "$CELL_HOME/auth.json"
 # `--ignore-user-config` keeps ~/.codex/config.toml out of the cell even though the home is
 # already fresh: two independent reasons for the same isolation, which is the right number for
 # something that silently changes what the model was asked.
+#
+# `--add-dir <cell>/workspace` is what makes this arm COMPARABLE, and its absence silently
+# invalidated the first wave-2 record. The runner launches every candidate with cwd=<cell>/code,
+# and Codex's `workspace-write` sandbox permits writes under the cwd only — so the documents the
+# rubric grades, which live in the SIBLING <cell>/workspace tree, were unreachable. Every Claude
+# Code arm runs with no filesystem confinement and writes them freely.
+#
+# The bundle therefore could not produce deliverables it was graded on, and its blinded reviewer
+# refused it for exactly that: "No result report was filed". That reads as a model result and is
+# an artefact of this wrapper. The grant is widened to the two trees the task actually spans, and
+# no further: the corpus's own `writable_workspace_paths` still bounds what the candidate is
+# *asked* to change, and read-only inputs stay read-only by that contract rather than by this
+# sandbox.
 set +e
 CODEX_HOME="$CELL_HOME" codex exec \
   --json \
   --ignore-user-config \
   --skip-git-repo-check \
+  --add-dir "$BENCH_CELL_ROOT/workspace" \
   "$@"
 status=$?
 set -e
