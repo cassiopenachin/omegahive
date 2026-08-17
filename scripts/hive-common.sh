@@ -94,6 +94,131 @@ b64() {  # b64 <file>
   base64 < "$1" | tr -d '\n'
 }
 
+# base64 decode, portable. GNU coreutils spells it `-d`, BSD/macOS spells it `-D` and
+# rejects `-d`. Callers that decode must go through here or they break on the same hosts
+# `env -C` broke on (drill audit C5, 2026-08-13).
+unb64() {  # unb64  (reads base64 on stdin, writes bytes on stdout)
+  # Probed by TRYING it, never by parsing --help. Two reasons, both already recorded in
+  # this repository. `--help | grep -q` is the SIGPIPE-under-pipefail shape the
+  # 2026-08-13 drill audit classified as a defect class — `grep -q` exits at the first
+  # match, the writer takes EPIPE, and the guard then fails precisely when the pattern
+  # DOES match, which here would silently select the BSD flag on a GNU host. And probing
+  # by behaviour rather than by presence is what `resolve_compose` below learned the hard
+  # way, after a presence check came back green over a dead runtime.
+  if printf 'aGk=' | base64 -d >/dev/null 2>&1; then base64 -d; else base64 -D; fi
+}
+
+# --- harness permission-boundary descriptors ------------------------------------------
+#
+# The descriptors are CODE, not deployment state: they ship in this repository beside the
+# launcher, so `permissions.md`'s "who enforces the boundary" question is answered by a
+# file an operator can read and git can blame. They are collected on the HOST and passed
+# to the resolver by exact bytes, because the catalog pins each one by digest and any
+# re-encode on the way in would break the very pin fail-closed depends on.
+: "${HIVE_BINDINGS_REPO_DIR:=}"   # override for tests; default is this repo's dir
+
+harness_bindings_dir() {  # harness_bindings_dir -> the directory holding the descriptors
+  if [ -n "$HIVE_BINDINGS_REPO_DIR" ]; then printf '%s' "$HIVE_BINDINGS_REPO_DIR"; return; fi
+  printf '%s' "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/harness-bindings"
+}
+
+# {"<binding_id>": "<base64 of the file's exact bytes>"} for every descriptor present.
+# The key is the FILE STEM; the resolver looks up by the route's `binding_id` and then
+# checks the descriptor's own `harness` against the route's, so a renamed file cannot
+# answer for a boundary it does not describe.
+harness_descriptors_json() {  # harness_descriptors_json
+  local dir f id out enc
+  dir=$(harness_bindings_dir)
+  [ -d "$dir" ] || die "harness binding descriptors not found: $dir
+  These ship with the launcher. Without them no route has a permission boundary, and a
+  launch without a boundary is exactly what permissions.md says must not happen."
+  out='{}'
+  for f in "$dir"/*.json; do
+    [ -f "$f" ] || continue
+    id=$(basename "$f" .json)
+    enc=$(b64 "$f") || die "could not encode harness binding descriptor: $f"
+    out=$(printf '%s' "$out" | jq --arg k "$id" --arg v "$enc" '. + {($k): $v}') \
+      || die "could not assemble the harness binding descriptor set"
+  done
+  [ "$out" != '{}' ] || die "no harness binding descriptors in $dir"
+  printf '%s' "$out"
+}
+
+# The one question a pure resolver cannot answer: which of the descriptors' declared
+# `config-absent` paths actually exist on THIS host. Passed in rather than assumed, so a
+# managed/admin policy file that outranks the materialized boundary refuses the launch
+# instead of silently replacing it.
+harness_present_paths_json() {  # harness_present_paths_json <descriptors-json>
+  local paths p out
+  paths=$(printf '%s' "$1" \
+    | jq -r '.[]' \
+    | while IFS= read -r enc; do
+        printf '%s' "$enc" | unb64 \
+          | jq -r '.classes[].probes[] | select(.kind == "config-absent") | .path'
+      done \
+    | sort -u) || die "could not read config-absent probe paths from the descriptors"
+  out='[]'
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    [ -e "$p" ] || continue
+    out=$(printf '%s' "$out" | jq --arg p "$p" '. + [$p]')
+  done <<< "$paths"
+  printf '%s' "$out"
+}
+
+# Write the materialized harness-native configuration into the isolated worker root.
+# Two properties matter more than the file's contents. It is written INTO THE WORKER'S
+# OWN ROOT and nowhere else — the operator's global harness configuration is never
+# rewritten, which is the failure permissions.md exists to end, one level down. And it
+# is written before the pane opens and re-verified by the supervisor before the child
+# exists, so "we generated a config" and "the child honors it" stay two facts.
+materialize_binding() {  # materialize_binding <plan-json> <worker-root>
+  local plan="$1" root="$2" rel want got dir
+  rel=$(printf '%s' "$plan" | jq -r '.binding.config_path // empty')
+  [ -n "$rel" ] || return 0          # argv-only boundary: nothing to write
+  case "$rel" in
+    /*|*..*) die "refusing to materialize a boundary outside the worker root: $rel" ;;
+  esac
+  want=$(printf '%s' "$plan" | jq -r '.binding.config_digest')
+  dir=$(dirname "$root/$rel")
+  mkdir -p "$dir" || die "cannot create $dir for the materialized boundary"
+  # `jq -j`, and never `$(jq -r ...)`: the config ends in a newline, command
+  # substitution strips trailing newlines, and `jq -r` adds one back. Either mistake
+  # changes the file's bytes and therefore its digest — which the read-back below
+  # catches, loudly, but only because the digest is taken over EXACT bytes. Writing
+  # straight through is the fix; the read-back is the proof.
+  printf '%s' "$plan" | jq -j '.binding.config_content' > "$root/$rel" \
+    || die "cannot write $root/$rel"
+  chmod 0600 "$root/$rel"
+  # Read back what actually landed. A write that succeeded and a file that says what we
+  # meant are different claims, and only the second one is a boundary.
+  got="sha256:$(sha256_hex < "$root/$rel")"
+  [ "$got" = "$want" ] || die "materialized boundary at $root/$rel hashes to $got, expected $want — the file on disk is not the one that was approved"
+  printf '%s\n' "  boundary: $rel  $want"
+}
+
+# Read a harness version out of a `--version` probe's combined output.
+#
+# The probe merges stderr, deliberately: a harness that fails to start says so there and
+# an operator needs to see it. But that also means an UNRELATED warning on stderr —
+# `bash: warning: setlocale: ...`, a deprecation notice, a proxy complaint — can arrive
+# on the first line, and "first token of the first non-empty line" then records that
+# warning's first word as the harness version. Observed 2026-08-14: a preflight reported
+# `harness: sh:`. On the spine that would be a `harness_version` fact naming a shell.
+#
+# So: prefer the first line whose first token STARTS WITH A DIGIT, which is what every
+# version string this stack has seen looks like (`2.1.232 (Claude Code)`,
+# `fake-harness 9.9.9` is caught by the fallback). Fall back to the old rule when no line
+# qualifies, because a harness with an unusual banner should still record something
+# rather than nothing — and `unknown` remains the caller's floor.
+harness_version_from() {  # harness_version_from  (reads probe output on stdin)
+  awk '
+    NF && $1 ~ /^[0-9]/ { print $1; found = 1; exit }
+    NF && !first        { first = $1 }
+    END { if (!found && first) print first }
+  '
+}
+
 # Refuse a tmux session name that cannot be targeted safely. Task, worker and run
 # ids are all charset-guarded because they flow into tmux targets and generated
 # shell; HIVE_TMUX_SESSION flows into the very same targets and was not — and a
@@ -552,13 +677,22 @@ board_json() {  # board_json  -> prints the board as a JSON array (or `[]`)
 # already validate theirs, and refuses rather than guessing. `[]` is a legitimate
 # answer; anything that is not a JSON array is an outage.
 board_json_strict() {  # board_json_strict <run>  -> prints the board array, or dies
-  local run="$1" out
-  if ! out=$( hive board-view "$run" --json 2>&1 ); then
-    printf '%s\n' "$out" >&2
+  local run="$1" out err
+  # Keep the machine-readable projection on stdout separate from runtime diagnostics.
+  # `podman compose` legitimately writes its external-provider banner to stderr even
+  # when the CLI succeeds; merging the streams turns a valid JSON array into invalid
+  # input and makes every launch refuse. Preserve stderr in a temporary file so a real
+  # failure still explains itself, but successful runtime noise never enters `out`.
+  err=$(mktemp "${TMPDIR:-/tmp}/hive-board-json.XXXXXX") \
+    || die "cannot create a temporary file for board-read diagnostics"
+  if ! out=$( hive board-view "$run" --json 2>"$err" ); then
+    cat "$err" >&2
+    rm -f "$err"
     die "cannot read the board for run '$run' — the cause is in the output above.
   Refusing to act on an unknown board state: an unreadable board is NOT an empty one,
   and treating it as empty is how a live task gets re-created from scratch."
   fi
+  rm -f "$err"
   if ! printf '%s' "$out" | jq -e 'type == "array"' >/dev/null 2>&1; then
     printf '%s\n' "$out" >&2
     die "the board read for run '$run' is not a JSON array (output above) — refusing to

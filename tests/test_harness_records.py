@@ -32,6 +32,7 @@ from typing import Any
 
 import pytest
 
+from harness_fixtures import pins
 from omegahive.events.types import ExecutionIdentity
 from omegahive.harness import records
 from omegahive.harness.records import (
@@ -62,6 +63,7 @@ def route(name: str = "r-sub", **over: Any) -> dict[str, Any]:
         "billing_market": "subscription",
         "credential_pool": "pool-a",
         "adapter": "claude-code",
+        **pins(),
     }
     base.update(over)
     return base
@@ -325,7 +327,7 @@ def test_identity_copies_every_field():
     entry = RouteEntry(
         name="r-x", model_vendor="vendor-v", provider="provider-p", model="model-m",
         harness="harness-h", billing_market="api", credential_pool="pool-c",
-        adapter="adapter-a",
+        adapter="adapter-a", **pins(),
     )
     ident = entry.identity()
     assert isinstance(ident, ExecutionIdentity)

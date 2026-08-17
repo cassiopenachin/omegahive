@@ -38,6 +38,7 @@ BINDING_SCHEMA_VERSION = 1
 
 _NAME_SHAPE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 _REF_SHAPE = re.compile(r".+@[0-9a-f]{7,40}")
+_DIGEST_SHAPE = re.compile(r"sha256:[0-9a-f]{64}")
 
 # Keys a binding may never carry. Every one of them is an identity or execution field
 # that belongs to the catalog (deployment) or to the adapter (code). `extra="forbid"`
@@ -46,9 +47,10 @@ _REF_SHAPE = re.compile(r".+@[0-9a-f]{7,40}")
 # different remedies.
 BINDING_FORBIDDEN_KEYS = frozenset(
     {
-        "adapter", "argv", "billing_market", "cmd", "command", "credential_pool",
-        "entrypoint", "env", "environment", "exec", "executable", "harness", "model",
-        "model_vendor", "price_basis", "provider", "shell",
+        "adapter", "argv", "billing_market", "binding_digest", "binding_id", "cmd",
+        "command", "credential_mode", "credential_pool", "entrypoint", "env",
+        "environment", "exec", "executable", "harness", "model", "model_vendor",
+        "permissions", "price_basis", "provider", "sandbox", "shell",
     }
 )
 
@@ -79,6 +81,21 @@ class RouteEntry(BaseModel):
     billing_market: Literal["subscription", "api"]
     credential_pool: str
     adapter: str
+    # Which permission-boundary descriptor this route runs under, and the exact bytes
+    # of it the operator approved. Both are REQUIRED: a route with no named boundary is
+    # the empty harness-bindings row `permissions.md` says is a launch that does not
+    # happen, and a named boundary with no digest cannot fail closed when the
+    # descriptor moves. The digest is re-pinned deliberately when the boundary changes,
+    # which is what keeps a boundary change from riding in on a code deploy.
+    binding_id: str
+    binding_digest: str
+    # How the provider credential reaches the execution. `harness-native` means the
+    # harness's own already-authenticated account is used and nothing is handed to the
+    # worker; `broker` means an operator-owned broker issues a scoped, expiring
+    # capability. There is deliberately no third value: a raw provider key in a route,
+    # a binding, or a worker environment is not a mode, it is the thing this field
+    # exists to make unrepresentable.
+    credential_mode: Literal["harness-native", "broker"] = "harness-native"
     # A route present in the catalog but switched off — kept visible (and therefore
     # auditable) rather than deleted, so "we turned this off" and "this never existed"
     # stay distinguishable.
@@ -88,11 +105,18 @@ class RouteEntry(BaseModel):
     price_basis: PriceBasis | None = None
     note: str | None = None
 
-    @field_validator("name")
+    @field_validator("name", "binding_id")
     @classmethod
     def _name_shape(cls, v: str) -> str:
         if not _NAME_SHAPE.fullmatch(v):
-            raise ValueError(f"route name must match [A-Za-z0-9._-]{{1,64}}, got {v!r}")
+            raise ValueError(f"must match [A-Za-z0-9._-]{{1,64}}, got {v!r}")
+        return v
+
+    @field_validator("binding_digest")
+    @classmethod
+    def _digest_shape(cls, v: str) -> str:
+        if not _DIGEST_SHAPE.fullmatch(v):
+            raise ValueError(f"binding_digest must be 'sha256:<64 hex>', got {v!r}")
         return v
 
     def identity(self) -> ExecutionIdentity:

@@ -1,0 +1,358 @@
+{
+  "schema_version": 1,
+  "binding_id": "claude-code.v1",
+  "harness": "claude-code",
+  "captured_at": "2026-08-14",
+  "config_path": ".claude/settings.local.json",
+  "config_format": "claude-code-settings",
+  "required_flags": [
+    [
+      "--setting-sources",
+      "project,local"
+    ],
+    [
+      "--permission-mode",
+      "auto"
+    ]
+  ],
+  "command_mode_flag": "--permission-mode",
+  "forbidden_argv_tokens": [
+    "--dangerously-skip-permissions",
+    "--allow-dangerously-skip-permissions",
+    "bypassPermissions",
+    "--bare",
+    "--safe-mode"
+  ],
+  "known_command_modes": [
+    "auto",
+    "acceptEdits",
+    "manual",
+    "dontAsk",
+    "plan",
+    "bypassPermissions"
+  ],
+  "safe_command_modes": [
+    "auto",
+    "acceptEdits",
+    "manual",
+    "dontAsk",
+    "plan"
+  ],
+  "status": "proven",
+  "verification": {
+    "deployment": "beastie",
+    "harness_version": "2.1.232",
+    "ran_at": "2026-08-14",
+    "probe_record": "docs/evidence/harness_binding_probe_claude_code_2026_08_14.md",
+    "outcome": "pass",
+    "config_digest": "sha256:0f5bf6a0afef0eedfc60b57d3ee2fbaeced8e9c2bfee4c276fac819de2736673"
+  },
+  "note": "Every deny rule is written as a SUBSTRING pattern (Bash(*token*)) rather than the prefix form (Bash(token *)) the workspace settings file uses. Measured on this harness at 2.1.232: a prefix pattern is evaded by an absolute path (/bin/echo) and by an interpreter (sh -c \"...\"), while the substring form catches both. THE COST IS REAL AND WAS PAID IMMEDIATELY, so it is stated here rather than discovered later: a substring rule denies any shell command whose TEXT contains the token, not only one that invokes it. The rule for the multiplexer-destruction command refused the very commit that was introducing it, because the phrase was in the commit message. On a worker boundary that trade is right - a worker that needs to type a denied token into a shell command is nearly always doing something the class exists to stop, the refusal is loud and self-correcting, and the Write tool remains available for prose. On a file that also binds document-writing sessions it is not, which is why the workspace .claude/settings.json keeps the prefix form. Reversing this trade is a one-line edit per rule here, followed by a re-pin of every route that names this descriptor.",
+  "classes": [
+    {
+      "policy_class": "P1",
+      "title": "the access layer is never touched from a worker",
+      "mechanisms": [
+        {
+          "kind": "settings-deny",
+          "rules": [
+            "Bash(*sudo *)",
+            "Bash(*sudoedit*)",
+            "Bash(*pkexec*)",
+            "Bash(*systemctl *)",
+            "Bash(*tailscale *)"
+          ],
+          "detail": "the harness's own permission engine refuses the tool call before the command reaches a shell. sudoedit and pkexec are here because the FIRST rule does not catch them: `Bash(*sudo *)` needs a space after the token, so `sudoedit /etc/x` sails past it, and pkexec is the same escalation by a different binary. Neither is an extension of the policy - both are the act permissions.md already names"
+        },
+        {
+          "kind": "setting-source-gating",
+          "rules": [],
+          "detail": "--setting-sources project,local excludes the operator's USER-level settings from the child's resolved configuration, so no per-user config can widen this boundary and none is relied on to hold it. Two limits, both real and neither hidden: the effective boundary is the UNION of this materialized file and the workspace's own committed .claude/settings.json, which is source-controlled and reviewed but is not written by this launcher (deny still beats allow, so it cannot cancel a rule here - it can only admit what nobody denied); and an admin/managed policy file outranks every source, which is why two config-absent probes look for one on both platforms rather than trusting the flag alone"
+        },
+        {
+          "kind": "launch-flag",
+          "rules": [],
+          "detail": "--permission-mode auto: a mode in which deny rules are evaluated first; the unsafe modes are refused by forbidden_argv_tokens"
+        }
+      ],
+      "probes": [
+        {
+          "id": "p1-rules-present",
+          "kind": "rule-present",
+          "rules": [
+            "Bash(*sudo *)",
+            "Bash(*sudoedit*)",
+            "Bash(*pkexec*)",
+            "Bash(*systemctl *)",
+            "Bash(*tailscale *)"
+          ],
+          "expect": "present"
+        },
+        {
+          "id": "p1-source-gating-argv",
+          "kind": "argv-flag",
+          "argv": [
+            "--setting-sources",
+            "project,local"
+          ],
+          "expect": "present"
+        },
+        {
+          "id": "p1-deny-enforced",
+          "kind": "deny-enforced",
+          "command": "echo sudo probe-canary",
+          "expect": "denied",
+          "note": "harmless by construction and denied by the SAME pattern the real command matches. A probe that runs the destructive form proves nothing extra and cannot be re-run; a probe whose command merely LOOKS destructive is refused by the model before the permission engine ever sees it, which scores an absent boundary as a present one."
+        },
+        {
+          "id": "p1-source-gated",
+          "kind": "source-gated",
+          "command": "echo sudo probe-canary",
+          "expect": "executed",
+          "note": "the paired negative: with --setting-sources excluding the materialized file, the same command is NOT denied. This is what proves the materialized file is doing the work rather than something else in the environment.",
+          "expect_output": "probe-canary"
+        },
+        {
+          "id": "p1-managed-policy-absent",
+          "kind": "config-absent",
+          "path": "/etc/claude-code/managed-settings.json",
+          "expect": "absent",
+          "note": "an admin/managed policy file outranks every source the launcher controls, INCLUDING the setting-source gating; if one appears the boundary is no longer the one this descriptor materializes and the launch refuses until an operator approves it"
+        },
+        {
+          "id": "p1-managed-policy-absent-macos",
+          "kind": "config-absent",
+          "path": "/Library/Application Support/ClaudeCode/managed-settings.json",
+          "expect": "absent",
+          "note": "the same file on macOS. Listed because this stack is explicitly portable to macOS and BSD and a probe that only knows one platform's path is a boundary that only holds on one platform"
+        }
+      ],
+      "residual": "The same interpreter bypass P2 and P3 name applies to this class and it was missing here. The allow list carries python, python3, uv and pytest, and nothing denies the Write tool, so writing a script and then running it under an allowed interpreter defeats every rule in this class in two steps a worker performs a dozen times a day. What is bound is the DIRECT invocation. The indirect route binds through WORKER.md and review, exactly as it does for P2 and P3, and this class claims no containment over it."
+    },
+    {
+      "policy_class": "P2",
+      "title": "secrets are never read, never printed, never committed",
+      "mechanisms": [
+        {
+          "kind": "settings-deny",
+          "rules": [
+            "Read(./.env)",
+            "Read(**/.env)",
+            "Read(**/*.env)",
+            "Read(**/.env.*)",
+            "Read(~/.ssh/**)",
+            "Read(~/.claude/**)",
+            "Read(~/.config/gh/**)",
+            "Read(~/.config/omegahive/**)",
+            "Read(~/.aws/**)",
+            "Read(~/.netrc)",
+            "Read(~/.git-credentials)",
+            "Bash(*credentials*)",
+            "Bash(*.netrc*)",
+            "Bash(*hosts.yml*)",
+            "Bash(*compose*config*)"
+          ],
+          "detail": "permissions.md P2 says a worker does not read `.env` files OR ANY FILE HOLDING CREDENTIALS, and the first draft bound only the first half. An independent review enumerated what actually exists on this host at the worker's own uid, with HOME inherited by design: ~/.claude/.credentials.json (the harness's own OAuth material), ~/.claude/history.jsonl (the operator's prompt history), ~/.config/gh/hosts.yml, and ~/.config/omegahive/secrets/. None was denied, and `cat` is positively allow-listed by the workspace's committed settings, so the shell route was open too. The Read rules cover the tool path and the Bash substrings cover the shell path. Also here: the ONE mechanism by which a secret actually reached a worker terminal twice (2026-07-28, 2026-08-01), a compose config that dereferences the secrets file and prints it - with a wildcard between the two words, because the adjacency form is walked past by `podman compose -f compose.yml config`"
+        },
+        {
+          "kind": "env-allowlist",
+          "rules": [],
+          "detail": "the child's environment is constructed from an allowlist, and any addition whose name contains API_KEY/SECRET/TOKEN/PASSWORD/CREDENTIAL is refused at the adapter boundary — so a secret cannot arrive by inheritance"
+        },
+        {
+          "kind": "setting-source-gating",
+          "rules": [],
+          "detail": "--setting-sources project,local excludes the operator's USER-level settings from the child's resolved configuration, so no per-user config can widen this boundary and none is relied on to hold it. Two limits, both real and neither hidden: the effective boundary is the UNION of this materialized file and the workspace's own committed .claude/settings.json, which is source-controlled and reviewed but is not written by this launcher (deny still beats allow, so it cannot cancel a rule here - it can only admit what nobody denied); and an admin/managed policy file outranks every source, which is why two config-absent probes look for one on both platforms rather than trusting the flag alone"
+        },
+        {
+          "kind": "instruction",
+          "rules": [],
+          "detail": "WORKER.md plus review carry the part no matcher can express: do not PRINT resolved configuration that dereferences a secret, by any route"
+        }
+      ],
+      "probes": [
+        {
+          "id": "p2-rules-present",
+          "kind": "rule-present",
+          "rules": [
+            "Read(**/*.env)",
+            "Read(~/.ssh/**)",
+            "Read(~/.claude/**)",
+            "Read(~/.config/omegahive/**)",
+            "Bash(*credentials*)",
+            "Bash(*compose*config*)"
+          ],
+          "expect": "present"
+        },
+        {
+          "id": "p2-env-absent",
+          "kind": "env-absent",
+          "sentinel_name": "HIVE_PROBE_SENTINEL_TOKEN",
+          "expect": "absent"
+        },
+        {
+          "id": "p2-deny-enforced",
+          "kind": "deny-enforced",
+          "command": "echo podman compose -f x.yml config probe-canary",
+          "expect": "denied"
+        }
+      ],
+      "residual": "A deny list binds the NAMED read paths and the one recorded printing mechanism. It does not and cannot bind 'do not print resolved configuration' in general, and two ordinary routes to a secret are outside it by construction rather than by omission: copying the file first (`cp .env /tmp/x` then reading /tmp/x, where neither step matches a rule), and reading it with a tool the engine does not classify as a reader. The engine's Read denials cover a recognized set of shell readers; grep, awk, od, base64, xxd, tar and `git show HEAD:path` are not obviously in it and were not tested here. Nor was the enforced behaviour of the Read rules themselves - the P2 probe that runs is the compose one; a Read-tool probe was attempted and came back inconclusive because the model declined to make the call, so the Read half of this row is materialized and rule-present but NOT enforcement-tested. That surface binds through WORKER.md and review, and this descriptor claims no containment over it. An ordinary harness permission policy is not an adversarial OS sandbox."
+    },
+    {
+      "policy_class": "P3",
+      "title": "the durable stack is never mutated, and shared infrastructure is never destroyed",
+      "mechanisms": [
+        {
+          "kind": "settings-deny",
+          "rules": [
+            "Bash(*podman system *)",
+            "Bash(*podman rm *)",
+            "Bash(*podman container rm*)",
+            "Bash(*podman rmi *)",
+            "Bash(*podman kill *)",
+            "Bash(*podman restart *)",
+            "Bash(*podman network rm*)",
+            "Bash(*podman pod rm*)",
+            "Bash(*podman pod stop*)",
+            "Bash(*podman volume rm *)",
+            "Bash(*podman stop *)",
+            "Bash(*docker system *)",
+            "Bash(*docker rm *)",
+            "Bash(*docker container rm*)",
+            "Bash(*docker rmi *)",
+            "Bash(*docker kill *)",
+            "Bash(*docker restart *)",
+            "Bash(*docker network rm*)",
+            "Bash(*docker volume rm *)",
+            "Bash(*docker stop *)",
+            "Bash(*prune*)",
+            "Bash(*compose down*)",
+            "Bash(*compose stop*)",
+            "Bash(*compose rm*)",
+            "Bash(*compose kill*)",
+            "Bash(*git push --force*)",
+            "Bash(*git push -f*)",
+            "Bash(*git push *+*)",
+            "Bash(*git push --delete*)",
+            "Bash(*git push * :*)",
+            "Bash(*tmux kill*)",
+            "Bash(*tmux killw*)",
+            "Bash(*tmux killp*)",
+            "Bash(*tmux send-keys*)"
+          ],
+          "detail": "permissions.md P3 says a worker does not stop, remove, or prune containers, volumes, or networks, and does not force-push. Two review passes found this row binding SPELLINGS rather than that set of effects, and each round the misses were ordinary commands, not obfuscation. Round one: podman kill, podman container rm, podman rmi, any prune but the two enumerated, `git push -f`, and - the sharpest - `podman compose down -v`, which the P4 allow entry `Bash(podman compose *)` ADMITTED and no deny matched, because deny-beats-allow does not help when there is no deny to beat. Round two: the whole docker verb set (resolve_compose supports docker as a first-class runtime, so on a docker host this row was essentially absent), remote-branch deletion by `git push --delete` and `git push origin :main`, and tmux's documented `killw`/`killp` aliases plus `send-keys`, which injects commands into another live worker's pane. `Bash(*tmux kill*)` now covers every kill subcommand and its aliases. Every rule binds an effect the policy already names; none extends it"
+        },
+        {
+          "kind": "setting-source-gating",
+          "rules": [],
+          "detail": "--setting-sources project,local excludes the operator's USER-level settings from the child's resolved configuration, so no per-user config can widen this boundary and none is relied on to hold it. Two limits, both real and neither hidden: the effective boundary is the UNION of this materialized file and the workspace's own committed .claude/settings.json, which is source-controlled and reviewed but is not written by this launcher (deny still beats allow, so it cannot cancel a rule here - it can only admit what nobody denied); and an admin/managed policy file outranks every source, which is why two config-absent probes look for one on both platforms rather than trusting the flag alone"
+        },
+        {
+          "kind": "settings-deny",
+          "rules": [
+            "Edit(**/.claude/**)",
+            "Write(**/.claude/**)",
+            "Bash(*settings.local.json*)",
+            "Bash(*settings.json*)",
+            "Bash(*rm *.claude*)",
+            "Bash(*rm -rf .claude*)",
+            "Bash(*git clean*)",
+            "Bash(*git stash*)",
+            "Edit(**/execution/**)",
+            "Write(**/execution/**)",
+            "Bash(*execution/plan.json*)",
+            "Bash(*execution/emit.sh*)"
+          ],
+          "detail": "THE BOUNDARY FILE IS SHARED INFRASTRUCTURE TOO, and protecting it by name was one indirection short. It is materialized into the worker's own writable tree and the supervisor verifies its digest exactly once, immediately before the child forks; nothing after that re-checks it, and a resumed or hand-restarted session never passes through the check at all. Naming the file left three neighbours open, all found by review: removing the DIRECTORY (`rm -rf .claude`), removing it without naming it (`git clean -xfd` and `git stash -u`, both allow-listed under `Bash(git *)` and both effective because the file is gitignored), and rewriting the OTHER half of the loaded union, .claude/settings.json, from the shell - a file that can carry hooks, which execute outside the permission engine entirely. The Edit/Write rules now cover the directory rather than the file. The same reasoning reaches one directory further, and a cross-vendor review is what pointed at it: the supervisor verifies the materialized file against plan.json's own digest and execs plan.json's own argv, so the PLAN is the root of trust and it sits in the worker's own tree at the worker's own uid. These rules deny writing it. They are an accident guard and nothing more - a determined agent at the same uid can edit a plan CONSISTENTLY (new config, matching digest) and the check passes, because there is no second copy to compare against. The real fix is a separate unix identity for workers, which is the already-parked `hive-user` cutover, and this order names it rather than pretending otherwise"
+        }
+      ],
+      "probes": [
+        {
+          "id": "p3-rules-present",
+          "kind": "rule-present",
+          "rules": [
+            "Bash(*tmux kill*)",
+            "Bash(*git push -f*)",
+            "Bash(*compose down*)",
+            "Bash(*prune*)",
+            "Bash(*docker kill *)"
+          ],
+          "expect": "present"
+        },
+        {
+          "id": "p3-deny-enforced",
+          "kind": "deny-enforced",
+          "command": "echo tmux kill-server probe-canary",
+          "expect": "denied",
+          "note": "the canary form of the exact command that caused the 2026-07-29 incident: same pattern, same engine, no multiplexer harmed"
+        }
+      ],
+      "residual": "sudo and systemctl are bound under P1. A worker that reaches the same effect through an allowed interpreter is outside a command matcher; the policy's own answer to that is review, not a longer list."
+    },
+    {
+      "policy_class": "P4",
+      "title": "the network is reached through named tools, not raw fetches",
+      "mechanisms": [
+        {
+          "kind": "settings-deny",
+          "rules": [
+            "Bash(*curl *)",
+            "Bash(*wget *)"
+          ],
+          "detail": "raw fetches refused; the harness's own web tooling is unaffected because it is not a Bash tool call"
+        },
+        {
+          "kind": "settings-allow",
+          "rules": [
+            "Bash(git *)",
+            "Bash(gh *)",
+            "Bash(uv *)",
+            "Bash(pytest *)",
+            "Bash(python *)",
+            "Bash(python3 *)",
+            "Bash(shellcheck *)",
+            "Bash(jq *)",
+            "Bash(podman compose *)",
+            "Bash(podman build *)",
+            "Bash(podman images *)",
+            "Bash(podman ps *)",
+            "Bash(podman logs *)"
+          ],
+          "detail": "the positive half of the class: the version-control and package tools an order needs stay usable. Deny is evaluated first, so an allow entry never widens a DENIED pattern - but it does admit everything nobody denied, which is how `Bash(podman compose *)` admitted `compose down -v` until P3 grew the rules to match. An allow list is read as a list of effects, not of prefixes"
+        },
+        {
+          "kind": "setting-source-gating",
+          "rules": [],
+          "detail": "--setting-sources project,local excludes the operator's USER-level settings from the child's resolved configuration, so no per-user config can widen this boundary and none is relied on to hold it. Two limits, both real and neither hidden: the effective boundary is the UNION of this materialized file and the workspace's own committed .claude/settings.json, which is source-controlled and reviewed but is not written by this launcher (deny still beats allow, so it cannot cancel a rule here - it can only admit what nobody denied); and an admin/managed policy file outranks every source, which is why two config-absent probes look for one on both platforms rather than trusting the flag alone"
+        }
+      ],
+      "probes": [
+        {
+          "id": "p4-rules-present",
+          "kind": "rule-present",
+          "rules": [
+            "Bash(*curl *)",
+            "Bash(*wget *)"
+          ],
+          "expect": "present"
+        },
+        {
+          "id": "p4-deny-enforced",
+          "kind": "deny-enforced",
+          "command": "echo curl probe-canary",
+          "expect": "denied"
+        },
+        {
+          "id": "p4-allow-executes",
+          "kind": "allow-executes",
+          "command": "git --version",
+          "expect": "executed",
+          "note": "the positive control. Without it a descriptor that denied everything would score four green classes and be useless.",
+          "expect_output": "git version"
+        }
+      ],
+      "residual": "THIS CLASS ENFORCES EXECUTABLE-NAME HYGIENE, NOT 'network only through named tools'. The distinction was buried in a general statement elsewhere and belongs here, because P4 is the class whose allow list carries the bypass: `Bash(python *)`, `Bash(python3 *)` and `Bash(uv *)` are explicitly permitted, and `python -c 'import urllib.request; urllib.request.urlopen(...)'` is a raw fetch that no rule in this descriptor matches. So are a package manager's own downloads and anything a script fetches. What is bound is the direct invocation of curl and wget, by any path and through a shell wrapper; what is not bound is the network. Closing that needs egress control at the OS or proxy layer, which is not this order's surface. Separately: an order needing a documented exception says so in its text and the operator grants it at launch (permissions.md P4). There is no per-order exception mechanism here - an exception is a different descriptor, deliberately, so it is visible in the route catalog rather than hidden in a flag."
+    }
+  ]
+}

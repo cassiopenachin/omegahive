@@ -33,7 +33,9 @@ from typing import Any
 
 import pytest
 
+from harness_fixtures import descriptors_map, pins, shipped_map
 from omegahive.harness.plan import (
+    BROKER_IMPLEMENTED,
     LAUNCHABLE_MARKETS,
     ResolvedPlan,
     execution_id_for,
@@ -66,6 +68,7 @@ def route(name: str = "r-sub", **over: Any) -> dict[str, Any]:
         "billing_market": "subscription",
         "credential_pool": "pool-a",
         "adapter": "claude-code",
+        **pins(),
     }
     base.update(over)
     return base
@@ -108,10 +111,12 @@ def plan(
     parent_env: dict[str, str] | None = None,
     expected_task: str | None = "example-task",
     expected_order_ref: str | None = ORDER_REF,
+    descriptors: dict[str, bytes] | None = None,
 ) -> ResolvedPlan:
     return resolve(
         binding_raw=binding if binding is not None else binding_bytes(),
         catalog_raw=catalog if catalog is not None else catalog_bytes(route()),
+        descriptors_raw=descriptors if descriptors is not None else descriptors_map(),
         binding_ref=BINDING_REF,
         expected_task=expected_task,
         expected_order_ref=expected_order_ref,
@@ -202,18 +207,56 @@ def test_unknown_route_still_refuses_when_agreement_holds():
 # --- api market: resolves, does not launch ----------------------------------
 
 def test_api_market_route_resolves_but_is_not_launchable():
-    p = plan(
-        catalog=(SCHEMAS / "route-catalog.example.json").read_bytes(),
-        binding=binding_bytes(route="example-api-route"),
-    )
+    """The shipped example catalog's api routes both refuse — for two DIFFERENT reasons.
+
+    Driven off the committed example rather than a local fixture, so the catalog an
+    operator actually copies is the thing under test. Its api routes name `codex.v1`,
+    which is a `declared` descriptor, so the refusal an operator meets first is the
+    unproven boundary — the credential gate is behind it and is exercised separately
+    below on a route whose boundary IS proven.
+    """
+    with pytest.raises(RefusalError) as exc:
+        plan(
+            catalog=(SCHEMAS / "route-catalog.example.json").read_bytes(),
+            binding=binding_bytes(route="example-api-route"),
+            descriptors=shipped_map(),
+        )
+    assert exc.value.code == "HARNESS_BINDING_UNPROVEN"
+
+
+def test_an_api_route_on_a_proven_boundary_still_refuses_for_its_credential():
+    """The credential gate, isolated from the boundary gate.
+
+    `api` + `harness-native` is the shape that would run a direct-API model on whatever
+    account the harness happens to hold, which is exactly what must not happen — the
+    long-lived provider credential has to stay outside the worker.
+    """
+    p = plan(catalog=catalog_bytes(route(billing_market="api")))
     assert p.identity.billing_market == "api"
-    assert p.price_basis is not None, "an api route carries the price basis that was true"
     assert p.launchable is False
-    assert p.unlaunchable_reason
-    assert "example-api-route" in p.unlaunchable_reason
-    assert "api" in p.unlaunchable_reason
+    assert p.refusal_code == "ROUTE_CREDENTIAL_MODE"
+    assert "broker" in (p.unlaunchable_reason or "")
     # The argv is still built, because `--check` must be able to show what WOULD run.
     assert p.launch.argv
+
+
+def test_an_api_route_asking_for_a_broker_refuses_because_none_exists():
+    """`credential_mode='broker'` is the ONLY shape in which an api route could launch,
+    and it refuses too — honestly, by name, with no fallback that puts a key near a
+    worker. This is the denial seam the conditional broker slice left behind when its
+    activation condition did not fire."""
+    p = plan(catalog=catalog_bytes(route(billing_market="api", credential_mode="broker")))
+    assert p.launchable is False
+    assert p.refusal_code == "BROKER_NOT_IMPLEMENTED"
+    assert not BROKER_IMPLEMENTED
+
+
+def test_a_subscription_route_may_not_ask_for_a_broker():
+    """The reverse mistake: a subscription route has no credential for a broker to
+    scope, so the combination is a catalog error rather than a configuration."""
+    p = plan(catalog=catalog_bytes(route(credential_mode="broker")))
+    assert p.launchable is False
+    assert p.refusal_code == "ROUTE_CREDENTIAL_MODE"
 
 
 def test_api_market_is_not_in_the_launchable_set():
@@ -389,17 +432,17 @@ def test_preflight_says_a_subscription_route_has_no_price_basis():
 
 
 def test_preflight_renders_the_api_route_numbers_and_the_launch_block():
-    p = plan(
-        catalog=(SCHEMAS / "route-catalog.example.json").read_bytes(),
-        binding=binding_bytes(route="example-api-route"),
-    )
+    price = {
+        "currency": "USD", "per_mtok_input": 0.14, "per_mtok_cache_read": 0.014,
+        "per_mtok_cache_write": 0.14, "per_mtok_output": 0.28,
+        "source": "example list prices", "captured_at": "2026-08-14",
+    }
+    p = plan(catalog=catalog_bytes(route(billing_market="api", price_basis=price)))
     text = preflight_text(to_json(p, kickoff=KICKOFF))
     assert "price basis: USD" in text
     for number in ("0.14", "0.014", "0.28"):
         assert number in text, f"{number} missing from the rendered price basis"
-    assert "NOT LAUNCHABLE:" in text
-    # The codex adapter proves neither surface, so the caveat must be visible.
-    assert "caveat:" in text
+    assert "NOT LAUNCHABLE [ROUTE_CREDENTIAL_MODE]:" in text
 
 
 def test_preflight_shows_identity_and_the_pins():
