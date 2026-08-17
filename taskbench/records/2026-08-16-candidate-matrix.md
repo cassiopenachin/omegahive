@@ -116,6 +116,21 @@ A one-task lead is not a stable lead and a tied result is not a demonstration of
 
 Reported separately from final accuracy: early escalation value matters even when two bundles reach the same pass count. A cell with no pulse finished inside the window — an absence of data, not a snapshot that saw nothing.
 
+## Time to actionable red
+
+When each final red first became objectively actionable. Retrospective and deliberately conservative: a patch heading somewhere wrong at minute five is not *knowable* as wrong at minute five, and crediting it would turn this into a second, worse pass rate.
+
+| bundle | final reds | at the pulse | at process exit | at review completion |
+|---|---|---|---|---|
+| incumbent | 0 | 0 | 0 | 0 |
+| haiku-claude-code | 4 | 0 | 4 | 0 |
+| luna-codex | 3 | 0 | 0 | 3 |
+| deepseek-claude-code | 0 | 0 | 0 | 0 |
+| muse-claude-code | 1 | 0 | 1 | 0 |
+| deepseek-reasonix | 0 | 0 | 0 | 0 |
+
+**A red found at process exit cost only its generation leg. A red found at review completion cost the review leg too, before anyone could know it was red.** Those are different operational prices for the same verdict, and the split is the point of this table.
+
 ## What this table is not
 
 Five hive-heavy tasks with one PLN sentinel. It cannot qualify a bundle for applied tenant research, for less-bounded work, or for the future middle tier, and the single cross-project task is a sentinel that the instrument reaches a second repository — not evidence about PLN research. **No bundle is benchmark-qualified by this document:** the M1c designation is the operator's, in a committed disposition.

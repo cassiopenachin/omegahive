@@ -1,0 +1,177 @@
+diff --git a/scripts/hive-close b/scripts/hive-close
+index 10e72a6..f1a5f7a 100755
+--- a/scripts/hive-close
++++ b/scripts/hive-close
+@@ -106,3 +106,16 @@ else
+     echo "  (already-scored is a normal reason for this to fail — add --again to record a second entry.)"
+   } >&2
+ fi
++
++# Refresh the project's derived task instruments after scoring. This is a
++# workspace by-product, so a failure is loud but cannot turn the already durable
++# close into a failure or undo its spine events.
++if "$SCRIPT_DIR/hive-metrics" "$PROJECT" </dev/null; then
++  echo "hive-close: metrics regenerated"
++else
++  {
++    echo
++    echo "hive-close: WARNING the close SUCCEEDED, but task metrics regeneration failed."
++    echo "  Recover with: hive-metrics $PROJECT"
++  } >&2
++fi
+diff --git a/scripts/hive-common.sh b/scripts/hive-common.sh
+index f71c43c..01bb5a9 100755
+--- a/scripts/hive-common.sh
++++ b/scripts/hive-common.sh
+@@ -218,8 +218,8 @@ order_pin() {  # order_pin <workspace-relative-path>  -> prints sha
+ # operator's clone is never swept into the commit. Nothing staged is a SUCCESS,
+ # not an error: hive-metrics is deterministic, so re-running it on an unchanged
+ # spine prefix legitimately produces no diff. Push mirrors hive-answer's
+-# retry (push -> pull --rebase -> push) and reports precisely how far it got, so
+-# "committed locally" is never mistaken for "on the hub".
++# A metrics push is deliberately not retried by rebasing: this is a shared
++# measurement path, and unattended rebases can move another operator's work.
+ commit_metrics() {  # commit_metrics <project> <commit-message>  -> 0 committed/nothing-to-do, non-zero otherwise
+   local msg="$2" spec="projects/$1/metrics"
+   git -C "$OPS_WS" add -- "$spec" || { echo "hive: git add failed for $spec in $OPS_WS" >&2; return 1; }
+@@ -230,16 +230,35 @@ commit_metrics() {  # commit_metrics <project> <commit-message>  -> 0 committed/
+   git -C "$OPS_WS" commit --quiet -m "$msg" -- "$spec" \
+     || { echo "hive: git commit failed for $spec in $OPS_WS (git identity unset, a commit hook, or an index lock?)" >&2; return 1; }
+   if ! git -C "$OPS_WS" push --quiet 2>/dev/null; then
+-    if ! git -C "$OPS_WS" pull --rebase --quiet; then
+-      echo "hive: push failed and rebase failed — committed locally in $OPS_WS, NOT on the hub; resolve by hand" >&2
+-      return 1
+-    fi
+-    git -C "$OPS_WS" push --quiet \
+-      || { echo "hive: push failed for $OPS_WS — committed locally, NOT on the hub" >&2; return 1; }
++    echo "hive: metrics push refused — committed locally in $OPS_WS, NOT on the hub" >&2
++    echo "  resolve manually: inspect the metrics commit, integrate the hub's changes, then push" >&2
++    return 1
+   fi
+   echo "  committed + pushed: $spec ($msg)"
+ }
+ 
++# One parser for the three scored prediction labels. Named risks is required
++# prose but intentionally remains unscored.
++parse_predictions() {  # parse_predictions <order-file>
++  local file="$1"
++  PRED_SECTION_PRESENT=0 PRED_DECLARED_UNPREDICTED=0
++  PRED_EFFORT_TXT="" PRED_QUESTIONS_TXT="" PRED_REVIEW_TXT="" PRED_BLOCK=""
++  if grep -qE '^##[[:space:]]*Predictions[[:space:]]*$' "$file"; then
++    # shellcheck disable=SC2034  # consumed by hive-launch/hive-score callers
++    PRED_SECTION_PRESENT=1
++    PRED_BLOCK=$(awk '/^##[ \t]*Predictions[ \t]*$/ { inblock=1; next } inblock && /^#/ { inblock=0 } inblock { print }' "$file")
++    # shellcheck disable=SC2034  # consumed by hive-launch caller
++    grep -qiF 'deliberately unpredicted' <<<"$PRED_BLOCK" && PRED_DECLARED_UNPREDICTED=1 || true
++    PRED_EFFORT_TXT=$( { printf '%s' "$PRED_BLOCK" | grep -oiE 'Expected effort:[[:space:]]*[0-9][0-9.–—-]*[[:space:]]*worker-hours?' | head -1 | sed -E 's/^[Ee]xpected effort:[[:space:]]*//'; } || true )
++    PRED_QUESTIONS_TXT=$( { printf '%s' "$PRED_BLOCK" | grep -oiE 'Expected questions:[[:space:]]*[0-9][0-9–—-]*' | head -1 | sed -E 's/^[Ee]xpected questions:[[:space:]]*//'; } || true )
++    PRED_REVIEW_TXT=$( { printf '%s' "$PRED_BLOCK" | grep -oiE 'Expected review outcome:[[:space:]]*[^.]+' | head -1 | sed -E 's/^[Ee]xpected review outcome:[[:space:]]*//'; } || true )
++  fi
++  PRED_FIELDS=0
++  if [ -n "$PRED_EFFORT_TXT" ]; then PRED_FIELDS=$((PRED_FIELDS + 1)); fi
++  if [ -n "$PRED_QUESTIONS_TXT" ]; then PRED_FIELDS=$((PRED_FIELDS + 1)); fi
++  if [ -n "$PRED_REVIEW_TXT" ]; then PRED_FIELDS=$((PRED_FIELDS + 1)); fi
++}
++
+ # The folded board as a JSON array (board-view --json): the machine projection —
+ # one object per task with task/status/owner/depends_on/review. This is the read
+ # path the tooling parses instead of the rendered table: a task id wider than the
+diff --git a/scripts/hive-launch b/scripts/hive-launch
+index 6de9fd9..304b6e4 100755
+--- a/scripts/hive-launch
++++ b/scripts/hive-launch
+@@ -167,6 +167,16 @@ fi
+ # adopted task keeps its original (seeded) task.created acceptance pin.
+ SHA=$(order_pin "$REL")
+ ACCEPTANCE="per $REL@$SHA"
++parse_predictions "$OPS_WS/$REL"
++if [ "$PRED_SECTION_PRESENT" -eq 1 ] && [ "$PRED_FIELDS" -eq 0 ] && [ "$PRED_DECLARED_UNPREDICTED" -eq 0 ]; then
++  if [ -z "$ANYWAY" ]; then
++    { echo "hive-launch: refusing '$TASK' — ## Predictions is present but none of the three scored fields parse."; echo "  required literal labels: Expected effort:, Expected questions:, Expected review outcome:, Named risks:"; echo "  offending lines:"; printf '%s\n' "$PRED_BLOCK" | sed 's/^/    /'; echo "  fix the labels, or override deliberately with --anyway."; } >&2
++    exit 1
++  fi
++  echo "hive-launch: WARNING --anyway bypassed an unparseable predictions section" >&2
++elif [ "$PRED_SECTION_PRESENT" -eq 1 ] && [ "$PRED_FIELDS" -gt 0 ] && [ "$PRED_FIELDS" -lt 3 ]; then
++  echo "hive-launch: WARNING predictions section is partial ($PRED_FIELDS of 3 scored fields parsed); missing fields are calibration gaps" >&2
++fi
+ # A heading-less order file is a titling problem, not a launch failure. Without
+ # the `|| true` the no-match `grep` fails the whole pipeline under `set -o
+ # pipefail`, aborting the script one line ABOVE its own fallback — which made
+diff --git a/scripts/hive-metrics-drill.sh b/scripts/hive-metrics-drill.sh
+index 9fea6ee..4d4e80c 100755
+--- a/scripts/hive-metrics-drill.sh
++++ b/scripts/hive-metrics-drill.sh
+@@ -53,6 +53,10 @@ cleanup() {
+ }
+ trap cleanup EXIT
+ 
++# Hygiene fold: install the EXIT trap before creating the isolated workspace,
++# and consume grep to EOF (never grep -q) so pipefail cannot turn a match into a
++# SIGPIPE failure. These are the two bounded classes reviewed for this drill.
++
+ echo "metrics drill: sandbox=$SANDBOX"
+ 
+ WS="$SANDBOX/ws"
+diff --git a/scripts/hive-score b/scripts/hive-score
+index dc208db..c350d01 100755
+--- a/scripts/hive-score
++++ b/scripts/hive-score
+@@ -208,14 +208,11 @@ fi
+ # order file at all is a real, and interesting, case: it scores as unpredicted.
+ PRED_BLOCK=""
+ if [ -n "$ORDER_REL" ]; then
+-  # From the `## Predictions` heading to the next heading of any level, exclusive.
+-  PRED_BLOCK=$(awk '
+-    /^##[ \t]*Predictions[ \t]*$/ { inblock = 1; next }
+-    inblock && /^#/                { inblock = 0 }
+-    inblock                        { print }
+-  ' "$OPS_WS/$ORDER_REL")
++  parse_predictions "$OPS_WS/$ORDER_REL"
+ else
+   ORDER_REL="(no order file found)"
++  PRED_SECTION_PRESENT=0 PRED_FIELDS=0
++  PRED_EFFORT_TXT="" PRED_QUESTIONS_TXT="" PRED_REVIEW_TXT=""
+ fi
+ 
+ # parse_range <text> -> "lo hi"; accepts "2", "1-2", "1–2" (en dash), "1—2".
+@@ -227,18 +224,13 @@ parse_range() {
+ # Verbatim slices of the prediction text; empty when the field was not predicted
+ # (a no-match grep is the *expected* partial-prediction case, not an error — hence
+ # the `|| true` guards under `set -o pipefail`).
+-PRED_EFFORT_TXT=$( { printf '%s' "$PRED_BLOCK" \
+-  | grep -oiE 'Expected effort:[[:space:]]*[0-9][0-9.–—-]*[[:space:]]*worker-hours?' \
+-  | head -1 | sed -E 's/^[Ee]xpected effort:[[:space:]]*//'; } || true )
+-PRED_QUESTIONS_TXT=$( { printf '%s' "$PRED_BLOCK" \
+-  | grep -oiE 'Expected questions:[[:space:]]*[0-9][0-9–—-]*' \
+-  | head -1 | sed -E 's/^[Ee]xpected questions:[[:space:]]*//'; } || true )
+-PRED_REVIEW_TXT=$( { printf '%s' "$PRED_BLOCK" \
+-  | grep -oiE 'Expected review outcome:[[:space:]]*[^.]+' \
+-  | head -1 | sed -E 's/^[Ee]xpected review outcome:[[:space:]]*//'; } || true )
+-
+ NOT_PREDICTED='*not predicted*'
+ 
++if [ -n "$REVIEW_VERDICT" ]; then
++  REVIEW_VERDICT=$(printf '%s' "$REVIEW_VERDICT" | tr '[:upper:]' '[:lower:]')
++  case "$REVIEW_VERDICT" in clean|'minor rework'|rework) ;; *) die "invalid --review '$REVIEW_VERDICT' (expected: clean | minor rework | rework)" ;; esac
++fi
++
+ # --- verdicts -----------------------------------------------------------------
+ # Effort tolerance is stated in the file header, not hidden here: a prediction
+ # counts as a hit within the wider of ±0.5h and ±25% of the predicted low bound.
+@@ -289,9 +281,14 @@ for t in "$PRED_EFFORT_TXT" "$PRED_QUESTIONS_TXT" "$PRED_REVIEW_TXT"; do
+   if [ -n "$t" ]; then FIELDS=$((FIELDS + 1)); fi
+ done
+ case "$FIELDS" in
+-  0) COVERAGE="unpredicted (no usable \`## Predictions\` section)" ;;
++  0) if [ "$PRED_SECTION_PRESENT" -eq 1 ]; then COVERAGE="unpredicted (section present, 0 of 3 fields parsed)"; else COVERAGE="unpredicted (no \`## Predictions\` section)"; fi ;;
+   3) COVERAGE="full" ;;
+-  *) COVERAGE="partial ($FIELDS of 3 fields predicted)" ;;
++  *)
++    MISSING=""
++    [ -z "$PRED_EFFORT_TXT" ] && MISSING="effort"
++    [ -z "$PRED_QUESTIONS_TXT" ] && MISSING="${MISSING:+$MISSING, }questions"
++    [ -z "$PRED_REVIEW_TXT" ] && MISSING="${MISSING:+$MISSING, }review outcome"
++    COVERAGE="partial ($FIELDS of 3 fields predicted; missing: $MISSING)" ;;
+ esac
+ 
+ # --- append --------------------------------------------------------------------

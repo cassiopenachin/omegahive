@@ -1,0 +1,55 @@
+diff --git a/projects/pln-benchmarks/reports/2026-08-16-ptc-revalidate-result.md b/projects/pln-benchmarks/reports/2026-08-16-ptc-revalidate-result.md
+new file mode 100644
+index 0000000..46b5b69
+--- /dev/null
++++ b/projects/pln-benchmarks/reports/2026-08-16-ptc-revalidate-result.md
+@@ -0,0 +1,49 @@
++# ptc-revalidate result
++
++## What shipped
++
++The working tree contains `docs/ptc-verdict.md` and
++`scripts/ptc-repro.py`. The verdict at PeTTaChainer
++`02a85c63be6a735f50f50e1084a717b3256b8406` and PeTTa
++`43705f5d9ff8958ffe7f0aa6777fb8477f2401f2` is **broken with minimal
++reproduction**: exact format-A STV rules produce no forward derivation and
++backward queries return empty, including the direct fact. The upstream issue
++was staged through `gh` as
++https://github.com/rTreutlein/PeTTaChainer/issues/1.
++
++## How verified
++
++- `uv sync --frozen --offline --python` Python 3.12.13, using the pinned local
++  PeTTa checkout and cached janus-swi 1.5.2.
++- `pettachainer/metta/test.sh`: verbatim result `Summary: 5 passed, 45 failed`;
++  the per-test output is recorded in `docs/ptc-verdict.md`.
++- Python unittest suite: `Ran 16 tests ... FAILED (failures=5, errors=2)`.
++- `scripts/ptc-repro.py`: forward `[]`; backward direct, one-step, and
++  unknown probes all `[]`.
++- Every verification command was invoked through `bin/bench-verify`; start
++  timestamps are in `verification.log`.
++- Podman was attempted but could not initialize because its rootless runtime
++  path is read-only in this worker; the isolated locked checkout was run on
++  the host instead. No upstream source was changed.
++
++## To operate
++
++From a clean plnbench checkout with the two pinned dependency bundles available,
++clone the bundles as sibling directories named `PeTTaChainer` and `PeTTa`, run
++`uv sync --frozen --python 3.12` in PeTTaChainer, then run:
++
++```bash
++uv run python ../plnbench/scripts/ptc-repro.py
++```
++
++The output is JSON. `forward: []` and empty backward result lists reproduce the
++verdict. Set `LC_ALL=C.UTF-8` when running the upstream MeTTa suite.
++
++## Reflection
++
++The order's requested commits could not be created: the harness grants read
++access but not write access to either repository's `.git` directory, so Git
++fails creating `.git/index.lock` with `Read-only file system`. The requested
++working files are present and diff-checked, but remain uncommitted until the
++operator runs the commit in a writable clone. The same restriction prevents
++committing this report in the workspace repository.

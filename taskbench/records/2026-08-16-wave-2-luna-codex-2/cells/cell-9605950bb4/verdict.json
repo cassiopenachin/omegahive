@@ -1,0 +1,108 @@
+{
+  "because": "INCONCLUSIVE \u2014 the session died: harness_crash: Traceback (most recent call last). This cell is not a model result and must be run again.",
+  "cell_id": "cell-9605950bb4",
+  "deterministic": {
+    "checks": [
+      {
+        "detail": "exit 1 (expected 0)",
+        "exit_code": 1,
+        "id": "verdict-shape",
+        "output_tail": "FAIL the verdict states no status for forward chaining\nFAIL the verdict states no status for backward chaining\n",
+        "passed": false
+      },
+      {
+        "detail": "ok",
+        "exit_code": 0,
+        "id": "repro-script-present",
+        "output_tail": "ok \u2014 repro script(s) committed and referenced by the verdict: scripts/ptc-repro.py\n",
+        "passed": true
+      },
+      {
+        "detail": "ok",
+        "exit_code": 0,
+        "id": "subjects-unpatched",
+        "output_tail": "ok \u2014 4 changed file(s), none under a vendored subject; 0 vendored checkout(s) clean\n",
+        "passed": true
+      }
+    ],
+    "excluded_legs": [
+      {
+        "executed_by": "not-executed",
+        "leg": "Close the stall-ledger row against the report ref.",
+        "reason": "A write to the live hive workspace. The instrument never touches it."
+      },
+      {
+        "executed_by": "not-executed",
+        "leg": "Announce the result on the spine per WORKER.md.",
+        "reason": "A spine emit, which this instrument's own scope forbids. The report the order asks for IS written and graded \u2014 only the announcement is out of reach."
+      }
+    ],
+    "missing_artefacts": [],
+    "passed": false,
+    "stop_line_violations": [],
+    "untouched_required_changes": []
+  },
+  "inconclusive": true,
+  "passed": false,
+  "review": {
+    "defect_count": 2,
+    "passed": false,
+    "probe_ok": true,
+    "ran": true,
+    "reason": "2 would-have-shipped defect(s)",
+    "verdict": {
+      "cell_id": "cell-9605950bb4",
+      "dod_legs": [
+        {
+          "leg": "suites-verbatim",
+          "met": "no",
+          "note": "Both suites are reported (MeTTa test.sh summary + per-file lines; Python unittest 'Ran 16 tests ... FAILED (failures=5, errors=2)'), and the Python suite's non-per-test output is fairly attributed to test_pettachainer.py / test_base_rate_acceptance_game.py. But the per-file MeTTa block lists 49 of the 50 files the quoted summary counts (4 PASS against '5 passed'), so the per-test record is not verbatim."
+        },
+        {
+          "leg": "rerunnable",
+          "met": "yes",
+          "note": "scripts/ptc-repro.py is committed and the doc gives clean-clone steps (bundle clone as siblings, uv sync --frozen --python 3.12, uv run) plus what the output should contain \u2014 JSON with forward results and the direct/one-step/Unknown backward probes, with 'forward: []' and empty backward lists as the reproducing signature (docs/ptc-verdict.md:21-38; report 'To operate')."
+        },
+        {
+          "leg": "upstream-filing",
+          "met": "yes",
+          "note": "The staged gh issue-create in mocks/gh.jsonl carries both pinned shas, the minimal repro (7 facts, 3 rules, compileadd, type defs excluded, STV wrapper), the observed behaviour in both modes, a pointer to the committed repro script, the suite state, and an explicit question about whether the format-A contract changed. The known-issues #2 overlap is noted in the verdict's disposition section rather than in the issue body, which the order permits ('note that issue alongside')."
+        },
+        {
+          "leg": "result-report",
+          "met": "yes",
+          "note": "artefacts/workspace.patch adds projects/pln-benchmarks/reports/2026-08-16-ptc-revalidate-result.md with What shipped / How verified / To operate / Reflection. Claims track the attempt, including honest disclosure that the podman path failed and that nothing could be git-committed (read-only .git), so 'committed' in the DoD is staged rather than done."
+        },
+        {
+          "leg": "verdict-shape",
+          "met": "no",
+          "note": "Red on both modes \u2014 verifier/verdict-shape.log. The document exists at docs/ptc-verdict.md and names both pinned shas, but no per-mode status was read out."
+        },
+        {
+          "leg": "repro-script-present",
+          "met": "yes",
+          "note": "Green \u2014 verifier/repro-script-present.log: 'repro script(s) committed and referenced by the verdict: scripts/ptc-repro.py'."
+        },
+        {
+          "leg": "subjects-unpatched",
+          "met": "yes",
+          "note": "Green \u2014 verifier/subjects-unpatched.log: '4 changed file(s), none under a vendored subject; 0 vendored checkout(s) clean'. No parser changes, no dataset-scale runs, no LLM calls anywhere in candidate.patch."
+        }
+      ],
+      "verdict": "fail",
+      "would_have_shipped_defects": [
+        {
+          "evidence": "verifier/verdict-shape.log: 'FAIL the verdict states no status for forward chaining' / 'FAIL the verdict states no status for backward chaining' against artefacts/docs/ptc-verdict.md (statuses appear only as bare 'Forward'/'Backward' rows in the table at lines 12-16).",
+          "summary": "The mechanically-checked verdict-shape leg is red: the committed verdict document does not state a status for either chaining mode in a form the check can read.",
+          "why_blocking": "verdict-shape is a named 'what must be true' leg of the rubric, and it fails on both modes. The deliverable of this order is a machine- and human-readable verdict per chaining mode at pinned shas; the pipeline arm (ROADMAP Goal 1) and the operator relaying the April thread gate on that per-mode status being legible from the document. A verdict whose per-mode status cannot be read out fails the one thing the document exists to carry, at the moment anyone downstream tries to consume it."
+        },
+        {
+          "evidence": "artefacts/docs/ptc-verdict.md:47 ('Summary: 5 passed, 45 failed') vs the per-file block at lines 53-101 \u2014 counted: 45 FAIL, 4 PASS, 49 entries.",
+          "summary": "The 'verbatim' per-test record of PeTTaChainer's MeTTa suite is incomplete and internally inconsistent with the summary it quotes.",
+          "why_blocking": "The verdict quotes 'Summary: 5 passed, 45 failed' (50 files) but the per-file block lists 49 entries \u2014 4 PASS and 45 FAIL. One passing test is unaccounted for. suites-verbatim requires the results recorded verbatim per test; a later re-run comparing against this record cannot tell whether a newly-passing test is an upstream fix or the entry that was dropped here, which is exactly the 'still broken vs environment differs' discrimination the verdict is supposed to enable."
+        }
+      ]
+    }
+  },
+  "task_id": "ptc-revalidate"
+}

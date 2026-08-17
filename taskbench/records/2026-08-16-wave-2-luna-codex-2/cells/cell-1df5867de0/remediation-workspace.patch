@@ -1,0 +1,101 @@
+diff --git a/projects/omegahive/RUNBOOK.md b/projects/omegahive/RUNBOOK.md
+index 590fcd3..3ae0e87 100644
+--- a/projects/omegahive/RUNBOOK.md
++++ b/projects/omegahive/RUNBOOK.md
+@@ -7,7 +7,7 @@ loop — one command per judgment (OPERATIONS.md Phase 1). They wrap the raw `em
+ `report` primitives; the identities they assert (operator/coordinator/instrument) are the
+ blessed human-tier role-borrowing (decisions.md 2026-07-13).
+ 
+-- **Launch:** `hive-launch <order-file> [--worker <id>]` — the order file is named relative to
++- **Launch:** `hive-launch <order-file> [--worker <id>] [--anyway]` — the order file is named relative to
+   the workspace root (`projects/omegahive/orders/<file>`) or bare. It refuses a dirty or unpushed
+   order (the pin must resolve on the hub, since the worker clones from the hub). It seeds the
+   board, issues the worker's emit wrapper (`~/work/hive-wrappers/<worker>.sh` — the worker's whole
+@@ -24,7 +24,8 @@ blessed human-tier role-borrowing (decisions.md 2026-07-13).
+ - **Close** (after merging the PR in the GitHub app, and — for service-touching tasks — deploying
+   from main, below): `hive-close <task> [--reason <text>]` — verifies the board is `in_review`,
+   reads the result ref off the spine, emits `review.passed` + `status_override(done)`, then
+-  **scores the task** (`hive-score`) and commits + pushes the calibration entry — closing and
++  **scores the task** (`hive-score`) and regenerates `tasks.md`/`tasks.csv`, committing + pushing
++  the calibration and task artifacts — closing and
+   recording are one act. `review.passed` here = "the operator read the result report"
+   (OPERATIONS.md pain 6), not artifact correctness. The scoring step is strictly after the close
+   emits and strictly non-fatal: if it fails, the close still stands and `hive-close` prints the
+@@ -87,7 +88,7 @@ after the wave's **last** close:
+ ```bash
+ hive-metrics <project>                                            # regenerate + commit + push tasks.{md,csv}
+ hive-score <task> --review "<clean|minor rework|rework>" --again  # once per task closed this wave
+-#   the review verdict is the one field the spine cannot know (PR rework is not an event), so it is
++  #   the review verdict is the one field the spine cannot know (PR rework is not an event), so it is
+ #   supplied by hand; --again because the close already recorded an entry without it
+ #   inside any loop, append </dev/null to each call — the spine read consumes stdin
+ ```
+@@ -98,6 +99,19 @@ load-bearing rather than convenience: the improver reads **only committed instru
+ uncommitted `calibration.md` is invisible to it — learned at retro 1, when three wave-1 scores sat
+ uncommitted on the operator clone (retro 2026-07-27 D5). `--no-commit` on either tool opts out.
+ 
++`hive-launch` checks the three scored prediction labels (`Expected effort:`,
++`Expected questions:`, `Expected review outcome:`); `Named risks:` is required
++authoring prose but remains intentionally unscored. A present section with no
++parsed field refuses before any spine write; use `--anyway` only for a deliberate
++override. A missing section, or the one-line deliberately-unpredicted disposition,
++is allowed. Partial sections warn and launch. `hive-score` records missing
++sections separately from present-but-unparsed sections. Its `--review` value must
++be `clean`, `minor rework`, or `rework` (case-insensitive).
++
++If metrics recording or regeneration cannot push, the commit remains local:
++inspect the workspace, integrate the hub changes manually, and push. The tools
++never rebase the shared metrics path unattended.
++
+ Then the improver retro runs (`seats/improver/PROTOCOL.md`), and its committed repairs land
+ before the next wave's orders launch.
+ 
+diff --git a/projects/omegahive/reports/2026-07-29-instrument-teeth-result.md b/projects/omegahive/reports/2026-07-29-instrument-teeth-result.md
+new file mode 100644
+index 0000000..0b17782
+--- /dev/null
++++ b/projects/omegahive/reports/2026-07-29-instrument-teeth-result.md
+@@ -0,0 +1,43 @@
++# instrument-teeth — result report
++
++## What shipped
++
++- `hive-launch` and `hive-score` now share one predictions parser. A present
++  section with zero parsed scored fields refuses before launch writes; `--anyway`
++  overrides it. Absent, declared-unpredicted, and partial sections retain their
++  intended behavior.
++- Coverage distinguishes absent from present-but-unparsed sections and names
++  missing fields. `--review` accepts only `clean`, `minor rework`, or `rework`,
++  case-insensitively.
++- `hive-close` regenerates `tasks.md` and `tasks.csv` after the close/score;
++  regeneration remains loud and non-fatal. Metrics push failures commit locally
++  and refuse to rebase.
++- Hygiene sweep read `scripts/hive-metrics-drill.sh` for the two bounded classes:
++  EXIT-trap-before-isolation ordering (0 instances; no fix) and `cmd | grep -q`
++  SIGPIPE under `pipefail` (0 instances; no fix). No third defect class was fixed.
++
++## How verified
++
++- `BENCH_VERIFY_LOG=/tmp/instrument-teeth-bench-verify.log ../bin/bench-verify -- scripts/hive-metrics-drill.sh`
++  — passed with the absent-vs-unparsed, review-validation, and push-refusal cases; no events issued and no run touched.
++- `shellcheck -x` passed on every touched script.
++- `bash -n` and `git diff --check` passed.
++
++## To operate
++
++For the two already-closed pln-benchmarks tasks whose labels were relabelled by
++R3, recover the lost calibration points with:
++
++```sh
++hive-score <task> --project pln-benchmarks --again
++```
++
++If metrics push or regeneration fails, keep the local commit, integrate the
++hub's changes manually, and push; the tools do not rebase this shared path.
++
++## Reflection
++
++The useful boundary is now executable: launch and calibration cannot silently
++disagree about what a prediction field is. The hermetic drill caught a shell
++strict-mode edge in the shared counter during verification, which confirms the
++value of keeping this path deterministic.
