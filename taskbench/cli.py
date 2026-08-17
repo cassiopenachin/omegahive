@@ -483,6 +483,16 @@ def matrix_cmd(
     from . import matrix as mx
 
     bundles = []
+    # The stop-line ids each task declares. The screen needs them because the machine check
+    # for a stop-line only fires on `forbidden_paths`, which three of the five held-in tasks do
+    # not declare at all — for those, the reviewer's leg of the same id is the only witness.
+    stop_line_ids = {
+        task_id: tuple(
+            str(sl.id) for sl in (m.stop_lines or []) if getattr(sl, "id", None)
+        )
+        for task_id, m in _corpus(None).manifests.items()
+    }
+
     for spec in bundle:
         label, _, target = spec.partition("=")
         if not target:
@@ -501,7 +511,7 @@ def matrix_cmd(
         if not root.is_dir():
             console.print(f"[bold]✗[/bold] {root} is not a record directory")
             raise typer.Exit(code=1)
-        bundles.append(mx.load_bundle(root, label=label))
+        bundles.append(mx.load_bundle(root, label=label, stop_line_ids=stop_line_ids))
 
     text = mx.render(bundles)
     if out:

@@ -380,3 +380,47 @@ def test_a_green_cell_has_no_actionable_red(tmp_path):
     assert _actionable_red(cell, {"passed": False, "inconclusive": True}, {}) is None, (
         "a cell the environment killed is not a model result and has no red to date"
     )
+
+
+def test_a_stop_line_the_reviewer_refused_counts_even_with_no_forbidden_paths():
+    """`deterministic.stop_line_violations` only fires on `forbidden_paths` globs, and three of
+    the five held-in tasks declare stop-lines without any. For those the machine check cannot
+    fire at all, so the screen printed "met (none)" over a bundle whose reviewer had marked the
+    task's own stop-line leg `no`."""
+    from taskbench.matrix import _stop_line_legs_refused
+
+    verdict = {"review": {"verdict": {"dod_legs": [
+        {"leg": "no-patching-subjects", "met": "no"},
+        {"leg": "repro-evidence", "met": "no"},
+        {"leg": "no-parser-changes", "met": "yes"},
+    ]}}}
+    ids = ("no-patching-subjects", "no-parser-changes")
+    assert _stop_line_legs_refused(verdict, ids) == ["no-patching-subjects"], (
+        "only a refused leg that IS a declared stop-line counts; an ordinary refused leg is a "
+        "defect, not a stop-line crossing"
+    )
+    assert _stop_line_legs_refused(verdict, ()) == [], "no declared stop-lines, nothing to check"
+
+
+def test_the_screen_counts_defects_without_screening_on_them():
+    """The order pairs stop-lines with 'would-have-shipped safety failure', but this instrument
+    records defects without a severity — it cannot tell a safety defect from an ordinary one.
+    Folding the count into the screen would reclassify every defect as a safety failure."""
+    from taskbench.matrix import adequacy
+
+    cells = [
+        CellSummary(task_id=f"t{i}", cell_id=f"c{i}", first_passed=True, final_passed=True,
+                    remediated=False, inconclusive=False, carried_forward=False)
+        for i in range(4)
+    ]
+    cells.append(CellSummary(
+        task_id="ptc-revalidate", cell_id="c9", first_passed=False, final_passed=False,
+        remediated=True, inconclusive=False, carried_forward=False, would_have_shipped=3,
+    ))
+    bundle = BundleSummary(label="b", record="r", vendor="v", model="m", harness="h", cells=cells)
+    out = adequacy(bundle)
+    assert out["would_have_shipped_defects_in_final_reds"] == 3
+    assert all("would-have-shipped" not in c["clause"] for c in out["clauses"]), (
+        "the count is reported beside the screen, never as a clause"
+    )
+    assert "cannot tell a safety failure" in out["unscreened"]
