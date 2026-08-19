@@ -476,3 +476,112 @@ def test_the_committed_fixture_writes_what_the_parser_reads(tmp_path: Path):
     assert ev.usage.output_tokens == 200, "the fixture's own docstring pins 200, not 300"
     assert ev.usage.evidence_records == 2
     assert ev.main_chain_models == ["fixture-model"]
+
+
+# --- codex rollout: cumulative totals, and a weaker model claim --------------------
+
+
+def _token_count(inp: int, cached: int, out: int) -> str:
+    """One `token_count` record, in the rollout's real nesting."""
+    return json.dumps(
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "total_token_usage": {
+                        "input_tokens": inp,
+                        "cached_input_tokens": cached,
+                        "cache_write_input_tokens": 0,
+                        "output_tokens": out,
+                        "total_tokens": inp + out,
+                    },
+                    "last_token_usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            },
+        }
+    )
+
+
+def _turn_context(model: str) -> str:
+    return json.dumps({"type": "turn_context", "payload": {"model": model}})
+
+
+def test_codex_totals_are_read_as_cumulative_never_summed():
+    """THE COUNTING HAZARD, and it is the mirror of Claude Code's.
+
+    Codex reports the RUNNING TOTAL for the thread on every turn, not that turn's
+    delta. Summing four such records inflates by the triangular number of turns —
+    silent, one-directional, and in the direction that makes a model look expensive.
+    Measured on a real rollout: four records whose last one reads 60,588 input tokens
+    sum to 150,181.
+    """
+    lines = [
+        _turn_context("gpt-5.6-sol"),
+        _token_count(14644, 11008, 243),
+        _token_count(29811, 25088, 314),
+        _token_count(45138, 36096, 382),
+        _token_count(60588, 43008, 387),
+    ]
+    ev = extract("codex-rollout", lines)
+    assert ev.usage.status == "reported"
+    assert ev.usage.input_tokens == 60588, "the LAST record is the thread total"
+    assert ev.usage.output_tokens == 387
+    assert ev.usage.cache_read_tokens == 43008
+    assert ev.usage.evidence_records == 4
+    assert any("cumulative" in n for n in ev.notes)
+
+
+def test_codex_records_that_do_not_increase_are_summed_and_the_note_says_so():
+    """The cumulative reading is CHECKED, not assumed. A file that is not that shape
+    gets the other arithmetic and a note telling the reader to verify it, rather than a
+    confident wrong number from a parser that never looked."""
+    lines = [_token_count(100, 0, 10), _token_count(50, 0, 5)]
+    ev = extract("codex-rollout", lines)
+    assert ev.usage.input_tokens == 150
+    assert any("did NOT increase monotonically" in n for n in ev.notes)
+
+
+def test_codex_model_comes_only_from_the_turn_context():
+    """A rollout mentions a model id in several places — a collaboration-mode block, a
+    compaction setting. Treating every mention as a main-chain model would make an
+    ordinary nested setting look like a mid-session model switch, and the caller turns
+    that into a TERMINAL FAILURE."""
+    lines = [
+        _turn_context("gpt-5.6-sol"),
+        json.dumps(
+            {
+                "type": "response_item",
+                "payload": {"type": "message", "model": "some-other-model-mentioned-inside"},
+            }
+        ),
+        _token_count(10, 0, 1),
+    ]
+    ev = extract("codex-rollout", lines)
+    assert ev.main_chain_models == ["gpt-5.6-sol"]
+
+
+def test_codex_usage_carries_the_weaker_model_claim_on_every_extraction():
+    """Codex reports the model it was CONFIGURED with, not a server-resolved identity.
+    A launch alias must never be promoted into a resolved id on its strength, and the
+    place that cannot be forgotten is the extraction itself."""
+    ev = extract("codex-rollout", [_turn_context("gpt-5.6-sol"), _token_count(10, 0, 1)])
+    assert any("not a server-resolved id" in n for n in ev.notes)
+
+
+def test_a_codex_rollout_with_no_usage_is_unavailable_never_zero():
+    ev = extract("codex-rollout", [_turn_context("gpt-5.6-sol")])
+    assert ev.usage.status == "unavailable"
+    assert ev.usage.reason and "no usage records" in ev.usage.reason
+    assert ev.usage.input_tokens is None
+
+
+def test_the_codex_stream_form_reads_through_the_same_parser():
+    """`--json` spells it `{"type":"turn.completed","usage":{...}}` and the rollout
+    nests it. One parser, because two for one vendor's two spellings would drift."""
+    lines = [
+        json.dumps({"type": "turn.completed", "usage": {"input_tokens": 5, "output_tokens": 2}})
+    ]
+    ev = extract("codex-rollout", lines)
+    assert ev.usage.input_tokens == 5
+    assert ev.usage.output_tokens == 2

@@ -74,49 +74,63 @@ Each is a distinct remedy, so each has a distinct code.
 
 | | Claude Code (`claude-code.v1`) | Codex (`codex.v1`) |
 |---|---|---|
-| Status | **proven** on beastie, harness 2.1.232, 2026-08-14 | **declared** — routes refuse |
-| Config surface | project-local `.claude/settings.local.json` in the worker root | none authored (`config_path: null`) |
-| Launch flags | `--setting-sources project,local`, `--permission-mode auto` | `--sandbox workspace-write`, `--ignore-user-config` (observed on 0.147.0) |
-| P1 access layer | deny `Bash(*sudo *)`, `Bash(*systemctl *)`, `Bash(*tailscale *)` | OS sandbox (declared, unmeasured) |
-| P2 secrets | deny `Read(**/*.env)`, `Read(**/.env.*)`, `Read(~/.ssh/**)`, `Bash(*compose*config*)`; env allowlist. **The `Read(...)` rules are materialized and rule-present but never enforcement-tested** — see the residual | env allowlist (binds — the launcher owns it); **the read half is unestablished** |
-| P3 durable stack | deny podman stop/kill/rm/rmi/restart/prune, the compose destructive verbs, force-push in three spellings, **all `tmux kill-*`**, and writes to the boundary file itself | OS sandbox (declared, unmeasured) |
-| P4 raw fetch | deny `Bash(*curl *)`, `Bash(*wget *)`; allow the development tools | sandbox network-off (declared, unmeasured) |
-| Evidence | `docs/evidence/harness_binding_probe_claude_code_2026_08_14.md` | none — the binary is installed and **not logged in** |
+| Status | **proven** on beastie, harness 2.1.232, 2026-08-14 | **proven** on beastie, harness 0.147.0, 2026-08-19 |
+| Config surface | project-local `.claude/settings.local.json` in the worker root | a GENERATED per-execution `CODEX_HOME` **in the run-dir**: `config.toml` + `rules/hive.rules` |
+| Launch flags | `--setting-sources project,local`, `--permission-mode auto` | **none** — `codex exec` and nothing else; `--sandbox` is a FORBIDDEN token |
+| P1 access layer | deny `Bash(*sudo *)`, `Bash(*systemctl *)`, `Bash(*tailscale *)` | execpolicy `prefix_rule` forbidding sudo/sudoedit/pkexec/systemctl/tailscale, with `host_executable` so absolute paths resolve |
+| P2 secrets | deny `Read(**/*.env)`, `Read(**/.env.*)`, `Read(~/.ssh/**)`, `Bash(*compose*config*)`; env allowlist. **The `Read(...)` rules are materialized and rule-present but never enforcement-tested** — see the residual | **an OS-level read denial**: the permission profile's `filesystem` table denies nine credential paths plus the `.env` family inside every writable root, and a deny beats a containing write grant. Enforcement-tested against a planted canary, with a loosening control |
+| P3 durable stack | deny podman stop/kill/rm/rmi/restart/prune, the compose destructive verbs, force-push in three spellings, **all `tmux kill-*`**, and writes to the boundary file itself | execpolicy rules for podman/docker/tmux destructive verbs, **plus** the canonical checkout and the git hub denied at the syscall, **plus** exactly two writable roots and nothing else |
+| P4 raw fetch | deny `Bash(*curl *)`, `Bash(*wget *)`; allow the development tools | execpolicy forbidding curl/wget/nc, allowing git/gh/uv/python3 — **and network egress off entirely** (stricter than the class asks; see the cost below) |
+| Evidence | `docs/evidence/harness_binding_probe_claude_code_2026_08_14.md` | `docs/evidence/harness_binding_probe_codex_2026_08_19.md` — PASS=12 FAIL=0 |
 
-The Codex row is written rather than blank on purpose. `permissions.md` says an empty
-row is a launch that does not happen; a filled-in `declared` row says the same thing and
-additionally tells an operator what *would* bind and what would not.
+### The Codex row: the boundary is the generated home, not the argv
 
-**What blocks the Codex row is now one operator act.** `codex-cli 0.147.0` is installed
-on this host — it arrived on 2026-08-14, after `worker-harness-core` recorded its absence
-— but `codex login status` reports *not logged in*. No model call is possible, so no
-class can be proven through the real agent loop.
+That sentence is the whole design, and getting it backwards is the way to break this.
 
-Two things follow, and both are worth knowing before someone picks this up:
+The launcher renders a per-execution `CODEX_HOME` into the **run-dir**, the supervisor
+seeds an opaque mode-0600 copy of the operator's existing `auth.json` into it and
+removes the whole directory on every terminal path, and the adapter places `CODEX_HOME`
+in the child's environment rather than letting it be inherited. The operator's prior
+threads, memory, plugins and personal configuration are therefore absent *by
+construction* rather than disabled by a flag whose meaning could change under a version
+bump. It lives in the run-dir and not the worker root for two reasons: it holds the
+credential copy, and the worker root is a git tree.
 
-- **The flag names in that descriptor are observed, not documented.** They come from
-  `codex exec --help` and `codex sandbox --help` on the installed build. An earlier draft,
-  written from documentation, named `--ask-for-approval never`, which does not exist on
-  `codex exec` in 0.147.0. That is precisely the error a `declared` status exists to keep
-  suspect, and it is why `declared` refuses rather than warns.
-- **`--ignore-user-config` is the find that matters.** The binary documents it as "Do not
-  load `$CODEX_HOME/config.toml`; auth still uses `CODEX_HOME`" — Codex's exact analogue
-  of `--setting-sources`, and the thing that makes a Codex boundary not depend on the
-  operator's global config.
+**Why `required_flags` is empty and `--sandbox` is forbidden.** Measured on 0.147.0:
+`--sandbox workspace-write` on the command line **overrides the permission profile**.
+With the profile denying a planted secret and that flag present, the agent read the
+secret. A flag that discards the boundary is not a boundary flag. `--ignore-user-config`
+is forbidden for the mirror reason — it suppresses exactly the `config.toml` the
+launcher just wrote — and `--ignore-rules`, `--add-dir` and `--cd` for the obvious ones.
 
-One retraction, stated plainly: an earlier draft asserted Codex has no per-command
-allow/deny list at all. **That claim is withdrawn.** `codex exec --ignore-rules` is
-documented by the binary as "Do not load user or project execpolicy `.rules` files", so
-an execpolicy mechanism exists. Its format, its scope resolution, and whether a rule can
-express a per-path *read* denial were not established here — which is exactly what P2's
-residual now says instead of the stronger claim.
+**Two retractions from the 2026-08-14 draft, both stated plainly.** That draft said
+Codex might be unable to express a per-path *read* denial, and it required
+`--ignore-user-config`. Both are withdrawn: the permission profile's `filesystem` table
+maps a path or glob to `read`/`write`/`deny`, a deny entry beats a containing write
+root, globs match and `~` expands — so P2 has a native mechanism here that is *stronger*
+than the other harness's, because it is enforced at the syscall rather than by a command
+matcher.
 
-**The cheap path to proving P1 and P3 costs no tokens at all.** `codex sandbox
---permission-profile <name> <command>` runs a command under Codex's own sandbox with no
-model call and no authentication, which means an attempted write outside the workspace
-root is a deterministic probe. Establishing a permission profile is the prerequisite;
-`scripts/hive-binding-probe` has no Codex driver today and refuses rather than guessing
-an interface it has never exercised.
+**The one cost an operator must accept knowingly.** Network egress is OFF for
+model-generated commands under this profile, and the profile's own
+`network = { mode = "full" }` does not lift it (measured: a raw TCP connect raises
+`PermissionError`). A worker on this route cannot push a branch or install a package
+from a sandboxed command. That is stricter than P4 requires, not looser — but it is a
+real operational limit, and the alternative legacy configuration family that does enable
+network has **no per-path read denial at all**, so taking it would trade the whole of P2
+for P4's positive half. The trade is named rather than taken.
+
+**Two refusal signatures, and both are real.** The command layer (execpolicy) refuses
+before anything executes and leaves no execution record, saying so on stderr as
+``Rejected("... policy forbids commands starting with X")``. The filesystem layer (the
+OS sandbox) lets the command run and denies the syscall, so the refusal arrives as an
+ordinary `Permission denied` inside the command's own output. `hive-binding-probe`
+records which layer answered rather than averaging them, because a class bound at the
+syscall and a class bound by a matcher have different strength.
+
+**`codex debug prompt-input` is a free oracle.** It renders the effective boundary —
+writable roots, denied reads, sandbox mode — with no model call, which is the cheapest
+way to check a rendered profile before spending anything.
 
 ### Two things about the Claude Code rules
 
@@ -228,11 +242,18 @@ no spine write, no tokens.
 
 ```bash
 export HIVE_CLI_CMD="uv run --project ~/src/SNET/omegahive omegahive"   # or use the container
-scripts/hive-binding-probe claude-code.v1 --record /tmp/probe.json
+scripts/hive-binding-probe claude-code.v1 --record /tmp/probe-claude.json
+scripts/hive-binding-probe codex.v1      --record /tmp/probe-codex.json
 ```
 
-Six real non-interactive sessions in a disposable `mktemp -d` root, roughly **US$0.08**
-on Haiku. This is what a descriptor's `status: proven` rests on, and both halves of that
+One command, one driver per harness, dispatched on the descriptor's own `harness`
+field — a runner that guessed a second vendor's non-interactive interface would report a
+boundary it never exercised. The Claude Code driver runs six real non-interactive
+sessions in a disposable `mktemp -d` root, roughly **US$0.08** on Haiku. The Codex
+driver runs twelve `codex exec` sessions in a disposable bundle under `$HOME` (Codex
+refuses to build its sandbox when `CODEX_HOME` sits under a temporary directory), seeds
+and then removes the credential, and exposes no dollar figure — its cost is window
+weight on the subscription. This is what a descriptor's `status: proven` rests on, and both halves of that
 claim are now enforced rather than remembered:
 
 - **Change a rule** and `check_status` refuses the descriptor, because
@@ -333,8 +354,9 @@ enforces the boundary or refuses" describes the bound path only.**
   meet the policy is a refused route, not a reason to change the policy.
 - **No credential broker, no secret manager, no rotation, no browser-login automation.**
   §3.
-- **No podman or native confinement.** Codex's P2 read gap is reported as a gap; closing
-  it with a new sandbox boundary is a separate operator decision.
+- **No podman or native confinement authored here.** Codex brings its own OS sandbox and
+  this build uses it; nothing new was built, and Claude Code's classes remain bound by a
+  command matcher with the residual that implies.
 - **No per-order permission exception mechanism.** `permissions.md` P4 allows an order to
   request one; here that would be a different descriptor, so the exception is visible in
   the route catalog rather than hidden in a flag.
