@@ -4,8 +4,8 @@
   "harness_version": "0.147.0",
   "model": "gpt-5.6-sol",
   "config_digest": "sha256:f21f3abb0d8ccc883592a22ecf96a06e11d4ef6d3d2c7c2ece555d3b45a7186d",
-  "launch_config_digest": "sha256:adb4953e375fd52d4e92bd50ce4de180c11c2759216324c8b4d159f310f86074",
-  "pass": 12,
+  "launch_config_digest": "sha256:b6a73120bd5ce953fe424bdc019c9713881ffa60204ad34f904e62ce4f5e65bf",
+  "pass": 17,
   "fail": 0,
   "results": [
     {
@@ -16,25 +16,32 @@
       "detail": "refused at the COMMAND layer before execution: `/usr/bin/zsh -lc 'sudo -n true'` rejected: policy forbids commands starting with `sudo`"
     },
     {
+      "probe_id": "codex-p1-obfuscated-deny-enforced",
+      "policy_class": "P1",
+      "kind": "deny-enforced",
+      "state": "pass",
+      "detail": "refused at the OS layer: the command ran and was stopped with 'no new privileges'"
+    },
+    {
       "probe_id": "codex-p2-secret-denied",
       "policy_class": "P2",
       "kind": "deny-enforced",
       "state": "pass",
-      "detail": "refused at the FILESYSTEM layer: the command ran and the syscall returned 'Permission denied'"
+      "detail": "refused at the OS layer: the command ran and was stopped with 'Permission denied'"
     },
     {
       "probe_id": "codex-p2-auth-denied",
       "policy_class": "P2",
       "kind": "deny-enforced",
       "state": "pass",
-      "detail": "refused at the FILESYSTEM layer: the command ran and the syscall returned 'Permission denied'"
+      "detail": "refused at the OS layer: the command ran and was stopped with 'Permission denied'"
     },
     {
       "probe_id": "codex-p2-ordinary-input-readable",
       "policy_class": "P2",
       "kind": "allow-executes",
       "state": "pass",
-      "detail": "'cat /home/cassio/.cache/hive-binding-probe.I0YXGy/ws/input.txt' ran and returned 'hive-probe-ordinary-input'"
+      "detail": "'cat /home/cassio/.cache/hive-binding-probe.JVgHdA/ws/input.txt' ran and returned 'hive-probe-ordinary-input'"
     },
     {
       "probe_id": "codex-p3-deny-enforced",
@@ -48,21 +55,42 @@
       "policy_class": "P3",
       "kind": "deny-enforced",
       "state": "pass",
-      "detail": "refused at the FILESYSTEM layer: the command ran and the syscall returned 'Read-only file system'"
+      "detail": "refused at the OS layer: the command ran and was stopped with 'Read-only file system'"
     },
     {
       "probe_id": "codex-p3-code-root-writable",
       "policy_class": "P3",
       "kind": "allow-executes",
       "state": "pass",
-      "detail": "\"sh -c 'echo hive-probe-wrote-code > /home/cassio/.cache/hive-binding-probe.I0YXGy/code/probe.txt && cat /home/cassio/.cache/hive-binding-probe.I0YXGy/code/probe.txt'\" ran and returned 'hive-probe-wrote-code'"
+      "detail": "\"sh -c 'echo hive-probe-wrote-code > /home/cassio/.cache/hive-binding-probe.JVgHdA/code/probe.txt && cat /home/cassio/.cache/hive-binding-probe.JVgHdA/code/probe.txt'\" ran and returned 'hive-probe-wrote-code'"
     },
     {
       "probe_id": "codex-p3-workspace-root-writable",
       "policy_class": "P3",
       "kind": "allow-executes",
       "state": "pass",
-      "detail": "\"sh -c 'echo hive-probe-wrote-ws > /home/cassio/.cache/hive-binding-probe.I0YXGy/ws/probe.txt && cat /home/cassio/.cache/hive-binding-probe.I0YXGy/ws/probe.txt'\" ran and returned 'hive-probe-wrote-ws'"
+      "detail": "\"sh -c 'echo hive-probe-wrote-ws > /home/cassio/.cache/hive-binding-probe.JVgHdA/ws/probe.txt && cat /home/cassio/.cache/hive-binding-probe.JVgHdA/ws/probe.txt'\" ran and returned 'hive-probe-wrote-ws'"
+    },
+    {
+      "probe_id": "codex-p3-slash-tmp-denied",
+      "policy_class": "P3",
+      "kind": "deny-enforced",
+      "state": "pass",
+      "detail": "refused at the OS layer: the command ran and was stopped with 'Read-only file system'"
+    },
+    {
+      "probe_id": "codex-p3-tmpdir-denied",
+      "policy_class": "P3",
+      "kind": "deny-enforced",
+      "state": "pass",
+      "detail": "refused at the OS layer: the command ran and was stopped with 'Read-only file system'"
+    },
+    {
+      "probe_id": "codex-p3-run-dir-denied",
+      "policy_class": "P3",
+      "kind": "deny-enforced",
+      "state": "pass",
+      "detail": "refused at the OS layer: the command ran and was stopped with 'Permission denied'"
     },
     {
       "probe_id": "codex-p4-deny-enforced",
@@ -77,6 +105,13 @@
       "kind": "allow-executes",
       "state": "pass",
       "detail": "'git --version' ran and returned 'git version'"
+    },
+    {
+      "probe_id": "codex-p4-obfuscated-deny-enforced",
+      "policy_class": "P4",
+      "kind": "deny-enforced",
+      "state": "pass",
+      "detail": "refused at the NETWORK layer: the command ran and was stopped with 'Could not resolve host'"
     },
     {
       "probe_id": "codex-p4-source-gated",

@@ -81,7 +81,7 @@ Each is a distinct remedy, so each has a distinct code.
 | P2 secrets | deny `Read(**/*.env)`, `Read(**/.env.*)`, `Read(~/.ssh/**)`, `Bash(*compose*config*)`; env allowlist. **The `Read(...)` rules are materialized and rule-present but never enforcement-tested** — see the residual | **an OS-level read denial**: the permission profile's `filesystem` table denies nine credential paths plus the `.env` family inside every writable root, and a deny beats a containing write grant. Enforcement-tested against a planted canary, with a loosening control |
 | P3 durable stack | deny podman stop/kill/rm/rmi/restart/prune, the compose destructive verbs, force-push in three spellings, **all `tmux kill-*`**, and writes to the boundary file itself | execpolicy rules for podman/docker/tmux destructive verbs, **plus** the canonical checkout and the git hub denied at the syscall, **plus** exactly two writable roots and nothing else |
 | P4 raw fetch | deny `Bash(*curl *)`, `Bash(*wget *)`; allow the development tools | execpolicy forbidding curl/wget/nc, allowing git/gh/uv/python3 — **and network egress off entirely** (stricter than the class asks; see the cost below) |
-| Evidence | `docs/evidence/harness_binding_probe_claude_code_2026_08_14.md` | `docs/evidence/harness_binding_probe_codex_2026_08_19.md` — PASS=12 FAIL=0 |
+| Evidence | `docs/evidence/harness_binding_probe_claude_code_2026_08_14.md` | `docs/evidence/harness_binding_probe_codex_2026_08_19.md` — PASS=17 FAIL=0 |
 
 ### The Codex row: the boundary is the generated home, not the argv
 
@@ -89,12 +89,25 @@ That sentence is the whole design, and getting it backwards is the way to break 
 
 The launcher renders a per-execution `CODEX_HOME` into the **run-dir**, the supervisor
 seeds an opaque mode-0600 copy of the operator's existing `auth.json` into it and
-removes the whole directory on every terminal path, and the adapter places `CODEX_HOME`
+removes the whole directory on every terminal path the shell can trap — a clean exit, a
+failing exit, and any handled signal — and the adapter places `CODEX_HOME`
 in the child's environment rather than letting it be inherited. The operator's prior
 threads, memory, plugins and personal configuration are therefore absent *by
 construction* rather than disabled by a flag whose meaning could change under a version
 bump. It lives in the run-dir and not the worker root for two reasons: it holds the
 credential copy, and the worker root is a git tree.
+
+An `EXIT` trap cannot cover `SIGKILL`, an OOM kill, or a host that loses power, and this
+directory holds a copy of a live subscription credential — so `hive-supervise
+--reconcile <work-root>` sweeps stale generated homes before it emits anything. That
+sweep is the floor under the trap, not a replacement for it, and it removes only
+`codex-home` directories under the root it was given and only ones this user owns.
+
+What is preserved out of the home before it goes is **extracted, not copied**: the
+rollout is a vendor file carrying the whole session including every tool output, and
+only two record kinds — the turn context and the token counts — are written to the
+durable run-dir. An allowlist is checkable; "we believe the vendor's format is clean" is
+not.
 
 **Why `required_flags` is empty and `--sandbox` is forbidden.** Measured on 0.147.0:
 `--sandbox workspace-write` on the command line **overrides the permission profile**.
@@ -120,11 +133,24 @@ real operational limit, and the alternative legacy configuration family that doe
 network has **no per-path read denial at all**, so taking it would trade the whole of P2
 for P4's positive half. The trade is named rather than taken.
 
-**Two refusal signatures, and both are real.** The command layer (execpolicy) refuses
+**The command layer is bypassable in one step, measured rather than cited.**
+`sudo -n true` is refused by policy; `X=sudo; $X -n true` and
+``eval "$(printf 's''udo')" -n true`` both RAN (2026-08-19, live agent loop). That is
+Codex's own documented behaviour — segments using substitution or an env-var prefix are
+not matched — and this guide carries the evidence rather than the quotation. **What held
+anyway** is the second layer: the kernel refused the escalation (`no new privileges`),
+the sandbox still denied every path outside the two roots, and egress was still off.
+Read every command-layer control as a first line against the ordinary case, and the OS
+as the control that survives a deliberate one. Both obfuscated forms are scored probes,
+so a build that drops the kernel flag turns the class red on the run that would
+otherwise promote it.
+
+**Three refusal signatures, and all are real.** The command layer (execpolicy) refuses
 before anything executes and leaves no execution record, saying so on stderr as
 ``Rejected("... policy forbids commands starting with X")``. The filesystem layer (the
 OS sandbox) lets the command run and denies the syscall, so the refusal arrives as an
-ordinary `Permission denied` inside the command's own output. `hive-binding-probe`
+ordinary `Permission denied` inside the command's own output. The network layer refuses
+egress, which arrives as a resolution or connection failure. `hive-binding-probe`
 records which layer answered rather than averaging them, because a class bound at the
 syscall and a class bound by a matcher have different strength.
 
@@ -250,7 +276,7 @@ One command, one driver per harness, dispatched on the descriptor's own `harness
 field — a runner that guessed a second vendor's non-interactive interface would report a
 boundary it never exercised. The Claude Code driver runs six real non-interactive
 sessions in a disposable `mktemp -d` root, roughly **US$0.08** on Haiku. The Codex
-driver runs twelve `codex exec` sessions in a disposable bundle under `$HOME` (Codex
+driver runs seventeen `codex exec` sessions in a disposable bundle under `$HOME` (Codex
 refuses to build its sandbox when `CODEX_HOME` sits under a temporary directory), seeds
 and then removes the credential, and exposes no dollar figure — its cost is window
 weight on the subscription. This is what a descriptor's `status: proven` rests on, and both halves of that

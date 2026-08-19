@@ -109,14 +109,27 @@ def test_a_missing_credential_refuses_and_says_it_is_an_operator_act(tmp_path):
 # --- cleanup ------------------------------------------------------------------------
 
 
-def _home_with_rollout(tmp_path: Path) -> tuple[Path, Path]:
+def _home_with_rollout(
+    tmp_path: Path, extra_records: list[dict] | None = None
+) -> tuple[Path, Path]:
     run_dir = tmp_path / "run"
     home = run_dir / "codex-home"
     sessions = home / "sessions" / "2026" / "08" / "19"
     sessions.mkdir(parents=True)
     (home / "auth.json").write_text(json.dumps({"token": CANARY}))
+    records = [
+        {"type": "turn_context", "payload": {"model": "gpt-5.6-sol"}},
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {"total_token_usage": {"input_tokens": 10, "output_tokens": 2}},
+            },
+        },
+        *(extra_records or []),
+    ]
     (sessions / "rollout-2026-08-19T10-00-00-abc.jsonl").write_text(
-        json.dumps({"type": "turn_context", "payload": {"model": "gpt-5.6-sol"}}) + "\n"
+        "\n".join(json.dumps(r) for r in records) + "\n"
     )
     return run_dir, home
 
@@ -138,6 +151,72 @@ def test_cleanup_removes_the_credential_and_keeps_the_evidence(tmp_path):
     assert preserved.exists(), "the non-secret evidence survives"
     assert "gpt-5.6-sol" in preserved.read_text()
     assert CANARY not in preserved.read_text()
+    # Usage survives too: the model and the token counts are the whole reason the
+    # rollout is preserved at all.
+    assert "token_count" in preserved.read_text()
+
+
+def test_only_the_two_evidence_record_kinds_are_persisted(tmp_path):
+    """EXTRACTED, not copied.
+
+    The rollout is a vendor file in a credential-bearing directory and it carries the
+    whole session — the prompt, every tool call, every tool OUTPUT. Persisting all of
+    that into a durable run-dir would be trusting a format this repository does not
+    control to never carry anything credential-adjacent in any field, forever. An
+    allowlist is checkable; "we believe it is clean" is not.
+    """
+    leaky = [
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call_output",
+                "output": "cat ~/.netrc\nmachine example login bob password " + CANARY,
+            },
+        },
+        {"type": "event_msg", "payload": {"type": "agent_message", "message": CANARY}},
+        {"type": "session_meta", "payload": {"id": "abc", "instructions": CANARY}},
+    ]
+    run_dir, home = _home_with_rollout(tmp_path, extra_records=leaky)
+    r = run_shell(f'clean_codex_home "{home}" "{run_dir}"')
+    assert r.returncode == 0, r.stderr
+
+    text = (run_dir / "codex-rollout.jsonl").read_text()
+    assert CANARY not in text, "no record kind outside the allowlist reaches the run-dir"
+    assert "custom_tool_call_output" not in text
+    assert "session_meta" not in text
+    # And what the record actually needs is still there.
+    assert "gpt-5.6-sol" in text
+    assert "token_count" in text
+
+
+# --- the sweep, for the paths a trap cannot cover -------------------------------------
+
+
+def test_the_sweep_removes_a_home_whose_supervisor_never_ran_its_trap(tmp_path):
+    """An EXIT trap covers a clean exit, a failing exit and a handled signal. It does
+    NOT cover SIGKILL, an OOM kill, or the host losing power — and this directory holds
+    a copy of a live subscription credential, so "usually removed" is not the standard.
+    `hive-supervise --reconcile` is the one thing that runs after those, so the floor
+    under the trap lives there."""
+    work_root = tmp_path / "work"
+    run_dir = work_root / "sess-abandoned" / "execution"
+    home = run_dir / "codex-home"
+    (home / "sessions").mkdir(parents=True)
+    (home / "auth.json").write_text(json.dumps({"token": CANARY}))
+
+    r = run_shell(f'sweep_codex_homes "{work_root}"')
+    assert r.returncode == 0, r.stderr
+    assert not home.exists(), "the abandoned credential is gone"
+    assert run_dir.exists(), "and the run-dir it lived in is not"
+
+
+def test_the_sweep_is_a_no_op_on_a_root_with_nothing_to_sweep(tmp_path):
+    work_root = tmp_path / "work"
+    (work_root / "sess-clean" / "execution").mkdir(parents=True)
+    r = run_shell(f'sweep_codex_homes "{work_root}"')
+    assert r.returncode == 0, r.stderr
+    r = run_shell('sweep_codex_homes "/no/such/root"')
+    assert r.returncode == 0, r.stderr
 
 
 def test_cleanup_is_idempotent_and_safe_when_the_home_was_never_created(tmp_path):

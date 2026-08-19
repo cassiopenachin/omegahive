@@ -269,7 +269,15 @@ seed_codex_auth() {  # seed_codex_auth <codex-home>
 # the record needs. Codex writes its session rollout under the home it is given, and
 # that rollout is the only place it states which model it ran and what it consumed —
 # deleting the home wholesale threw that away and left executions unattributable, which
-# is the defect PR #55 hit and fixed. So the rollout is copied out FIRST.
+# is the defect PR #55 hit and fixed. So the evidence is extracted FIRST.
+#
+# EXTRACTED, not copied. The rollout is a vendor file in a credential-bearing directory,
+# and it carries the whole session: the prompt, every tool call, every tool OUTPUT. What
+# the record needs from it is two record kinds — the turn context (which model, and the
+# boundary that was actually in force) and the token counts. Persisting the rest into a
+# durable run-dir would be trusting a format this repository does not control to never
+# carry anything credential-adjacent in any field, forever. An allowlist is checkable;
+# "we believe it is clean" is not.
 #
 # Idempotent, and safe to call when the home was never created.
 clean_codex_home() {  # clean_codex_home <codex-home> <run-dir>
@@ -278,11 +286,34 @@ clean_codex_home() {  # clean_codex_home <codex-home> <run-dir>
   if [ -n "$run_dir" ] && [ -d "$home/sessions" ]; then
     rollout=$(find "$home/sessions" -name 'rollout-*.jsonl' -type f 2>/dev/null | head -1 || true)
     if [ -n "$rollout" ] && [ -f "$rollout" ]; then
-      cp "$rollout" "$run_dir/codex-rollout.jsonl" 2>/dev/null || true
+      jq -c 'select(.type == "turn_context"
+                 or (.type == "event_msg" and .payload.type == "token_count"))' \
+        < "$rollout" > "$run_dir/codex-rollout.jsonl" 2>/dev/null \
+        || : > "$run_dir/codex-rollout.jsonl"
       chmod 0600 "$run_dir/codex-rollout.jsonl" 2>/dev/null || true
     fi
   fi
   rm -rf "$home"
+}
+
+# Sweep generated harness homes left behind by a supervisor that did not get to run its
+# trap. An EXIT trap covers a clean exit, a failing exit and a handled signal; it does
+# NOT cover SIGKILL, an OOM kill, or the host losing power — and this directory holds a
+# copy of a live subscription credential, so "usually removed" is not the standard. This
+# is the floor under the trap, not a replacement for it.
+#
+# Deliberately narrow: it removes only directories named `codex-home` directly under a
+# run-dir the caller named, and only ones it owns. It never walks outside that root.
+sweep_codex_homes() {  # sweep_codex_homes <work-root>
+  local root="$1" home swept=0
+  [ -n "$root" ] && [ -d "$root" ] || return 0
+  while IFS= read -r home; do
+    [ -n "$home" ] || continue
+    [ -O "$home" ] || { echo "  skipping $home: not owned by this user" >&2; continue; }
+    clean_codex_home "$home" "$(dirname "$home")"
+    swept=$((swept + 1))
+  done < <(find "$root" -maxdepth 3 -type d -name 'codex-home' 2>/dev/null)
+  [ "$swept" -eq 0 ] || echo "  swept $swept stale generated harness home(s)"
 }
 
 # Read a harness version out of a `--version` probe's combined output.

@@ -106,10 +106,19 @@ mkdir -p "$WS_ROOT" "$CODE_ROOT" "$OUTSIDE" "$RUN_DIR"
 git -C "$WS_ROOT" init -q 2>/dev/null || true
 git -C "$CODE_ROOT" init -q 2>/dev/null || true
 
-SECRET_CANARY_PATH="$WS_ROOT/.env"
+# The planted secret is NESTED and in the SECOND writable root, deliberately. A canary
+# at `<root>/.env` is covered by an explicit path entry, so a control that only ever
+# moved that one would sensitivity-test the easy rule; this one is covered only by the
+# `{writable_root}/**/*.env` GLOB, which is the rule that actually has to work, in the
+# root that is not the cwd. A top-level canary is planted too so the loosening control
+# strikes a rule family rather than a single line.
+mkdir -p "$CODE_ROOT/nested/deeper"
+SECRET_CANARY_PATH="$CODE_ROOT/nested/deeper/service.env"
 DECLARED_INPUT_PATH="$WS_ROOT/input.txt"
 printf 'CANARY=hive-probe-planted-secret\n' > "$SECRET_CANARY_PATH"
 chmod 0600 "$SECRET_CANARY_PATH"
+printf 'CANARY=hive-probe-planted-secret-toplevel\n' > "$WS_ROOT/.env"
+chmod 0600 "$WS_ROOT/.env"
 printf 'hive-probe-ordinary-input\n' > "$DECLARED_INPUT_PATH"
 
 # --- materialize, exactly as a launch would -------------------------------------------
@@ -188,6 +197,7 @@ substitute() {  # substitute <text> — the bundle's real paths for the descript
           -e "s#DECLARED_INPUT_PATH#$DECLARED_INPUT_PATH#g" \
           -e "s#CODEX_HOME_PATH#$CODEX_HOME_PATH#g" \
           -e "s#OUTSIDE_ROOT_PATH#$OUTSIDE#g" \
+          -e "s#RUN_DIR_PATH#$RUN_DIR#g" \
           -e "s#CODE_ROOT_PATH#$CODE_ROOT#g" \
           -e "s#WORKER_ROOT_PATH#$WS_ROOT#g"
 }
@@ -262,6 +272,10 @@ echo
 echo "control 2/2: striking the planted secret's deny entries from the rendered profile"
 SECRET_PROBE=$(printf '%s' "$PLAN" | jq -c '.probes[] | select(.id == "codex-p2-secret-denied")' | head -1)
 if [ -n "$SECRET_PROBE" ]; then
+  # Strike the whole `.env` rule family, explicit entries and globs alike — the canary
+  # this re-reads is nested and matched only by the glob, so a control that removed the
+  # explicit line and left the glob would change nothing and still be reported as a
+  # control.
   grep -v '\.env" = "deny"' "$CODEX_HOME_PATH/config.toml" > "$CODEX_HOME_PATH/config.toml.loosened"
   mv "$CODEX_HOME_PATH/config.toml.loosened" "$CODEX_HOME_PATH/config.toml"
   CMD=$(substitute "$(printf '%s' "$SECRET_PROBE" | jq -r '.command')")

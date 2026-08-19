@@ -110,6 +110,11 @@ emit_finished() {  # emit_finished <run-dir> <payload-json-or-empty>
 reconcile() {  # reconcile <root>
   local root="$1" rd rc=0
   [ -d "$root" ] || die "reconcile root does not exist: $root"
+  # First, before any event: remove generated harness homes whose supervisor never got
+  # to run its EXIT trap. Such a directory holds a copy of a live subscription
+  # credential, and the reconcile sweep is the one place that runs after a SIGKILL or a
+  # host restart — the exact paths a trap cannot cover.
+  sweep_codex_homes "$root"
   for rd in "$root"/*/; do
     rd="${rd%/}"
     [ -f "$rd/plan.json" ] || continue
@@ -324,6 +329,9 @@ if [ -n "$CODEX_HOME_PATH" ]; then
   # because shellcheck renumbered this check between releases and the suppression has
   # to satisfy both or the lint passes locally and fails on the runner.
   reap_codex_home() { clean_codex_home "$CODEX_HOME_PATH" "$RUN_DIR"; }
+  # EXIT covers a clean exit, a failing exit, and any signal this shell handles. It does
+  # NOT cover SIGKILL or the host dying; `hive-supervise --reconcile` sweeps those, and
+  # the claim in the descriptor and the guide is worded to match rather than to flatter.
   trap reap_codex_home EXIT
   seed_codex_auth "$CODEX_HOME_PATH"
   log "codex home seeded at $CODEX_HOME_PATH (credential mode 0600, removed on every exit)"
