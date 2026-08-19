@@ -169,6 +169,118 @@ def extract_claude_code_transcript(lines: Iterable[str]) -> UsageEvidence:
     )
 
 
+def extract_codex_rollout(lines: Iterable[str]) -> UsageEvidence:
+    """Read Codex's own session rollout (`sessions/**/rollout-*.jsonl`).
+
+    Codex reports consumption per TURN, not per message, and it reports it
+    CUMULATIVELY: each `turn.completed` (and its rollout-side equivalent) carries the
+    running totals for the thread, not that turn's delta. Summing them inflates by
+    roughly the triangular number of turns — the same class of silent, one-directional
+    error the Claude Code extractor's per-content-block duplication produces, and in
+    the same direction. So the rule here is LAST WINS, not sum: the final usage object
+    in the file is the thread's total.
+
+    That is checked rather than assumed. If the counts do not increase monotonically
+    the file is not the cumulative shape this parser was written against, and the
+    extraction says so in its notes rather than quietly reporting the last row of
+    something it misread.
+
+    MODEL ATTRIBUTION IS WEAKER HERE THAN ON CLAUDE CODE, and the note says so on
+    every extraction. Codex records the model it was CONFIGURED with; its event stream
+    carries no server-resolved identity. That is a harness statement, not a provider
+    one, and a launch alias must never be promoted into a resolved id on its strength.
+    """
+    records, bad = _iter_json_lines(lines)
+
+    rows: list[dict[str, Any]] = []
+    models: list[str] = []
+    for rec in records:
+        raw_payload = rec.get("payload")
+        payload: dict[str, Any] = raw_payload if isinstance(raw_payload, dict) else {}
+
+        # Two spellings of one number, read by one parser because the supervisor sees
+        # the rollout and the probe runner sees the `--json` stream, and two parsers
+        # for one vendor would drift:
+        #   rollout: {"type":"event_msg","payload":{"type":"token_count",
+        #             "info":{"total_token_usage":{...}}}}
+        #   stream:  {"type":"turn.completed","usage":{...}}
+        usage: Any = None
+        info = payload.get("info")
+        if isinstance(info, dict) and isinstance(info.get("total_token_usage"), dict):
+            usage = info["total_token_usage"]
+        elif isinstance(rec.get("usage"), dict):
+            usage = rec["usage"]
+        if isinstance(usage, dict) and any(
+            k in usage for k in ("input_tokens", "output_tokens")
+        ):
+            rows.append(
+                {
+                    "message_id": f"turn-{len(rows)}",
+                    "model": None,
+                    "input_tokens": int(usage.get("input_tokens") or 0),
+                    "cache_read_tokens": int(usage.get("cached_input_tokens") or 0),
+                    "cache_write_tokens": int(usage.get("cache_write_input_tokens") or 0),
+                    "output_tokens": int(usage.get("output_tokens") or 0),
+                    "sidechain": False,
+                }
+            )
+
+        # Model attribution comes from `turn_context` ONLY. The rollout mentions a
+        # model id in several places — the collaboration-mode block, a compaction
+        # setting — and treating every mention as a main-chain model would make an
+        # ordinary nested setting look like a mid-session model switch, which the
+        # caller turns into a terminal failure. One record kind, deliberately.
+        if rec.get("type") == "turn_context":
+            m = payload.get("model")
+            if isinstance(m, str) and m and m not in models:
+                models.append(m)
+
+    if not rows:
+        reason = "codex rollout held no usage records"
+        if bad:
+            reason += f" ({bad} unparseable line(s))"
+        return unavailable(reason)
+
+    notes: list[str] = []
+    keys = ("input_tokens", "cache_read_tokens", "cache_write_tokens", "output_tokens")
+    monotonic = all(
+        all(rows[i][k] <= rows[i + 1][k] for k in keys) for i in range(len(rows) - 1)
+    )
+    if monotonic:
+        final = rows[-1]
+        totals = {k: final[k] for k in keys}
+        notes.append(
+            f"{len(rows)} cumulative usage record(s); the last one is the thread total "
+            "(codex reports running totals per turn, so summing would inflate)"
+        )
+    else:
+        totals = {k: sum(r[k] for r in rows) for k in keys}
+        notes.append(
+            f"{len(rows)} usage record(s) did NOT increase monotonically, so they were "
+            "summed as per-turn deltas rather than read as cumulative totals. Verify "
+            "against the harness before trusting this number"
+        )
+    if bad:
+        notes.append(f"{bad} unparseable line(s) skipped (truncated rollout is expected)")
+    notes.append(
+        "model identity is the harness's CONFIGURED model, not a server-resolved id: "
+        "codex exposes no resolved-model surface, so this must not be read as proof of "
+        "which model answered"
+    )
+
+    return UsageEvidence(
+        usage=ExecutionUsage(
+            status="reported",
+            source="codex-rollout",
+            evidence_records=len(rows),
+            **totals,
+        ),
+        rows=rows,
+        main_chain_models=models,
+        notes=notes,
+    )
+
+
 def extract_fake_usage_file(lines: Iterable[str]) -> UsageEvidence:
     """The fixture surface: one JSON object per line, already one row per message.
 
@@ -223,6 +335,7 @@ def extract_fake_usage_file(lines: Iterable[str]) -> UsageEvidence:
 
 _EXTRACTORS = {
     "claude-code-transcript": extract_claude_code_transcript,
+    "codex-rollout": extract_codex_rollout,
     "fake-usage-file": extract_fake_usage_file,
 }
 

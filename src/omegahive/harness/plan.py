@@ -16,9 +16,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from omegahive.events.types import ExecutionIdentity, PriceBasis
-from omegahive.harness.adapters import LaunchContext, LaunchPlan, get_adapter
+from omegahive.harness.adapters import (
+    LaunchContext,
+    LaunchPlan,
+    boundary_root,
+    get_adapter,
+)
 from omegahive.harness.bindings import (
     HarnessBinding,
+    MaterializeContext,
     Materialized,
     ProbeResult,
     check_argv,
@@ -81,6 +87,11 @@ class ResolvedPlan:
     # A stable code for the unlaunchable case, so a reader can branch on the reason
     # rather than matching prose. None when the route is launchable.
     refusal_code: str | None = None
+    # The ABSOLUTE directory the boundary's `config_path` hangs off for this execution.
+    # Carried rather than recomputed because the launcher writes into it, the supervisor
+    # re-checks it, and the adapter may have put it in the child's environment — three
+    # readers who must not each derive it from a rule they hold privately.
+    boundary_root_path: str = ""
 
 
 def execution_id_for(binding: LaunchBinding, binding_ref: str) -> str:
@@ -194,6 +205,7 @@ def resolve(
     cwd: str,
     session_id: str,
     code_root: str = "",
+    run_dir: str = "",
     parent_env: Mapping[str, str],
     present_paths: frozenset[str] = frozenset(),
 ) -> ResolvedPlan:
@@ -229,14 +241,21 @@ def resolve(
         session_id=session_id,
         parent_env=parent_env,
         code_root=code_root,
+        run_dir=run_dir,
     )
     launch = adapter.build(route, ctx, harness_binding)
 
     # Materialize BEFORE checking the argv, because on a harness whose boundary is a
     # file the argv's job is to make the child read that file — the two are one control
     # and verifying either alone verifies nothing.
-    extra_dirs = [code_root] if code_root else []
-    mat = materialize(harness_binding, extra_dirs=extra_dirs)
+    mat = materialize(
+        harness_binding,
+        context=MaterializeContext(
+            extra_dirs=[code_root] if code_root else [],
+            worker_root=cwd,
+            run_dir=run_dir,
+        ),
+    )
     check_argv(harness_binding, launch.argv)
 
     probes = run_local_probes(
@@ -276,6 +295,7 @@ def resolve(
         materialized=mat,
         probes=probes,
         refusal_code=refusal_code,
+        boundary_root_path=boundary_root(harness_binding, ctx),
     )
 
 
@@ -373,6 +393,16 @@ def to_json(plan: ResolvedPlan, *, kickoff: str) -> dict[str, Any]:
             "config_path": plan.materialized.path,
             "config_content": plan.materialized.content,
             "config_digest": plan.materialized.digest,
+            # Which root `config_path` hangs off, and where that root actually is on
+            # this host. A boundary that doubles as the harness's state directory does
+            # not live in the worker's tree, and the shell has to be told rather than
+            # inferring it from a rule written twice.
+            "config_root": plan.harness_binding.config_root,
+            "config_root_path": plan.boundary_root_path,
+            # A directory-shaped boundary is many files under one digest. `content` is
+            # then the MANIFEST rather than a file's bytes, and these are the files.
+            "config_directory": plan.materialized.directory,
+            "config_files": [f.model_dump(mode="json") for f in plan.materialized.files],
             "rules": plan.materialized.rules,
             "probes": [p.model_dump(mode="json") for p in plan.probes],
         },

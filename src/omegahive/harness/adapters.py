@@ -65,6 +65,29 @@ class LaunchContext:
     # file access to the cwd needs it named explicitly in the materialized config —
     # which is why it travels here rather than being discovered.
     code_root: str = ""
+    # The supervisor's private run-dir. A harness whose boundary IS its state directory
+    # gets that directory here: it must live outside every writable root (it holds the
+    # ephemeral credential copy and the plan the boundary check is anchored to) and it
+    # must be removable on every terminal path without touching the worker's work.
+    run_dir: str = ""
+
+
+def boundary_root(binding: HarnessBinding, ctx: LaunchContext) -> str:
+    """The ABSOLUTE path the descriptor's `config_path` hangs off, for this execution.
+
+    Resolved in one place because three consumers need the same answer and would
+    otherwise each recompute it: the adapter (which puts it in the child's
+    environment), the launcher (which writes the files) and the supervisor (which
+    re-checks their bytes). `config_root` selects the base; an empty base yields an
+    empty answer, which is how a `--check` with no run-dir stays free of side effects
+    rather than inventing a path.
+    """
+    if binding.config_path is None:
+        return ""
+    base = ctx.run_dir if binding.config_root == "run" else ctx.cwd
+    if not base:
+        return ""
+    return f"{base.rstrip('/')}/{binding.config_path}"
 
 
 @dataclass(frozen=True)
@@ -212,17 +235,30 @@ class ClaudeCodeAdapter(Adapter):
 class CodexAdapter(Adapter):
     """OpenAI Codex CLI.
 
-    UNVERIFIED ON THIS DEPLOYMENT. The Codex binary was not installed on the host when
-    this adapter was written (2026-08-13), so its argv shape is implemented from the
-    documented interface and its evidence surfaces are recorded as UNKNOWN rather than
-    assumed. That distinction is the point: an adapter that claimed a usage surface it
-    had never read would put invented numbers on the spine, which is precisely the
-    failure the `unavailable`-plus-reason path exists to prevent.
+    The whole boundary travels in ONE environment variable. `CODEX_HOME` names a
+    generated per-execution directory holding the permission profile, the execpolicy
+    rules, and an opaque copy of the operator's existing `auth.json` — so the
+    operator's own harness state (prior threads, memory, plugins, personal
+    configuration) is absent by construction rather than disabled by a flag. The
+    launcher renders that directory; the supervisor seeds the credential into it,
+    verifies its bytes, and removes it on every terminal path.
 
-    Consequently `proves_model` and `proves_usage` are False. A Codex execution records
-    its consumption as `unavailable` with a named reason until someone runs the harness
-    and establishes the surface. That is a truthful record, and it is the input the next
-    order needs; it is not a placeholder zero.
+    `CODEX_HOME` is therefore set by this adapter and never inherited: an inherited
+    value would silently point the child at the operator's real home, which is the one
+    outcome that reads as a bound launch and is not one.
+
+    What the argv deliberately does NOT carry, both measured on codex-cli 0.147.0:
+    `--sandbox <mode>`, because it OVERRIDES the permission profile (with the profile
+    denying a planted secret and `-s workspace-write` on the command line, the agent
+    read the secret); and `--ignore-user-config`, because it suppresses exactly the
+    `config.toml` this launcher just wrote. Both are forbidden argv tokens in the
+    descriptor rather than comments here.
+
+    Evidence surfaces are now established. Codex writes a session ROLLOUT under the
+    home it is given, and that rollout carries both the configured model id and the
+    per-turn token counts — so `proves_model` and `proves_usage` are True, with the
+    standing caveat (carried by the extractor, not hidden here) that Codex reports the
+    model it was CONFIGURED with rather than a server-resolved identity.
     """
 
     name = "codex"
@@ -237,20 +273,27 @@ class CodexAdapter(Adapter):
             "--model", route.model,
             ctx.kickoff,
         ]
-        env = _clean_env(ctx.parent_env, frozenset({"CODEX_HOME"}), {})
+        home = boundary_root(binding, ctx)
+        if not home:
+            raise RefusalError(
+                "HARNESS_BINDING_UNRENDERABLE",
+                "the codex adapter needs the generated harness home the descriptor "
+                "declares (config_path under config_root); without it the child would "
+                "read the operator's own Codex state and no boundary would apply",
+            )
+        # NOT inherited: whatever the parent had is dropped and this execution's own
+        # directory is placed. `_clean_env` is still given the name so the allowlist
+        # documents that this variable is expected, but the addition wins.
+        env = _clean_env(ctx.parent_env, frozenset(), {"CODEX_HOME": home})
         return LaunchPlan(
             argv=argv,
             env=env,
             version_argv=self.version_argv(),
             model_requested=route.model,
-            usage_extractor="none",
-            usage_hint={},
-            proves_model=False,
-            proves_usage=False,
-            unproven_reason=(
-                "codex usage and resolved-model surfaces are not established on this "
-                "deployment (harness not installed when the adapter was written)"
-            ),
+            usage_extractor="codex-rollout",
+            usage_hint={"codex_home": home, "run_dir": ctx.run_dir},
+            proves_model=True,
+            proves_usage=True,
         )
 
 

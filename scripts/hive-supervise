@@ -239,16 +239,41 @@ verify_binding() {  # verify_binding -> prints a reason on failure, empty on suc
   fi
   rel=$(jq -r '.binding.config_path // empty' "$PLAN")
   if [ -n "$rel" ]; then
-    if [ ! -f "${CWD:-$PWD}/$rel" ]; then
-      printf '%s' "the materialized boundary is missing at ${CWD:-$PWD}/$rel"
+    local base is_dir count idx fpath fdigest full
+    # The root is the plan's, not this script's guess. A boundary that doubles as the
+    # harness's state directory lives in the run-dir; one the harness reads out of the
+    # project it works in lives in the worker root. Getting this wrong would look for
+    # the file in the wrong place and report a MISSING boundary over a correct launch —
+    # a fail-closed path firing on the safe case, which this file has shipped once.
+    base=$(jq -r '.binding.config_root_path // empty' "$PLAN")
+    [ -n "$base" ] || base="${CWD:-$PWD}/$rel"
+    is_dir=$(jq -r '.binding.config_directory // false' "$PLAN")
+    # EVERY rendered file is re-hashed, not just the manifest: a manifest is a claim
+    # about files, and the question here is what the child will actually read. The
+    # per-file digests come from the same plan the manifest does, so a plan edited
+    # consistently still passes — that residual is stated in the descriptor and is the
+    # `hive-user` cutover's to close, not this check's.
+    count=$(jq '.binding.config_files | length' "$PLAN")
+    if [ "$count" -eq 0 ]; then
+      printf '%s' "the plan's binding declares config_path $rel and no files, so nothing in it can be verified"
       return
     fi
+    for ((idx = 0; idx < count; idx++)); do
+      fpath=$(jq -r --argjson i "$idx" '.binding.config_files[$i].path' "$PLAN")
+      fdigest=$(jq -r --argjson i "$idx" '.binding.config_files[$i].digest' "$PLAN")
+      if [ "$is_dir" = "true" ]; then full="$base/$fpath"; else full="$base"; fi
+      if [ ! -f "$full" ]; then
+        printf '%s' "the materialized boundary is missing at $full"
+        return
+      fi
+      got="sha256:$(sha256_hex < "$full")"
+      if [ "$got" != "$fdigest" ]; then
+        printf '%s' "the materialized boundary at $full hashes to $got, but the approved plan pins $fdigest"
+        return
+      fi
+    done
     want=$(jq -r '.binding.config_digest' "$PLAN")
-    got="sha256:$(sha256_hex < "${CWD:-$PWD}/$rel")"
-    if [ "$got" != "$want" ]; then
-      printf '%s' "the materialized boundary at ${CWD:-$PWD}/$rel hashes to $got, but the approved plan pins $want"
-      return
-    fi
+    [ -n "$want" ] || { printf '%s' "the plan's binding carries no config_digest"; return; }
   fi
   n=${#ARGV[@]}
   # A required flag is either a pair (`--permission-mode auto`) or a lone switch
@@ -284,6 +309,24 @@ if [ -n "$BINDING_FAILURE" ]; then
     '{status:"unavailable", reason:$r}')
   finish failure certain 126
   exit 1
+fi
+
+# --- 0b. the ephemeral credential, for a harness whose home IS its boundary ----------
+# Seeded AFTER the boundary verified and never before: a credential copy placed for a
+# launch that then refuses is a credential sitting on disk for no reason. Removed on
+# EVERY terminal path — clean exit, failure, signal, and the `die` inside any helper —
+# by one EXIT trap rather than by remembering at each exit. The rollout is preserved
+# out of the home first, because it is the only place Codex states which model it ran
+# and what it consumed, and it carries no credential.
+CODEX_HOME_PATH=$(jq -r '.env.CODEX_HOME // empty' "$PLAN")
+if [ -n "$CODEX_HOME_PATH" ]; then
+  # shellcheck disable=SC2317,SC2329  # reachable: the trap below invokes it. Two codes
+  # because shellcheck renumbered this check between releases and the suppression has
+  # to satisfy both or the lint passes locally and fails on the runner.
+  reap_codex_home() { clean_codex_home "$CODEX_HOME_PATH" "$RUN_DIR"; }
+  trap reap_codex_home EXIT
+  seed_codex_auth "$CODEX_HOME_PATH"
+  log "codex home seeded at $CODEX_HOME_PATH (credential mode 0600, removed on every exit)"
 fi
 
 # --- 1. probe the harness version -- no model call, no tokens -----------------------
@@ -406,6 +449,21 @@ extract_usage() {
         src=$(find "$cfg/projects" -maxdepth 2 -type f -name "$sid.jsonl" 2>/dev/null | head -1)
         [ -n "$src" ] || reason="no transcript named $sid.jsonl under $cfg/projects"
       fi
+      ;;
+    codex-rollout)
+      # Read out of the generated home while it still exists — the EXIT trap removes it
+      # moments from now, having first copied the rollout into the run-dir. The run-dir
+      # copy is the fallback, which is what `--reconcile` finds on a supervisor that
+      # died and is being swept afterwards.
+      local home
+      home=$(jq -r '.usage_hint.codex_home // empty' "$PLAN")
+      if [ -n "$home" ] && [ -d "$home/sessions" ]; then
+        src=$(find "$home/sessions" -name 'rollout-*.jsonl' -type f 2>/dev/null | head -1)
+      fi
+      if [ -z "$src" ] && [ -f "$RUN_DIR/codex-rollout.jsonl" ]; then
+        src="$RUN_DIR/codex-rollout.jsonl"
+      fi
+      [ -n "$src" ] || reason="codex wrote no session rollout under its generated home, so neither its consumption nor the model it ran can be read"
       ;;
     fake-usage-file)
       src=$(jq -r '.usage_hint.usage_file // empty' "$PLAN")

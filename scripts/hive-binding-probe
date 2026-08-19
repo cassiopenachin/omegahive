@@ -44,11 +44,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/hive-common.sh"
 
 BINDING_ID=""
+# The default is the CLAUDE CODE driver's cheap model. It is deliberately not passed
+# through to another driver: each harness's sensible probe model is its own, and a
+# default silently forwarded to a second vendor names a model that does not exist
+# there. `--model` given explicitly IS forwarded, because then it is a choice.
 MODEL="claude-haiku-4-5-20251001"
+MODEL_GIVEN=""
 RECORD=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --model)  shift; [ $# -gt 0 ] || die "--model needs a value"; MODEL="$1" ;;
+    --model)  shift; [ $# -gt 0 ] || die "--model needs a value"; MODEL="$1"; MODEL_GIVEN=1 ;;
     --record) shift; [ $# -gt 0 ] || die "--record needs a path"; RECORD="$1" ;;
     -h|--help) sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
     -*) die "unknown argument '$1'" ;;
@@ -62,24 +67,35 @@ command -v jq >/dev/null 2>&1 || die "jq is required"
 DESC="$(harness_bindings_dir)/$BINDING_ID.json"
 [ -f "$DESC" ] || die "no such binding descriptor: $DESC"
 
-PLAN=$(jq -n --arg d "$(b64 "$DESC")" '{descriptor_b64:$d, extra_dirs:[]}' \
-  | hive harness-materialize) || die "the descriptor could not be materialized (see above)"
-HARNESS=$(printf '%s' "$PLAN" | jq -r '.harness')
-CONFIG_PATH=$(printf '%s' "$PLAN" | jq -r '.config_path // empty')
+# The harness is read from the descriptor before anything is rendered, because the
+# drivers do not even materialize alike: a harness whose boundary is one file in the
+# worker root and one whose boundary is a generated state directory need different
+# per-execution facts, and guessing either would render a configuration no launch
+# writes.
+HARNESS=$(jq -r '.harness' "$DESC")
 
-# The runner knows how to drive exactly one harness. That is a deliberate refusal rather
-# than a gap: a probe runner that guessed a second harness's non-interactive interface
-# would report a boundary it never actually exercised, which is the one failure this
-# whole mechanism exists to prevent.
+# Each driver knows exactly one harness. That is a deliberate refusal rather than a
+# gap: a runner that guessed a harness's non-interactive interface would report a
+# boundary it never actually exercised, which is the one failure this whole mechanism
+# exists to prevent.
 case "$HARNESS" in
   claude-code)
     command -v claude >/dev/null 2>&1 \
       || die "harness 'claude-code' is not installed on this host; a boundary cannot be proven against a binary that is absent" ;;
+  codex)
+    FORWARD=()
+    [ -n "$MODEL_GIVEN" ] && FORWARD+=(--model "$MODEL")
+    [ -n "$RECORD" ] && FORWARD+=(--record "$RECORD")
+    exec "$SCRIPT_DIR/hive-binding-probe-codex" "$BINDING_ID" "${FORWARD[@]+"${FORWARD[@]}"}" ;;
   *)
     die "no probe driver for harness '$HARNESS'.
   This descriptor stays 'declared' and its routes refuse (HARNESS_BINDING_UNPROVEN),
   which is the correct outcome — not a reason to mark it proven from documentation." ;;
 esac
+
+PLAN=$(jq -n --arg d "$(b64 "$DESC")" '{descriptor_b64:$d, extra_dirs:[]}' \
+  | hive harness-materialize) || die "the descriptor could not be materialized (see above)"
+CONFIG_PATH=$(printf '%s' "$PLAN" | jq -r '.config_path // empty')
 
 [ -n "$CONFIG_PATH" ] || die "descriptor $BINDING_ID declares no config file; this runner has nothing to place"
 

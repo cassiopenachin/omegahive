@@ -243,13 +243,14 @@ else
     --arg ref "$BINDING_REL@$BINDING_SHA" \
     --arg task "$TASK" --arg order "$REL@$SHA" \
     --arg kick "$KICKOFF" --arg cwd "$WS_ROOT" --arg code "$CODE_ROOT" \
-    --arg sid "$SESSION_UUID" \
+    --arg sid "$SESSION_UUID" --arg rundir "$EXEC_DIR" \
     --argjson env "$(jq -n 'env')" \
     --argjson desc "$descriptors_json" \
     --argjson present "$present_json" \
     '{binding_b64:$b, catalog_b64:$c, descriptors_b64:$desc, binding_ref:$ref,
       expected_task:$task, expected_order_ref:$order, kickoff:$kick, cwd:$cwd,
-      code_root:$code, session_id:$sid, env:$env, present_paths:$present}')
+      code_root:$code, run_dir:$rundir, session_id:$sid, env:$env,
+      present_paths:$present}')
 
   if [ -n "$CHECK_ONLY" ]; then
     echo "hive-launch --check: task=$TASK worker=$WORKER project=$PROJECT (no side effects)"
@@ -459,7 +460,12 @@ echo "  clones: $WS_ROOT  +  $CODE_ROOT (origin -> $CODE_REPO)"
 # the auditable half and this is the enforced half; a worker root that has one without
 # the other is the state this order exists to make unreachable.
 if [ -n "$PLAN_JSON" ]; then
-  materialize_binding "$PLAN_JSON" "$WS_ROOT"
+  # The run-dir is created HERE rather than further down, because a boundary whose root
+  # is the run-dir has nowhere to land otherwise — and because that directory holds the
+  # credential the supervisor is about to seed, so it is 0700 from the moment it exists
+  # rather than from the moment someone remembers.
+  mkdir -p "$EXEC_DIR" && chmod 0700 "$EXEC_DIR"
+  materialize_binding "$PLAN_JSON" "$WS_ROOT" "$EXEC_DIR"
 fi
 
 # Issue the per-seat emit wrapper (proto-credential): one file per identity,

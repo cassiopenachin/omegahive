@@ -81,6 +81,18 @@ ENFORCEABLE_MECHANISMS = frozenset(
         "launch-flag",            # a flag on the child's own command line
         "sandbox-flag",           # an OS-level confinement mode the harness provides
         "env-allowlist",          # the child's environment is constructed, not inherited
+        # An OS-level READ denial on named paths or globs, expressed in the harness's
+        # own filesystem-permission table. Kept apart from `settings-deny` because the
+        # two answer different questions and, on Codex, render into different files:
+        # `settings-deny` gates COMMANDS before they run, this gates PATHS at the
+        # syscall. A harness that has one and not the other is a real difference, and
+        # collapsing them would let a command matcher stand in for a read boundary.
+        "filesystem-deny",
+        # The launcher hands the child a GENERATED harness-state directory by
+        # environment variable, so the operator's own harness state — prior threads,
+        # memory, plugins, personal configuration — is absent by construction rather
+        # than disabled by a flag whose meaning can change under a version bump.
+        "generated-home",
     }
 )
 MECHANISM_KINDS = ENFORCEABLE_MECHANISMS | {"instruction"}
@@ -88,12 +100,19 @@ MECHANISM_KINDS = ENFORCEABLE_MECHANISMS | {"instruction"}
 # Kinds whose whole content IS their rules. A mechanism of one of these kinds with an
 # empty rule list denies nothing while satisfying every structural check, so it is
 # refused at parse time rather than caught later by something that does not look inside.
-_RULE_BEARING_MECHANISMS = frozenset({"settings-deny", "settings-allow"})
+_RULE_BEARING_MECHANISMS = frozenset({"settings-deny", "settings-allow", "filesystem-deny"})
+
+# The rule-bearing kinds that express a DENIAL. `check_coverage` requires each of these
+# to be named by a `rule-present` probe, so that deleting the mechanism is caught by
+# something rather than by nobody.
+_DENY_BEARING_MECHANISMS = frozenset({"settings-deny", "filesystem-deny"})
 
 # Probe kinds. `local` probes are deterministic and run at every preflight; `harness`
 # probes need the installed harness and a model call, so they run in the probe runner
 # (`scripts/hive-binding-probe`) and their result is recorded in the descriptor.
-LOCAL_PROBE_KINDS = frozenset({"rule-present", "argv-flag", "env-absent", "config-absent"})
+LOCAL_PROBE_KINDS = frozenset(
+    {"rule-present", "argv-flag", "env-absent", "config-absent", "env-present"}
+)
 HARNESS_PROBE_KINDS = frozenset({"deny-enforced", "allow-executes", "source-gated"})
 PROBE_KINDS = LOCAL_PROBE_KINDS | HARNESS_PROBE_KINDS
 
@@ -170,6 +189,9 @@ class Probe(BaseModel):
     sentinel_name: str | None = None
     # `config-absent`: a path that must not exist, because its presence would override
     # the materialized boundary (an admin/managed policy file).
+    # `env-present`: the suffix the named variable's value must end with, so a harness
+    # whose whole boundary is reached through a generated directory can assert that the
+    # child is actually pointed at THAT directory rather than at the operator's.
     path: str | None = None
     # `allow-executes` / `source-gated`: the text that PROVES the command ran. Declared
     # rather than guessed. The runner first inferred it from the command's last token,
@@ -211,6 +233,9 @@ class Probe(BaseModel):
             "deny-enforced": ("command", self.command),
             "allow-executes": ("command", self.command),
             "source-gated": ("command", self.command),
+            # Without a variable name this probe would assert over nothing at all —
+            # the same vacuous-pass shape every other entry here exists to refuse.
+            "env-present": ("sentinel_name", self.sentinel_name),
         }.get(self.kind)
         if required is not None and not required[1]:
             raise ValueError(
@@ -285,10 +310,20 @@ class HarnessBinding(BaseModel):
     binding_id: str
     harness: str
     captured_at: str
-    # Where the materialized configuration is written, relative to the worker root.
-    # `null` means this harness takes its whole boundary from launch flags.
+    # Where the materialized configuration is written, relative to the root named by
+    # `config_root`. `null` means this harness takes its whole boundary from launch
+    # flags. For a directory-shaped boundary (`codex-home`) this is the directory, and
+    # the rendered files are relative to it.
     config_path: str | None
-    config_format: Literal["claude-code-settings", "codex-toml", "none"]
+    config_format: Literal["claude-code-settings", "codex-home", "none"]
+    # Which root `config_path` hangs off. `worker` is the worker's own clone, which is
+    # right for a boundary the harness reads out of the project it is working in.
+    # `run` is the supervisor's private run-dir, which is right for a boundary that
+    # doubles as the harness's STATE directory: such a directory holds the ephemeral
+    # credential copy and the session record, so it must sit outside every root the
+    # model can write and outside any git tree, and it must be removable on every
+    # terminal path without touching the worker's work.
+    config_root: Literal["worker", "run"] = "worker"
     # Tokens that come immediately after the executable, before any flag — a harness
     # subcommand. Declared here rather than spelled in adapter code so that the argv an
     # adapter builds, the argv `check_argv` verifies, and the argv a probe runner drives
@@ -455,7 +490,12 @@ def check_coverage(binding: HarnessBinding) -> None:
         # refuses it by name (HARNESS_BINDING_UNRENDERABLE) rather than asking it to
         # probe a configuration nothing writes.
         declared = (
-            {r for m in c.mechanisms if m.kind == "settings-deny" for r in m.rules}
+            {
+                r
+                for m in c.mechanisms
+                if m.kind in _DENY_BEARING_MECHANISMS
+                for r in m.rules
+            }
             if binding.config_format != "none"
             else set()
         )
@@ -654,20 +694,200 @@ def check_digest(binding: HarnessBinding, raw: bytes, expected: str) -> None:
 # --------------------------------------------------------------------------------------
 
 
+class MaterializeContext(BaseModel):
+    """The per-execution facts a renderer needs, and nothing else.
+
+    Every field defaults to empty, and the empty context is the CANONICAL rendering —
+    the one `verification.config_digest` pins and `check_status` re-derives. A launch
+    renders the same rules with this execution's paths filled in, so the two digests
+    differ by construction and each answers its own question: the canonical one asks
+    "are these the rules that were proved", the launch one asks "are these the bytes
+    the child read".
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Writable roots outside the worker root — on Claude Code the `additionalDirectories`
+    # entry, on Codex a second `write` row in the filesystem table.
+    extra_dirs: list[str] = Field(default_factory=list)
+    # The worker's own clone. Claude Code scopes to the cwd implicitly and needs no
+    # entry; a harness with an explicit filesystem table must name it or the worker
+    # cannot write its own workspace.
+    worker_root: str = ""
+    # The supervisor's private run-dir. Never writable, and DENIED outright where the
+    # harness can express that: it holds the plan that anchors the boundary check and,
+    # for a generated-home harness, the ephemeral credential copy.
+    run_dir: str = ""
+
+
+class MaterializedFile(BaseModel):
+    """One file the launcher writes, relative to the boundary's own root."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str        # relative to `Materialized.path`'s root; never absolute, never `..`
+    content: str
+    digest: str      # sha256 over `content`
+
+
 class Materialized(BaseModel):
     """What the launcher wrote, and the digest the supervisor re-checks."""
 
     model_config = ConfigDict(extra="forbid")
 
-    path: str | None            # worker-root-relative; None when the boundary is argv-only
-    content: str                # exact bytes to write (empty when path is None)
+    path: str | None            # root-relative; None when the boundary is argv-only
+    # For a single-file boundary this is the file's exact bytes. For a directory-shaped
+    # one it is the MANIFEST — one `<digest>  <path>` line per rendered file, sorted —
+    # so that `digest` keeps meaning "the one number that pins what was written",
+    # whether that is one file or a tree.
+    content: str
     digest: str                 # sha256 over `content`
     rules: list[str]            # every enforceable rule the file carries, flattened
+    # The actual files. A single-file boundary carries exactly one entry whose `path`
+    # equals `Materialized.path`; a directory boundary carries one per file, each
+    # relative to that directory.
+    files: list[MaterializedFile] = Field(default_factory=list)
+    # Whether `path` names a directory to be created rather than a file to be written.
+    directory: bool = False
     # Kept apart as well as flattened, because a substring search over the whole file
     # cannot tell a deny from an allow — and a rule MOVED from deny to allow would then
     # still satisfy its own `rule-present` probe over a file that now permits it.
     deny: list[str] = Field(default_factory=list)
     allow: list[str] = Field(default_factory=list)
+
+
+def _class_rules(binding: HarnessBinding, kind: str) -> list[str]:
+    """Every rule of one mechanism kind, in descriptor order, deduplicated."""
+    out: list[str] = []
+    for c in binding.classes:
+        for m in c.mechanisms:
+            if m.kind == kind:
+                out.extend(m.rules)
+    return _dedupe(out)
+
+
+# A `filesystem-deny` rule may be written relative to every writable root, because the
+# path that matters is not a fixed place on the host but "wherever this worker can
+# write". Codex's filesystem table takes absolute paths and `~`-rooted ones only — a
+# bare `**/*.env` is rejected outright — so the descriptor carries the ROOT-RELATIVE
+# form and the renderer expands it once per writable root. In the CANONICAL rendering
+# there are no roots, so these rules expand to nothing, which is correct: they describe
+# a boundary around this execution's trees and there are none.
+_ROOT_TOKEN = "{writable_root}"
+
+
+def _expand_roots(rules: list[str], roots: list[str]) -> list[str]:
+    out: list[str] = []
+    for rule in rules:
+        if _ROOT_TOKEN not in rule:
+            out.append(rule)
+            continue
+        for root in roots:
+            out.append(rule.replace(_ROOT_TOKEN, root.rstrip("/")))
+    return _dedupe(out)
+
+
+def _toml_quote(value: str) -> str:
+    r"""A TOML basic string. Refuses rather than escaping anything exotic.
+
+    Every value that reaches here is a filesystem path this launcher chose, so the
+    reachable character set is narrow. A path carrying a quote, a backslash or a
+    control character is a launcher bug or a hostile workspace name, and silently
+    escaping it would write a boundary whose meaning depends on a TOML parser's
+    escape handling agreeing with ours. Refusing is the honest answer.
+    """
+    if any(c in value for c in '"\\\n\r\t') or any(ord(c) < 0x20 for c in value):
+        raise RefusalError(
+            "HARNESS_BINDING_UNRENDERABLE",
+            f"cannot render {value!r} into the boundary: a path carrying a quote, a "
+            "backslash or a control character would change what the rendered "
+            "configuration means, so it refuses rather than being escaped",
+        )
+    return f'"{value}"'
+
+
+def _codex_home(binding: HarnessBinding, ctx: MaterializeContext) -> list[MaterializedFile]:
+    r"""Render the descriptor into a generated Codex home directory.
+
+    Two files, because Codex binds commands and paths through two different
+    mechanisms and there is no one file that carries both:
+
+      config.toml       a named PERMISSION PROFILE. `default_permissions` selects it,
+                        `filesystem` maps paths to read/write/deny. Measured on
+                        codex-cli 0.147.0: a `deny` entry beats a containing `write`
+                        root, globs work, `~` expands, and a path named by nothing is
+                        readable — which is what makes the denies falsifiable.
+      rules/hive.rules  the EXECPOLICY rules, `prefix_rule(pattern, decision)` in
+                        Starlark. User scope, so they are always loaded; the project
+                        scope is gated on a trust entry and is the wrong shape for a
+                        launcher.
+
+    Why the argv carries no sandbox flag: `--sandbox workspace-write` OVERRIDES the
+    profile. Measured — with the profile denying a planted secret and `-s
+    workspace-write` on the command line, the agent read the secret. So the mode is
+    expressed here and `--sandbox` is a forbidden argv token, not a required flag.
+    `--ignore-user-config` is forbidden for the mirror reason: it suppresses exactly
+    this config.toml.
+    """
+    write_roots = _dedupe([d for d in [ctx.worker_root, *ctx.extra_dirs] if d])
+    deny_paths = _expand_roots(_class_rules(binding, "filesystem-deny"), write_roots)
+    # The run-dir holds the plan that anchors the boundary check AND the ephemeral
+    # credential copy, so it is denied outright rather than merely left unwritable.
+    if ctx.run_dir:
+        deny_paths.append(ctx.run_dir)
+
+    lines = [
+        "# GENERATED by omegahive hive-launch. Do not edit: the supervisor recomputes",
+        "# this file's digest against the approved plan immediately before the child",
+        f"# exists, and a mismatch is a terminal failure. Descriptor: {binding.binding_id}",
+        "",
+        f"default_permissions = {_toml_quote(_CODEX_PROFILE)}",
+        "",
+        f"[permissions.{_CODEX_PROFILE}]",
+        "filesystem = {",
+        '  "/" = "read",',
+    ]
+    for root in _dedupe(write_roots):
+        lines.append(f"  {_toml_quote(root)} = \"write\",")
+    for path in _dedupe(deny_paths):
+        lines.append(f"  {_toml_quote(path)} = \"deny\",")
+    lines.append("}")
+    lines.append("")
+
+    rules = _class_rules(binding, "settings-deny") + _class_rules(binding, "settings-allow")
+    rule_lines = [
+        "# GENERATED by omegahive hive-launch. Codex execpolicy, user scope.",
+        "# `forbidden` wins over `allow` regardless of order; patterns match argv",
+        "# tokens positionally, so they cannot be evaded by whitespace and cannot",
+        "# over-match a command that merely mentions the token.",
+        "",
+        *rules,
+        "",
+    ]
+    return [
+        _rendered("config.toml", "\n".join(lines)),
+        _rendered("rules/hive.rules", "\n".join(rule_lines)),
+    ]
+
+
+# The profile name the renderer writes and `default_permissions` selects. One spelling,
+# here, because a name that appeared twice would eventually appear differently twice.
+_CODEX_PROFILE = "hive-worker"
+
+
+def _rendered(path: str, content: str) -> MaterializedFile:
+    return MaterializedFile(
+        path=path, content=content, digest=binding_digest(content.encode("utf-8"))
+    )
+
+
+def _manifest(files: list[MaterializedFile]) -> str:
+    """`<digest>  <path>` per file, sorted by path — the digest subject for a tree.
+
+    Sorted so that reordering the renderer's output cannot change the number, and
+    carrying each file's own digest so that a manifest match means every file matches.
+    """
+    return "".join(f"{f.digest}  {f.path}\n" for f in sorted(files, key=lambda f: f.path))
 
 
 def _claude_code_settings(binding: HarnessBinding, extra_dirs: list[str]) -> dict[str, Any]:
@@ -708,8 +928,26 @@ def _dedupe(items: list[str]) -> list[str]:
     return out
 
 
-def materialize(binding: HarnessBinding, *, extra_dirs: list[str]) -> Materialized:
-    """Render the harness-native configuration for one isolated worker root."""
+def materialize(
+    binding: HarnessBinding,
+    *,
+    extra_dirs: list[str] | None = None,
+    context: MaterializeContext | None = None,
+) -> Materialized:
+    """Render the harness-native configuration for one isolated worker root.
+
+    `context` carries everything per-execution. `extra_dirs` is the older, narrower
+    spelling of the same thing and is kept because it is the whole context a
+    single-root harness needs; passing both is a caller bug and refuses.
+    """
+    if context is not None and extra_dirs is not None:
+        raise RefusalError(
+            "HARNESS_BINDING_MALFORMED",
+            "materialize takes extra_dirs or context, not both — two spellings of the "
+            "same per-execution facts is how they drift apart",
+        )
+    ctx = context or MaterializeContext(extra_dirs=list(extra_dirs or []))
+    extra_dirs = list(ctx.extra_dirs)
     if binding.config_format == "none" or binding.config_path is None:
         # Rules with no renderer are rules nobody will write. A descriptor may legitimately
         # take its whole boundary from argv (`config_format: none`), but then it must not
@@ -734,6 +972,37 @@ def materialize(binding: HarnessBinding, *, extra_dirs: list[str]) -> Materializ
                 "cannot materialize",
             )
         return Materialized(path=None, content="", digest=binding_digest(b""), rules=[])
+    if binding.config_format == "codex-home":
+        files = _codex_home(binding, ctx)
+        write_roots = _dedupe([d for d in [ctx.worker_root, *ctx.extra_dirs] if d])
+        # `deny` is what the file ACTUALLY says, root-relative rules already expanded,
+        # because a `rule-present` probe that matched the descriptor's template rather
+        # than the rendered line would go green over a file that says something else.
+        deny = _class_rules(binding, "settings-deny") + _expand_roots(
+            _class_rules(binding, "filesystem-deny"), write_roots
+        )
+        allow = _class_rules(binding, "settings-allow")
+        if not deny:
+            # The same gate the Claude Code branch carries, for the same reason: four
+            # classes can each name an enforceable mechanism — a generated home, an env
+            # allowlist — and still render a directory that refuses nothing.
+            raise RefusalError(
+                "HARNESS_BINDING_UNRENDERABLE",
+                f"{binding.binding_id}: renders {binding.config_path} with no deny rule "
+                "of any kind. A descriptor whose format writes a boundary must write a "
+                "boundary into it",
+            )
+        manifest = _manifest(files)
+        return Materialized(
+            path=binding.config_path,
+            content=manifest,
+            digest=binding_digest(manifest.encode("utf-8")),
+            rules=deny + allow,
+            deny=deny,
+            allow=allow,
+            files=files,
+            directory=True,
+        )
     if binding.config_format == "claude-code-settings":
         doc = _claude_code_settings(binding, extra_dirs)
         content = json.dumps(doc, indent=2, sort_keys=False) + "\n"
@@ -761,6 +1030,7 @@ def materialize(binding: HarnessBinding, *, extra_dirs: list[str]) -> Materializ
             rules=rules,
             deny=list(perms.get("deny", [])),
             allow=list(perms.get("allow", [])),
+            files=[_rendered(binding.config_path, content)],
         )
     raise RefusalError(
         "HARNESS_BINDING_MALFORMED",
@@ -887,6 +1157,27 @@ def _run_local_probe(
             "parent carried none either, so nothing was dropped and this run measured a "
             "clean parent rather than a working filter"
         )
+    if p.kind == "env-present":
+        # The mirror of `env-absent`, and it exists because on some harnesses the
+        # load-bearing launch control is an ENVIRONMENT VARIABLE rather than a flag:
+        # Codex reads its whole boundary out of `$CODEX_HOME`, so an argv-flag probe
+        # would be checking a surface the boundary does not travel on. Asserting the
+        # SUFFIX rather than the whole value keeps the check meaningful without
+        # putting an absolute host path in a descriptor that ships in git.
+        name = p.sentinel_name or ""
+        value = env.get(name)
+        if not value:
+            return "fail", (
+                f"the constructed environment carries no {name}, so the child would "
+                "fall back to the operator's own harness state instead of the "
+                "generated one this boundary is written into"
+            )
+        if p.path and not value.endswith(p.path):
+            return "fail", (
+                f"{name} does not end with {p.path!r}; the child is pointed at some "
+                "other directory than the one the boundary was materialized into"
+            )
+        return "pass", f"{name} is set and ends with {p.path or '<any>'}"
     if p.kind == "config-absent":
         # `path` is required for this kind by the model, so it is present here.
         if p.path in present_paths:

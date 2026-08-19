@@ -172,29 +172,117 @@ harness_present_paths_json() {  # harness_present_paths_json <descriptors-json>
 # rewritten, which is the failure permissions.md exists to end, one level down. And it
 # is written before the pane opens and re-verified by the supervisor before the child
 # exists, so "we generated a config" and "the child honors it" stay two facts.
-materialize_binding() {  # materialize_binding <plan-json> <worker-root>
-  local plan="$1" root="$2" rel want got dir
+materialize_binding() {  # materialize_binding <plan-json> <worker-root> [run-dir]
+  local plan="$1" worker_root="$2" run_dir="${3:-}" rel want got dir root n i fpath fdigest
   rel=$(printf '%s' "$plan" | jq -r '.binding.config_path // empty')
   [ -n "$rel" ] || return 0          # argv-only boundary: nothing to write
   case "$rel" in
-    /*|*..*) die "refusing to materialize a boundary outside the worker root: $rel" ;;
+    /*|*..*) die "refusing to materialize a boundary outside its declared root: $rel" ;;
+  esac
+  # WHICH root, and it is the descriptor's choice rather than this function's. A
+  # boundary that doubles as the harness's STATE directory holds the ephemeral
+  # credential copy and the session record, so it must not live in the worker's git
+  # tree; `config_root: run` puts it in the supervisor's private run-dir instead.
+  case "$(printf '%s' "$plan" | jq -r '.binding.config_root // "worker"')" in
+    run)
+      root="$run_dir"
+      [ -n "$root" ] || die "this boundary is rooted in the run-dir and no run-dir was given to materialize_binding" ;;
+    *) root="$worker_root" ;;
   esac
   want=$(printf '%s' "$plan" | jq -r '.binding.config_digest')
-  dir=$(dirname "$root/$rel")
-  mkdir -p "$dir" || die "cannot create $dir for the materialized boundary"
-  # `jq -j`, and never `$(jq -r ...)`: the config ends in a newline, command
-  # substitution strips trailing newlines, and `jq -r` adds one back. Either mistake
-  # changes the file's bytes and therefore its digest — which the read-back below
-  # catches, loudly, but only because the digest is taken over EXACT bytes. Writing
-  # straight through is the fix; the read-back is the proof.
-  printf '%s' "$plan" | jq -j '.binding.config_content' > "$root/$rel" \
-    || die "cannot write $root/$rel"
-  chmod 0600 "$root/$rel"
-  # Read back what actually landed. A write that succeeded and a file that says what we
-  # meant are different claims, and only the second one is a boundary.
-  got="sha256:$(sha256_hex < "$root/$rel")"
-  [ "$got" = "$want" ] || die "materialized boundary at $root/$rel hashes to $got, expected $want — the file on disk is not the one that was approved"
-  printf '%s\n' "  boundary: $rel  $want"
+
+  # A directory-shaped boundary is many files under one digest, and `config_content` is
+  # then the MANIFEST rather than any file's bytes. Both shapes are written by the same
+  # loop over `config_files`, which the resolver populates for the single-file case too.
+  n=$(printf '%s' "$plan" | jq '.binding.config_files | length')
+  [ "$n" -gt 0 ] || die "the plan's binding declares $rel and no files to write into it"
+  if [ "$(printf '%s' "$plan" | jq -r '.binding.config_directory // false')" = "true" ]; then
+    # 0700: this directory holds the credential copy the supervisor is about to seed.
+    mkdir -p "$root/$rel" || die "cannot create $root/$rel"
+    chmod 0700 "$root/$rel"
+  fi
+  for ((i = 0; i < n; i++)); do
+    fpath=$(printf '%s' "$plan" | jq -r --argjson i "$i" '.binding.config_files[$i].path')
+    fdigest=$(printf '%s' "$plan" | jq -r --argjson i "$i" '.binding.config_files[$i].digest')
+    case "$fpath" in
+      /*|*..*) die "refusing to write a boundary file outside its own root: $fpath" ;;
+    esac
+    # For a directory boundary the file paths are relative to `rel`; for a single-file
+    # one `rel` IS the path, so joining would double it.
+    if [ "$(printf '%s' "$plan" | jq -r '.binding.config_directory // false')" = "true" ]; then
+      dir=$(dirname "$root/$rel/$fpath")
+      mkdir -p "$dir" || die "cannot create $dir for the materialized boundary"
+      # `jq -j`, and never `$(jq -r ...)`: the content ends in a newline, command
+      # substitution strips trailing newlines, and `jq -r` adds one back. Either
+      # mistake changes the file's bytes and therefore its digest — which the
+      # read-back below catches, loudly, but only because the digest is taken over
+      # EXACT bytes. Writing straight through is the fix; the read-back is the proof.
+      printf '%s' "$plan" | jq -j --argjson i "$i" '.binding.config_files[$i].content' \
+        > "$root/$rel/$fpath" || die "cannot write $root/$rel/$fpath"
+      chmod 0600 "$root/$rel/$fpath"
+      got="sha256:$(sha256_hex < "$root/$rel/$fpath")"
+    else
+      dir=$(dirname "$root/$fpath")
+      mkdir -p "$dir" || die "cannot create $dir for the materialized boundary"
+      printf '%s' "$plan" | jq -j --argjson i "$i" '.binding.config_files[$i].content' \
+        > "$root/$fpath" || die "cannot write $root/$fpath"
+      chmod 0600 "$root/$fpath"
+      got="sha256:$(sha256_hex < "$root/$fpath")"
+    fi
+    [ "$got" = "$fdigest" ] \
+      || die "materialized boundary file $fpath hashes to $got, expected $fdigest — the bytes on disk are not the ones that were approved"
+  done
+  printf '%s\n' "  boundary: $rel  $want  ($n file(s) under $root)"
+}
+
+# --- the ephemeral subscription credential, for a harness whose home IS its boundary ---
+#
+# Codex reads its subscription credential out of `$CODEX_HOME/auth.json`, the same
+# directory that carries the permission profile — so a generated home that excludes the
+# operator's prior threads, memory, plugins and configuration also excludes the login,
+# and the harness answers 401. The pattern this productionizes (taskbench PR #55,
+# proven 2026-08-14) is the narrowest thing that works: copy THOSE BYTES and nothing
+# else, mode 0600 inside a 0700 directory, never read them, never print them, and
+# remove the directory on every terminal path.
+#
+# The launcher may copy the bytes; the model and its tools may not read them. That is
+# not a promise here — the rendered profile denies the whole directory at the syscall,
+# and `codex-p2-auth-denied` is the probe that proves it.
+: "${CODEX_AUTH_SOURCE:=$HOME/.codex/auth.json}"
+
+seed_codex_auth() {  # seed_codex_auth <codex-home>
+  local home="$1" src="$CODEX_AUTH_SOURCE"
+  [ -n "$home" ] || die "seed_codex_auth needs the generated home"
+  [ -f "$src" ] || die "no Codex credential at $src
+  The subscription login is an OPERATOR act: run 'codex login' once on this host. This
+  launcher copies those bytes into a per-execution home and never creates them, and
+  there is deliberately no automated login path."
+  [ -d "$home" ] || die "the generated Codex home does not exist: $home"
+  chmod 0700 "$home"
+  # `cp` then `chmod`, in that order and with no intervening read. The value is never
+  # captured into a shell variable, so it cannot reach a trace, a log, or an argv.
+  cp "$src" "$home/auth.json" || die "cannot seed the Codex credential into $home"
+  chmod 0600 "$home/auth.json"
+}
+
+# Remove the credential and the generated home, preserving ONLY the non-secret evidence
+# the record needs. Codex writes its session rollout under the home it is given, and
+# that rollout is the only place it states which model it ran and what it consumed —
+# deleting the home wholesale threw that away and left executions unattributable, which
+# is the defect PR #55 hit and fixed. So the rollout is copied out FIRST.
+#
+# Idempotent, and safe to call when the home was never created.
+clean_codex_home() {  # clean_codex_home <codex-home> <run-dir>
+  local home="$1" run_dir="$2" rollout
+  [ -n "$home" ] || return 0
+  if [ -n "$run_dir" ] && [ -d "$home/sessions" ]; then
+    rollout=$(find "$home/sessions" -name 'rollout-*.jsonl' -type f 2>/dev/null | head -1 || true)
+    if [ -n "$rollout" ] && [ -f "$rollout" ]; then
+      cp "$rollout" "$run_dir/codex-rollout.jsonl" 2>/dev/null || true
+      chmod 0600 "$run_dir/codex-rollout.jsonl" 2>/dev/null || true
+    fi
+  fi
+  rm -rf "$home"
 }
 
 # Read a harness version out of a `--version` probe's combined output.

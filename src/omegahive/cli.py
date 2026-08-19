@@ -644,6 +644,7 @@ def harness_resolve_cmd(
             kickoff=kickoff,
             cwd=req.get("cwd", ""),
             code_root=req.get("code_root", ""),
+            run_dir=req.get("run_dir", ""),
             session_id=req.get("session_id", ""),
             parent_env=req.get("env") or {},
             present_paths=frozenset(req.get("present_paths") or []),
@@ -657,6 +658,40 @@ def harness_resolve_cmd(
         print(preflight_text(doc))
     else:
         print(json.dumps(doc, sort_keys=True))
+
+
+@app.command("harness-probe-score")
+def harness_probe_score_cmd() -> None:
+    """Score one harness probe against the harness's own records, read from stdin.
+
+    Reads `{kind, command, expect_output, stream, rollout}` and prints
+    `{state, detail, observed}`. It exists as a command rather than as jq in the probe
+    runner because the judgement is not one comparison: Codex refuses at two layers
+    with two different signatures, "the model never tried" is a third outcome that must
+    not read as either, and all three need tests that can fail. See
+    `omegahive.harness.probescore` for the reasoning.
+    """
+    import sys
+
+    from .harness.probescore import score
+
+    try:
+        req = json.loads(sys.stdin.read())
+    except json.JSONDecodeError as exc:
+        print(json.dumps({"state": "fail", "detail": f"probe request is not JSON: {exc}"}))
+        raise typer.Exit(code=2) from exc
+    print(
+        json.dumps(
+            score(
+                kind=req.get("kind", ""),
+                command=req.get("command", ""),
+                expect_output=req.get("expect_output") or None,
+                stream=req.get("stream", ""),
+                rollout=req.get("rollout", ""),
+            ),
+            sort_keys=True,
+        )
+    )
 
 
 @app.command("harness-materialize")
@@ -673,6 +708,7 @@ def harness_materialize_cmd() -> None:
     import sys
 
     from .harness.bindings import (
+        MaterializeContext,
         check_coverage,
         load_binding_descriptor,
         materialize,
@@ -689,7 +725,18 @@ def harness_materialize_cmd() -> None:
     try:
         binding = load_binding_descriptor(raw)
         check_coverage(binding)
-        mat = materialize(binding, extra_dirs=list(req.get("extra_dirs") or []))
+        ctx = MaterializeContext(
+            extra_dirs=list(req.get("extra_dirs") or []),
+            worker_root=req.get("worker_root") or "",
+            run_dir=req.get("run_dir") or "",
+        )
+        mat = materialize(binding, context=ctx)
+        # The CANONICAL rendering — no per-execution paths at all — is what
+        # `verification.config_digest` pins and `check_status` re-derives, so the probe
+        # runner is handed it alongside the one it will actually place. Without it a
+        # runner that legitimately needs roots (two writable trees cannot be probed
+        # without them) would have to guess which number belongs in the evidence.
+        canonical = materialize(binding, context=MaterializeContext())
     except RefusalError as exc:
         print(json.dumps({"ok": False, "code": exc.code, "message": exc.message}))
         raise typer.Exit(code=1) from exc
@@ -704,6 +751,11 @@ def harness_materialize_cmd() -> None:
                 "config_path": mat.path,
                 "config_content": mat.content,
                 "config_digest": mat.digest,
+                "canonical_config_digest": canonical.digest,
+                "config_root": binding.config_root,
+                "config_directory": mat.directory,
+                "config_files": [f.model_dump(mode="json") for f in mat.files],
+                "subcommand": binding.subcommand,
                 "required_flags": binding.required_flags,
                 "probes": [
                     {"policy_class": c.policy_class, **p.model_dump(mode="json")}
