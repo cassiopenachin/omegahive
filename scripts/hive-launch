@@ -595,19 +595,47 @@ half_launch_recovery() {  # half_launch_recovery <what-failed>
     echo "  Do NOT re-run hive-launch: the task is owned now, so it will refuse."
     echo "  Finish it by hand (WORKER.md section Launch) — either is complete:"
     echo
-    if [ -n "$kf" ]; then
+    # THE RECOVERY COMMAND IS THE PANE COMMAND, not a raw worker invocation. On the
+    # BOUND path the pane runs `hive-supervise <run-dir>`, which is what materializes
+    # nothing but verifies everything: the boundary digest against the bytes on disk,
+    # the argv against the descriptor, the harness version against the evidence, the
+    # generated harness home seeded and reaped, and the two execution facts. Printing
+    # `$HIVE_WORKER_CMD` here instead — which this function did — hands the operator a
+    # command that starts the SAME worker with NONE of that, on a task the board has
+    # already signed for. On Codex it would also fall back to the operator's own
+    # harness home, credential and configuration included. So the bound path prints one
+    # command and deliberately offers no bare-terminal fallback: if the boundary cannot
+    # be applied, the correct outcome is that the session does not start.
+    if [ -n "$PLAN_JSON" ]; then
+      echo "  (a) retry just the pane — it runs the SUPERVISOR, which applies the approved"
+      echo "      boundary and records the execution facts:"
+      echo "        tmux new-window -a -t '$SESSION_T:{end}' -n '$TASK' -c '$WS_ROOT' \\"
+      echo "          '$SCRIPT_DIR/hive-supervise \"$EXEC_DIR\"'"
+      echo "      If the session itself is gone ('can't find session'), create it instead:"
+      echo "        tmux new-session -d -s '$HIVE_TMUX_SESSION' -n '$TASK' -c '$WS_ROOT' \\"
+      echo "          '$SCRIPT_DIR/hive-supervise \"$EXEC_DIR\"'"
+      echo "  (b) if tmux itself is the problem, run the SAME command in any terminal:"
+      echo "        $SCRIPT_DIR/hive-supervise \"$EXEC_DIR\""
+      echo "      There is deliberately no third option. Starting the harness directly"
+      echo "      would run this signed task outside the boundary the operator approved,"
+      echo "      and on a generated-home harness it would inherit the operator's own."
+      echo "      The kickoff is already inside the plan; you do not paste it."
+    elif [ -n "$kf" ]; then
       echo "  (a) retry just the pane:"
       echo "        tmux new-window -a -t '$SESSION_T:{end}' -n '$TASK' -c '$WS_ROOT' \\"
       echo "          -e HIVE_KICKOFF=\"\$(cat '$kf')\" '$HIVE_WORKER_CMD \"\$HIVE_KICKOFF\"'"
       echo "      If the session itself is gone ('can't find session'), create it instead:"
       echo "        tmux new-session -d -s '$HIVE_TMUX_SESSION' -n '$TASK' -c '$WS_ROOT' \\"
       echo "          -e HIVE_KICKOFF=\"\$(cat '$kf')\" '$HIVE_WORKER_CMD \"\$HIVE_KICKOFF\"'"
-    fi
-    echo "  (b) fallback if tmux itself is the problem — run the session in any terminal and"
-    echo "      paste the kickoff below as its first message:"
-    echo "        cd '$WS_ROOT' && $HIVE_WORKER_CMD"
-    if [ -n "$kf" ]; then
+      echo "  (b) fallback if tmux itself is the problem — run the session in any terminal and"
+      echo "      paste the kickoff below as its first message:"
+      echo "        cd '$WS_ROOT' && $HIVE_WORKER_CMD"
       echo "      Prefer (a): the pane name is the task registry, and (b) leaves no pane."
+      echo "      NOTE this is the LEGACY unbound path — there is no boundary on it at all."
+    else
+      echo "  (b) fallback if tmux itself is the problem — run the session in any terminal and"
+      echo "      paste the kickoff below as its first message:"
+      echo "        cd '$WS_ROOT' && $HIVE_WORKER_CMD"
     fi
     echo
     echo "  If you would rather abandon this seat, recover per RUNBOOK 'Dead worker recovery'"

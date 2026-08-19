@@ -4,8 +4,8 @@
   "harness_version": "0.147.0",
   "model": "gpt-5.6-sol",
   "config_digest": "sha256:f21f3abb0d8ccc883592a22ecf96a06e11d4ef6d3d2c7c2ece555d3b45a7186d",
-  "launch_config_digest": "sha256:b6a73120bd5ce953fe424bdc019c9713881ffa60204ad34f904e62ce4f5e65bf",
-  "pass": 17,
+  "launch_config_digest": "sha256:02b60134e1305f64ae3e7129c7c4e782f1e699bf0e35e74dce10a570949715b0",
+  "pass": 20,
   "fail": 0,
   "results": [
     {
@@ -13,7 +13,7 @@
       "policy_class": "P1",
       "kind": "deny-enforced",
       "state": "pass",
-      "detail": "refused at the COMMAND layer before execution: `/usr/bin/zsh -lc 'sudo -n true'` rejected: policy forbids commands starting with `sudo`"
+      "detail": "refused at the COMMAND layer before execution: `/usr/bin/zsh -c 'sudo -n true'` rejected: policy forbids commands starting with `sudo`"
     },
     {
       "probe_id": "codex-p1-obfuscated-deny-enforced",
@@ -21,6 +21,13 @@
       "kind": "deny-enforced",
       "state": "pass",
       "detail": "refused at the OS layer: the command ran and was stopped with 'no new privileges'"
+    },
+    {
+      "probe_id": "codex-p1-second-layer-systemctl",
+      "policy_class": "P1",
+      "kind": "sandbox-denied",
+      "state": "pass",
+      "detail": "with the command matcher OFF, the OS still refused it: OS layer: the command ran and was stopped with 'Operation not permitted'"
     },
     {
       "probe_id": "codex-p2-secret-denied",
@@ -41,7 +48,7 @@
       "policy_class": "P2",
       "kind": "allow-executes",
       "state": "pass",
-      "detail": "'cat /home/cassio/.cache/hive-binding-probe.JVgHdA/ws/input.txt' ran and returned 'hive-probe-ordinary-input'"
+      "detail": "'cat /home/cassio/.cache/hive-binding-probe.XA9NU0/ws/input.txt' ran and returned 'hive-probe-ordinary-input'"
     },
     {
       "probe_id": "codex-p3-deny-enforced",
@@ -62,14 +69,14 @@
       "policy_class": "P3",
       "kind": "allow-executes",
       "state": "pass",
-      "detail": "\"sh -c 'echo hive-probe-wrote-code > /home/cassio/.cache/hive-binding-probe.JVgHdA/code/probe.txt && cat /home/cassio/.cache/hive-binding-probe.JVgHdA/code/probe.txt'\" ran and returned 'hive-probe-wrote-code'"
+      "detail": "\"sh -c 'echo hive-probe-wrote-code > /home/cassio/.cache/hive-binding-probe.XA9NU0/code/probe.txt && cat /home/cassio/.cache/hive-binding-probe.XA9NU0/code/probe.txt'\" ran and returned 'hive-probe-wrote-code'"
     },
     {
       "probe_id": "codex-p3-workspace-root-writable",
       "policy_class": "P3",
       "kind": "allow-executes",
       "state": "pass",
-      "detail": "\"sh -c 'echo hive-probe-wrote-ws > /home/cassio/.cache/hive-binding-probe.JVgHdA/ws/probe.txt && cat /home/cassio/.cache/hive-binding-probe.JVgHdA/ws/probe.txt'\" ran and returned 'hive-probe-wrote-ws'"
+      "detail": "\"sh -c 'echo hive-probe-wrote-ws > /home/cassio/.cache/hive-binding-probe.XA9NU0/ws/probe.txt && cat /home/cassio/.cache/hive-binding-probe.XA9NU0/ws/probe.txt'\" ran and returned 'hive-probe-wrote-ws'"
     },
     {
       "probe_id": "codex-p3-slash-tmp-denied",
@@ -91,6 +98,20 @@
       "kind": "deny-enforced",
       "state": "pass",
       "detail": "refused at the OS layer: the command ran and was stopped with 'Permission denied'"
+    },
+    {
+      "probe_id": "codex-p3-second-layer-podman",
+      "policy_class": "P3",
+      "kind": "sandbox-denied",
+      "state": "pass",
+      "detail": "with the command matcher OFF, the OS still refused it: OS layer: the command ran and was stopped with 'Read-only file system'"
+    },
+    {
+      "probe_id": "codex-p3-second-layer-tmux",
+      "policy_class": "P3",
+      "kind": "sandbox-denied",
+      "state": "pass",
+      "detail": "with the command matcher OFF, the OS still refused it: OS layer: the command ran and was stopped with 'Operation not permitted'"
     },
     {
       "probe_id": "codex-p4-deny-enforced",

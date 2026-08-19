@@ -81,7 +81,7 @@ Each is a distinct remedy, so each has a distinct code.
 | P2 secrets | deny `Read(**/*.env)`, `Read(**/.env.*)`, `Read(~/.ssh/**)`, `Bash(*compose*config*)`; env allowlist. **The `Read(...)` rules are materialized and rule-present but never enforcement-tested** — see the residual | **an OS-level read denial**: the permission profile's `filesystem` table denies nine credential paths plus the `.env` family inside every writable root, and a deny beats a containing write grant. Enforcement-tested against a planted canary, with a loosening control |
 | P3 durable stack | deny podman stop/kill/rm/rmi/restart/prune, the compose destructive verbs, force-push in three spellings, **all `tmux kill-*`**, and writes to the boundary file itself | execpolicy rules for podman/docker/tmux destructive verbs, **plus** the canonical checkout and the git hub denied at the syscall, **plus** exactly two writable roots and nothing else |
 | P4 raw fetch | deny `Bash(*curl *)`, `Bash(*wget *)`; allow the development tools | execpolicy forbidding curl/wget/nc, allowing git/gh/uv/python3 — **and network egress off entirely** (stricter than the class asks; see the cost below) |
-| Evidence | `docs/evidence/harness_binding_probe_claude_code_2026_08_14.md` | `docs/evidence/harness_binding_probe_codex_2026_08_19.md` — PASS=17 FAIL=0 |
+| Evidence | `docs/evidence/harness_binding_probe_claude_code_2026_08_14.md` | `docs/evidence/harness_binding_probe_codex_2026_08_19.md` — PASS=20 FAIL=0 |
 
 ### The Codex row: the boundary is the generated home, not the argv
 
@@ -140,10 +140,18 @@ Codex's own documented behaviour — segments using substitution or an env-var p
 not matched — and this guide carries the evidence rather than the quotation. **What held
 anyway** is the second layer: the kernel refused the escalation (`no new privileges`),
 the sandbox still denied every path outside the two roots, and egress was still off.
-Read every command-layer control as a first line against the ordinary case, and the OS
-as the control that survives a deliberate one. Both obfuscated forms are scored probes,
-so a build that drops the kernel flag turns the class red on the run that would
-otherwise promote it.
+**So the question is what holds when it IS bypassed**, and that is measured per class
+rather than argued. `codex sandbox` runs a command under the same rendered profile with
+no model call and no execpolicy — exactly what a bypassed matcher looks like — so the
+second layer is deterministic and free to score every run: `systemctl` cannot reach the
+system bus, `podman` cannot initialize (its runtime state is read-only), `tmux` cannot
+connect to its socket, and all three work outside the sandbox. Read every command-layer
+control as a first line against the ordinary case, and the OS as the control that
+survives a deliberate one.
+
+**The one P3 effect with no second layer under it** is an act that needs no socket and
+lives inside a writable root — `git push --force` from the worker's own clone. That is
+in P3's residual rather than averaged into the rest.
 
 **Three refusal signatures, and all are real.** The command layer (execpolicy) refuses
 before anything executes and leaves no execution record, saying so on stderr as
@@ -276,7 +284,7 @@ One command, one driver per harness, dispatched on the descriptor's own `harness
 field — a runner that guessed a second vendor's non-interactive interface would report a
 boundary it never exercised. The Claude Code driver runs six real non-interactive
 sessions in a disposable `mktemp -d` root, roughly **US$0.08** on Haiku. The Codex
-driver runs seventeen `codex exec` sessions in a disposable bundle under `$HOME` (Codex
+driver runs eighteen `codex exec` sessions plus three free `sandbox-denied` checks in a disposable bundle under `$HOME` (Codex
 refuses to build its sandbox when `CODEX_HOME` sits under a temporary directory), seeds
 and then removes the credential, and exposes no dollar figure — its cost is window
 weight on the subscription. This is what a descriptor's `status: proven` rests on, and both halves of that

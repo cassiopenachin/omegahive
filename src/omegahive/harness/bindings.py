@@ -113,7 +113,23 @@ _DENY_BEARING_MECHANISMS = frozenset({"settings-deny", "filesystem-deny"})
 LOCAL_PROBE_KINDS = frozenset(
     {"rule-present", "argv-flag", "env-absent", "config-absent", "env-present"}
 )
-HARNESS_PROBE_KINDS = frozenset({"deny-enforced", "allow-executes", "source-gated"})
+HARNESS_PROBE_KINDS = frozenset(
+    {
+        "deny-enforced",
+        "allow-executes",
+        "source-gated",
+        # THE SECOND LAYER, measured with the first one deliberately switched off.
+        # A `deny-enforced` probe answers "does the command matcher refuse this". It
+        # cannot answer the question that matters once the matcher is known to be
+        # bypassable in one step: if a worker DOES get the command through, does the
+        # effect still fail? `sandbox-denied` runs the command under the harness's own
+        # sandbox with no model call and no command policy — which is exactly what
+        # "the matcher was bypassed" looks like — and requires that the OS refuse it
+        # anyway. It is deterministic and free, so it costs nothing to keep and a
+        # future build that loosens the sandbox turns it red.
+        "sandbox-denied",
+    }
+)
 PROBE_KINDS = LOCAL_PROBE_KINDS | HARNESS_PROBE_KINDS
 
 _ID_SHAPE = re.compile(r"[A-Za-z0-9._-]{1,64}")
@@ -233,6 +249,7 @@ class Probe(BaseModel):
             "deny-enforced": ("command", self.command),
             "allow-executes": ("command", self.command),
             "source-gated": ("command", self.command),
+            "sandbox-denied": ("command", self.command),
             # Without a variable name this probe would assert over nothing at all —
             # the same vacuous-pass shape every other entry here exists to refuse.
             "env-present": ("sentinel_name", self.sentinel_name),

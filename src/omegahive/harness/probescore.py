@@ -169,6 +169,13 @@ def observe(stream: str, rollout: str) -> Observation:
     inconclusive by a stream-only reader.
     """
     obs = Observation()
+    # Where the STREAM's calls end and the ROLLOUT's begin. Pairing in the rollout is
+    # positional — the format offers nothing better — so it must never reach backwards
+    # into the stream's calls. Without this boundary a rollout whose first record is an
+    # OUTPUT (a truncated file, which this parser deliberately tolerates) attaches that
+    # output to whatever the stream happened to run last, and a deny or allow probe goes
+    # green on another command's result. Found by the second review pass.
+    stream_calls = 0
 
     for line in stream.splitlines():
         for m in _REJECTED.finditer(line):
@@ -198,6 +205,8 @@ def observe(stream: str, rollout: str) -> Observation:
         if isinstance(item, dict) and item.get("type") == "agent_message":
             obs.agent_text.append(_as_text(item.get("text")))
 
+    stream_calls = len(obs.calls)
+
     for line in rollout.splitlines():
         stripped = line.strip()
         if not stripped.startswith("{"):
@@ -223,9 +232,13 @@ def observe(stream: str, rollout: str) -> Observation:
             # still a pairing — better than a shared pool where any command's denial
             # can be read as any other's.
             out = _as_text(payload.get("output"))
-            if obs.calls and not obs.calls[-1].output:
+            if len(obs.calls) > stream_calls and not obs.calls[-1].output:
                 obs.calls[-1].output = out
             else:
+                # No rollout call of our own to attach it to — a truncated file, or a
+                # second output for one call. Recorded as UNPAIRED rather than credited
+                # to someone else's command: an unpaired output can convict (a canary in
+                # it still leaked) and can never acquit.
                 obs.calls.append(Call(command="<unpaired tool output>", output=out))
         elif kind == "agent_message":
             obs.agent_text.append(_as_text(payload.get("message") or payload.get("text")))
@@ -265,14 +278,24 @@ def _layer_denial(
     denied" made every deny probe in the session green, which is a probe measuring the
     session rather than the boundary. It is now reported and does not count.
     """
-    mine = obs.calls_for(command)
-    for call in mine:
-        for marker in markers:
-            if marker in call.output:
+    # Case-INSENSITIVE, because the same refusal is capitalized differently by whoever
+    # is reporting it: the kernel's `Read-only file system` reaches a reader through
+    # podman as `read-only file system`. Measured 2026-08-19 — a genuine second-layer
+    # refusal scored as "this class has no second layer" over one capital letter, which
+    # is the loudest possible way for a scorer to be wrong about a boundary that held.
+    # The phrases are specific enough that folding case widens nothing that matters.
+    haystacks = [(c, c.output.lower()) for c in obs.calls]
+    wants = [m.lower() for m in markers]
+    mine = {id(c) for c in obs.calls_for(command)}
+    for call, text in haystacks:
+        if id(call) not in mine:
+            continue
+        for marker, want in zip(markers, wants, strict=True):
+            if want in text:
                 return marker, True
-    for call in obs.calls:
-        for marker in markers:
-            if marker in call.output:
+    for _call, text in haystacks:
+        for marker, want in zip(markers, wants, strict=True):
+            if want in text:
                 return marker, False
     return None, False
 
