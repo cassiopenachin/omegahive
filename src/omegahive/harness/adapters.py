@@ -25,6 +25,7 @@ unrecognized harness name re-enters as an arbitrary shell string.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
@@ -50,6 +51,11 @@ BASE_ENV_ALLOWLIST = frozenset(
 # braces over the allowlist: an adapter author adding a variable by name should not be
 # able to reintroduce a credential by accident.
 _CREDENTIAL_MARKERS = ("API_KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL")
+
+# `2.1.232`, `0.147.0`, `9.9.9` — a digit, a dot, a digit. Deliberately narrower than
+# "starts with a digit", because the point is to pick the version out of a line that
+# also carries a product name.
+_VERSION_SHAPED = re.compile(r"^[0-9]+\.[0-9]")
 
 
 @dataclass(frozen=True)
@@ -163,29 +169,40 @@ class Adapter:
         return [self.executable, "--version"]
 
     def parse_version(self, output: str) -> str:
-        """The first token that looks like a version, else the first token at all.
+        """The first version-SHAPED token anywhere, else a digit-leading one, else the
+        first token at all.
 
-        `claude --version` prints `2.1.231 (Claude Code)`; taking the first token keeps
-        the recorded value a version rather than a product banner.
+        Two harnesses put it in two places. `claude --version` prints
+        `2.1.231 (Claude Code)` — the version is field one. `codex --version` prints
+        `codex-cli 0.147.0` — the version is field two, and a rule that only looked at
+        field one recorded `codex-cli` as the harness version. Measured 2026-08-19, and
+        it is not cosmetic: that value is what `status: proven` is tied to and what the
+        supervisor compares series against before the child exists, so a product name
+        recorded there makes every launch look like a series change.
 
-        The digit preference is not cosmetic. The probe merges stderr so that a harness
-        which fails to start can say why — which means an unrelated warning
+        The digit preference is not cosmetic either. The probe merges stderr so that a
+        harness which fails to start can say why — which means an unrelated warning
         (`bash: warning: setlocale: ...`) can land on the first line, and the naive rule
-        records that warning's first word as the harness version. Observed 2026-08-14 on
-        a real preflight, which reported `harness: sh:`. A version fact naming a shell is
-        worse than no fact. The shell twin is `harness_version_from` in hive-common.sh.
+        records that warning's first word as the version. Observed 2026-08-14 on a real
+        preflight, which reported `harness: sh:`. A version fact naming a shell is worse
+        than no fact. The shell twin is `harness_version_from` in hive-common.sh, and a
+        test holds the two implementations together.
         """
         first = ""
+        digit_first = ""
         for raw in output.splitlines():
             line = raw.strip()
             if not line:
                 continue
-            token = line.split()[0]
-            if token[:1].isdigit():
-                return token
+            tokens = line.split()
+            for token in tokens:
+                if _VERSION_SHAPED.match(token):
+                    return token
+            if not digit_first and tokens[0][:1].isdigit():
+                digit_first = tokens[0]
             if not first:
-                first = token
-        return first
+                first = tokens[0]
+        return digit_first or first
 
 
 class ClaudeCodeAdapter(Adapter):

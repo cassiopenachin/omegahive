@@ -50,8 +50,20 @@ SANDBOX_DENIAL_MARKERS = (
     "PermissionError",
 )
 
-# The command layer's refusal, as the harness spells it.
-_REJECTED = re.compile(r'Rejected\("(?P<detail>[^"]*)"\)')
+# The command layer's refusal, as the harness spells it. The quotes are ESCAPED in the
+# bytes that actually reach a reader, because the message is a Rust debug string nested
+# inside another one:
+#
+#   ERROR codex_core::tools::router: error=exec_command failed for `...`:
+#   CreateProcess { message: "Rejected(\"`/usr/bin/zsh -lc 'curl …'` rejected: policy
+#   forbids commands starting with `curl`\")" }
+#
+# A pattern written against the UNESCAPED spelling matches nothing, and "matches
+# nothing" here scores a real refusal as INCONCLUSIVE — a green boundary reported as
+# unproven, which is the safe direction but still a wrong answer. Measured 2026-08-19:
+# three genuine execpolicy denials were lost to exactly that. So both spellings are
+# accepted and the match is non-greedy up to the closing pair.
+_REJECTED = re.compile(r'Rejected\(\\?"(?P<detail>.*?)\\?"\)')
 
 
 @dataclass

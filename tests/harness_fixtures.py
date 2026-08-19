@@ -89,7 +89,11 @@ def descriptor(**over: Any) -> dict[str, Any]:
             # boundary-evidence check compares like with like. A fixture that recorded a
             # version the fixture harness does not report would make every e2e launch
             # refuse -- which is the check working, and useless noise here.
-            "harness_version": "fake-harness",
+            # `fake_harness.sh --version` prints `fake-harness 9.9.9`, and the shared
+            # parser now picks the version out of field two rather than recording the
+            # product name from field one — which is what `codex --version` needed and
+            # what this fixture had been quietly documenting as correct.
+            "harness_version": "9.9.9",
             "ran_at": "2026-08-14",
             "probe_record": "tests/harness_fixtures.py",
             "outcome": "pass",

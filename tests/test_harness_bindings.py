@@ -34,8 +34,10 @@ from omegahive.harness.adapters import ClaudeCodeAdapter, LaunchContext
 from omegahive.harness.bindings import (
     POLICY_CLASSES,
     HarnessBinding,
+    MaterializeContext,
     binding_digest,
     check_coverage,
+    check_status,
     load_binding_descriptor,
     materialize,
     run_local_probes,
@@ -99,6 +101,7 @@ def plan(*, routes=None, descriptors=None, env=None, present=frozenset()):
         kickoff=KICKOFF,
         cwd="/srv/work/w1/hive",
         code_root="/srv/work/w1/omegahive",
+        run_dir="/srv/work/w1/execution",
         session_id="0f9c9a6e-0000-4000-8000-000000000001",
         parent_env=env if env is not None else dict(PARENT_ENV),
         present_paths=present,
@@ -251,21 +254,58 @@ def test_a_proven_claim_with_no_evidence_refuses():
     assert exc.value.code == "HARNESS_BINDING_UNPROVEN"
 
 
-def test_the_shipped_codex_descriptor_is_declared_and_therefore_refuses():
-    """Codex is not installed on this deployment, so its rows are written and its route
-    does not launch. Filling the permissions.md rows is not the same as clearing them."""
-    b = load_binding_descriptor(shipped("codex.v1"))
-    assert b.status == "declared"
-    assert b.verification is None
+def test_the_shipped_codex_descriptor_is_proven_against_the_rules_it_renders():
+    """`proven` is tied to bytes, not to a word.
+
+    The claim and its evidence must travel together AND describe the same rules: the
+    verification block names the canonical config digest, and `check_status` re-derives
+    it. A rule edited after the probe run keeps a passing record that no longer
+    describes the descriptor, and this is what refuses it.
+    """
+    raw = shipped("codex.v1")
+    b = load_binding_descriptor(raw)
+    assert b.status == "proven"
+    assert b.verification is not None
+    assert b.verification.outcome == "pass"
+    assert b.verification.harness_version == "0.147.0"
+    assert (REPO / b.verification.probe_record).exists(), (
+        "the record a proven status points at must be a file someone can read"
+    )
+    assert b.verification.config_digest == materialize(
+        b, context=MaterializeContext()
+    ).digest
+    # And the route it backs now launches, which is the whole delta of this order.
     r = route(
         harness="codex",
         adapter="codex",
         binding_id="codex.v1",
-        binding_digest=binding_digest(shipped("codex.v1")),
+        binding_digest=binding_digest(raw),
     )
+    resolved = plan(routes=[r], descriptors=shipped_map())
+    assert resolved.launchable is True
+
+
+def test_a_rule_edited_after_the_probe_run_invalidates_its_own_evidence():
+    """The drift gate, on the descriptor this order promoted.
+
+    Without it `proven` survives an edit to the rules it was proven over: the catalog
+    re-pin that edit forces is an operator pasting a number, which does not ask whether
+    anything was re-probed.
+    """
+    doc = json.loads(shipped("codex.v1"))
+    for c in doc["classes"]:
+        for m in c["mechanisms"]:
+            if m["kind"] == "settings-deny" and m["rules"]:
+                m["rules"].append('prefix_rule(pattern = ["nmap"], decision = "forbidden")')
+                break
+        else:
+            continue
+        break
+    b = load_binding_descriptor(json.dumps(doc).encode())
     with pytest.raises(RefusalError) as exc:
-        plan(routes=[r], descriptors=shipped_map())
+        check_status(b)
     assert exc.value.code == "HARNESS_BINDING_UNPROVEN"
+    assert "no longer this" in exc.value.message
 
 
 def test_the_shipped_codex_descriptor_names_its_p2_gap_rather_than_implying_coverage():
@@ -789,11 +829,15 @@ def test_the_report_refuses_the_example_catalogs_api_routes_for_their_own_reason
     by = {r["route"]: r for r in rows}
     assert by["claude-opus-subscription"]["state"] == "launchable"
     assert by["claude-haiku-subscription"]["state"] == "launchable"
-    assert by["codex-terra-subscription"]["refusal_code"] == "ROUTE_DISABLED"
-    # Both api rows name codex.v1, which is declared, so the unproven boundary is the
-    # refusal an operator meets first — before the credential question is even asked.
-    assert by["example-api-route"]["refusal_code"] == "HARNESS_BINDING_UNPROVEN"
-    assert by["example-api-route-broker"]["refusal_code"] == "HARNESS_BINDING_UNPROVEN"
+    # The Codex subscription rows became launchable on 2026-08-19, when codex.v1 was
+    # promoted against a real authenticated probe run. Before that they refused on the
+    # boundary and the credential seam below was unreachable from the shipped example.
+    assert by["codex-terra-subscription"]["state"] == "launchable"
+    assert by["codex-sol-subscription"]["state"] == "launchable"
+    # The two api rows now refuse for their OWN two reasons rather than both hiding
+    # behind an unproven boundary — which is what this row was always meant to show.
+    assert by["example-api-route"]["refusal_code"] == "ROUTE_CREDENTIAL_MODE"
+    assert by["example-api-route-broker"]["refusal_code"] == "BROKER_NOT_IMPLEMENTED"
 
 
 def test_the_report_shows_the_credential_refusals_when_the_boundary_is_proven():
@@ -926,16 +970,147 @@ def test_rules_with_no_renderer_refuse_rather_than_materializing_nothing():
     assert exc.value.code == "HARNESS_BINDING_UNRENDERABLE"
 
 
-def test_the_shipped_codex_descriptor_is_this_shape_deliberately():
-    """Its Starlark rules are recorded for whoever builds the renderer, and this refusal
-    is what stops them reading as something in force. It refuses earlier than this in a
-    launch — `check_status` fires first — so both messages are reachable and neither is
-    the only guard."""
+def test_the_shipped_codex_descriptor_binds_through_its_generated_home():
+    """The whole boundary is the generated home, so the argv must carry NO sandbox flag.
+
+    This is the assertion that would have caught the defect measured on 2026-08-19:
+    `--sandbox workspace-write` on the command line OVERRIDES the permission profile,
+    so a descriptor that required it would render a boundary and then discard it. It is
+    a forbidden token here, not a required flag, and `required_flags` is empty because
+    on this harness there is genuinely nothing the argv contributes.
+    """
     b = load_binding_descriptor(shipped("codex.v1"))
-    assert b.config_format == "none"
+    assert b.config_format == "codex-home"
+    assert b.config_root == "run", (
+        "the home holds the ephemeral credential; it never lives in the worker's git tree"
+    )
+    assert b.required_flags == []
+    for token in ("--sandbox", "--ignore-user-config", "--ignore-rules"):
+        assert token in b.forbidden_argv_tokens, f"{token} discards the rendered boundary"
+    # The mode check must not silently pass on a half-declared mode: the two coherent
+    # states are "a mode flag with a value" and "no mode flag at all".
+    assert b.command_mode_flag is None
+    assert b.command_mode is None
+
+
+def test_the_codex_home_renders_two_files_under_one_manifest_digest():
+    """One digest over a tree, and it is the manifest — not any one file's bytes.
+
+    Codex binds commands and paths through two different mechanisms living in two
+    different files, so the digest has to pin a set. It pins the manifest, which
+    carries each file's own digest, so a manifest match means every file matches.
+    """
+    b = load_binding_descriptor(shipped("codex.v1"))
+    mat = materialize(b, context=MaterializeContext())
+    assert mat.directory is True
+    assert sorted(f.path for f in mat.files) == ["config.toml", "rules/hive.rules"]
+    for f in mat.files:
+        assert f.digest in mat.content, "the manifest must name every file's own digest"
+    rules = next(f for f in mat.files if f.path == "rules/hive.rules").content
+    profile = next(f for f in mat.files if f.path == "config.toml").content
+    assert 'prefix_rule(pattern = ["sudo"], decision = "forbidden")' in rules
+    assert 'default_permissions = "hive-worker"' in profile
+
+
+def test_the_codex_profile_names_exactly_the_two_intended_write_roots():
+    """No third broad root, and the run-dir is denied rather than merely unwritable."""
+    b = load_binding_descriptor(shipped("codex.v1"))
+    mat = materialize(
+        b,
+        context=MaterializeContext(
+            worker_root="/w/ws", extra_dirs=["/w/code"], run_dir="/w/run"
+        ),
+    )
+    profile = next(f for f in mat.files if f.path == "config.toml").content
+    writes = [ln for ln in profile.splitlines() if ln.strip().endswith('= "write",')]
+    assert len(writes) == 2, f"exactly two writable roots, got {writes}"
+    assert '"/w/ws" = "write",' in profile
+    assert '"/w/code" = "write",' in profile
+    # The run-dir holds plan.json — the root of trust for the boundary check — and the
+    # ephemeral credential. Unwritable is not enough; it is denied for READ too.
+    assert '"/w/run" = "deny",' in profile
+    # Root-relative rules expand once per writable root, because Codex's filesystem
+    # table rejects a bare `**/*.env` outright.
+    assert '"/w/ws/**/*.env" = "deny",' in profile
+    assert '"/w/code/**/*.env" = "deny",' in profile
+    assert "{writable_root}" not in profile, "a template that reached the file denies nothing"
+
+
+def test_the_canonical_codex_rendering_carries_no_execution_paths():
+    """What `verification.config_digest` pins is the rules, not this run's directories.
+
+    Without the split the evidence would be pinned to a disposable probe bundle and
+    every real launch would then read as drift.
+    """
+    b = load_binding_descriptor(shipped("codex.v1"))
+    canonical = materialize(b, context=MaterializeContext())
+    profile = next(f for f in canonical.files if f.path == "config.toml").content
+    assert '= "write"' not in profile, "the canonical rendering has no writable roots"
+    assert '"~/.ssh" = "deny",' in profile, "the host-stable denials are part of what was proved"
+    launch = materialize(
+        b, context=MaterializeContext(worker_root="/w/ws", run_dir="/w/run")
+    )
+    assert canonical.digest != launch.digest
+
+
+def test_a_codex_home_that_denies_nothing_refuses_to_render():
+    """The hollow-boundary guard, one kind sideways from the one that caught it first.
+
+    `settings-deny` with no rules is refused at parse time; `generated-home` and
+    `env-allowlist` legitimately carry none. So four classes can each name an
+    enforceable mechanism and still render a home that refuses nothing, and the gate
+    has to be an assertion about the OUTPUT rather than about any one mechanism.
+    """
+    doc = json.loads(shipped("codex.v1"))
+    for c in doc["classes"]:
+        c["mechanisms"] = [
+            m
+            for m in c["mechanisms"]
+            if m["kind"] not in ("settings-deny", "filesystem-deny", "settings-allow")
+        ] or [{"kind": "generated-home", "rules": [], "detail": "x"}]
+        c["probes"] = [p for p in c["probes"] if p["kind"] != "rule-present"]
+    b = load_binding_descriptor(json.dumps(doc).encode())
     with pytest.raises(RefusalError) as exc:
-        materialize(b, extra_dirs=[])
+        materialize(b, context=MaterializeContext())
     assert exc.value.code == "HARNESS_BINDING_UNRENDERABLE"
+
+
+def test_a_filesystem_deny_rule_must_be_named_by_a_probe():
+    """The B1 guard, extended to the kind this order added.
+
+    A `filesystem-deny` mechanism nobody probes could be deleted and caught by
+    nothing — the same hole `settings-deny` had, and the reason coverage now checks
+    every deny-bearing kind rather than the one kind that existed first.
+    """
+    doc = json.loads(shipped("codex.v1"))
+    for c in doc["classes"]:
+        if c["policy_class"] == "P2":
+            c["probes"] = [p for p in c["probes"] if p["kind"] != "rule-present"]
+    b = load_binding_descriptor(json.dumps(doc).encode())
+    with pytest.raises(RefusalError) as exc:
+        check_coverage(b)
+    assert exc.value.code == "POLICY_CLASS_UNPROBED"
+
+
+def test_a_path_that_cannot_be_rendered_safely_refuses_rather_than_escaping():
+    """A quote in a writable root would change what the profile MEANS.
+
+    Escaping it would make the boundary's meaning depend on a TOML parser agreeing
+    with ours about escape handling — the difference between a launcher that is
+    careful and one that is lucky.
+    """
+    b = load_binding_descriptor(shipped("codex.v1"))
+    with pytest.raises(RefusalError) as exc:
+        materialize(b, context=MaterializeContext(worker_root='/w/a"b'))
+    assert exc.value.code == "HARNESS_BINDING_UNRENDERABLE"
+
+
+def test_materialize_refuses_both_spellings_of_the_context_at_once():
+    """Two spellings of one set of facts is how they drift apart."""
+    b = load_binding_descriptor(shipped("claude-code.v1"))
+    with pytest.raises(RefusalError) as exc:
+        materialize(b, extra_dirs=["/a"], context=MaterializeContext(extra_dirs=["/b"]))
+    assert exc.value.code == "HARNESS_BINDING_MALFORMED"
 
 
 # --- controls the second review found untested -------------------------------------
@@ -1085,7 +1260,10 @@ def test_a_descriptor_naming_a_subcommand_puts_it_first_in_the_argv():
     `--ignore-user-config` exits 2 on bare `codex` and works under `codex exec`, so the
     first Codex binding described an argv that could not have started the harness at all.
     The subcommand is part of the descriptor for that reason — one specification for the
-    adapter, the checker, and the probe runner.
+    adapter, the checker, and the probe runner. It outlived the flag that motivated it:
+    that flag is now FORBIDDEN (it would suppress the launcher's own config.toml) and
+    the subcommand is still required, because `codex` with no subcommand is the
+    interactive TUI and not a non-interactive worker at all.
     """
     from omegahive.harness.adapters import CodexAdapter
     from omegahive.harness.records import RouteEntry
@@ -1099,7 +1277,7 @@ def test_a_descriptor_naming_a_subcommand_puts_it_first_in_the_argv():
     )
     ctx = LaunchContext(kickoff=KICKOFF, cwd="/w", execution_id="e",
                         session_id="0f9c9a6e-0000-4000-8000-000000000001",
-                        parent_env={}, code_root="/c")
+                        parent_env={}, code_root="/c", run_dir="/w/run")
     argv = CodexAdapter().build(entry, ctx, b).argv
     assert argv[:2] == ["codex", "exec"]
 

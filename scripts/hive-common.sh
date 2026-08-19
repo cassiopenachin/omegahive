@@ -299,11 +299,22 @@ clean_codex_home() {  # clean_codex_home <codex-home> <run-dir>
 # `fake-harness 9.9.9` is caught by the fallback). Fall back to the old rule when no line
 # qualifies, because a harness with an unusual banner should still record something
 # rather than nothing — and `unknown` remains the caller's floor.
+# The version token is not always the FIRST one. `claude --version` prints
+# `2.1.232 (Claude Code)` and `codex --version` prints `codex-cli 0.147.0` — so a rule
+# that only ever looks at field 1 records the product name as the version on the second
+# harness. Measured 2026-08-19: a Codex probe run recorded `codex-cli` as its harness
+# version, and that value is what `status: proven` is tied to and what the supervisor
+# compares series against, so it would have made every launch look like a series change.
+# The rule is therefore: the first VERSION-SHAPED token anywhere on a line, then the
+# first digit-leading token, then the first token at all.
 harness_version_from() {  # harness_version_from  (reads probe output on stdin)
   awk '
-    NF && $1 ~ /^[0-9]/ { print $1; found = 1; exit }
-    NF && !first        { first = $1 }
-    END { if (!found && first) print first }
+    !found && NF {
+      for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+\.[0-9]/) { print $i; found = 1; exit }
+    }
+    NF && !digitfirst && $1 ~ /^[0-9]/ { digitfirst = $1 }
+    NF && !first { first = $1 }
+    END { if (!found) { if (digitfirst) print digitfirst; else if (first) print first } }
   '
 }
 

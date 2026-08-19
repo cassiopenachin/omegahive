@@ -25,8 +25,15 @@
   ],
   "known_command_modes": [],
   "safe_command_modes": [],
-  "status": "declared",
-  "verification": null,
+  "status": "proven",
+  "verification": {
+    "deployment": "beastie",
+    "harness_version": "0.147.0",
+    "ran_at": "2026-08-19",
+    "probe_record": "docs/evidence/harness_binding_probe_codex_2026_08_19.md",
+    "outcome": "pass",
+    "config_digest": "sha256:f21f3abb0d8ccc883592a22ecf96a06e11d4ef6d3d2c7c2ece555d3b45a7186d"
+  },
   "note": "THE BOUNDARY IS THE GENERATED HOME, NOT THE ARGV, and that is the one thing to understand before editing this file. The launcher renders a per-execution CODEX_HOME holding config.toml (a named permission profile) and rules/hive.rules (execpolicy), the supervisor seeds an opaque mode-0600 copy of the operator's existing auth.json into it and removes the whole directory on every terminal path, and CODEX_HOME is placed in the child's environment by the adapter rather than inherited. Everything the operator has - prior threads, memory, plugins, personal config - is absent by construction rather than disabled by a flag. WHY required_flags IS EMPTY AND WHY --sandbox IS FORBIDDEN: measured on codex-cli 0.147.0, `--sandbox workspace-write` on the command line OVERRIDES the permission profile. With the profile denying a planted secret and that flag present, the agent read the secret. A flag that discards the boundary is not a boundary flag, so it is forbidden outright rather than required, and the mode is expressed in the profile. `--ignore-user-config` is forbidden for the mirror reason - it suppresses exactly the config.toml this launcher writes - and `--ignore-rules` for the obvious one. `--add-dir` and `--cd` are forbidden because they would widen the writable set or move the root behind the profile's back. RETRACTED FROM THE 2026-08-14 DRAFT: that Codex may be unable to express a per-path READ denial. It can. `[permissions.<name>] filesystem` maps a path or glob to read/write/deny; a deny entry BEATS a containing write root, globs match, `~` expands, and a path named by nothing stays readable - which is what makes the denies falsifiable rather than decorative. P2 therefore has a native mechanism on this harness and no longer rests on the environment half alone. WHAT IS STILL NOT CLOSED, in one sentence each: network egress is off for model-generated commands under this profile and the profile's own `network = { mode = ... }` key does not turn it on (measured: a raw TCP connect raised PermissionError), so a Codex worker cannot reach the network from a sandboxed command at all - stricter than P4 asks for, and an operational limit the route's operator must accept knowingly; and the same-uid residual every row in this repository carries applies here too.",
   "classes": [
     {

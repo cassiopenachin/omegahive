@@ -20,6 +20,7 @@ boundary and never re-enters as a shell command string.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,12 @@ SESSION_ID = "0f9c9a6e-0000-4000-8000-000000000001"
 # adapters must place in argv, so a build that forgets them shows up as a diff in the
 # vector rather than as a comment nobody reads.
 BINDING = HarnessBinding(**descriptor())
+# The Codex row binds through a generated home rather than a file in the worker root,
+# so it needs its own fixture: building the Codex adapter against a Claude Code
+# descriptor would resolve the home to that descriptor's settings path and prove
+# nothing about either.
+_CODEX_DESCRIPTOR = Path(__file__).resolve().parents[1] / "harness-bindings" / "codex.v1.json"
+CODEX_BINDING = HarnessBinding(**json.loads(_CODEX_DESCRIPTOR.read_bytes()))
 
 KICKOFF = "you are worker w1;\nread WORKER.md; $(whoami) `id`"
 
@@ -85,6 +92,7 @@ def ctx(**over: Any) -> LaunchContext:
         "execution_id": "example-task-a1-0123456789",
         "session_id": SESSION_ID,
         "parent_env": dict(BENIGN),
+        "run_dir": "/srv/work/w1/execution",
     }
     fields.update(over)
     return LaunchContext(**fields)
@@ -205,23 +213,53 @@ def test_no_config_dir_hint_when_the_var_is_absent():
 
 # --- CodexAdapter: honest about what it cannot prove ------------------------
 
-def test_codex_proves_nothing_and_says_why():
-    plan = CodexAdapter().build(route(adapter="codex", harness="codex"), ctx(), BINDING)
-    assert plan.proves_model is False
-    assert plan.proves_usage is False
-    assert plan.usage_extractor == "none"
-    assert isinstance(plan.unproven_reason, str) and plan.unproven_reason.strip(), \
-        "an unproven surface must carry a named reason an operator can read"
-    assert plan.usage_hint == {}
-    assert plan.argv[0] == "codex"
+def test_codex_reads_its_evidence_out_of_the_generated_home():
+    """Both surfaces are established now, and the hint says where they are.
+
+    They were `unavailable` with a named reason while the harness was uninstalled; the
+    session rollout carries the configured model and the per-turn token counts, so the
+    honest answer changed and the adapter changed with it.
+    """
+    plan = CodexAdapter().build(
+        route(adapter="codex", harness="codex"), ctx(), CODEX_BINDING
+    )
+    assert plan.proves_model is True
+    assert plan.proves_usage is True
+    assert plan.usage_extractor == "codex-rollout"
+    assert plan.usage_hint["codex_home"].endswith("/codex-home")
+    assert plan.argv[:2] == ["codex", "exec"]
     assert plan.argv[-1] == KICKOFF
+    # The boundary is the home, so the argv must contribute nothing to it — and must
+    # carry none of the tokens that would discard it.
+    for token in ("--sandbox", "--ignore-user-config", "--ignore-rules"):
+        assert token not in plan.argv
 
 
-def test_codex_env_admits_codex_home_only():
+def test_codex_home_is_placed_by_the_adapter_and_never_inherited():
+    """An inherited CODEX_HOME points the child at the OPERATOR's real harness state.
+
+    That is the one outcome that reads as a bound launch and is not one: the operator's
+    home carries prior threads, memory, plugins, personal configuration — and the
+    permission profile this launcher just wrote is not in it. So the parent's value is
+    dropped and this execution's own directory is placed over it.
+    """
     parent = {**BENIGN, "CODEX_HOME": "/srv/state/codex", "CLAUDE_CONFIG_DIR": "/srv/claude"}
-    plan = CodexAdapter().build(route(), ctx(parent_env=parent), BINDING)
-    assert plan.env["CODEX_HOME"] == "/srv/state/codex"
+    plan = CodexAdapter().build(
+        route(adapter="codex", harness="codex"),
+        ctx(parent_env=parent, run_dir="/srv/work/w1/execution"),
+        CODEX_BINDING,
+    )
+    assert plan.env["CODEX_HOME"] == "/srv/work/w1/execution/codex-home"
     assert "CLAUDE_CONFIG_DIR" not in plan.env
+
+
+def test_codex_refuses_to_build_without_a_generated_home():
+    """No home means no boundary, and a launch there is a worker with none at all."""
+    with pytest.raises(RefusalError) as exc:
+        CodexAdapter().build(
+            route(adapter="codex", harness="codex"), ctx(run_dir=""), CODEX_BINDING
+        )
+    assert exc.value.code == "HARNESS_BINDING_UNRENDERABLE"
 
 
 # --- FakeAdapter: no default, never resolves from PATH ----------------------
@@ -260,7 +298,7 @@ def test_fake_adapter_builds_when_configured():
         pytest.param("", "", id="empty"),
         pytest.param("\n", "", id="newline-only"),
         pytest.param("   \n\n2.1.231 (Claude Code)\n", "2.1.231", id="leading-blank-lines"),
-        pytest.param("fake-harness 9.9.9\n", "fake-harness", id="first-token-wins"),
+        pytest.param("fake-harness 9.9.9\n", "9.9.9", id="version-not-in-field-one"),
         pytest.param("  9.9.9  \n", "9.9.9", id="surrounding-whitespace"),
     ],
 )
@@ -280,8 +318,15 @@ def test_parse_version_takes_the_first_token_of_the_first_non_empty_line(
         ("/bin/sh: warning: setlocale: LC_ALL: cannot change locale\n2.1.232 (Claude Code)\n",
          "2.1.232"),
         ("\n\nbash: warning: something\n  3.0.1-beta\n", "3.0.1-beta"),
-        # No line starts with a digit: fall back rather than record nothing.
-        ("fake-harness 9.9.9\n", "fake-harness"),
+        # The version is field TWO, which is where `codex --version` puts it
+        # (`codex-cli 0.147.0`). A rule that only read field one recorded the PRODUCT
+        # NAME as the harness version — measured 2026-08-19, and it is the value
+        # `status: proven` is tied to and the one the supervisor compares series
+        # against, so it would have made every launch look like a series change.
+        ("fake-harness 9.9.9\n", "9.9.9"),
+        ("codex-cli 0.147.0\n", "0.147.0"),
+        # Nothing version-shaped anywhere: fall back rather than record nothing.
+        ("harness-with-no-version\n", "harness-with-no-version"),
         ("", ""),
     ],
 )

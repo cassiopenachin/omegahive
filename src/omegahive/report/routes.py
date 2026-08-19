@@ -50,6 +50,11 @@ from omegahive.harness.records import (
 # without a task, an order, or a worker, so these placeholders stand in for the parts
 # that cannot affect a boundary check.
 _STUB_SESSION = "00000000-0000-4000-a000-000000000000"
+# Deliberately named so that a path leaking into a rendered row is obviously a stub
+# rather than a host fact somebody might act on.
+_STUB_WORKER_ROOT = "/hive-routes-report/worker-root"
+_STUB_CODE_ROOT = "/hive-routes-report/code-root"
+_STUB_RUN_DIR = "/hive-routes-report/run-dir"
 
 
 def _row(route: RouteEntry, **kw: Any) -> dict[str, Any]:
@@ -145,13 +150,21 @@ def evaluate_routes(
             continue
         try:
             adapter = get_adapter(route.adapter)
+            # NOTIONAL paths, not empty ones. This report answers "would this route
+            # launch", and a harness whose boundary is a generated DIRECTORY correctly
+            # refuses to build without one — so an empty context made every Codex route
+            # read as HARNESS_BINDING_UNRENDERABLE, which is this report telling the
+            # operator that a working route is broken. The stubs are obviously-fake
+            # absolute paths and nothing is created: this function is read-only and
+            # never upgrades a route, so it must also never invent a real one.
             ctx = LaunchContext(
                 kickoff="",
-                cwd="",
+                cwd=_STUB_WORKER_ROOT,
                 execution_id="report",
                 session_id=_STUB_SESSION,
                 parent_env=env,
-                code_root="",
+                code_root=_STUB_CODE_ROOT,
+                run_dir=_STUB_RUN_DIR,
             )
             launch = adapter.build(route, ctx, binding)
             check_argv(binding, launch.argv)

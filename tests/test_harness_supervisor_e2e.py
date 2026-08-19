@@ -278,7 +278,7 @@ def test_route_then_start_then_finish_in_order(rig):
     assert finished[1] == "instrument"
     # One stable execution id across the pair.
     assert started[3]["execution_id"] == finished[3]["execution_id"]
-    assert started[3]["harness_version"] == "fake-harness"
+    assert started[3]["harness_version"] == "9.9.9"
 
     fin = finished[3]
     assert fin["outcome"] == "success"
@@ -570,7 +570,7 @@ def test_materialize_binding_refuses_a_path_outside_the_worker_root(rig, tmp_pat
             capture_output=True, text=True, cwd=str(REPO), timeout=60,
         )
         assert proc.returncode != 0, evil
-        assert "outside the worker root" in proc.stderr
+        assert "outside its declared root" in proc.stderr
 
 
 def test_unb64_round_trips_without_a_help_parsing_guard():
