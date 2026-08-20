@@ -655,10 +655,12 @@ def check_status(binding: HarnessBinding) -> None:
     if binding.status != "proven":
         raise RefusalError(
             "HARNESS_BINDING_UNPROVEN",
-            f"descriptor {binding.binding_id!r} is {binding.status!r}: its mechanisms "
-            "are written from documentation and have not been probed against the "
-            "installed harness on this deployment. Run scripts/hive-binding-probe and "
-            "record the result before a worker runs here",
+            f"descriptor {binding.binding_id!r} is {binding.status!r}: it carries no "
+            "passing verification for the configuration it renders on this deployment. "
+            "That is not the same as 'nothing was measured' — a descriptor may be "
+            "declared while holding real partial evidence, and codex.v1 is exactly "
+            "that today — but partial evidence does not launch a worker. Run "
+            "scripts/hive-binding-probe and record the result before one runs here",
         )
     if binding.verification is None or binding.verification.outcome != "pass":
         raise RefusalError(
@@ -873,10 +875,29 @@ def _codex_home(binding: HarnessBinding, ctx: MaterializeContext) -> list[Materi
         # worker that cannot commit cannot produce a branch, a PR, or a workspace
         # report, which is most of what a worker is for.
         #
-        # This is NOT a third root and not a widening: `.git` is a subpath of a root
-        # this table already grants, and re-granting it restores the ordinary contents
-        # of "the worker may write its own clone". Verified alongside it that the
-        # planted-secret denial and the outside-root refusal both still hold.
+        # It is not a third ROOT — `.git` is a subpath of a tree this table already
+        # grants — but calling it "not a widening" would be false, and an independent
+        # review was right to say so. Codex makes `.git` read-only ON PURPOSE, and
+        # re-granting it hands the worker its own hooks, refs, objects and `config`,
+        # which is where `core.hooksPath` and a credential helper live.
+        #
+        # It is taken anyway because the alternative is a worker that cannot commit,
+        # and the residual is stated in P3 rather than implied. Two things were
+        # measured before taking it. Denying `<root>/.git/config` breaks git outright
+        # (it must READ config), so the credential-helper surface cannot be closed
+        # this way. Denying `<root>/.git/hooks` DOES work and is deliberately NOT
+        # done: `git config core.hooksPath <writable>` defeats it in one line, so it
+        # would stop the accident, tax every git command with a warning, and read
+        # stronger than it is.
+        #
+        # THE OPERATIONAL CONSEQUENCE, which is the part that bites elsewhere: a
+        # worker-owned `.git` is worker-controlled input. Anything on the TRUSTED side
+        # that later runs git in that checkout — a supervisor-side publish, an
+        # operator inspecting the clone — inherits its hooks and config. Use a fresh
+        # clone, or `-c core.hooksPath=/dev/null -c credential.helper=`.
+        #
+        # Verified alongside the grant: the planted-secret denial and the outside-root
+        # refusal both still hold.
         lines.append(f"  {_toml_quote(root.rstrip('/') + '/.git')} = \"write\",")
     for path in _dedupe(deny_paths):
         lines.append(f"  {_toml_quote(path)} = \"deny\",")

@@ -1,6 +1,8 @@
 # Corrective record — Codex network, authentication, and worker protocol, 2026-08-20
 
-**Outcome: STOPPED.** `codex.v1` remains `declared` and every Codex route refuses.
+**Outcome: STOPPED.** `codex.v1` remains `declared` and **no Codex route is launchable**: the four
+enabled rows refuse `HARNESS_BINDING_UNPROVEN` on the boundary, and the disabled Luna
+row refuses `ROUTE_DISABLED` before the boundary is consulted at all.
 This record supersedes `harness_binding_probe_codex_2026_08_19.md` for P4, for its
 network claims, and for its `proven` status. That file's P1–P3 measurements stand.
 
@@ -112,6 +114,10 @@ list: `gh auth status` and `gh api user` both fail with *permission denied* on
 **Codex's credential broker exists, has a GitHub provider, and is not reachable from
 the standalone CLI.** The order asked for this to be established rather than assumed:
 
+- **Scope of this claim, tightened after review:** no supported **user, profile,
+  CLI-override or system** config path. `/etc/codex/config.toml` *is* read by a
+  standalone Linux install, but it uses the same schema, so it does not provide one
+  either. What is not claimed is that no configuration surface anywhere can enable it.
 - `network-proxy/src/credential_broker/providers.rs` registers
   `&[&github::PROVIDER, &openai::PROVIDER]`. The GitHub provider reads `GH_TOKEN` /
   `GITHUB_TOKEN` **from the proxy's environment** and injects

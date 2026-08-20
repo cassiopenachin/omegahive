@@ -74,14 +74,14 @@ Each is a distinct remedy, so each has a distinct code.
 
 | | Claude Code (`claude-code.v1`) | Codex (`codex.v1`) |
 |---|---|---|
-| Status | **proven** on beastie, harness 2.1.232, 2026-08-14 | **proven** on beastie, harness 0.147.0, 2026-08-19 |
+| Status | **proven** on beastie, harness 2.1.232, 2026-08-14 | **declared** — routes refuse. Promoted 2026-08-19 and **demoted 2026-08-20** on operator rejection |
 | Config surface | project-local `.claude/settings.local.json` in the worker root | a GENERATED per-execution `CODEX_HOME` **in the run-dir**: `config.toml` + `rules/hive.rules` |
 | Launch flags | `--setting-sources project,local`, `--permission-mode auto` | **none** — `codex exec` and nothing else; `--sandbox` is a FORBIDDEN token |
 | P1 access layer | deny `Bash(*sudo *)`, `Bash(*systemctl *)`, `Bash(*tailscale *)` | execpolicy `prefix_rule` forbidding sudo/sudoedit/pkexec/systemctl/tailscale, with `host_executable` so absolute paths resolve |
 | P2 secrets | deny `Read(**/*.env)`, `Read(**/.env.*)`, `Read(~/.ssh/**)`, `Bash(*compose*config*)`; env allowlist. **The `Read(...)` rules are materialized and rule-present but never enforcement-tested** — see the residual | **an OS-level read denial**: the permission profile's `filesystem` table denies nine credential paths plus the `.env` family inside every writable root, and a deny beats a containing write grant. Enforcement-tested against a planted canary, with a loosening control |
 | P3 durable stack | deny podman stop/kill/rm/rmi/restart/prune, the compose destructive verbs, force-push in three spellings, **all `tmux kill-*`**, and writes to the boundary file itself | execpolicy rules for podman/docker/tmux destructive verbs, **plus** the canonical checkout and the git hub denied at the syscall, **plus** exactly two writable roots and nothing else |
-| P4 raw fetch | deny `Bash(*curl *)`, `Bash(*wget *)`; allow the development tools | execpolicy forbidding curl/wget/nc, allowing git/gh/uv/python3 — **and network egress off entirely** (stricter than the class asks; see the cost below) |
-| Evidence | `docs/evidence/harness_binding_probe_claude_code_2026_08_14.md` | `docs/evidence/harness_binding_probe_codex_2026_08_19.md` — PASS=20 FAIL=0 |
+| P4 raw fetch | deny `Bash(*curl *)`, `Bash(*wget *)`; allow the development tools | execpolicy forbidding curl/wget/nc, allowing git/gh/uv/python3, and **egress off — an operator-reserved decision, not a proof**; see below |
+| Evidence | `docs/evidence/harness_binding_probe_claude_code_2026_08_14.md` | `…codex_2026_08_19.md` (P1–P3; its P4 is retracted) and **`…codex_2026_08_20_corrective.md`**, which supersedes it |
 
 ### The Codex row: the boundary is the generated home, not the argv
 
@@ -124,16 +124,33 @@ root, globs match and `~` expands — so P2 has a native mechanism here that is 
 than the other harness's, because it is enforced at the syscall rather than by a command
 matcher.
 
-**The one cost an operator must accept knowingly.** Network egress is OFF for
-model-generated commands under this profile, and the profile's own
-`network = { mode = "full" }` does not lift it (measured: a raw TCP connect raises
-`PermissionError`). A worker on this route cannot push a branch or install a package
-from a sandboxed command. That is stricter than P4 requires, not looser — but it is a
-real operational limit, and the alternative legacy configuration family that does enable
-network has **no per-path read denial at all**, so taking it would trade the whole of P2
-for P4's positive half. The trade is named rather than taken.
+**Egress is OFF, and that is a PARKED DECISION rather than a finding.** The
+2026-08-19 record said the profile's `network` key could not lift the no-egress state
+and called that the harness's available design. **That was wrong**, and the promotion
+resting on it was rejected: the key did not lift it because `[features]
+network_proxy` was absent. With the feature on, Codex runs a managed proxy, and
+measured on 0.147.0 an allowlisted host is reachable while direct TCP cannot escape
+the proxy and LAN and loopback are closed — with the filesystem denies intact.
 
-**The command layer is bypassable in one step, measured rather than cited.**
+What turning it on would cost is the class's own wording. Literal `curl` stays refused
+by execpolicy; `X=curl; $X https://github.com` returned **200**. So with egress on this
+class enforces **destination scope**, not *named tools, not raw fetches*. Whether that
+satisfies P4 is an operator/design decision, so egress stays off — at the stated cost
+that a worker on this route cannot reach the network at all, and therefore cannot push
+a branch, open a PR, or install a package. Full measurements and the exact stanza:
+`docs/evidence/harness_binding_probe_codex_2026_08_20_corrective.md`.
+
+**Why the Codex row is `declared` and what would change it.** The corrective run
+stopped at credential delivery: P2 denies `~/.config/gh` and `~/.ssh` by design, and
+Codex's own credential broker — which has a GitHub provider that injects at the proxy,
+where the child never sees the token — is gated behind `network.mitm = true`, which no
+standalone user, profile, CLI-override or system config path can set. A Codex worker
+can read, edit, run and commit; it cannot push, open a PR, or emit a lifecycle event
+(its wrapper's transport is podman, and the P3 second layer denies the runtime socket
+by design). Those are capabilities the hive would have to supply from outside the
+sandbox, not settings to loosen.
+
+**The command layer is bypassable in one step, measured rather than cited.****The command layer is bypassable in one step, measured rather than cited.**
 `sudo -n true` is refused by policy; `X=sudo; $X -n true` and
 ``eval "$(printf 's''udo')" -n true`` both RAN (2026-08-19, live agent loop). That is
 Codex's own documented behaviour — segments using substitution or an env-var prefix are
@@ -284,7 +301,7 @@ One command, one driver per harness, dispatched on the descriptor's own `harness
 field — a runner that guessed a second vendor's non-interactive interface would report a
 boundary it never exercised. The Claude Code driver runs six real non-interactive
 sessions in a disposable `mktemp -d` root, roughly **US$0.08** on Haiku. The Codex
-driver runs eighteen `codex exec` sessions plus three free `sandbox-denied` checks in a disposable bundle under `$HOME` (Codex
+driver runs eighteen `codex exec` sessions plus three free `sandbox-denied` checks. **Do not run it while the Codex row is `declared` for the reason it is** — the corrective record names a gate no probe suite can pass, and spending the suite before that gate moves measures nothing in a disposable bundle under `$HOME` (Codex
 refuses to build its sandbox when `CODEX_HOME` sits under a temporary directory), seeds
 and then removes the credential, and exposes no dollar figure — its cost is window
 weight on the subscription. This is what a descriptor's `status: proven` rests on, and both halves of that
