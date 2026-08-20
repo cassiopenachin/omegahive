@@ -207,47 +207,29 @@ def test_unknown_route_still_refuses_when_agreement_holds():
 
 # --- api market: resolves, does not launch ----------------------------------
 
-def test_api_market_route_resolves_but_is_not_launchable():
-    """The shipped example catalog's api route refuses for its CREDENTIAL, not its
-    boundary — and that it now gets that far is the point.
+def test_the_example_catalogs_codex_routes_refuse_on_the_boundary():
+    """Driven off the committed example rather than a local fixture, so the catalog an
+    operator actually copies is the thing under test.
 
-    Driven off the committed example rather than a local fixture, so the catalog an
-    operator actually copies is the thing under test. Until 2026-08-19 both api rows
-    named a `declared` descriptor, so the boundary refusal fired first and the
-    credential seam was never reached from the shipped example at all. `codex.v1` is
-    proven now, which means this row exercises the gate it was written to demonstrate.
+    `codex.v1` is `declared` again as of 2026-08-20, so every row naming it refuses
+    before any credential question is asked — including the two subscription rows the
+    example leaves ENABLED. That pairing is the point: an operator's routing decision
+    and a boundary that has earned it are different facts, and the boundary is the
+    gate in front.
     """
-    p = plan(
-        catalog=(SCHEMAS / "route-catalog.example.json").read_bytes(),
-        binding=binding_bytes(route="example-api-route"),
-        descriptors=shipped_map(),
-    )
-    assert p.launchable is False
-    assert p.refusal_code == "ROUTE_CREDENTIAL_MODE"
-
-
-def test_the_example_catalogs_broker_route_reaches_the_broker_refusal():
-    """The other half of the api seam, and it must not be masked by the first."""
-    p = plan(
-        catalog=(SCHEMAS / "route-catalog.example.json").read_bytes(),
-        binding=binding_bytes(route="example-api-route-broker"),
-        descriptors=shipped_map(),
-    )
-    assert p.launchable is False
-    assert p.refusal_code == "BROKER_NOT_IMPLEMENTED"
-
-
-def test_the_example_catalogs_codex_subscription_routes_are_launchable():
-    """The delta of this order, stated as the thing an operator will check first."""
-    for name in ("codex-terra-subscription", "codex-sol-subscription"):
-        p = plan(
-            catalog=(SCHEMAS / "route-catalog.example.json").read_bytes(),
-            binding=binding_bytes(route=name),
-            descriptors=shipped_map(),
-        )
-        assert p.launchable is True, name
-        assert p.harness_binding.status == "proven"
-        assert p.launch.env["CODEX_HOME"].endswith("/codex-home")
+    for name in (
+        "codex-terra-subscription",
+        "codex-sol-subscription",
+        "example-api-route",
+        "example-api-route-broker",
+    ):
+        with pytest.raises(RefusalError) as exc:
+            plan(
+                catalog=(SCHEMAS / "route-catalog.example.json").read_bytes(),
+                binding=binding_bytes(route=name),
+                descriptors=shipped_map(),
+            )
+        assert exc.value.code == "HARNESS_BINDING_UNPROVEN", name
 
 
 def test_an_api_route_on_a_proven_boundary_still_refuses_for_its_credential():

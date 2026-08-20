@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "captured_at": "2026-08-19",
+  "captured_at": "2026-08-20",
   "note": "REDACTED EXAMPLE — not a live catalog. The live file is a DEPLOYMENT fact and is never committed: see docs/omegahive_worker_harness.md. Credential pools are opaque labels here and must stay that way; a pool name is a pointer for whoever holds the credentials, never the credential, an account id, or a host path. Every route names the permission-boundary descriptor it runs under (binding_id) and pins its exact bytes (binding_digest); `omegahive harness-routes` prints the current digest for copy-pasting, and a descriptor that has moved since the pin refuses with BINDING_DIGEST_MISMATCH rather than launching under a boundary nobody approved.",
   "routes": [
     {
@@ -43,9 +43,9 @@
       "credential_pool": "pool-b",
       "adapter": "codex",
       "enabled": true,
-      "note": "the second vendor's worker tier. Enabled here because codex.v1 is PROVEN as of 2026-08-19 - the harness is installed and authenticated on deployment #0 and its P1-P4 probes ran against the real agent loop (docs/evidence/harness_binding_probe_codex_2026_08_19.md). Read the descriptor's residual before routing real work here: network egress is off for model-generated commands under this boundary, which is stricter than P4 requires and means a worker on this route cannot push a branch from inside the sandbox",
+      "note": "the second vendor's worker tier. ENABLED here and still REFUSING, which is the pair worth copying: `enabled` is the operator's routing decision and the BOUNDARY is a separate gate in front of it. codex.v1 was promoted on 2026-08-19 and demoted on 2026-08-20 when the operator rejected a P4 proof that had measured executable presence rather than network behaviour, so this row refuses HARNESS_BINDING_UNPROVEN until the corrective proof lands. A route an operator wants and a boundary that has earned it are different facts",
       "binding_id": "codex.v1",
-      "binding_digest": "sha256:86f072d181e69c3f4275be1001b167c07d1e6dbf1d7a9c04937a1870439952eb",
+      "binding_digest": "sha256:485fd5bfc5f7faf577730c7ba78c87055b0f978621b84ea4d13c4f4af9430f32",
       "credential_mode": "harness-native"
     },
     {
@@ -58,9 +58,9 @@
       "credential_pool": "pool-b",
       "adapter": "codex",
       "enabled": true,
-      "note": "the model the operator named for review-orchestration-v2. Same boundary, same credential pool, different model - which is the whole point of pinning the model in the catalog rather than in a harness flag",
+      "note": "the model the operator named for review-orchestration-v2. Same boundary, same credential pool, different model - which is the whole point of pinning the model in the catalog rather than in a harness flag. Refuses today for the same reason Terra does",
       "binding_id": "codex.v1",
-      "binding_digest": "sha256:86f072d181e69c3f4275be1001b167c07d1e6dbf1d7a9c04937a1870439952eb",
+      "binding_digest": "sha256:485fd5bfc5f7faf577730c7ba78c87055b0f978621b84ea4d13c4f4af9430f32",
       "credential_mode": "harness-native"
     },
     {
@@ -75,7 +75,7 @@
       "enabled": false,
       "note": "disabled rather than deleted, which is the shape worth copying: a route the operator has DECIDED against stays visible with its reason, so a later reader does not rediscover the question. The reason here is model quality and not the boundary - the HIP-1 wave-2 benchmark found Luna not worker-qualified, while the very same benchmark run is what qualified this harness. A launch against a disabled route refuses with ROUTE_DISABLED before any boundary or credential question is asked",
       "binding_id": "codex.v1",
-      "binding_digest": "sha256:86f072d181e69c3f4275be1001b167c07d1e6dbf1d7a9c04937a1870439952eb",
+      "binding_digest": "sha256:485fd5bfc5f7faf577730c7ba78c87055b0f978621b84ea4d13c4f4af9430f32",
       "credential_mode": "harness-native"
     },
     {
@@ -99,7 +99,7 @@
       },
       "note": "STRUCTURAL EXAMPLE ONLY, and it refuses twice over. An api-market route validates and resolves, and `hive-launch --check` will show it, but launching one refuses with ROUTE_CREDENTIAL_MODE: a direct-API route may not run on the harness's own credentials, because the long-lived provider credential must stay outside the worker. The price_basis is what makes a historical cost derivable later without consulting a catalog that has since changed.",
       "binding_id": "codex.v1",
-      "binding_digest": "sha256:86f072d181e69c3f4275be1001b167c07d1e6dbf1d7a9c04937a1870439952eb",
+      "binding_digest": "sha256:485fd5bfc5f7faf577730c7ba78c87055b0f978621b84ea4d13c4f4af9430f32",
       "credential_mode": "harness-native"
     },
     {
@@ -123,7 +123,7 @@
       },
       "note": "THE OTHER HALF OF THE API SEAM. This route asks for the only credential shape in which a direct-API route could ever launch — an operator-owned broker that alone reads the long-lived credential and issues an opaque, expiring, execution-scoped capability — and it refuses with BROKER_NOT_IMPLEMENTED, because no broker exists on this deployment. That slice is conditional on a committed HIP-1 qualification naming a direct-API bundle as a live qualifier, and at 2026-08-14 none did. The refusal is the feature: there is no fallback path that puts a raw key near a worker.",
       "binding_id": "codex.v1",
-      "binding_digest": "sha256:86f072d181e69c3f4275be1001b167c07d1e6dbf1d7a9c04937a1870439952eb",
+      "binding_digest": "sha256:485fd5bfc5f7faf577730c7ba78c87055b0f978621b84ea4d13c4f4af9430f32",
       "credential_mode": "broker"
     }
   ]

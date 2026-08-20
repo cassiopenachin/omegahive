@@ -254,45 +254,63 @@ def test_a_proven_claim_with_no_evidence_refuses():
     assert exc.value.code == "HARNESS_BINDING_UNPROVEN"
 
 
-def test_the_shipped_codex_descriptor_is_proven_against_the_rules_it_renders():
-    """`proven` is tied to bytes, not to a word.
+def test_the_shipped_codex_descriptor_is_declared_and_therefore_refuses():
+    """Demoted 2026-08-20 by operator rejection, and this is the test that holds it there.
 
-    The claim and its evidence must travel together AND describe the same rules: the
-    verification block names the canonical config digest, and `check_status` re-derives
-    it. A rule edited after the probe run keeps a passing record that no longer
-    describes the descriptor, and this is what refuses it.
+    It was `proven` for one day. The promotion rested on a P4 proof that measured the
+    wrong thing twice: it tested a permission profile's `network` table while
+    `[features] network_proxy` was absent, saw no egress, and reported that state as
+    the harness's available design — and its positive control was `git --version`,
+    which proves an executable exists and nothing about a named tool reaching its
+    service. `declared` is the honest state until the corrective proof either goes
+    green end to end or names the gate it stopped at.
     """
     raw = shipped("codex.v1")
     b = load_binding_descriptor(raw)
-    assert b.status == "proven"
-    assert b.verification is not None
-    assert b.verification.outcome == "pass"
-    assert b.verification.harness_version == "0.147.0"
-    assert (REPO / b.verification.probe_record).exists(), (
-        "the record a proven status points at must be a file someone can read"
-    )
-    assert b.verification.config_digest == materialize(
-        b, context=MaterializeContext()
-    ).digest
-    # And the route it backs now launches, which is the whole delta of this order.
+    assert b.status == "declared"
+    assert b.verification is None
+    with pytest.raises(RefusalError) as exc:
+        check_status(b)
+    assert exc.value.code == "HARNESS_BINDING_UNPROVEN"
+
     r = route(
         harness="codex",
         adapter="codex",
         binding_id="codex.v1",
         binding_digest=binding_digest(raw),
     )
-    resolved = plan(routes=[r], descriptors=shipped_map())
-    assert resolved.launchable is True
+    with pytest.raises(RefusalError) as exc:
+        plan(routes=[r], descriptors=shipped_map())
+    assert exc.value.code == "HARNESS_BINDING_UNPROVEN"
 
 
-def test_a_rule_edited_after_the_probe_run_invalidates_its_own_evidence():
-    """The drift gate, on the descriptor this order promoted.
+def test_a_rule_edited_after_a_probe_run_invalidates_its_own_evidence():
+    """The drift gate, exercised on a synthetic verification block.
 
-    Without it `proven` survives an edit to the rules it was proven over: the catalog
-    re-pin that edit forces is an operator pasting a number, which does not ask whether
-    anything was re-probed.
+    It cannot be exercised on the shipped Codex descriptor while that descriptor is
+    `declared` — `check_status` refuses on the status before it ever reaches the digest
+    comparison — so the gate is driven here from a descriptor built for it. Without
+    this, `proven` survives an edit to the rules it was proven over, and the catalog
+    re-pin that edit forces is an operator pasting a number rather than re-proving a
+    boundary.
     """
     doc = json.loads(shipped("codex.v1"))
+    b = load_binding_descriptor(json.dumps(doc).encode())
+    honest_digest = materialize(b, context=MaterializeContext()).digest
+    doc["status"] = "proven"
+    doc["verification"] = {
+        "deployment": "beastie",
+        "harness_version": "0.147.0",
+        "ran_at": "2026-08-19",
+        "probe_record": "docs/evidence/harness_binding_probe_codex_2026_08_19.md",
+        "outcome": "pass",
+        "config_digest": honest_digest,
+    }
+    # Consistent with itself: the gate passes.
+    check_status(load_binding_descriptor(json.dumps(doc).encode()))
+
+    # Now move one rule and nothing else. The evidence is about a boundary that is no
+    # longer this one, and the status must not outlive it.
     for c in doc["classes"]:
         for m in c["mechanisms"]:
             if m["kind"] == "settings-deny" and m["rules"]:
@@ -301,9 +319,8 @@ def test_a_rule_edited_after_the_probe_run_invalidates_its_own_evidence():
         else:
             continue
         break
-    b = load_binding_descriptor(json.dumps(doc).encode())
     with pytest.raises(RefusalError) as exc:
-        check_status(b)
+        check_status(load_binding_descriptor(json.dumps(doc).encode()))
     assert exc.value.code == "HARNESS_BINDING_UNPROVEN"
     assert "no longer this" in exc.value.message
 
@@ -829,15 +846,17 @@ def test_the_report_refuses_the_example_catalogs_api_routes_for_their_own_reason
     by = {r["route"]: r for r in rows}
     assert by["claude-opus-subscription"]["state"] == "launchable"
     assert by["claude-haiku-subscription"]["state"] == "launchable"
-    # The Codex subscription rows became launchable on 2026-08-19, when codex.v1 was
-    # promoted against a real authenticated probe run. Before that they refused on the
-    # boundary and the credential seam below was unreachable from the shipped example.
-    assert by["codex-terra-subscription"]["state"] == "launchable"
-    assert by["codex-sol-subscription"]["state"] == "launchable"
-    # The two api rows now refuse for their OWN two reasons rather than both hiding
-    # behind an unproven boundary — which is what this row was always meant to show.
-    assert by["example-api-route"]["refusal_code"] == "ROUTE_CREDENTIAL_MODE"
-    assert by["example-api-route-broker"]["refusal_code"] == "BROKER_NOT_IMPLEMENTED"
+    # Every Codex row refuses on the BOUNDARY while codex.v1 is declared — including
+    # the two the operator has enabled, because `enabled` is a routing decision and the
+    # boundary is a separate gate in front of it. The api rows' own credential refusals
+    # are behind that gate and are exercised separately below on a proven boundary.
+    for name in (
+        "codex-terra-subscription",
+        "codex-sol-subscription",
+        "example-api-route",
+        "example-api-route-broker",
+    ):
+        assert by[name]["refusal_code"] == "HARNESS_BINDING_UNPROVEN", name
 
 
 def test_the_report_shows_the_credential_refusals_when_the_boundary_is_proven():
