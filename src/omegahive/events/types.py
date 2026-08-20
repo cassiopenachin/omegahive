@@ -279,7 +279,16 @@ class ExecutionIdentity(BaseModel):
 
 
 class ExecutionBinding(BaseModel):
-    """WHICH permission boundary this execution ran under, and whether it held.
+    """HISTORICAL: which permission-boundary descriptor an execution ran under.
+
+    Retained so that events emitted before the 2026-08-20 runner-trust cutover replay
+    unchanged. Nothing emits it any more: the descriptor, its digest, the materialized
+    configuration and the probe verdicts were the P1-P4 launch qualification, and that
+    product is retired. No event is rewritten or backfilled, so a reader of the log will
+    find this block on executions up to the cutover and `null` after it, which is the
+    truthful record of a system that changed.
+
+    The original contract, unchanged for those events:
 
     Two digests, because they answer two different questions and one cannot stand for
     the other. `binding_digest` pins the DESCRIPTOR — the policy-to-mechanism mapping
@@ -401,24 +410,50 @@ class ExecutionUsage(BaseModel):
 
 
 class ExecutionRouteApproved(BaseModel):
-    """The operator's signed decision to run ONE task on ONE named route.
+    """What this task was launched on: the route, its provenance, and the runner shape.
 
-    This is the authority fact: the launcher executes a signed intent and never signs
-    one, so this event is attributable to the human actor that invoked the pinned
-    binding. It precedes `task.assigned`.
+    The authority fact is elsewhere and always was — the human `task.created` carries the
+    operator's acceptance of the pinned order, and that is the approval act. This event
+    records what the launcher then RESOLVED, so that a later reader can answer "what ran
+    this, and was the configuration the same as last time" without a second approval
+    ledger. It precedes `task.assigned`.
+
+    Before the 2026-08-20 runner-trust cutover the launcher required a committed
+    per-order launch binding and a proven permission-boundary descriptor; `binding_ref`
+    and `binding` are the fields those carried. Both are now optional and unset, and no
+    historical event is rewritten — a reader distinguishes the two eras by their
+    presence, which is more honest than a backfill.
     """
 
     execution_id: str
     purpose: Literal["work", "review"]
     attempt: int = Field(ge=1)
-    binding_ref: str          # the committed binding, pinned: path@<git-sha>
     catalog_digest: str       # sha256 of the exact catalog bytes that resolved the route
     identity: ExecutionIdentity
-    # The approved permission boundary. REQUIRED: the operator's signature on a spend
-    # decision is also a signature on what that spend may reach, and an approval that
-    # cannot say which boundary it approved is the gap this milestone closes.
-    binding: ExecutionBinding
-    predicted_total_tokens: int = Field(ge=0)
+    # The pinned order this launch accepted, `path@<git-sha>`. It is what the execution
+    # id is derived from, so two launches of the same order/purpose/attempt name one
+    # execution rather than two.
+    order_ref: str | None = None
+    # Whether the operator named the route for this launch or the catalog defaulted to
+    # it. Provenance, not a judgment: both are authorized.
+    route_source: Literal["default", "override"] | None = None
+    # `sha256:<hex>` over the resolved NON-SECRET runner configuration — executable,
+    # static argument vector, inherited environment NAMES, worker I/O mode. It answers
+    # "is this the same runner configuration as last time" and deliberately not "is this
+    # runner safe", which nothing here can know. Never a value out of an environment.
+    runner_fingerprint: str | None = None
+    worker_io: Literal["direct", "supervised"] | None = None
+    # The doctrine's status vocabulary, recorded at launch so a later reader knows how
+    # much the model and usage facts on this execution are worth.
+    model_identity_evidence: Literal["observed", "declared"] | None = None
+    usage_evidence: Literal["observed", "unavailable"] | None = None
+    # HISTORICAL (pre-cutover): the committed launch binding, pinned, and the permission
+    # boundary it named. Unset on every launch after 2026-08-20.
+    binding_ref: str | None = None
+    binding: ExecutionBinding | None = None
+    # HISTORICAL (pre-cutover): the token prediction a launch binding carried. There is
+    # no per-order binding file to hold one, and an invented number is worse than none.
+    predicted_total_tokens: int | None = Field(default=None, ge=0)
     price_basis: PriceBasis | None = None
 
     @field_validator("execution_id")
@@ -428,11 +463,11 @@ class ExecutionRouteApproved(BaseModel):
             raise ValueError(f"execution_id must match [A-Za-z0-9._-]{{1,128}}, got {v!r}")
         return v
 
-    @field_validator("binding_ref")
+    @field_validator("binding_ref", "order_ref")
     @classmethod
-    def _binding_ref_shape(cls, v: str) -> str:
-        if not _REF_SHAPE.fullmatch(v):
-            raise ValueError(f"binding_ref must match 'path@<git-sha>', got {v!r}")
+    def _ref_shape(cls, v: str | None) -> str | None:
+        if v is not None and not _REF_SHAPE.fullmatch(v):
+            raise ValueError(f"must match 'path@<git-sha>', got {v!r}")
         return v
 
     @field_validator("catalog_digest")
@@ -455,10 +490,10 @@ class ExecutionStarted(BaseModel):
     purpose: Literal["work", "review"]
     attempt: int = Field(ge=1)
     identity: ExecutionIdentity
-    # Re-verified by the supervisor against the materialized file on disk immediately
-    # before the child exists — so this is what the child actually ran under, not what
-    # the launcher intended half a minute earlier.
-    binding: ExecutionBinding
+    # HISTORICAL (pre-cutover): the permission boundary the supervisor re-verified on
+    # disk before the child existed. Unset since 2026-08-20; retained so pre-cutover
+    # events replay unchanged.
+    binding: ExecutionBinding | None = None
     harness_version: str      # probed from the installed harness, not assumed
     model_requested: str      # what the adapter actually put on the command line
     started_at: str

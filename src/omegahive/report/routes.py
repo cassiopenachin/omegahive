@@ -1,26 +1,32 @@
-"""The refusal report: every catalog route as `launchable` or `refused`, with reasons.
+"""The catalog check: every route as `resolvable` or `refused`, with the reason.
 
 One redacted, side-effect-free command answers the question an operator otherwise
-answers by attempting a launch and reading a traceback: which routes can carry a worker
-right now, under which permission boundary, with which classes probed, and — for the
-ones that cannot — exactly why.
+answers by attempting a launch and reading a traceback: what can this deployment run
+right now, which route is the worker default, whether each named executable is present,
+and — for the ones that cannot resolve — exactly why.
+
+This used to be a qualification report: boundary status per route, mechanism per policy
+class, probe tallies, residual prose. That product is retired (runner-trust doctrine,
+2026-08-20). Configuration is authorization, so there is no state here to promote and
+nothing to certify; what is left is a catalog and command check, which is a smaller and
+more honest thing.
 
 Three properties are load-bearing:
 
-  * **It never upgrades a route.** This module only reads. There is no path here that
-    materializes a file, writes a catalog, marks a descriptor proven, or flips a
-    credential mode. A report that could fix what it reports would eventually be run
-    for the fixing.
+  * **It never changes a route.** This module only reads. There is no path here that
+    writes a catalog, enables an entry, or records anything. A report that could fix
+    what it reports would eventually be run for the fixing.
 
-  * **It makes no network or model call.** The harness version is not probed and no
-    provider is contacted, so this is safe to run on a laptop, in a cron, or into a
-    paste. What it cannot see, it says it cannot see.
+  * **It makes no network or model call.** No provider is contacted and no harness is
+    started. Executable presence is answered by the HOST and passed in, because a pure
+    function cannot stat anything and the CLI runs in a container where the operator's
+    harnesses are not installed.
 
   * **It is redacted by construction, not by filtering.** The only strings it can print
-    come from the catalog (route identity and an opaque credential-pool label), the
-    descriptor (rule patterns, which are policy), and refusal messages. It never
-    receives an environment, a settings file's values, or a credential, so there is
-    nothing here for a redaction pass to miss.
+    come from the catalog — route identity, an opaque credential-pool label, and the
+    runner's executable and argument vector — plus refusal messages. It never receives
+    an environment or a credential, so there is nothing here for a redaction pass to
+    miss. The runner's `inherit_env` is printed as NAMES, which is all it ever holds.
 """
 
 from __future__ import annotations
@@ -29,177 +35,94 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from omegahive.harness.adapters import LaunchContext, get_adapter
-from omegahive.harness.bindings import (
-    check_argv,
-    load_binding_descriptor,
-    materialize,
-    run_local_probes,
-)
-from omegahive.harness.plan import _credential_gate, resolve_harness_binding
-from omegahive.harness.records import (
-    RefusalError,
-    RouteEntry,
-    load_catalog,
-    resolve_route,
-)
-
-# A deterministic stand-in for the launch context. The report builds each route's argv
-# through the REAL adapter — an argv-flag probe over a hand-written vector would check
-# the report's idea of the boundary rather than the launcher's — but it must do so
-# without a task, an order, or a worker, so these placeholders stand in for the parts
-# that cannot affect a boundary check.
-_STUB_SESSION = "00000000-0000-4000-a000-000000000000"
+from omegahive.harness.adapters import get_adapter
+from omegahive.harness.records import RefusalError, RouteEntry, load_catalog
 
 
-def _row(route: RouteEntry, **kw: Any) -> dict[str, Any]:
-    base = {
+def _row(route: RouteEntry, *, default: bool, present: bool | None,
+         state: str = "resolvable", refusal_code: str | None = None,
+         reason: str | None = None) -> dict[str, Any]:
+    return {
         "route": route.name,
+        "state": state,
+        "refusal_code": refusal_code,
+        "reason": reason,
+        "is_worker_default": default,
+        "enabled": route.enabled,
+        "model_vendor": route.model_vendor,
+        "provider": route.provider,
+        "model": route.model,
         "harness": route.harness,
         "adapter": route.adapter,
-        "model": route.model,
-        "provider": route.provider,
         "billing_market": route.billing_market,
-        "credential_mode": route.credential_mode,
         "credential_pool": route.credential_pool,
-        "enabled": route.enabled,
-        "binding_id": route.binding_id,
-        "binding_digest": route.binding_digest,
-        "state": "refused",
-        "refusal_code": None,
-        "reason": None,
-        "binding_status": None,
-        "command_mode": None,
-        "classes": {},
-        "probes": {},
-        "residuals": {},
+        "worker_io": route.runner.worker_io,
+        "executable": route.runner.executable,
+        "executable_present": present,
+        "runner_args": list(route.runner.args),
+        "inherit_env": list(route.runner.inherit_env),
+        "runner_fingerprint": route.runner.fingerprint(),
+        "has_price_basis": route.price_basis is not None,
+        "note": route.note,
     }
-    base.update(kw)
-    return base
 
 
 def evaluate_routes(
     *,
     catalog_raw: bytes,
-    descriptors_raw: Mapping[str, bytes],
-    parent_env: Mapping[str, str] | None = None,
-    present_paths: frozenset[str] = frozenset(),
+    present_executables: Mapping[str, bool] | None = None,
 ) -> list[dict[str, Any]]:
-    """One row per catalog route, in catalog order.
+    """Every catalog route, in catalog order, with the one verdict a check can give.
 
-    Catalog order rather than sorted: the operator edits that file by hand, and a report
-    whose order matches the file is a report they can read against it.
+    `present_executables` maps an executable name to whether the host can find it. An
+    absent entry is reported as unknown rather than as missing: not having asked and
+    having asked and been told no are different facts, and only one of them is a reason
+    to stop.
     """
     catalog = load_catalog(catalog_raw)
-    env = dict(parent_env or {})
+    present_executables = present_executables or {}
     rows: list[dict[str, Any]] = []
+    default_name = catalog.defaults.worker
+    seen: dict[str, int] = {}
     for route in catalog.routes:
-        # Resolve the route by NAME through the same function the launcher uses, before
-        # anything else. The catalog is hand-edited and `RouteCatalog` has no
-        # duplicate-name validator, so two entries sharing a name is an ordinary edit —
-        # and this report used to render BOTH as launchable while a launch refused with
-        # ROUTE_AMBIGUOUS. The direction is fail-safe, but the operator reads two
-        # different models under one approved name, from the document whose whole job is
-        # answering "what is launchable".
-        try:
-            resolve_route(catalog, route.name)
-        except RefusalError as exc:
-            rows.append(_row(route, refusal_code=exc.code, reason=exc.message))
+        seen[route.name] = seen.get(route.name, 0) + 1
+
+    for route in catalog.routes:
+        present = present_executables.get(route.runner.executable)
+        is_default = route.name == default_name
+        if seen[route.name] > 1:
+            rows.append(_row(route, default=is_default, present=present, state="refused",
+                             refusal_code="ROUTE_AMBIGUOUS",
+                             reason=f"route name {route.name!r} appears "
+                                    f"{seen[route.name]} times in the catalog"))
             continue
         if not route.enabled:
-            rows.append(
-                _row(
-                    route,
-                    refusal_code="ROUTE_DISABLED",
-                    reason="present in the catalog and switched off; kept visible so "
-                    "'we turned this off' and 'this never existed' stay distinguishable",
-                )
-            )
+            rows.append(_row(route, default=is_default, present=present, state="refused",
+                             refusal_code="ROUTE_DISABLED",
+                             reason="present but disabled; enabling it is the "
+                                    "authorization act"))
             continue
         try:
-            binding = resolve_harness_binding(route, descriptors_raw)
+            get_adapter(route.adapter)
         except RefusalError as exc:
-            # Still show what the descriptor CLAIMS, when there is one to read. An
-            # operator meeting `HARNESS_BINDING_UNPROVEN` needs to know which classes
-            # would bind and which would not — that is the input to deciding whether
-            # installing the harness is worth it — and a row of dashes hides exactly
-            # that. The row stays refused; only the description gets richer.
-            claimed: dict[str, Any] = {}
-            raw = descriptors_raw.get(route.binding_id)
-            if raw is not None:
-                try:
-                    declared = load_binding_descriptor(raw)
-                    claimed = {
-                        "binding_status": declared.status,
-                        "command_mode": declared.command_mode,
-                        "classes": declared.mechanism_summary(),
-                        "residuals": {
-                            c.policy_class: c.residual
-                            for c in declared.classes
-                            if c.residual
-                        },
-                    }
-                except RefusalError:
-                    claimed = {}
-            rows.append(_row(route, refusal_code=exc.code, reason=exc.message, **claimed))
+            rows.append(_row(route, default=is_default, present=present, state="refused",
+                             refusal_code=exc.code, reason=exc.message))
             continue
-        try:
-            adapter = get_adapter(route.adapter)
-            ctx = LaunchContext(
-                kickoff="",
-                cwd="",
-                execution_id="report",
-                session_id=_STUB_SESSION,
-                parent_env=env,
-                code_root="",
-            )
-            launch = adapter.build(route, ctx, binding)
-            check_argv(binding, launch.argv)
-            mat = materialize(binding, extra_dirs=[])
-            probes = run_local_probes(
-                binding,
-                materialized=mat,
-                argv=launch.argv,
-                env=launch.env,
-                parent_env=env,
-                present_paths=present_paths,
-            )
-        except RefusalError as exc:
-            rows.append(
-                _row(
-                    route,
-                    refusal_code=exc.code,
-                    reason=exc.message,
-                    binding_status=binding.status,
-                )
-            )
+        if present is False:
+            rows.append(_row(route, default=is_default, present=present, state="refused",
+                             refusal_code="EXECUTABLE_MISSING",
+                             reason=f"the host cannot find {route.runner.executable!r} "
+                                    "on PATH"))
             continue
+        rows.append(_row(route, default=is_default, present=present))
 
-        failed = [p for p in probes if p.state == "fail"]
-        common = {
-            "binding_status": binding.status,
-            "command_mode": binding.command_mode,
-            "classes": binding.mechanism_summary(),
-            "probes": {p.probe_id: p.state for p in probes},
-            "residuals": {c.policy_class: c.residual for c in binding.classes if c.residual},
-        }
-        if failed:
-            rows.append(
-                _row(
-                    route,
-                    refusal_code="BINDING_PROBE_FAILED",
-                    reason="; ".join(
-                        f"{p.policy_class}/{p.probe_id}: {p.detail}" for p in failed
-                    ),
-                    **common,
-                )
-            )
-            continue
-        gate = _credential_gate(route)
-        if gate is not None:
-            rows.append(_row(route, refusal_code=gate[0], reason=gate[1], **common))
-            continue
-        rows.append(_row(route, state="launchable", **common))
+    if default_name not in {r["route"] for r in rows}:
+        known = ", ".join(sorted(r["route"] for r in rows)) or "<none>"
+        raise RefusalError(
+            "DEFAULT_ROUTE_UNKNOWN",
+            f"the catalog's defaults.worker names {default_name!r} and no such route "
+            f"exists; known: {known}",
+        )
     return rows
 
 
@@ -210,57 +133,32 @@ def routes_to_json(rows: list[dict[str, Any]]) -> str:
 def routes_to_text(rows: list[dict[str, Any]]) -> str:
     """The human form. Every row states its verdict first, on one line."""
     if not rows:
-        return "no routes in the catalog."
+        return "no routes in the catalog.\n"
     out: list[str] = []
-    launchable = sum(1 for r in rows if r["state"] == "launchable")
-    out.append(f"{len(rows)} route(s): {launchable} launchable, {len(rows) - launchable} refused")
+    ok = sum(1 for r in rows if r["state"] == "resolvable")
+    out.append(f"{len(rows)} route(s): {ok} resolvable, {len(rows) - ok} refused")
     out.append("")
     for r in rows:
-        verdict = "LAUNCHABLE" if r["state"] == "launchable" else f"REFUSED  [{r['refusal_code']}]"
-        out.append(f"{verdict}  {r['route']}")
+        verdict = "OK      " if r["state"] == "resolvable" else f"REFUSED [{r['refusal_code']}]"
+        marker = "  <- worker default" if r["is_worker_default"] else ""
+        out.append(f"{verdict}  {r['route']}{marker}")
         out.append(
             f"    {r['model']} @ {r['harness']} "
-            f"({r['billing_market']}/{r['credential_mode']}, pool {r['credential_pool']})"
+            f"({r['billing_market']}, pool {r['credential_pool']}, adapter {r['adapter']})"
         )
-        out.append(f"    boundary: {r['binding_id']} {r['binding_digest'][:19]}… "
-                   f"status {r['binding_status'] or 'n/a'}  mode {r['command_mode'] or 'n/a'}")
-        for pc in ("P1", "P2", "P3", "P4"):
-            mech = ", ".join(r["classes"].get(pc, [])) or "—"
-            out.append(f"      {pc}: {mech}")
-        deferred = [k for k, v in r["probes"].items() if v == "deferred"]
-        failed = [k for k, v in r["probes"].items() if v == "fail"]
-        passed = [k for k, v in r["probes"].items() if v == "pass"]
-        if r["probes"]:
-            line = f"      probes: {len(passed)} pass"
-            if deferred:
-                line += f", {len(deferred)} deferred ({', '.join(sorted(deferred))})"
-            if failed:
-                line += f", {len(failed)} FAIL ({', '.join(sorted(failed))})"
-            out.append(line)
-        residual_classes = sorted(pc for pc, v in r["residuals"].items() if v)
-        if residual_classes:
-            out.append(
-                f"      residuals: {', '.join(residual_classes)} "
-                f"(stated in full under {r['binding_id']} below)"
-            )
+        if r["executable_present"] is None:
+            found = "presence not checked"
+        else:
+            found = "found on PATH" if r["executable_present"] else "NOT FOUND on PATH"
+        out.append(f"    runner: {r['executable']}  ({found})   worker I/O: {r['worker_io']}")
+        if r["runner_args"]:
+            out.append(f"      args: {r['runner_args']}")
+        if r["inherit_env"]:
+            out.append(f"      inherits (names only): {' '.join(r['inherit_env'])}")
+        out.append(f"      fingerprint: {r['runner_fingerprint']}")
         if r["reason"]:
             out.append(f"    reason: {r['reason']}")
+        if r["note"]:
+            out.append(f"    note: {r['note']}")
         out.append("")
-
-    # Residuals once per BOUNDARY, not once per route. They are the honest half of the
-    # report and they are long; repeating them under every route that shares a
-    # descriptor is how the honest half becomes the part nobody reads.
-    seen: dict[str, dict[str, str]] = {}
-    for r in rows:
-        for pc, residual in r["residuals"].items():
-            if residual:
-                seen.setdefault(r["binding_id"], {})[pc] = residual
-    if seen:
-        out.append("What these boundaries do NOT close:")
-        out.append("")
-        for binding_id, residuals in sorted(seen.items()):
-            out.append(f"  {binding_id}")
-            for pc, residual in sorted(residuals.items()):
-                out.append(f"    {pc}: {residual}")
-            out.append("")
     return "\n".join(out).rstrip() + "\n"

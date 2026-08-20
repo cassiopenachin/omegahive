@@ -33,32 +33,38 @@ set -euo pipefail
 : "${WORK_ROOT:=$HOME/work}"                       # per-worker working trees live under here
 : "${WRAPPER_DIR:=$HOME/work/hive-wrappers}"       # per-seat emit wrappers (proto-credentials)
 : "${HIVE_TMUX_SESSION:=hive}"                     # tmux session that holds the worker panes
-# Session launcher, and the pane's autonomy is part of it: a launched pane that
-# waits on interactive permission prompts is not launched — the ceremony ends and
-# the work does not start. `--permission-mode auto` is the mode WORKER.md section
-# Launch specifies (adaptable, stall-free; bypass mode is prohibited, and auto
-# cannot be granted by the repo's own settings, hence the flag here). The hard
-# line stays the workspace's committed deny pins, which are evaluated first in
-# every mode. Override the whole string with HIVE_WORKER_CMD (project.conf / env)
-# if the worker CLI's flag ever drifts; the drill overrides it to a no-op.
-: "${HIVE_WORKER_CMD:=claude --permission-mode auto}"
+# There is deliberately no HIVE_WORKER_CMD here any more. The command a worker runs is
+# a ROUTE fact — the catalog's `runner` block names the executable, its static arguments
+# and the environment variable names it needs — and a deployment string beside the
+# catalog was a second, weaker way to say the same thing that recorded no model, vendor,
+# billing market or credential pool. Every launch goes through the route resolver.
 : "${HIVE_WIP_REVIEW_MAX:=3}"                       # hive-launch refuses at this many in_review tasks (review debt, summed across all projects); --anyway overrides
 
-# --- worker execution routing (HIP-1 M2) --------------------------------------------
+# --- worker execution routing -------------------------------------------------------
 # The route catalog is a DEPLOYMENT fact and lives outside every project: it names what
-# this host can run, which credential pools exist, and what list prices applied when it
-# was captured. It is never committed to a project, and nothing here reads its contents
-# — hive-launch pipes its exact bytes to the CLI, which digests and validates them.
-# `schemas/route-catalog.example.json` is the redacted shape; the live file is the
-# operator's, at this path.
+# this host can run, how it runs it, which credential pools exist, and what list prices
+# applied when it was captured. It is never committed to a project, and nothing here
+# reads its contents — hive-launch pipes its exact bytes to the CLI, which digests and
+# validates them. `schemas/route-catalog.example.json` is the redacted shape; the live
+# file is the operator's, at this path.
+#
+# Its presence IS the authorization (runner-trust doctrine, 2026-08-20). There is no
+# per-order binding file, no descriptor digest to paste and no promotion state; a route
+# with `enabled: true` may carry a worker, and deleting or disabling it is revocation.
+# The catalog must therefore live OUTSIDE every worker-writable task root, which the
+# default below satisfies and any override must preserve.
 : "${HIVE_ROUTE_CATALOG:=$HOME/.config/omegahive/routes.json}"
-# Where a project's committed launch bindings live, relative to the project directory.
-: "${HIVE_BINDINGS_DIR:=bindings}"
-# Enforcement is OFF until the operator finishes migrating the workspace: a launch with
-# no binding still runs, loudly, on the legacy HIVE_WORKER_CMD path. Set to 1 to make a
-# missing binding a refusal. `hive-launch --check-migration` enumerates what would
-# refuse today, which is the input to deciding when to flip this.
-: "${HIVE_ENFORCE_BINDINGS:=0}"
+
+# The supervisor's own state, and the reason it is not under $WORK_ROOT/<worker>: that
+# directory is the worker's TASK ROOT, which the worker may write to in full. Anything a
+# trusted-side decision depends on — the immutable launch plan, the relay wrappers, the
+# terminal fact — lives here instead, one directory per worker, outside every task root.
+: "${HIVE_EXEC_ROOT:=$WORK_ROOT/hive-exec}"
+
+# How long a supervised worker's wrapper waits for a receipt before giving up. It times
+# out LOUDLY rather than deadlocking the session: a wedged supervisor must cost the
+# worker one refused call, not its whole turn.
+: "${HIVE_SPOOL_TIMEOUT:=180}"
 
 # RUN / RUN_ID / CODE_REPO / PROJECT / CANON_CODE are resolved per operation by
 # load_project_conf (from the order's project) — never hardcoded here, because a
@@ -108,93 +114,37 @@ unb64() {  # unb64  (reads base64 on stdin, writes bytes on stdout)
   if printf 'aGk=' | base64 -d >/dev/null 2>&1; then base64 -d; else base64 -D; fi
 }
 
-# --- harness permission-boundary descriptors ------------------------------------------
+# --- host answers a pure resolver cannot give ----------------------------------------
 #
-# The descriptors are CODE, not deployment state: they ship in this repository beside the
-# launcher, so `permissions.md`'s "who enforces the boundary" question is answered by a
-# file an operator can read and git can blame. They are collected on the HOST and passed
-# to the resolver by exact bytes, because the catalog pins each one by digest and any
-# re-encode on the way in would break the very pin fail-closed depends on.
-: "${HIVE_BINDINGS_REPO_DIR:=}"   # override for tests; default is this repo's dir
+# The resolver is a pure function of bytes: it cannot stat a path or look on PATH, which
+# is what makes `--check` genuinely free of side effects. The one thing only the host can
+# answer is whether the executable a route names is actually installed, so it is answered
+# here and passed in. Both the preflight and the real launch call the SAME helper, because
+# a gate that can disagree with what it gates is a defect this tooling has already paid
+# for once (retro 2026-07-29 D1).
 
-harness_bindings_dir() {  # harness_bindings_dir -> the directory holding the descriptors
-  if [ -n "$HIVE_BINDINGS_REPO_DIR" ]; then printf '%s' "$HIVE_BINDINGS_REPO_DIR"; return; fi
-  printf '%s' "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/harness-bindings"
-}
-
-# {"<binding_id>": "<base64 of the file's exact bytes>"} for every descriptor present.
-# The key is the FILE STEM; the resolver looks up by the route's `binding_id` and then
-# checks the descriptor's own `harness` against the route's, so a renamed file cannot
-# answer for a boundary it does not describe.
-harness_descriptors_json() {  # harness_descriptors_json
-  local dir f id out enc
-  dir=$(harness_bindings_dir)
-  [ -d "$dir" ] || die "harness binding descriptors not found: $dir
-  These ship with the launcher. Without them no route has a permission boundary, and a
-  launch without a boundary is exactly what permissions.md says must not happen."
+# {"<executable>": true|false} for every executable named by any route in the catalog.
+present_executables_json() {  # present_executables_json <catalog-path>
+  local out exe
   out='{}'
-  for f in "$dir"/*.json; do
-    [ -f "$f" ] || continue
-    id=$(basename "$f" .json)
-    enc=$(b64 "$f") || die "could not encode harness binding descriptor: $f"
-    out=$(printf '%s' "$out" | jq --arg k "$id" --arg v "$enc" '. + {($k): $v}') \
-      || die "could not assemble the harness binding descriptor set"
-  done
-  [ "$out" != '{}' ] || die "no harness binding descriptors in $dir"
+  while IFS= read -r exe; do
+    [ -n "$exe" ] || continue
+    if command -v "$exe" >/dev/null 2>&1; then
+      out=$(printf '%s' "$out" | jq --arg k "$exe" '. + {($k): true}')
+    else
+      out=$(printf '%s' "$out" | jq --arg k "$exe" '. + {($k): false}')
+    fi
+  done < <(jq -r '.routes[]?.runner.executable // empty' "$1" 2>/dev/null | sort -u)
   printf '%s' "$out"
 }
 
-# The one question a pure resolver cannot answer: which of the descriptors' declared
-# `config-absent` paths actually exist on THIS host. Passed in rather than assumed, so a
-# managed/admin policy file that outranks the materialized boundary refuses the launch
-# instead of silently replacing it.
-harness_present_paths_json() {  # harness_present_paths_json <descriptors-json>
-  local paths p out
-  paths=$(printf '%s' "$1" \
-    | jq -r '.[]' \
-    | while IFS= read -r enc; do
-        printf '%s' "$enc" | unb64 \
-          | jq -r '.classes[].probes[] | select(.kind == "config-absent") | .path'
-      done \
-    | sort -u) || die "could not read config-absent probe paths from the descriptors"
-  out='[]'
-  while IFS= read -r p; do
-    [ -n "$p" ] || continue
-    [ -e "$p" ] || continue
-    out=$(printf '%s' "$out" | jq --arg p "$p" '. + [$p]')
-  done <<< "$paths"
-  printf '%s' "$out"
-}
-
-# Write the materialized harness-native configuration into the isolated worker root.
-# Two properties matter more than the file's contents. It is written INTO THE WORKER'S
-# OWN ROOT and nowhere else — the operator's global harness configuration is never
-# rewritten, which is the failure permissions.md exists to end, one level down. And it
-# is written before the pane opens and re-verified by the supervisor before the child
-# exists, so "we generated a config" and "the child honors it" stay two facts.
-materialize_binding() {  # materialize_binding <plan-json> <worker-root>
-  local plan="$1" root="$2" rel want got dir
-  rel=$(printf '%s' "$plan" | jq -r '.binding.config_path // empty')
-  [ -n "$rel" ] || return 0          # argv-only boundary: nothing to write
-  case "$rel" in
-    /*|*..*) die "refusing to materialize a boundary outside the worker root: $rel" ;;
-  esac
-  want=$(printf '%s' "$plan" | jq -r '.binding.config_digest')
-  dir=$(dirname "$root/$rel")
-  mkdir -p "$dir" || die "cannot create $dir for the materialized boundary"
-  # `jq -j`, and never `$(jq -r ...)`: the config ends in a newline, command
-  # substitution strips trailing newlines, and `jq -r` adds one back. Either mistake
-  # changes the file's bytes and therefore its digest — which the read-back below
-  # catches, loudly, but only because the digest is taken over EXACT bytes. Writing
-  # straight through is the fix; the read-back is the proof.
-  printf '%s' "$plan" | jq -j '.binding.config_content' > "$root/$rel" \
-    || die "cannot write $root/$rel"
-  chmod 0600 "$root/$rel"
-  # Read back what actually landed. A write that succeeded and a file that says what we
-  # meant are different claims, and only the second one is a boundary.
-  got="sha256:$(sha256_hex < "$root/$rel")"
-  [ "$got" = "$want" ] || die "materialized boundary at $root/$rel hashes to $got, expected $want — the file on disk is not the one that was approved"
-  printf '%s\n' "  boundary: $rel  $want"
+# Refuse a launch whose named executable is not installed. A missing command is a cheap
+# deterministic failure, which is exactly the class the doctrine says launch still
+# refuses — and finding out from a preflight beats finding out from a dead pane.
+require_executable() {  # require_executable <executable> <route-name>
+  command -v "$1" >/dev/null 2>&1 || die "route '$2' names the executable '$1', which is not on PATH.
+  Catalog presence authorizes a runner; it cannot install one. Fix the route's
+  runner.executable in $HIVE_ROUTE_CATALOG, or install the harness."
 }
 
 # Read a harness version out of a `--version` probe's combined output.
