@@ -1,9 +1,26 @@
 # Probe record — Codex permission boundary, authenticated agent loop, 2026-08-19
 
-**This IS a `proven` record.** It supersedes
-`harness_binding_probe_codex_2026_08_14.md`, which recorded ten offline `execpolicy
-check` evaluations and stated plainly that nothing established whether the running
-agent honoured any of them. That is the gap this run closes.
+> **RETRACTED IN PART, 2026-08-20 — this is NOT a `proven` record.** The operator
+> rejected the promotion it backed. What is retracted is **P4 and the promotion**;
+> the P1–P3 measurements below were taken against the real agent loop and stand.
+>
+> **Why P4 is retracted.** This run tested a permission profile's `network` table
+> while `[features] network_proxy` was **absent**, observed no egress, and reported
+> that no-egress state as the harness's available native design. It is not: in
+> 0.147.0 `network.enabled` controls whether network *may* be used and does not start
+> the managed proxy on its own. And this run's P4 positive control was
+> `git --version`, which proves an executable exists and nothing about a named
+> development tool reaching its service. A class scored green against a mechanism
+> that was never switched on cannot promote a descriptor.
+>
+> The corrective measurements are in
+> `harness_binding_probe_codex_2026_08_20_corrective.md`, which supersedes this file
+> for P4, for the network claims in *What this record does NOT establish*, and for
+> the `proven` status. `codex.v1` is `declared`.
+
+It supersedes `harness_binding_probe_codex_2026_08_14.md`, which recorded ten offline
+`execpolicy check` evaluations and stated plainly that nothing established whether the
+running agent honoured any of them. That gap — for P1, P2 and P3 — is closed here.
 
 | | |
 |---|---|
@@ -12,7 +29,7 @@ agent honoured any of them. That is the gap this run closes.
 | Deployment | beastie (deployment #0) |
 | Model | `gpt-5.6-sol` |
 | Runner | `scripts/hive-binding-probe codex.v1` → `scripts/hive-binding-probe-codex` |
-| Result | **PASS=20 FAIL=0** — eighteen real probes plus both sensitivity controls |
+| Result | PASS=20 FAIL=0 as run — **but see the retraction above: the P4 rows measured the wrong thing, and the promotion this backed was rejected** |
 | Canonical config digest | `sha256:f21f3abb0d8ccc883592a22ecf96a06e11d4ef6d3d2c7c2ece555d3b45a7186d` |
 | Machine record | `docs/evidence/harness_binding_probe_codex_2026_08_19.json` |
 
@@ -138,14 +155,12 @@ produce them. Every one of them was found by RUNNING the suite, not by reading i
 
 ## What this record does NOT establish
 
-- **Network egress.** It is OFF for model-generated commands under this profile, and
-  the profile's own `network = { mode = "full" }` key does not lift it — measured, a
-  raw TCP connect raises `PermissionError`. That is *stricter* than P4 asks for, and it
-  is an operational limit: a worker on this route cannot push a branch or install a
-  package from a sandboxed command. The `network_proxy` feature that would change this
-  is experimental and off. The alternative legacy configuration family does enable
-  network and has **no per-path read denial at all**, so taking it would trade all of
-  P2 for P4's positive half. That trade is named, not taken.
+- ~~**Network egress.**~~ **RETRACTED — this entry was wrong in its central claim.**
+  It said the profile's `network` key "does not lift" the no-egress state and treated
+  that as the harness's available design. The key did not lift it because
+  `[features] network_proxy` was absent; with the feature on, the managed proxy runs
+  and an allowlisted host is reachable. Corrected measurements, including what that
+  does to P4's meaning, are in the 2026-08-20 corrective record.
 - **A determined agent at the same uid.** Unchanged from every row in this repository.
   What is narrower here than on the other harness is that the filesystem half is
   enforced at the syscall rather than by a command matcher, so an obfuscated command

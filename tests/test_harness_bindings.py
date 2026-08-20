@@ -1042,9 +1042,16 @@ def test_the_codex_profile_names_exactly_the_two_intended_write_roots():
     )
     profile = next(f for f in mat.files if f.path == "config.toml").content
     writes = [ln for ln in profile.splitlines() if ln.strip().endswith('= "write",')]
-    assert len(writes) == 2, f"exactly two writable roots, got {writes}"
+    # Two roots, each with its own `.git` re-granted — four entries, two trees.
+    assert len(writes) == 4, f"exactly two writable trees, got {writes}"
     assert '"/w/ws" = "write",' in profile
     assert '"/w/code" = "write",' in profile
+    # Codex makes `.git` READ-ONLY inside a workspace-write root by default, and a
+    # worker that cannot write `.git` cannot commit — measured 2026-08-20, before
+    # this line existed `git commit` failed with `Read-only file system` on
+    # `index.lock`. Not a third root: a subpath of one already granted.
+    assert '"/w/ws/.git" = "write",' in profile
+    assert '"/w/code/.git" = "write",' in profile
     # The run-dir holds plan.json — the root of trust for the boundary check — and the
     # ephemeral credential. Unwritable is not enough; it is denied for READ too.
     assert '"/w/run" = "deny",' in profile

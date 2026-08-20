@@ -866,6 +866,18 @@ def _codex_home(binding: HarnessBinding, ctx: MaterializeContext) -> list[Materi
     ]
     for root in _dedupe(write_roots):
         lines.append(f"  {_toml_quote(root)} = \"write\",")
+        # AND its `.git`, explicitly. Codex adds a READ-ONLY carve-out for `.git`
+        # inside every workspace-write root — a sensible vendor default, and fatal for
+        # a hive worker: measured 2026-08-20, `git commit` in the worker's own clone
+        # fails with `Unable to create .git/index.lock: Read-only file system`. A
+        # worker that cannot commit cannot produce a branch, a PR, or a workspace
+        # report, which is most of what a worker is for.
+        #
+        # This is NOT a third root and not a widening: `.git` is a subpath of a root
+        # this table already grants, and re-granting it restores the ordinary contents
+        # of "the worker may write its own clone". Verified alongside it that the
+        # planted-secret denial and the outside-root refusal both still hold.
+        lines.append(f"  {_toml_quote(root.rstrip('/') + '/.git')} = \"write\",")
     for path in _dedupe(deny_paths):
         lines.append(f"  {_toml_quote(path)} = \"deny\",")
     lines.append("}")
