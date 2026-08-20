@@ -1,0 +1,16 @@
+{
+  "cell_id": "cell-90638340fc",
+  "inputs": [
+    "README.md",
+    "artefacts/scripts/hive-common.sh",
+    "artefacts/scripts/hive-launch",
+    "artefacts/scripts/hive-score",
+    "candidate.patch",
+    "cell.json",
+    "order.md",
+    "packet-manifest.json",
+    "rubric.md",
+    "verifier/metrics-drill.log",
+    "verifier/shellcheck.log"
+  ]
+}

@@ -1,0 +1,166 @@
+diff --git a/docs/omegahive_recovery_runbook.md b/docs/omegahive_recovery_runbook.md
+index 51ff606..681d015 100644
+--- a/docs/omegahive_recovery_runbook.md
++++ b/docs/omegahive_recovery_runbook.md
+@@ -87,11 +87,13 @@ silently skip events. Follow the ordering exactly.
+      ```sh
+      docker compose run --rm cli bump-generation --run-id <run>
+      ```
+-     The bump only works on a *registered* run; it refuses one that was never opened
+-     (`run not registered`). The durable `omegahive` project run is currently unregistered
+-     — the `hive emit` write path never opens runs — so the bump is inert until the run is
+-     registered out of band (`omegahive.port.open_run`). See the ops RUNBOOK for the
+-     one-liner; until then the restart floor below is the operative path.
++     The bump works on a *registered* run; it refuses one that was never opened
++     (`run not registered`). The write path opens a run idempotently on its first emit, so
++     any run that has carried an event (including the durable `omegahive` run) is
++     registered and bumpable from its first event. Only a run whose stored log predates
++     that write-path change — e.g. a dump restored from before the write path opened runs —
++     is still unregistered; see the ops RUNBOOK for the one-time `open_run` fallback, then
++     bump again.
+    - **Restart *every* client** — the always-safe interim floor, independent of the token.
+ 4. **Restart** coordinators/workers; each re-snapshots through the port.
+ 
+diff --git a/src/omegahive/gateway/gateway.py b/src/omegahive/gateway/gateway.py
+index 9b81ce6..40c8f4e 100644
+--- a/src/omegahive/gateway/gateway.py
++++ b/src/omegahive/gateway/gateway.py
+@@ -94,6 +94,10 @@ class Gateway:
+         conn = self._store.conn
+         try:
+             with conn.transaction():
++                # 0. idempotent run registration — a run carries a generation token
++                # only after it is opened, so every emit registers its run in the same
++                # transaction as the event insert (no-op when already registered).
++                self._store.open_run()
+                 # 1. idempotency lookup FIRST — a replay returns the existing event
+                 # before any fold or gate, so a committed op is never re-gated.
+                 if idempotency_key is not None:
+diff --git a/tests/test_emit_cli.py b/tests/test_emit_cli.py
+index daa5698..28f1a8d 100644
+--- a/tests/test_emit_cli.py
++++ b/tests/test_emit_cli.py
+@@ -35,6 +35,7 @@ def cli_db(monkeypatch):
+     try:
+         with c.transaction():
+             c.execute("DELETE FROM events WHERE run_id = %s", (RUN,))
++            c.execute("DELETE FROM runs WHERE run_id = %s", (RUN,))
+     finally:
+         c.close()
+ 
+diff --git a/tests/test_emit_registers_run.py b/tests/test_emit_registers_run.py
+new file mode 100644
+index 0000000..edfe0e1
+--- /dev/null
++++ b/tests/test_emit_registers_run.py
+@@ -0,0 +1,110 @@
++"""`omegahive emit` registers its run (the write-path idempotent open).
++
++The finding (2026-07-13 backups-restore) was that the durable `omegahive` run had no
++row in `runs` — the emit write path never opened the run, so its generation token was
++inert and the restore bump was a silent no-op. This order fixes the write path to open
++the run idempotently (same transaction as the event insert). Driven end-to-end against
++live Postgres through the Typer app, like test_emit_cli.py.
++"""
++
++from __future__ import annotations
++
++import os
++
++import pytest
++from typer.testing import CliRunner
++
++from omegahive import cli
++from omegahive.clock import LogicalClock
++from omegahive.db import connect
++from omegahive.events.log import EventLog
++
++TEST_DATABASE_URL = os.environ.get(
++    "OMEGAHIVE_TEST_DATABASE_URL",
++    "postgresql://omegahive:omegahive@localhost:5432/omegahive_test",
++)
++
++runner = CliRunner()
++RUN = "cli-emit-registers-run"
++REF = "docs/omegahive_ui_spec.md@" + "abcdef12" * 5  # a well-formed path@<40-hex-sha>
++
++
++@pytest.fixture
++def cli_db(monkeypatch):
++    """Point the CLI's connection at the test DB; delete this run's rows on teardown."""
++    monkeypatch.setattr(cli, "connect", lambda *a, **k: connect(TEST_DATABASE_URL))
++    yield
++    c = connect(TEST_DATABASE_URL)
++    try:
++        with c.transaction():
++            c.execute("DELETE FROM events WHERE run_id = %s", (RUN,))
++            c.execute("DELETE FROM runs WHERE run_id = %s", (RUN,))
++    finally:
++        c.close()
++
++
++def _generation() -> int | None:
++    c = connect(TEST_DATABASE_URL)
++    try:
++        return EventLog(c, LogicalClock(0), RUN).generation()
++    finally:
++        c.close()
++
++
++def _emit(payload: str):
++    return runner.invoke(cli.app, [
++        "emit", "--run-id", RUN, "--role", "worker", "--actor", "w1",
++        "--type", "task.reported", "--task", "t1",
++        "--payload", payload,
++    ])
++
++
++def test_first_emit_registers_fresh_run(cli_db):
++    """A fresh scratch run id gets a generation token from its first emit."""
++    assert _generation() is None                       # not registered before
++
++    r = _emit(f'{{"ref": "{REF}", "kind": "result"}}')
++    assert r.exit_code == 0, r.output
++
++    assert _generation() == 1                          # registered with initial generation
++
++
++def test_second_emit_is_a_noop_and_keeps_registration(cli_db):
++    """The run stays registered and the generation is untouched by a deduped re-emit."""
++    payload = f'{{"ref": "{REF}", "kind": "result"}}'
++    assert _emit(payload).exit_code == 0
++    assert _generation() == 1
++
++    r2 = _emit(payload)
++    assert r2.exit_code == 0, r2.output
++    assert "already recorded" in r2.output.lower()
++    assert _generation() == 1                          # no-op: registration + token unchanged
++
++
++def test_bump_generation_succeeds_on_emitted_scratch_run(cli_db):
++    """A run touched by an emit is registered, so bump-generation is no longer inert."""
++    payload = f'{{"ref": "{REF}", "kind": "result"}}'
++    assert _emit(payload).exit_code == 0
++    assert _generation() == 1
++
++    rb = runner.invoke(cli.app, ["bump-generation", "--run-id", RUN])
++    assert rb.exit_code == 0, rb.output
++    assert _generation() == 2
++
++
++def test_already_registered_run_behavior_unchanged(cli_db):
++    """Pre-registering a run first: emit works and bump-generation still works."""
++    c = connect(TEST_DATABASE_URL)
++    try:
++        with c.transaction():
++            EventLog(c, LogicalClock(0), RUN).open_run()
++    finally:
++        c.close()
++    assert _generation() == 1
++
++    r = _emit(f'{{"ref": "{REF}", "kind": "finding"}}')
++    assert r.exit_code == 0, r.output
++
++    rb = runner.invoke(cli.app, ["bump-generation", "--run-id", RUN])
++    assert rb.exit_code == 0, rb.output
++    assert _generation() == 2

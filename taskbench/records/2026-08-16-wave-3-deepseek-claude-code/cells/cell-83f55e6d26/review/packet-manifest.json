@@ -1,0 +1,18 @@
+{
+  "cell_id": "cell-83f55e6d26",
+  "inputs": [
+    "README.md",
+    "artefacts/docs/INDEX.md",
+    "artefacts/docs/archive/README.md",
+    "artefacts/docs/reference/README.md",
+    "artefacts/workspace.patch",
+    "candidate.patch",
+    "cell.json",
+    "order.md",
+    "packet-manifest.json",
+    "rubric.md",
+    "verifier/docs-index-complete.log",
+    "verifier/link-integrity.log",
+    "verifier/nothing-deleted.log"
+  ]
+}

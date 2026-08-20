@@ -1,0 +1,210 @@
+diff --git a/projects/pln-benchmarks/reports/2026-07-28-ptc-revalidate-result.md b/projects/pln-benchmarks/reports/2026-07-28-ptc-revalidate-result.md
+new file mode 100644
+index 0000000..bf8f864
+--- /dev/null
++++ b/projects/pln-benchmarks/reports/2026-07-28-ptc-revalidate-result.md
+@@ -0,0 +1,204 @@
++# Result: ptc-revalidate — PeTTaChainer chaining verdict at pinned shas
++
++**Verdict: backward chaining is BROKEN, forward chaining WORKS**, at
++PeTTaChainer@02a85c6 + PeTTa@43705f5. The April 2026 blocker is not fixed. It
++reproduces at upstream HEAD, in upstream's own isolated task environment,
++against upstream's own tests.
++
++## What shipped
++
++**Code repo** (`cassiopenachin/plnbench`, branch `ptc-revalidate`,
++PR https://github.com/cassiopenachin/plnbench/pull/1, HEAD `cc8d4dd`):
++
++- `docs/ptc-verdict.md` — the verdict. Per-mode status at named shas, both
++  upstream suites verbatim, the April format-A table, what the diagnosis rules
++  out, and the consequence for the pipeline arm.
++- `tests/repros/ptc-revalidate/run-verdict.sh` — rebuilds the entire verdict from
++  a clean clone: fetches both pins into `vendor/`, builds PeTTaChainer's own
++  `.myclaw` image, runs five probes into `results/ptc-verdict/`.
++- `tests/repros/ptc-revalidate/minimal_repro.metta` — three lines: a fact is in
++  the KB, `query` cannot find it.
++- `tests/repros/ptc-revalidate/rule_tv_encoding.metta` — an `(STV s c)`
++  Implication is inert; `(CTV ...)` fires; upstream's own STV-implication test
++  shape forward-chains to nothing.
++- `tests/repros/ptc-revalidate/proofwriter_format_a.py` — the April ProofWriter
++  probe, both chaining modes, both rule encodings.
++- `tests/repros/ptc-revalidate/README.md` — what each log should contain, so a
++  future re-run can tell "still broken" from "environment differs".
++
++Nothing under `vendor/` was modified and no upstream source was patched.
++
++**Upstream filing:** https://github.com/rTreutlein/PeTTaChainer/issues/1 —
++minimal repro, upstream's own suite results, what was ruled out, and the second
++defect.
++
++**Workspace:** stall-ledger row **S1** closed against this report.
++
++## Findings
++
++1. **Backward chaining (`query`) returns empty for every query**, including a
++   query for a fact just `compileadd`ed and visibly present in `&kb`. Silent —
++   no error, warning, or timeout. Step budgets 1, 2, 4, 100, 1000 all return
++   empty. This is broader than April recorded ("empty for all queries"): the
++   direct-fact case shows it fails before any inference is required.
++
++2. **Forward chaining works.** It derives correctly with sensible truth values
++   and answers the April format-A ProofWriter probe **6/6**, including the
++   depth-1 derivation. A forward-derived fact is still not retrievable by
++   `query` afterwards — which is why upstream's forward tests fail on their
++   *final* assertion, not their first.
++
++3. **Second, independent defect:** an `Implication` carrying `(STV s c)`
++   compiles without error and then never fires, in either chaining mode. The
++   same rule carrying `(CTV (STV s c) (STV s c))` forward-chains normally. This
++   is a break, not a deprecation: upstream ships
++   `tests/test_stv_implication_derived_ctv.metta` asserting the STV form
++   derives its conclusion, and `LLM_RULE_SPEC.md`'s rule template — what
++   `get_language_spec()` hands an LLM — writes rules exactly that way, while
++   neither LLM-facing spec mentions `CTV` at all.
++
++Upstream suite results: MeTTa `6 passed, 44 failed`; Python
++`Ran 16 tests, FAILED (failures=5, errors=2)`. The MeTTa split tracks `query`
++usage almost exactly — none of the 6 passing files calls `query`, 43 of the 44
++failing files do.
++
++## How verified
++
++- **Upstream's own suites, upstream's own runners, upstream's own environment.**
++  Built PeTTaChainer's `.myclaw/Dockerfile` (swipl 9.3.33, CPython 3.10.18,
++  janus-swi 1.5.2, `uv sync --frozen`) and ran the exact commands from its
++  `.myclaw/environment.json`. Logs captured verbatim into
++  `results/ptc-verdict/`.
++- **`run-verdict.sh` executed end-to-end twice**, the second time after the
++  final edits, from an emptied `results/ptc-verdict/`. Both runs reproduced
++  every number quoted in the verdict doc. That is the rerunnability claim
++  discharged, not asserted.
++- **Alternative causes eliminated by running them**, not by argument:
++  - PeTTa regression — reproduces against PeTTa@d9a437c (2026-07-20,
++    contemporaneous with the PeTTaChainer pin) as well as the pinned
++    43705f5 (2026-07-24). PR #212's quoting change, which broke PLN's
++    `Direct.metta` (known-issues #2), is not the cause.
++  - SWI-Prolog version — identical on 9.3.33 (container) and 10.1.5 (host).
++  - Locale — all runs export `LC_ALL=C.UTF-8` (known-issues #1).
++  - API misuse — reproduces at the MeTTa level with no Python in the path, and
++    upstream's own tests fail the same way.
++- **Finding 3 checked against upstream's intent**, not just against the specs:
++  found `test_stv_implication_derived_ctv.metta`, ran its exact shape through
++  `forward-chain`, got nothing. This changed the finding's framing (from "spec
++  is stale" to "supported form is broken") and the issue body was corrected
++  before anyone had read it.
++- **Independent code review: not run.** The diff is a verdict document plus
++  repro scripts — no product code, no interfaces, nothing `core/` or
++  `benchmarks/` depends on. Every substantive claim is reproduced mechanically
++  by the committed script, which is stronger evidence than a reviewer reading
++  the prose, and operator review is the chartered next step. If the operator
++  wants a pass anyway, the diff is small.
++
++## To operate
++
++**Re-run the verdict** (from a clean clone of the code repo, on this host):
++
++```bash
++bash tests/repros/ptc-revalidate/run-verdict.sh
++```
++
++- Needs podman (or docker), git, and network on first run. Nothing else —
++  SWI-Prolog, Python, janus and uv all come from the container image, so the
++  host toolchain does not affect the result. `CONTAINER_ENGINE=docker` forces an
++  engine.
++- Roughly ten minutes cold, most of it the image build; re-runs are much faster.
++- Exits 0 always. The upstream suites are *expected* to fail at these pins —
++  that is the finding, not a broken run. Compare against the table in
++  `tests/repros/ptc-revalidate/README.md`.
++- Writes to `results/ptc-verdict/` (gitignored — regenerate, don't commit).
++
++**Two host-specific things the script already handles**, noted because they will
++bite anyone running upstream's `.myclaw` environment by hand:
++
++- `podman build` refuses the Dockerfile's short `FROM swipl:9.3.33` when it
++  cannot prompt for a registry. The script passes
++  `--from docker.io/library/swipl:9.3.33`.
++- Upstream's `.myclaw/petta` shim execs `/nexus/Dev/OpenCog/PeTTa/run.sh` while
++  its `pyproject.toml` resolves petta at `../../PeTTa`. Those agree only if
++  PeTTaChainer sits two levels below `/nexus/Dev/OpenCog`, so the script mounts
++  it at `/nexus/Dev/OpenCog/work/PeTTaChainer`. Editing either file to
++  "fix" the mismatch would violate the no-patching stop-line; the mount layout
++  satisfies both without touching the subject.
++
++Two named volumes, `plnbench-ptc-uv-cache` and `plnbench-ptc-uv-python`, persist
++uv's cache and its managed CPython. The second is not just a speed-up: `.venv`
++lives in the mounted clone and symlinks its interpreter into the container's
++HOME, so without a persistent HOME every run finds a dangling `.venv` and
++rebuilds it. Remove both with `podman volume rm` to force a fully cold run.
++
++**Pins.** `pins.env` supplies `PETTA_SHA`; PeTTaChainer is pinned inside
++`run-verdict.sh` (`PETTACHAINER_SHA=02a85c63be...`), deliberately not in
++`pins.env` — per that file's trailing note, vendoring the pipeline arm's
++subjects repo-wide would bake in an unvalidated arm. Bumping either pin means
++re-running the script and revising the verdict doc; the verdict is only about
++the shas it names.
++
++**What the pipeline arm needs to know.** At these pins the semantic-parser →
++PeTTaChainer arm (ROADMAP Goal 1) cannot use backward chaining at all. If it
++proceeds before an upstream fix it must be forward-chaining-only **and** emit
++`CTV`-wrapped rules, which means it cannot use `get_language_spec()`'s rule
++template unmodified — the documented template produces inert rules. The
++`lib_pln` arm stays the ProofWriter path of record; nothing here changes
++`docs/conventions.md`.
++
++**Open with the maintainer.** PeTTaChainer issue #1 is filed and unanswered.
++The operator's consult channel still owns the `Direct.metta` item — see below.
++
++## Reflection
++
++**The order's "one conversation, two data points" instruction was conditional,
++and the condition failed.** It asked to note known-issues #2 (PLN's
++`Direct.metta`) alongside the PeTTaChainer filing *if the maintainers overlap*.
++They do not meaningfully: `Direct.metta` is authored by Patrick Hammer and Peter
++Isaev in `trueagi-io/PLN`; PeTTaChainer's maintainer has one commit in that
++repo. Bundling would have put an off-topic PLN item into a PeTTaChainer bug
++report — the opposite of one conversation. So it was held back, the
++determination is recorded in `docs/ptc-verdict.md`, and `Direct.metta` remains
++for the operator's consult channel to the chartered PLN consults. **This is the
++one place a future worker might reasonably have chosen differently**, so it is
++flagged rather than buried.
++
++**The second finding nearly shipped with the wrong frame.** The first draft said
++the `(STV s c)` rule form was undocumented-vs-documented drift — "the spec is
++stale, `CTV` is the real contract." Then `test_stv_implication_derived_ctv.metta`
++turned up in the failing list: upstream has a test asserting the STV form works.
++Running that test's exact shape through `forward-chain` (not `query`) showed it
++derives nothing, which makes it a defect in its own right rather than the
++backward bug seen through one more test. The lesson is narrow and worth
++repeating: **when filing against a subject under test, grep its own tests for
++the behaviour you are about to call unsupported.** The failing-test list is
++evidence about intent, not just about breakage.
++
++**The 44/50 failure rate looked environmental at first and wasn't.** A suite
++that fails almost entirely usually means a bad build. What separated the cases
++was that the 6 passing files are exactly the ones that never call `query` — a
++correlation cheap to check and decisive once checked. Reaching for it before
++re-litigating the toolchain saved the time the order priced as its main risk.
++
++**Environment build was the predicted risk and cost the least.** The order
++priced SWI-Prolog + janus on the worker host as the risk mass; upstream's
++`.myclaw` container made the host toolchain irrelevant, and the two frictions
++that did appear (podman's short-name refusal, the `/nexus` path mismatch) were
++mount-level, not toolchain-level. Zero questions were needed — the order's
++named seam never opened.
++
++**Finding 3 is a fresh instance of stall-ledger S3**, the silent-failure class
++(wrong encoding → empty result → no error) that consumed April's debugging time.
++S3 is assigned to `pw-libpln-slice` on the lib_pln side; this is the same
++pathology on the PeTTaChainer side, and worth counting as evidence when that row
++is assessed. Both defects found here are silent: empty results, no diagnostics.
++Any future arm against PeTTaChainer should treat "empty" as *undiagnosed* rather
++than as "Unknown".
++
++**A scoring trap for whoever builds the benchmark harness.** In the format-A
++table the backward columns score 2/6 — but every query returned empty, and empty
++*is* the OWA "Unknown" answer. A chainer that always returns empty scores 2/6 on
++that table by construction. Read those columns as 0/6. Any ProofWriter scorer
++that maps empty → Unknown will award a completely dead chainer roughly the
++Unknown base rate; the harness needs a liveness check independent of the answer
++mapping, or the gate rule will not fire when it should.

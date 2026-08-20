@@ -1,0 +1,347 @@
+[
+  {
+    "cell_id": "cell-83f55e6d26",
+    "first_passed": true,
+    "labels": {
+      "harness": "claude-code-2.1.233",
+      "model": "deepseek/deepseek-v4-flash-0731@preset/omegahive-deepseek-v4-flash-0731",
+      "vendor": "deepseek"
+    },
+    "passed": true,
+    "remediated": false,
+    "resolved_model": "deepseek/deepseek-v4-flash-0731@preset/omegahive-deepseek-v4-flash-0731",
+    "spend": {
+      "candidate_attempt": {
+        "available": true,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 8441728,
+        "input_tokens": 587356,
+        "output_tokens": 63821,
+        "usd": 8.753169000000002
+      },
+      "candidate_remediation": null,
+      "note": "Per-leg list-price spend as each harness reported it. A leg reporting nothing is null, never zero. The generation/review split is what the all-in economics comparison needs; it is not computed here.",
+      "review": [
+        {
+          "available": true,
+          "cache_creation_input_tokens": 52844,
+          "cache_read_input_tokens": 346894,
+          "input_tokens": 17,
+          "output_tokens": 14351,
+          "usd": 1.061822
+        }
+      ],
+      "total_usd_reported": 9.815
+    },
+    "task_id": "docs-triage",
+    "usage": {
+      "available": true,
+      "reported": {
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 8441728,
+        "inference_geo": "",
+        "input_tokens": 587356,
+        "iterations": [],
+        "output_tokens": 63821,
+        "output_tokens_details": {
+          "thinking_tokens": 36159
+        },
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      },
+      "source": "harness result envelope",
+      "total_cost_usd": 8.753169000000002
+    },
+    "wall_ms": 849313
+  },
+  {
+    "cell_id": "cell-5692ca2c30",
+    "first_passed": false,
+    "labels": {
+      "harness": "claude-code-2.1.233",
+      "model": "deepseek/deepseek-v4-flash-0731@preset/omegahive-deepseek-v4-flash-0731",
+      "vendor": "deepseek"
+    },
+    "passed": true,
+    "remediated": true,
+    "resolved_model": "deepseek/deepseek-v4-flash-0731@preset/omegahive-deepseek-v4-flash-0731",
+    "spend": {
+      "candidate_attempt": {
+        "available": true,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 11169920,
+        "input_tokens": 1185764,
+        "output_tokens": 123820,
+        "usd": 14.840787999999995
+      },
+      "candidate_remediation": {
+        "available": true,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 3264256,
+        "input_tokens": 385428,
+        "output_tokens": 33372,
+        "usd": 4.393567999999999
+      },
+      "note": "Per-leg list-price spend as each harness reported it. A leg reporting nothing is null, never zero. The generation/review split is what the all-in economics comparison needs; it is not computed here.",
+      "review": [
+        {
+          "available": true,
+          "cache_creation_input_tokens": 56774,
+          "cache_read_input_tokens": 932068,
+          "input_tokens": 38,
+          "output_tokens": 13295,
+          "usd": 1.3674079999999997
+        },
+        {
+          "available": true,
+          "cache_creation_input_tokens": 91445,
+          "cache_read_input_tokens": 1006257,
+          "input_tokens": 31,
+          "output_tokens": 20558,
+          "usd": 1.9327525
+        }
+      ],
+      "total_usd_reported": 22.5345
+    },
+    "task_id": "instrument-teeth",
+    "usage": {
+      "available": true,
+      "reported": {
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 11169920,
+        "inference_geo": "",
+        "input_tokens": 1185764,
+        "iterations": [],
+        "output_tokens": 123820,
+        "output_tokens_details": {
+          "thinking_tokens": 76738
+        },
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      },
+      "source": "harness result envelope",
+      "total_cost_usd": 14.840787999999995
+    },
+    "wall_ms": 1438281
+  },
+  {
+    "cell_id": "cell-e92df96ecb",
+    "first_passed": true,
+    "labels": {
+      "harness": "claude-code-2.1.233",
+      "model": "deepseek/deepseek-v4-flash-0731@preset/omegahive-deepseek-v4-flash-0731",
+      "vendor": "deepseek"
+    },
+    "passed": true,
+    "remediated": false,
+    "resolved_model": "deepseek/deepseek-v4-flash-0731@preset/omegahive-deepseek-v4-flash-0731",
+    "spend": {
+      "candidate_attempt": {
+        "available": true,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 7632768,
+        "input_tokens": 494238,
+        "output_tokens": 99803,
+        "usd": 8.782648999999997
+      },
+      "candidate_remediation": null,
+      "note": "Per-leg list-price spend as each harness reported it. A leg reporting nothing is null, never zero. The generation/review split is what the all-in economics comparison needs; it is not computed here.",
+      "review": [
+        {
+          "available": true,
+          "cache_creation_input_tokens": 52546,
+          "cache_read_input_tokens": 664263,
+          "input_tokens": 6302,
+          "output_tokens": 17284,
+          "usd": 1.3222705
+        }
+      ],
+      "total_usd_reported": 10.1049
+    },
+    "task_id": "launch-pane-fix",
+    "usage": {
+      "available": true,
+      "reported": {
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 7632768,
+        "inference_geo": "",
+        "input_tokens": 494238,
+        "iterations": [],
+        "output_tokens": 99803,
+        "output_tokens_details": {
+          "thinking_tokens": 71059
+        },
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      },
+      "source": "harness result envelope",
+      "total_cost_usd": 8.782648999999997
+    },
+    "wall_ms": 1035851
+  },
+  {
+    "cell_id": "cell-a6775cf48e",
+    "first_passed": true,
+    "labels": {
+      "harness": "claude-code-2.1.233",
+      "model": "deepseek/deepseek-v4-flash-0731@preset/omegahive-deepseek-v4-flash-0731",
+      "vendor": "deepseek"
+    },
+    "passed": true,
+    "remediated": false,
+    "resolved_model": "deepseek/deepseek-v4-flash-0731@preset/omegahive-deepseek-v4-flash-0731",
+    "spend": {
+      "candidate_attempt": {
+        "available": true,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 12521600,
+        "input_tokens": 1134754,
+        "output_tokens": 101912,
+        "usd": 15.421545000000007
+      },
+      "candidate_remediation": null,
+      "note": "Per-leg list-price spend as each harness reported it. A leg reporting nothing is null, never zero. The generation/review split is what the all-in economics comparison needs; it is not computed here.",
+      "review": [
+        {
+          "available": true,
+          "cache_creation_input_tokens": 55160,
+          "cache_read_input_tokens": 417236,
+          "input_tokens": 21,
+          "output_tokens": 11100,
+          "usd": 1.0388920000000001
+        }
+      ],
+      "total_usd_reported": 16.4604
+    },
+    "task_id": "ptc-revalidate",
+    "usage": {
+      "available": true,
+      "reported": {
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 12521600,
+        "inference_geo": "",
+        "input_tokens": 1134754,
+        "iterations": [],
+        "output_tokens": 101912,
+        "output_tokens_details": {
+          "thinking_tokens": 51363
+        },
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      },
+      "source": "harness result envelope",
+      "total_cost_usd": 15.421545000000007
+    },
+    "wall_ms": 1778343
+  },
+  {
+    "cell_id": "cell-81d201c206",
+    "first_passed": false,
+    "labels": {
+      "harness": "claude-code-2.1.233",
+      "model": "deepseek/deepseek-v4-flash-0731@preset/omegahive-deepseek-v4-flash-0731",
+      "vendor": "deepseek"
+    },
+    "passed": true,
+    "remediated": true,
+    "resolved_model": "deepseek/deepseek-v4-flash-0731@preset/omegahive-deepseek-v4-flash-0731",
+    "spend": {
+      "candidate_attempt": {
+        "available": true,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 3527552,
+        "input_tokens": 377817,
+        "output_tokens": 31000,
+        "usd": 4.433600999999997
+      },
+      "candidate_remediation": {
+        "available": true,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 1332736,
+        "input_tokens": 306459,
+        "output_tokens": 20376,
+        "usd": 2.7080630000000006
+      },
+      "note": "Per-leg list-price spend as each harness reported it. A leg reporting nothing is null, never zero. The generation/review split is what the all-in economics comparison needs; it is not computed here.",
+      "review": [
+        {
+          "available": true,
+          "cache_creation_input_tokens": 30310,
+          "cache_read_input_tokens": 461901,
+          "input_tokens": 27,
+          "output_tokens": 8152,
+          "usd": 0.7390485
+        },
+        {
+          "available": true,
+          "cache_creation_input_tokens": 23631,
+          "cache_read_input_tokens": 374137,
+          "input_tokens": 21,
+          "output_tokens": 6670,
+          "usd": 0.5912664999999999
+        }
+      ],
+      "total_usd_reported": 8.472
+    },
+    "task_id": "run-registration",
+    "usage": {
+      "available": true,
+      "reported": {
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 3527552,
+        "inference_geo": "",
+        "input_tokens": 377817,
+        "iterations": [],
+        "output_tokens": 31000,
+        "output_tokens_details": {
+          "thinking_tokens": 16341
+        },
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      },
+      "source": "harness result envelope",
+      "total_cost_usd": 4.433600999999997
+    },
+    "wall_ms": 899887
+  }
+]

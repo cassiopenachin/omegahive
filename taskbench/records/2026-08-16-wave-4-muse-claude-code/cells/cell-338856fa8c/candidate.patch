@@ -1,0 +1,78 @@
+diff --git a/scripts/hive-launch b/scripts/hive-launch
+index cb9529c..2f6bbec 100755
+--- a/scripts/hive-launch
++++ b/scripts/hive-launch
+@@ -228,13 +228,69 @@ KICK
+ # Open the pane. The kickoff travels as an env var (HIVE_KICKOFF) so no multi-line
+ # text is ever quoted onto a command line; the window runs the worker command with
+ # it as the initial prompt. The pane NAME is the registry — no registry file.
++# Window allocation uses append/free-slot semantics (-a) against the session so an
++# occupied index never collides; only a name collision (window already named for
++# this task) is meaningful and is refused. The index is never chosen by us and
++# no .tmux.conf assumption (base-index, renumber-windows) is made.
+ launch_cmd="$HIVE_WORKER_CMD \"\$HIVE_KICKOFF\""
++# Fail-safe half-launch: if the window fails after the spine was seeded, the
++# board is owned but no pane exists. Print the filled kickoff and the remaining
++# manual steps per WORKER.md §Launch so the operator can complete the launch
++# without archaeology.
++print_half_launch_recovery() {
++  echo "" >&2
++  echo "hive-launch: HALF-LAUNCH — board is seeded but pane creation failed." >&2
++  echo "Complete the launch manually per WORKER.md §Launch (fallback):" >&2
++  echo "" >&2
++  printf '  task=%s  worker=%s  project=%s  run=%s\n' "$TASK" "$WORKER" "$PROJECT" "$RUN" >&2
++  printf '  clones: %s  +  %s\n' "$WS_ROOT" "$CODE_ROOT" >&2
++  printf '  wrapper: %s\n' "$WRAPPER" >&2
++  echo "" >&2
++  echo "--- filled kickoff (HIVE_KICKOFF) ---" >&2
++  printf '%s\n' "$KICKOFF" >&2
++  echo "--- end kickoff ---" >&2
++  echo "" >&2
++  echo "Remaining steps (WORKER.md §Launch manual path):" >&2
++  printf '  1. Clones already provisioned at %s and %s\n' "$WS_ROOT" "$CODE_ROOT" >&2
++  echo "     (printed as clones: above). If missing, re-clone per WORKER.md §Launch:" >&2
++  printf '       git clone %s %s\n' "$WS_HUB" "$WS_ROOT" >&2
++  printf '       git clone %s %s && git -C %s remote set-url origin %s\n' "$CANON_CODE" "$CODE_ROOT" "$CODE_ROOT" "$CODE_REPO" >&2
++  printf '  2. Emit wrapper already issued at %s\n' "$WRAPPER" >&2
++  echo "     Verify it exists and is executable; if missing recreate per hive-launch wrapper template." >&2
++  echo "  3. Board is already seeded (task.created + worker.registered + task.assigned," >&2
++  echo "     or adopt register+assign). Do NOT re-emit; verify with:" >&2
++  printf '       hive board-view %s --json | jq\n' "$RUN" >&2
++  echo "     A task that is assigned/blocked/in_progress is already owned — do not relaunch," >&2
++  echo "     recover via task.reassigned (RUNBOOK) if needed." >&2
++  echo "  4. Open the pane manually with append semantics (never specify an index):" >&2
++  # shellcheck disable=SC2016
++  printf '       tmux new-window -a -t %s -n %s -c %s -e HIVE_KICKOFF="$KICKOFF" %s\n' \
++    "$HIVE_TMUX_SESSION" "$TASK" "$WS_ROOT" "$HIVE_WORKER_CMD \"\$HIVE_KICKOFF\"" >&2
++  echo "     If the session does not exist:" >&2
++  # shellcheck disable=SC2016
++  printf '       tmux new-session -d -s %s -n %s -c %s -e HIVE_KICKOFF="$KICKOFF" %s\n' \
++    "$HIVE_TMUX_SESSION" "$TASK" "$WS_ROOT" "$HIVE_WORKER_CMD \"\$HIVE_KICKOFF\"" >&2
++  echo "  5. Verify the pane is the registry:" >&2
++  # shellcheck disable=SC2016
++  printf '       tmux list-windows -t %s -F "#{window_name}" | grep -qxF %s\n' "$HIVE_TMUX_SESSION" "$TASK" >&2
++  echo "" >&2
++  printf 'If a window named "%s" already exists, do not create a second window;\n' "$TASK" >&2
++  echo "the pane name is the registry — name collision must be resolved via task.reassigned (RUNBOOK)." >&2
++}
+ if tmux has-session -t "$HIVE_TMUX_SESSION" 2>/dev/null; then
+-  tmux new-window -t "$HIVE_TMUX_SESSION" -n "$TASK" -c "$WS_ROOT" \
+-    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd"
++  if ! tmux new-window -a -t "$HIVE_TMUX_SESSION" -n "$TASK" -c "$WS_ROOT" \
++    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd"; then
++    echo "hive-launch: create window failed: pane not created (see half-launch recovery below)" >&2
++    print_half_launch_recovery || true
++    exit 1
++  fi
+ else
+-  tmux new-session -d -s "$HIVE_TMUX_SESSION" -n "$TASK" -c "$WS_ROOT" \
+-    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd"
++  if ! tmux new-session -d -s "$HIVE_TMUX_SESSION" -n "$TASK" -c "$WS_ROOT" \
++    -e HIVE_KICKOFF="$KICKOFF" "$launch_cmd"; then
++    echo "hive-launch: create session/window failed (see half-launch recovery below)" >&2
++    print_half_launch_recovery || true
++    exit 1
++  fi
+ fi
+ echo "  pane:   $HIVE_TMUX_SESSION:$TASK  (attach: tmux attach -t $HIVE_TMUX_SESSION)"
+ echo "hive-launch: done."

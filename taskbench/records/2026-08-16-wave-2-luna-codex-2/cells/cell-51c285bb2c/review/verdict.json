@@ -1,0 +1,73 @@
+{
+  "cell_id": "cell-51c285bb2c",
+  "dod_legs": [
+    {
+      "leg": "repro-evidence",
+      "met": "yes",
+      "note": "The report names the reproduced collision (`create window failed: index 4 in use` after task.created/worker.registered/task.assigned) and the state it stranded (owned task, no pane, kickoff never delivered), and honestly discloses that the drill itself was not run here rather than faking coverage \u2014 the fallback the order's named risk prescribes. The 'after' evidence is deferred to the operator's drill run; that deferral is legitimate under the out-of-scope carve-out, but the drill case it points at is dead on arrival (defect 1)."
+    },
+    {
+      "leg": "runbook-half-launch",
+      "met": "yes",
+      "note": "RUNBOOK 'Dead worker recovery' gains a paragraph covering recognition ('window creation failed after spine seeding'), why re-running the launcher is wrong ('not recovery and the task is already owned'), and how to finish by hand (printed filled kickoff + append-semantics tmux command, worker follows WORKER.md and accepts through its issued wrapper). artefacts/workspace.patch:12-18."
+    },
+    {
+      "leg": "name-collision-refusal",
+      "met": "no",
+      "note": "The guard is present and correctly never creates a second window (hive-launch:135-138), but the message names no recovery path, and the attempt did not change it. See defect 2."
+    },
+    {
+      "leg": "result-report",
+      "met": "yes",
+      "note": "projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md carries all four sections, states the ordering choice and its rationale under 'To operate' as scope item 3 requires, and is candid about the missing bin/bench-verify and the unrun drill. Two claims overstate: 'keeping the existing name-collision refusal' (see defect 2) and 'the drill changes are written for the green-cell operator run' (they abort on line 190)."
+    },
+    {
+      "leg": "bash-syntax",
+      "met": "yes",
+      "note": "verifier/bash-syntax.log is empty \u2014 bash -n clean. Note this check cannot see the runtime unbound-variable abort in defect 1."
+    },
+    {
+      "leg": "shellcheck",
+      "met": "yes",
+      "note": "verifier/shellcheck.log is empty \u2014 shellcheck -x clean."
+    },
+    {
+      "leg": "no-event-model",
+      "met": "yes",
+      "note": "Stop-line not crossed. The emit/adopt/board-guard blocks (hive-launch:96-138, 186-207) are untouched; the patch only wraps window creation and adds a failure branch."
+    },
+    {
+      "leg": "no-registry-file",
+      "met": "yes",
+      "note": "Stop-line not crossed. The window name remains the sole registry; no state file is written, and the recovery print reiterates the task name as the window name."
+    },
+    {
+      "leg": "no-tmux-conf-assumptions",
+      "met": "yes",
+      "note": "Stop-line not crossed in the launcher: `new-window -a -t <session> -n <task>` supplies only session and name, and tmux's append/shuffle-up allocation holds regardless of base-index or renumber-windows. The drill's fixture does pin an explicit `:4`, but that is test scaffolding, not launcher behaviour."
+    },
+    {
+      "leg": "drill-green (out of scope)",
+      "met": "not-applicable",
+      "note": "Running the drill is excluded by the rubric; the attempt correctly does not claim to have run it. Defect 1 is a static reading of the delivered drill code, not a penalty for the missing run."
+    },
+    {
+      "leg": "spine-announce (out of scope)",
+      "met": "not-applicable",
+      "note": "Excluded by the rubric; the attempt does not claim to have announced."
+    }
+  ],
+  "verdict": "fail",
+  "would_have_shipped_defects": [
+    {
+      "evidence": "artefacts/scripts/hive-tooling-drill.sh:190 (`tmux new-window -d -t \"$TMUX_SESSION:4\" -n occupied-slot -c \"$WS_ROOT\"`) against `set -euo pipefail` at line 24; WS_ROOT appears nowhere else in the file (grep: single hit at 190); candidate.patch:76",
+      "summary": "The new drill case dereferences an undefined variable ($WS_ROOT) under `set -u`, so the drill aborts at the first new line and every assertion from that point on \u2014 the two new cases plus all existing lifecycle, throttle, adopt and refusal checks \u2014 never runs.",
+      "why_blocking": "scripts/hive-tooling-drill.sh sets `set -euo pipefail` (line 24). WS_ROOT is defined only inside hive-launch, never in the drill's own shell (the drill exports HIVE_TMUX_SESSION, WS_HUB, OPS_WS, CANON_ROOT, WORK_ROOT, WRAPPER_DIR at lines 151-157, and never sources hive-common.sh in the main shell). The operator who runs the drill against the green cell \u2014 the exact hand-off the rubric describes \u2014 gets `hive-tooling-drill.sh: line 190: WS_ROOT: unbound variable` and a non-zero exit immediately after the alpha-demo launch section. Confirmed by running the same construct: `set -euo pipefail; foo -c \"$WS_ROOT\"` exits 1 with `WS_ROOT: unbound variable`. Both order scope item 4 clauses fail: the occupied-index case and the half-launch recovery assertion never execute, and the existing assertions do not stay green. The 'after' half of the reproduction evidence, which the report defers to this operator run, is therefore unreachable. bash -n and shellcheck cannot catch this class (both verifier logs are empty/clean), so it would have reached the operator undetected."
+    },
+    {
+      "evidence": "artefacts/scripts/hive-launch:135-138 (unchanged \u2014 absent from candidate.patch); artefacts/workspace.patch:33-39 (report claim); order.md:14",
+      "summary": "The name-collision refusal is left exactly as the baseline wrote it and does not name a recovery path, though the order requires one and the result report claims the requirement is satisfied.",
+      "why_blocking": "Order scope item 2 requires an open window already named for this task to be 'refused with an error that names the recovery path, never a second window'. The refusal at hive-launch:137 dies with `a tmux window named '$TASK' already exists in session '$HIVE_TMUX_SESSION' (the pane is the registry)` \u2014 it states the rule but gives the operator no path forward, unlike the sibling refusals in the same script which do (`recover via task.reassigned (RUNBOOK)`, hive-launch:119/122). The candidate patch does not touch this line, and the RUNBOOK addition covers only the half-launch case, so an operator hitting a name collision is left to archaeology \u2014 the failure mode this order exists to remove. The report asserts the fix 'keep[s] the existing name-collision refusal' as if the leg were closed, which overstates what is there."
+    }
+  ]
+}

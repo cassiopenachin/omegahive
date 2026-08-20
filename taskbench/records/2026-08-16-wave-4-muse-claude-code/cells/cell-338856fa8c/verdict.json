@@ -1,0 +1,118 @@
+{
+  "because": "the order's named deliverables were never touched: scripts/hive-tooling-drill.sh; review leg: 1 would-have-shipped defect(s)",
+  "cell_id": "cell-338856fa8c",
+  "deterministic": {
+    "checks": [
+      {
+        "detail": "ok",
+        "exit_code": 0,
+        "id": "bash-syntax",
+        "output_tail": "",
+        "passed": true
+      },
+      {
+        "detail": "ok",
+        "exit_code": 0,
+        "id": "shellcheck",
+        "output_tail": "",
+        "passed": true
+      }
+    ],
+    "excluded_legs": [
+      {
+        "executed_by": "operator",
+        "leg": "`scripts/hive-tooling-drill.sh` green, including this task's new cases.",
+        "reason": "The loop drill emits scratch spine events, which this instrument's own scope forbids, and it drives tmux. At this task's baseline the drill predates the tmux isolation that the task itself introduces, so running it necessarily creates sessions on the operator's live tmux server \u2014 the server holding every worker pane. An offline evaluation instrument must not carry that blast radius. The operator runs the drill against a green cell."
+      },
+      {
+        "executed_by": "not-executed",
+        "leg": "Announce the result on the spine per WORKER.md.",
+        "reason": "A spine emit, which this instrument's own scope forbids. The report the order asks for IS written and graded \u2014 only the announcement is out of reach."
+      }
+    ],
+    "missing_artefacts": [],
+    "passed": false,
+    "stop_line_violations": [],
+    "untouched_required_changes": [
+      "scripts/hive-tooling-drill.sh"
+    ]
+  },
+  "inconclusive": false,
+  "passed": false,
+  "review": {
+    "defect_count": 1,
+    "passed": false,
+    "probe_ok": true,
+    "ran": true,
+    "reason": "1 would-have-shipped defect(s)",
+    "verdict": {
+      "cell_id": "cell-338856fa8c",
+      "dod_legs": [
+        {
+          "leg": "repro-evidence",
+          "met": "no",
+          "note": "The report names the collision (`create window failed: index 4 in use`) and the stranded state (owned on the board, no pane, kickoff never delivered), but attributes both to the order's own 2026-07-27 account rather than to anything it reproduced, and never shows the allocation working afterwards \u2014 the 'after' is the changed source line plus a man-page paraphrase of `-a`. It is transparent about this ('What was asserted instead of an on-host tmux collision replay'), which is honest, but the leg is still unmet."
+        },
+        {
+          "leg": "runbook-half-launch",
+          "met": "yes",
+          "note": "RUNBOOK gains '### Half-launched task (launch seeded the board but pane creation failed)' under dead-worker recovery (artefacts/workspace.patch:12-64): how to recognise it (HALF-LAUNCH banner; board `assigned` while `list-windows` shows no window for the task), why not to re-run (clones/wrapper already provisioned and board already seeded \u2014 'do NOT re-emit or re-provision'; an owned task is recovered via task.reassigned, not relaunch), and the manual finish with `new-window -a` plus the name-collision caveat."
+        },
+        {
+          "leg": "name-collision-refusal",
+          "met": "yes",
+          "note": "artefacts/scripts/hive-launch:135-138 \u2014 the pre-existing `list-windows | grep -qxF` guard still dies before any state change, and the message now names the recovery path (attach and look first; if dead, RUNBOOK 'Dead worker recovery' \u2014 kill the pane, fresh worker id, emit task.reassigned) and states 'Never a second window for one task.' The reworded message keeps the `task.reassigned` needle the drill asserts at hive-tooling-drill.sh:353, so no existing refusal assertion is broken by the rewording."
+        },
+        {
+          "leg": "result-report",
+          "met": "no",
+          "note": "The report exists at projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md with all four sections, and its What shipped / To operate / Rollback claims match the patch exactly (including the honest statement that the drill is 'unchanged, still the baseline file' and that reordering was deliberately not taken). The single mismatch is the unsupported 'Reproduce was performed in a tmp sandbox' claim, carried above as the defect. Separately, the report addresses the grading harness rather than the project ('this instrument', 'this cell', 'per TASK.md') \u2014 a wart in an operator-facing artefact, not scored as a defect."
+        },
+        {
+          "leg": "bash-syntax",
+          "met": "yes",
+          "note": "verifier/bash-syntax.log is empty \u2014 the launcher parses."
+        },
+        {
+          "leg": "shellcheck",
+          "met": "yes",
+          "note": "verifier/shellcheck.log is empty \u2014 clean on the loop scripts."
+        },
+        {
+          "leg": "no-event-model",
+          "met": "yes",
+          "note": "Stop-line not crossed. The patch changes only window creation, the collision message, and the added recovery print; the adopt/refuse branch, board guards, emit calls and payloads at hive-launch:113-207 are untouched."
+        },
+        {
+          "leg": "no-registry-file",
+          "met": "yes",
+          "note": "Stop-line not crossed. No registry file added; the pane name remains the registry, and both the new message and the RUNBOOK section restate that."
+        },
+        {
+          "leg": "no-tmux-conf-assumptions",
+          "met": "yes",
+          "note": "Stop-line not crossed. `new-window -a -t \"$HIVE_TMUX_SESSION\" -n \"$TASK\"` (hive-launch:281) supplies only session and name; no index is derived and no base-index/renumber-windows behaviour is assumed. The `new-session` branch creates a fresh session with one window and has no collision case."
+        },
+        {
+          "leg": "drill coverage (occupied-index case + half-launch assertion, drill green)",
+          "met": "not-applicable",
+          "note": "Out of scope per the rubric. Not credited either: candidate.patch does not touch scripts/hive-tooling-drill.sh, and the report says so plainly rather than claiming the drill is green with new cases."
+        },
+        {
+          "leg": "announce the result on the spine per WORKER.md",
+          "met": "not-applicable",
+          "note": "Out of scope per the rubric (a spine emit). The report itself is written and graded above; no announcement is claimed."
+        }
+      ],
+      "verdict": "fail",
+      "would_have_shipped_defects": [
+        {
+          "evidence": "artefacts/workspace.patch:141-223 \u2014 'How verified' lists only shellcheck/bash -n; the 'Before' block cites 'Per the order's 2026-07-27 confirmation' rather than an observed run, the 'After' block cites '`man tmux` (3.5a)', and the 'On failure the script now prints (excerpt, stderr)' block is hand-rendered with placeholder values (`example-task`, `sess-example-0727`, `/home/operator/...`). Line 153-156 claims 'Reproduce was performed in a tmp sandbox that mirrors the drill's structure' while the same paragraph concedes 'Evidence is structural rather than end-to-end tmux+DB'; no sandbox output appears anywhere in the report or artefacts. candidate.patch touches only scripts/hive-launch.",
+          "summary": "No reproduction was performed and the fix was never executed once: the report's 'How verified' rests entirely on shellcheck plus a man-page reading of `-a`, so the DoD's before/after reproduction evidence is absent.",
+          "why_blocking": "The order makes 'Reproduce first' scope item 1 and a merge condition ('reproduction evidence in the report (before: the collision + stranded state; after: clean allocation + recovery print)'), precisely because a plausible form-based fix had already been observed to fail in practice on this exact bug \u2014 the order records that `new-window -t hive -n <task>` with no index 'fails identically', so reasoning from the manual about tmux target resolution had already produced one wrong answer. The attempt's sole justification for `-a` is that same class of reasoning. The 40-line `print_half_launch_recovery` path has likewise never been run, so its first execution would be at the moment an operator is mid-recovery. The reviewer holding the DoD bounces this; an isolated replay was available without the excluded blast radius (a private `tmux -L` socket needs no spine emits and never touches the operator's live server), so the order's named-risk escape hatch ('if the drill can't simulate an occupied index portably') does not cover the gap."
+        }
+      ]
+    }
+  },
+  "task_id": "launch-pane-fix"
+}

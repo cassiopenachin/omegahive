@@ -1,0 +1,166 @@
+diff --git a/docs/omegahive_recovery_runbook.md b/docs/omegahive_recovery_runbook.md
+index 51ff606..90faa5b 100644
+--- a/docs/omegahive_recovery_runbook.md
++++ b/docs/omegahive_recovery_runbook.md
+@@ -87,12 +87,10 @@ silently skip events. Follow the ordering exactly.
+      ```sh
+      docker compose run --rm cli bump-generation --run-id <run>
+      ```
+-     The bump only works on a *registered* run; it refuses one that was never opened
+-     (`run not registered`). The durable `omegahive` project run is currently unregistered
+-     — the `hive emit` write path never opens runs — so the bump is inert until the run is
+-     registered out of band (`omegahive.port.open_run`). See the ops RUNBOOK for the
+-     one-liner; until then the restart floor below is the operative path.
+-   - **Restart *every* client** — the always-safe interim floor, independent of the token.
++     The bump only works on a *registered* run; unregistered runs refuse it. Runs are
++     registered automatically when their first event is emitted; the durable `omegahive`
++     project run is registered on its first emission.
++   - **Restart *every* client** — the always-safe floor, independent of the token.
+ 4. **Restart** coordinators/workers; each re-snapshots through the port.
+ 
+ Verify a restore reproduces the board: deployment check 3 (`scripts/deploy_checks.sh`)
+diff --git a/src/omegahive/gateway/gateway.py b/src/omegahive/gateway/gateway.py
+index 9b81ce6..740a65f 100644
+--- a/src/omegahive/gateway/gateway.py
++++ b/src/omegahive/gateway/gateway.py
+@@ -99,9 +99,13 @@ class Gateway:
+                 if idempotency_key is not None:
+                     existing = self._store.find_by_key(actor.id, idempotency_key)
+                     if existing is not None:
++                        # Register the run (idempotent) so it carries a generation token.
++                        self._store.open_run()
+                         return Accepted(existing)
+                 # 2. serialize per run: advisory lock keyed in Postgres (never Python hash()).
+                 conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (self._store.run_id,))
++                # Register the run (idempotent) so it carries a generation token.
++                self._store.open_run()
+                 # 3. fold + gate against the run prefix under the lock.
+                 board = fold(self._store.read_run())
+                 rej = self._gate(board, actor, event_type, payload, task_id)
+diff --git a/tests/test_emit_cli.py b/tests/test_emit_cli.py
+index daa5698..97fa364 100644
+--- a/tests/test_emit_cli.py
++++ b/tests/test_emit_cli.py
+@@ -99,3 +99,122 @@ def test_bad_role_exits_nonzero(cli_db):
+     ])
+     assert r.exit_code == 1
+     assert "invalid actor" in r.output.lower()
++
++
++def test_emit_registers_run(cli_db, monkeypatch):
++    # verify that emit idempotently registers the run so it has a generation token
++    run_id = "cli-emit-register-test"
++    monkeypatch.setattr(cli, "connect", lambda *a, **k: connect(TEST_DATABASE_URL))
++
++    # before emit, run is unregistered
++    c = connect(TEST_DATABASE_URL)
++    try:
++        gen_before = EventLog(c, LogicalClock(0), run_id).generation()
++        assert gen_before is None
++    finally:
++        c.close()
++
++    # emit registers the run
++    r = runner.invoke(cli.app, [
++        "emit", "--run-id", run_id, "--role", "worker", "--actor", "w1",
++        "--type", "task.reported", "--task", "t1",
++        "--payload", f'{{"ref": "{REF}", "kind": "result"}}',
++    ])
++    assert r.exit_code == 0, r.output
++
++    # after emit, run is registered with generation 1
++    c = connect(TEST_DATABASE_URL)
++    try:
++        gen_after = EventLog(c, LogicalClock(0), run_id).generation()
++        assert gen_after == 1
++    finally:
++        c.close()
++
++    # cleanup
++    c = connect(TEST_DATABASE_URL)
++    try:
++        with c.transaction():
++            c.execute("DELETE FROM events WHERE run_id = %s", (run_id,))
++            c.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
++    finally:
++        c.close()
++
++
++def test_emit_registration_is_idempotent(cli_db, monkeypatch):
++    # verify that a second emit on a fresh run doesn't re-register or bump generation
++    run_id = "cli-emit-idempotent-test"
++    monkeypatch.setattr(cli, "connect", lambda *a, **k: connect(TEST_DATABASE_URL))
++
++    # first emit registers the run
++    r1 = runner.invoke(cli.app, [
++        "emit", "--run-id", run_id, "--role", "worker", "--actor", "w1",
++        "--type", "task.reported", "--task", "t1",
++        "--payload", f'{{"ref": "{REF}", "kind": "result"}}',
++    ])
++    assert r1.exit_code == 0, r1.output
++
++    c = connect(TEST_DATABASE_URL)
++    try:
++        gen_after_first = EventLog(c, LogicalClock(0), run_id).generation()
++        assert gen_after_first == 1
++    finally:
++        c.close()
++
++    # second emit (different task) doesn't change generation
++    r2 = runner.invoke(cli.app, [
++        "emit", "--run-id", run_id, "--role", "worker", "--actor", "w1",
++        "--type", "task.reported", "--task", "t2",
++        "--payload", f'{{"ref": "{REF}", "kind": "result"}}',
++    ])
++    assert r2.exit_code == 0, r2.output
++
++    c = connect(TEST_DATABASE_URL)
++    try:
++        gen_after_second = EventLog(c, LogicalClock(0), run_id).generation()
++        assert gen_after_second == 1
++    finally:
++        c.close()
++
++    # cleanup
++    c = connect(TEST_DATABASE_URL)
++    try:
++        with c.transaction():
++            c.execute("DELETE FROM events WHERE run_id = %s", (run_id,))
++            c.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
++    finally:
++        c.close()
++
++
++def test_emit_then_bump_generation(cli_db, monkeypatch):
++    # verify that bump-generation succeeds on a run registered via emit
++    run_id = "cli-emit-bump-test"
++    monkeypatch.setattr(cli, "connect", lambda *a, **k: connect(TEST_DATABASE_URL))
++
++    # emit registers the run
++    r1 = runner.invoke(cli.app, [
++        "emit", "--run-id", run_id, "--role", "worker", "--actor", "w1",
++        "--type", "task.reported", "--task", "t1",
++        "--payload", f'{{"ref": "{REF}", "kind": "result"}}',
++    ])
++    assert r1.exit_code == 0, r1.output
++
++    # bump-generation should succeed (run is now registered)
++    r2 = runner.invoke(cli.app, ["bump-generation", "--run-id", run_id])
++    assert r2.exit_code == 0, r2.output
++    assert "1" in r2.output and "2" in r2.output
++
++    c = connect(TEST_DATABASE_URL)
++    try:
++        gen = EventLog(c, LogicalClock(0), run_id).generation()
++        assert gen == 2
++    finally:
++        c.close()
++
++    # cleanup
++    c = connect(TEST_DATABASE_URL)
++    try:
++        with c.transaction():
++            c.execute("DELETE FROM events WHERE run_id = %s", (run_id,))
++            c.execute("DELETE FROM runs WHERE run_id = %s", (run_id,))
++    finally:
++        c.close()

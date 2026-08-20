@@ -1,0 +1,62 @@
+{
+  "cell_id": "cell-5692ca2c30",
+  "dod_legs": [
+    {
+      "leg": "one-parser",
+      "met": "yes",
+      "note": "hive-score's own regex set is deleted (candidate.patch:566-579) and both callers now enter the single parse_predictions/assess_predictions pair in scripts/hive-common.sh:97-171 (hive-launch:85, hive-score:225). The drill proves it on one input: assess_predictions on the theta fixture returns 'refuse' and hive-score on the same order records 'section present, 0 of 3 fields parsed' (verifier/metrics-drill.log:121,127)."
+    },
+    {
+      "leg": "refuse-unparsed-not-absent",
+      "met": "yes",
+      "note": "hive-launch:73-103 runs the gate after the id/tmux guards and before the pin, the clones, the wrapper and every emit (first emit is hive-launch:255/263), so the refusal precedes any spine write; --anyway skips it (hive-launch:86). Verdicts: no-section and declared-unpredicted -> allow, 1-of-3 and 2-of-3 -> warn+launch, 0-of-3 dialect -> refuse (verifier/metrics-drill.log:116-121). Refusal prints the four literal labels and the captured offending lines (hive-launch:90-96; metrics-drill.log:124-125). Narrow edge: a `## Predictions` heading with a wholly empty body collapses to 'absent' and allows (hive-common.sh:109) \u2014 degenerate, not the D1 case the gate exists for."
+    },
+    {
+      "leg": "absent-vs-unparsed-distinct",
+      "met": "yes",
+      "note": "hive-score:290-302 emits 'unpredicted (no `## Predictions` section)' vs 'unpredicted (section present, 0 of 3 fields parsed)' (plus a third string for the declared-unpredicted case). Both asserted on two fixture tasks, gamma and theta (verifier/metrics-drill.log:95,98). Partial coverage names the missed fields (hive-score:301)."
+    },
+    {
+      "leg": "review-vocabulary",
+      "met": "yes",
+      "note": "hive-score:65-71 lowercases with tr then accepts only clean|minor rework|rework, dying with a message naming all three; validation runs before any scoring act. Drill: '--review bogus refuses, naming the three values', '--review Rework stored lowercase rework', 'did not store the mixed-case spelling' (verifier/metrics-drill.log:81-83)."
+    },
+    {
+      "leg": "close-ordering",
+      "met": "yes",
+      "note": "The regeneration is appended after the emit steps and after the score step in scripts/hive-close (candidate.patch:9-24), wrapped in `if ! hive-metrics \"$PROJECT\"` so a failure cannot propagate; the warning states the close succeeded and is durable, names the task, and gives the single recovery command. Exit status of the script is unaffected by the failure branch."
+    },
+    {
+      "leg": "refuse-not-rebase",
+      "met": "yes",
+      "note": "hive-common.sh:353-360 replaces push -> pull --rebase -> push with commit-locally, print 'refusing to auto-rebase a shared metrics path' plus the manual `pull --rebase && push` step, return 1. Drill injects a dead remote: non-zero exit, loud, names the manual step, local commit survives, no 'rebase failed' tell, recoverable by a plain push (verifier/metrics-drill.log:130-136)."
+    },
+    {
+      "leg": "named-risks-unscored",
+      "met": "yes",
+      "note": "PRED_LABELS carries `Named risks:` for printing only; the field count is over three (hive-common.sh:76-77, 132-136), and no scoring path reads it \u2014 stop-line not crossed. Documented as unscored at hive-common.sh:70-75 and in the result report's Reflection. Nit, not a defect: the refusal's gloss says 'hive-score parses these four literal bullet labels' (hive-launch:89), which overstates \u2014 it scores three \u2014 though the RUNBOOK text distinguishes 'the three scored fields' from the four printed labels."
+    },
+    {
+      "leg": "drill-hygiene-reported",
+      "met": "yes",
+      "note": "Reported by class in the result report Reflection: class 1 (EXIT-trap-before-isolation) 'none found' in hive-metrics-drill.sh with the reason; class 2 fixed by converting `cmd | grep -q` to `grep ... >/dev/null` throughout, remaining -q calls noted as direct file greps. No third class claimed, no restructure. The report says '22 instances fixed'; the patch shows 20 (candidate.patch removes 20 `grep -q*` pipeline lines). A miscount in a sweep tally, not a behavioural error."
+    },
+    {
+      "leg": "result-report",
+      "met": "yes",
+      "note": "projects/omegahive/reports/2026-08-16-instrument-teeth-result.md carries What shipped / How verified / To operate / Reflection (artefacts/workspace.patch:77-225). Claims check out: 131 PASS / 0 FAIL matches verifier/metrics-drill.log:144; it explicitly states the tooling drill was NOT run here and why, and does not claim the spine announcement \u2014 neither out-of-scope leg is falsely credited. 'To operate' names the pln re-score recovery command the order requires."
+    },
+    {
+      "leg": "shellcheck",
+      "met": "yes",
+      "note": "verifier/shellcheck.log is empty (0 bytes) \u2014 clean."
+    },
+    {
+      "leg": "metrics-drill",
+      "met": "yes",
+      "note": "verifier/metrics-drill.log:144 \u2014 PASS=131 FAIL=0, no events issued, no run touched; includes the new parser/gate, coverage-string, --review and commit_metrics sections."
+    }
+  ],
+  "verdict": "pass",
+  "would_have_shipped_defects": []
+}

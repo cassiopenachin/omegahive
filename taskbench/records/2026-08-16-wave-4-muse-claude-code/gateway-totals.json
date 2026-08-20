@@ -1,0 +1,211 @@
+{
+  "complete": true,
+  "per_cell": {
+    "cell-338856fa8c": {
+      "attempt": {
+        "calls_missing_receipt": 0,
+        "calls_observed": 57,
+        "calls_with_receipt": 57,
+        "calls_without_generation": 0,
+        "gateway_cost_usd": 0.92581725,
+        "native_tokens_cached": 3000135,
+        "native_tokens_completion": 87534,
+        "native_tokens_prompt": 3083157,
+        "native_tokens_reasoning": 69989,
+        "preset_ids": [
+          "f5a116b3-427d-4f64-85cf-782b1cb5a125"
+        ],
+        "resolved_models": [
+          "meta/muse-spark-1.2-20260805"
+        ],
+        "resolved_upstreams": [
+          "Meta"
+        ]
+      },
+      "remediation": {
+        "calls_missing_receipt": 0,
+        "calls_observed": 23,
+        "calls_with_receipt": 23,
+        "calls_without_generation": 0,
+        "gateway_cost_usd": 0.2802904,
+        "native_tokens_cached": 715781,
+        "native_tokens_completion": 25044,
+        "native_tokens_prompt": 768970,
+        "native_tokens_reasoning": 19735,
+        "preset_ids": [
+          "f5a116b3-427d-4f64-85cf-782b1cb5a125"
+        ],
+        "resolved_models": [
+          "meta/muse-spark-1.2-20260805"
+        ],
+        "resolved_upstreams": [
+          "Meta"
+        ]
+      }
+    },
+    "cell-55986dba32": {
+      "attempt": {
+        "calls_missing_receipt": 0,
+        "calls_observed": 72,
+        "calls_with_receipt": 72,
+        "calls_without_generation": 0,
+        "gateway_cost_usd": 1.7088814,
+        "native_tokens_cached": 6228036,
+        "native_tokens_completion": 40997,
+        "native_tokens_prompt": 6708387,
+        "native_tokens_reasoning": 23983,
+        "preset_ids": [
+          "f5a116b3-427d-4f64-85cf-782b1cb5a125"
+        ],
+        "resolved_models": [
+          "meta/muse-spark-1.2-20260805"
+        ],
+        "resolved_upstreams": [
+          "Meta"
+        ]
+      }
+    },
+    "cell-64d3b14c26": {
+      "attempt": {
+        "calls_missing_receipt": 0,
+        "calls_observed": 141,
+        "calls_with_receipt": 131,
+        "calls_without_generation": 10,
+        "gateway_cost_usd": 3.5026159,
+        "native_tokens_cached": 12019151,
+        "native_tokens_completion": 315679,
+        "native_tokens_prompt": 12305637,
+        "native_tokens_reasoning": 268638,
+        "preset_ids": [
+          "f5a116b3-427d-4f64-85cf-782b1cb5a125"
+        ],
+        "resolved_models": [
+          "meta/muse-spark-1.2-20260805"
+        ],
+        "resolved_upstreams": [
+          "Meta"
+        ],
+        "without_generation_detail": {
+          "calls": {
+            "404 /api/v1/messages/count_tokens?beta=true": 10
+          },
+          "why_not_a_gap": "the gateway refused these, so no generation was created and no receipt exists to fetch. They are reported rather than dropped, and they do not make the totals a floor."
+        }
+      }
+    },
+    "cell-931dd98b0d": {
+      "attempt": {
+        "calls_missing_receipt": 0,
+        "calls_observed": 43,
+        "calls_with_receipt": 42,
+        "calls_without_generation": 1,
+        "gateway_cost_usd": 0.40995515,
+        "native_tokens_cached": 1197416,
+        "native_tokens_completion": 34518,
+        "native_tokens_prompt": 1264329,
+        "native_tokens_reasoning": 23430,
+        "preset_ids": [
+          "f5a116b3-427d-4f64-85cf-782b1cb5a125"
+        ],
+        "resolved_models": [
+          "meta/muse-spark-1.2-20260805"
+        ],
+        "resolved_upstreams": [
+          "Meta"
+        ],
+        "without_generation_detail": {
+          "calls": {
+            "404 /api/v1/messages/count_tokens?beta=true": 1
+          },
+          "why_not_a_gap": "the gateway refused these, so no generation was created and no receipt exists to fetch. They are reported rather than dropped, and they do not make the totals a floor."
+        }
+      },
+      "remediation": {
+        "calls_missing_receipt": 0,
+        "calls_observed": 43,
+        "calls_with_receipt": 43,
+        "calls_without_generation": 0,
+        "gateway_cost_usd": 0.5846475,
+        "native_tokens_cached": 1388840,
+        "native_tokens_completion": 53973,
+        "native_tokens_prompt": 1506389,
+        "native_tokens_reasoning": 42292,
+        "preset_ids": [
+          "f5a116b3-427d-4f64-85cf-782b1cb5a125"
+        ],
+        "resolved_models": [
+          "meta/muse-spark-1.2-20260805"
+        ],
+        "resolved_upstreams": [
+          "Meta"
+        ]
+      }
+    },
+    "cell-cea54c8523": {
+      "attempt": {
+        "calls_missing_receipt": 0,
+        "calls_observed": 56,
+        "calls_with_receipt": 55,
+        "calls_without_generation": 1,
+        "gateway_cost_usd": 1.0838855,
+        "native_tokens_cached": 3561140,
+        "native_tokens_completion": 64939,
+        "native_tokens_prompt": 3780119,
+        "native_tokens_reasoning": 51315,
+        "preset_ids": [
+          "f5a116b3-427d-4f64-85cf-782b1cb5a125"
+        ],
+        "resolved_models": [
+          "meta/muse-spark-1.2-20260805"
+        ],
+        "resolved_upstreams": [
+          "Meta"
+        ],
+        "without_generation_detail": {
+          "calls": {
+            "404 /api/v1/messages/count_tokens?beta=true": 1
+          },
+          "why_not_a_gap": "the gateway refused these, so no generation was created and no receipt exists to fetch. They are reported rather than dropped, and they do not make the totals a floor."
+        }
+      },
+      "remediation": {
+        "calls_missing_receipt": 0,
+        "calls_observed": 58,
+        "calls_with_receipt": 58,
+        "calls_without_generation": 0,
+        "gateway_cost_usd": 0.9181237,
+        "native_tokens_cached": 2518023,
+        "native_tokens_completion": 85013,
+        "native_tokens_prompt": 2661315,
+        "native_tokens_reasoning": 74976,
+        "preset_ids": [
+          "f5a116b3-427d-4f64-85cf-782b1cb5a125"
+        ],
+        "resolved_models": [
+          "meta/muse-spark-1.2-20260805"
+        ],
+        "resolved_upstreams": [
+          "Meta"
+        ]
+      }
+    }
+  },
+  "record": "taskbench/records/2026-08-16-wave-4-muse-claude-code",
+  "resolved_models": [
+    "meta/muse-spark-1.2-20260805"
+  ],
+  "resolved_upstreams": [
+    "Meta"
+  ],
+  "totals": {
+    "calls_missing_receipt": 0,
+    "calls_observed": 493,
+    "calls_with_receipt": 481,
+    "calls_without_generation": 12,
+    "gateway_cost_usd": 9.4142168,
+    "native_tokens_cached": 30628522,
+    "native_tokens_completion": 707697,
+    "native_tokens_prompt": 32078303,
+    "native_tokens_reasoning": 574358
+  }
+}

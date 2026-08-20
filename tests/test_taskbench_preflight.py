@@ -224,3 +224,63 @@ def test_a_task_that_needs_no_database_is_not_gated_on_one(corpus, monkeypatch):
     corpus.manifests["greeting"].environment_needs = ["nothing"]
     monkeypatch.setenv(preflight.TEST_DSN_ENV, "postgresql://nobody@127.0.0.1:1/none")
     assert preflight.check_database_reachable(corpus, ["greeting"]) == []
+
+
+def test_the_held_in_check_is_about_membership_not_sequence(corpus):
+    """It refused two live launches for putting the precommitted lead task first — which the
+    order requires of every bundle — while reporting the identical five ids back with nothing
+    to show that only their order differed."""
+    from taskbench.preflight import check_corpus
+
+    reordered = list(reversed(list(corpus.catalog.held_in)))
+    assert check_corpus(
+        corpus, expect_hash=corpus.content_hash, expect_held_in=reordered
+    ) == []
+
+
+def test_a_narrowed_launch_is_still_refused_and_says_what_is_missing(corpus):
+    from taskbench.preflight import check_corpus
+
+    """The guard's real job, undiminished: a batch that quietly drops a task would score a
+    partial bundle as a whole one."""
+    held_in = list(corpus.catalog.held_in)
+    problems = check_corpus(
+        corpus, expect_hash=corpus.content_hash, expect_held_in=held_in[:-1]
+    )
+    assert problems and "would score a partial bundle" in problems[0]
+    assert held_in[-1] in problems[0]
+
+
+def test_a_launch_naming_an_unknown_task_is_still_refused(corpus):
+    from taskbench.preflight import check_corpus
+
+    problems = check_corpus(
+        corpus, expect_hash=corpus.content_hash,
+        expect_held_in=[*corpus.catalog.held_in, "not-a-corpus-task"],
+    )
+    assert problems and "the corpus does not hold in" in problems[0]
+
+
+def test_a_batch_writing_its_record_does_not_block_another_batch(tmp_path):
+    """Records are the study's output. Counting them as an unclean instrument serialised the
+    whole study — while any batch ran, its record made the tree dirty and every other batch's
+    preflight refused. Found when a gateway shakedown was refused by wave 2's live record."""
+    import subprocess as sp
+
+    from taskbench.preflight import check_checkout_clean
+
+    repo = tmp_path / "repo"
+    (repo / "taskbench" / "records" / "2026-08-16-some-batch").mkdir(parents=True)
+    for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+        sp.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+    (repo / "code.py").write_text("x = 1\n")
+    sp.run(["git", "-C", str(repo), "add", "code.py"], check=True, capture_output=True)
+    sp.run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True, capture_output=True)
+
+    (repo / "taskbench" / "records" / "2026-08-16-some-batch" / "run.json").write_text("{}")
+    assert check_checkout_clean(repo) == [], "a live record must not block a batch"
+
+    # The guard's real job is untouched: changed CODE still refuses, and names what changed.
+    (repo / "code.py").write_text("x = 2\n")
+    problems = check_checkout_clean(repo)
+    assert problems and "code.py" in problems[0]

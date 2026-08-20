@@ -1,0 +1,169 @@
+diff --git a/projects/omegahive/RUNBOOK.md b/projects/omegahive/RUNBOOK.md
+index d482690..bfcb97b 100644
+--- a/projects/omegahive/RUNBOOK.md
++++ b/projects/omegahive/RUNBOOK.md
+@@ -136,6 +136,35 @@ replaced, never resurrected:
+ The board keeps the full history (both workers' events remain); no override is needed —
+ the reassignment IS the recovery.
+ 
++### Half-launch (window never created)
++
++A different dead-worker variant: `hive-launch` seeded the board (task.created +
++worker.registered + task.assigned) but died at the tmux pane step — the task is
++**owned with no worker window** and the kickoff was never delivered. Since
++launch-pane-fix (2026-07-27), the launcher uses append window allocation and, if the
++pane still fails, prints the manual completion path and exits non-zero. To finish a
++half-launch:
++
++1. The clones and the emit wrapper **already exist** — do not re-provision them
++   (`~/work/<worker>/hive`, `~/work/<worker>/<project>`, `~/work/hive-wrappers/<worker>.sh`).
++   The board is already seeded; **no further emits are needed**.
++2. Open a named window in the `hive` session and start the worker with the kickoff.
++   Use append semantics (`tmux new-window -a`) — never an explicit index — so the
++   window cannot collide with an open one:
++   ```bash
++   tmux new-window -a -t hive -n <TASK> -c ~/work/<WORKER>/hive \
++     -e "HIVE_KICKOFF=$(cat ~/work/<WORKER>/kickoff.txt)" \
++     'claude "$HIVE_KICKOFF"'
++   ```
++   On a half-launch, `hive-launch` saves the filled kickoff to
++   `~/work/<WORKER>/kickoff.txt` and prints it, so the operator can paste it into a
++   window without reconstructing the launch by hand.
++3. The worker picks up from the pane exactly as a normal launch (it reads WORKER.md
++   and emits `task.accepted`).
++
++The dead-pane path above (`task.reassigned`) is for a window that **exists** but whose
++worker died; a half-launch is only the window-never-created case.
++
+ ## Backups and restore
+ 
+ Two stores, one backup directory. Losing the workspace is losing the project the same as
+diff --git a/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md b/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md
+new file mode 100644
+index 0000000..3b3afd5
+--- /dev/null
++++ b/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md
+@@ -0,0 +1,123 @@
++# Result — launch-pane-fix: tmux window by name, fail-safe half-launch
++
++**Order:** `orders/2026-07-27-launch-pane-fix.md` · **Task:** `launch-pane-fix` · **Project:** omegahive
++
++## What shipped
++
++One small PR in `scripts/` plus the operator-facing doc update:
++
++- **`scripts/hive-launch`** — two defects fixed:
++  1. **Collision-free window allocation.** The pane is now opened with append
++     semantics: `tmux new-window -a -t <session> -n <task>` instead of
++     `tmux new-window -t <session> -n <task>`. `-a` inserts the new window after the
++     session's active window and tmux shifts the rest, so the index is *always* free
++     — it can never raise `create window failed: index N in use`. The launcher
++     supplies only the session and the window name (task id), never an index. The
++     one collision that remains meaningful is a **name** collision: the clobber guard
++     still refuses a second window already named for the task, and the refusal now
++     names the recovery path (`task.reassigned`, RUNBOOK) instead of only noting the
++     pane is the registry.
++  2. **Fail-safe half-launch.** A failure at the pane step *after* the board is
++     seeded now prints the exact manual completion path — the filled kickoff and the
++     remaining steps per WORKER.md §Launch — and exits non-zero. The filled kickoff is
++     also saved to `~/work/<worker>/kickoff.txt` so the operator can finish without
++     reconstructing the launch by hand. No more archaeology from launch output.
++- **`scripts/hive-tooling-drill.sh`** — two new cases:
++  1. **Occupied-index case:** pre-fills a scratch tmux session with five operator
++     windows (including an active window whose "next index" is occupied), launches a
++     task into it, and asserts the launch succeeds, the window is created with the
++     task name, every pre-existing window is left intact, and the board is assigned.
++  2. **Half-launch recovery assertion:** simulates a pane failure after seeding with a
++     mock `tmux` on PATH (delegates the read-only `has-session`/`list-windows` checks,
++     fails window creation) and asserts the launch exits non-zero and prints the
++     recovery path — the half-launch banner, the WORKER.md §Launch reference, the
++     filled kickoff, the wrapper path, the saved kickoff file, and the stranded board
++     state.
++- **`RUNBOOK.md`** — the dead-worker recovery section gains the **half-launch**
++  (window-never-created) case: what it is, that clones/wrapper/board are already in
++  place (no re-provisioning, no re-emitting), and the exact append-semantics window
++  command to finish it.
++
++No event-model, board-guard, or adopt-logic changes. No registry file — the pane name
++stays the registry. No `.tmux.conf` assumptions: the allocation is name-only and holds
++under any base-index / renumber-windows config.
++
++## How verified
++
++- **Syntax + lint:** `bash -n` and `shellcheck` (warning level and full) are clean on
++  both changed scripts (the only remaining shellcheck note on `hive-launch` is the
++  pre-existing SC1091 "not following hive-common.sh" info, present at baseline too).
++- **tmux behavior experiments (this cell has a real `tmux`, so the core allocation
++  claim is tested directly):** verified that `new-window -a -t <session>` always lands
++  on a free index — with occupied indices, active-window-in-the-middle, and
++  `renumber-windows off` — and that the multi-line `HIVE_KICKOFF` env var survives the
++  `-a` + `-e` + `-c` invocation. Also verified the mock-tmux failure path: the launch's
++  guarded `if ! tmux new-window -a …` catches the failure and the `half_launch`
++  function renders the full recovery print.
++- **The loop drill was NOT run here.** Per the task's out-of-scope note, the full
++  `hive-tooling-drill.sh` drives tmux sessions on the operator's live tmux server and
++  emits scratch spine events, which this offline cell must not do; it also needs the
++  stack (podman compose + postgres) which is not up here. The drill's new cases are
++  written and syntax/lint-clean, and the operator runs the drill against a green cell.
++- **Reproduction of the 2026-07-27 failure:** the exact "index 4 in use" failure is
++  config-dependent and could not be reproduced in this cell's tmux 3.5a (here even the
++  old `new-window -t <session>` form allocates the next free index). Per the order's
++  named risk, the report states what was asserted instead of faking coverage: the
++  drill's occupied-index case pins that the launch now succeeds in the exact occupied
++  scenario (five windows open, active window's next index occupied) and that the
++  window is created by name with a free index. The operator's drill run against the
++  real host config is the final reproduction evidence.
++
++## To operate
++
++- **Run the drill** (needs the stack up and a tmux server; it uses scratch runs and a
++  sandbox — never the durable `omegahive` run):
++  ```bash
++  scripts/hive-tooling-drill.sh
++  ```
++  Two new sections are expected: `occupied-index case` (four PASSes) and
++  `half-launch recovery` (eight PASSes); every existing lifecycle/refusal assertion
++  must stay green.
++- **The ordering choice and its rationale:** the order allowed reordering window
++  creation *before* seeding, provided every refusal path was preserved. I chose **not**
++  to reorder; the launch stays provision → seed → pane. Rationale: creating the window
++  first would orphan a named window if a seed emit then failed (moving the failure to
++  the other side of the board write), and every existing refusal path already runs
++  before any write. Keeping seed-before-pane and printing the manual finish preserves
++  all refusal paths and converts any pane failure into a documented recovery.
++- **What the recovery print looks like:** on a pane failure after seeding, `hive-launch`
++  exits non-zero and prints the half-launch banner, the already-provisioned paths
++  (clones + wrapper), the exact append-semantics window command
++  (`tmux new-window -a -t hive -n <task> -c <ws_root> -e "HIVE_KICKOFF=$(cat …/kickoff.txt)" 'claude "$HIVE_KICKOFF"'`),
++  and the filled kickoff. The kickoff is also saved to `~/work/<worker>/kickoff.txt`.
++  No further emits are needed — `worker.registered` + `task.assigned` already landed
++  before the pane step.
++- **Name collision recovery:** if the refusal "a tmux window named `<task>` already
++  exists" fires, the pane is the registry: if the old worker is dead, kill the pane and
++  recover via `task.reassigned` (RUNBOOK dead-worker recovery) — never launch a second
++  window for the same task.
++
++## Reflection
++
++- **tmux `-a` semantics surprised me.** I initially documented `new-window -a` as
++  "append after the session's last window"; experiments showed it inserts after the
++  *active* window and shifts subsequent windows. That is still collision-free (the
++  index is always free because tmux renumbers), which is the property the order needs —
++  but the comment and the drill assertion were corrected to match reality (the drill
++  asserts no pre-existing window is clobbered, rather than a hard-coded index).
++- **The old failure is not reproducible on this tmux.** `new-window -t <session>`
++  (the baseline form) allocates the next free index here, so the exact "index 4 in
++  use" depends on a config/state I could not recreate. The order's evidence is taken
++  as authoritative and the fix is the specified `-a` form; the drill pins the fixed
++  behavior rather than faking a reproduction of the broken one. If the operator's
++  drill run shows `-a` behaving differently on the real host, that is the one place to
++  revisit.
++- **Half-launch vs. dead-pane are distinct recoveries.** A dead pane (window exists,
++  worker died) is `task.reassigned`; a half-launch (window never created) is the
++  manual-finish path. The RUNBOOK now says so explicitly, which was the ambiguity that
++  made the 2026-07-27 recovery archaeological.
++- **Deterministic half-launch testing needs a mock tmux.** There is no portable way to
++  force a pane failure with a real tmux on a valid session, so the drill's half-launch
++  case shadows `tmux` on PATH with a wrapper that delegates the read-only checks and
++  fails window creation. This keeps the assertion deterministic and does not depend on
++  tmux config.

@@ -1,0 +1,73 @@
+{
+  "cell_id": "cell-126d2d7a96",
+  "dod_legs": [
+    {
+      "leg": "runbook-caveats",
+      "met": "no",
+      "note": "Code-repo half done and done honestly: candidate.patch:14-18 replaces the inert-bump caveat with an accurate forward-looking statement (the write path registers idempotently in the same transaction as the first write; bump still refuses a never-opened run; restart floor remains safe) without falsely claiming the live run is already registered. The workspace `projects/omegahive/RUNBOOK.md` half is absent from the attempt."
+    },
+    {
+      "leg": "result-report",
+      "met": "no",
+      "note": "No report exists in candidate.patch, artefacts/, or packet-manifest.json. The rubric places this leg in scope, carving out only the spine announcement."
+    },
+    {
+      "leg": "pytest",
+      "met": "yes",
+      "note": "verifier/pytest.log: 402 passed, 1 warning in 37.20s. No regressions."
+    },
+    {
+      "leg": "ruff",
+      "met": "yes",
+      "note": "verifier/ruff.log: All checks passed!"
+    },
+    {
+      "leg": "mypy",
+      "met": "yes",
+      "note": "verifier/mypy.log: Success: no issues found in 148 source files."
+    },
+    {
+      "leg": "registration-property",
+      "met": "yes",
+      "note": "verifier/registration-property.log: ok \u2014 every registration property case holds. The implementation (src/omegahive/gateway/gateway.py:96-100) calls self._store.open_run() as the first statement inside the emit transaction, so registration shares the event insert's transaction and covers the replayed-legacy-event case (the open precedes the idempotency short-circuit return at line 106). The idempotency-before-fold/gate invariant the original comment protected is preserved \u2014 fold and gate still run after the lookup."
+    },
+    {
+      "leg": "no-generation-semantics",
+      "met": "yes",
+      "note": "Stop-line not crossed. The patch adds one open_run() call and renumbers comments; it touches no generation, GENERATION_MISMATCH, or cursor code, and makes no schema change beyond what open_run already does."
+    },
+    {
+      "leg": "never-bump-live",
+      "met": "yes",
+      "note": "Stop-line not crossed. The only bump is in tests/test_emit_cli.py (candidate.patch:79-81), against the CLI test run id on TEST_DATABASE_URL, not the live spine. No live-run bump appears anywhere in the attempt."
+    },
+    {
+      "leg": "omegahive row demonstrably exists in runs (query evidence)",
+      "met": "not-applicable",
+      "note": "Rubric marks this out of scope \u2014 an operator act post-dating any worker's result. The attempt correctly does not claim to have done it."
+    },
+    {
+      "leg": "announce result on the spine per WORKER.md",
+      "met": "not-applicable",
+      "note": "Rubric marks this out of scope \u2014 a spine emit forbidden by the instrument's scope."
+    },
+    {
+      "leg": "durable run's registry row exists (read-only query evidence)",
+      "met": "not-applicable",
+      "note": "Rubric marks this out of scope."
+    }
+  ],
+  "verdict": "fail",
+  "would_have_shipped_defects": [
+    {
+      "evidence": "packet-manifest.json lists the attempt's complete input set; it contains no file under a reports directory. candidate.patch (85 lines, 3 files: docs/omegahive_recovery_runbook.md, src/omegahive/gateway/gateway.py, tests/test_emit_cli.py) adds no report. artefacts/ contains only docs/omegahive_recovery_runbook.md and src/omegahive/gateway/gateway.py.",
+      "summary": "No result report was filed \u2014 the order's named deliverable (What shipped / How verified / To operate / Reflection) does not exist anywhere in the attempt.",
+      "why_blocking": "The order's Definition of done requires a result report with **To operate** and **Reflection**, and order item 2 requires that report to state which registration path was taken for the live `omegahive` run (side effect of the next real emit vs. the RUNBOOK's one-time `open_run` line). The rubric explicitly places this leg IN scope (only the spine announcement is out of reach). Without it, the operator who must finish the out-of-band half of this change \u2014 actually getting the durable run registered after deploy \u2014 has no record of what shipped, how it was verified, or which path they are expected to take. The recovery runbook now tells them the token arrives \"after the next real emit\" but nothing tells them whether that emit is expected to happen on its own or must be driven."
+    },
+    {
+      "evidence": "order.md:14 requires both `projects/omegahive/RUNBOOK.md` (workspace) and `docs/omegahive_recovery_runbook.md` (code repo); rubric.md:9 grades both. candidate.patch touches only docs/omegahive_recovery_runbook.md, and packet-manifest.json / artefacts/ contain no workspace RUNBOOK.",
+      "summary": "Only one of the two required runbook caveats was updated \u2014 the workspace `projects/omegahive/RUNBOOK.md` restore step 3 still carries the inert-bump caveat.",
+      "why_blocking": "Order item 4 names two files explicitly, and the rubric's runbook-caveats leg requires both \u2014 \"the one in the code repo and the one in the workspace\". The code-repo copy was updated (candidate.patch:14-18); nothing in the attempt touches the workspace ops RUNBOOK. The workspace RUNBOOK is the document an operator actually follows during a restore drill \u2014 the drill that produced this finding in the first place \u2014 and the code-repo runbook itself redirects there (\"See the ops RUNBOOK for the one-liner\" was the removed line; artefacts/docs/omegahive_recovery_runbook.md:107 still defers to it for the full phantom-ahead procedure). An operator restoring from backup and reading the workspace RUNBOOK would still be told the durable cursor-invalidation signal is inert for `omegahive` and that restart-every-client is the only operative path \u2014 which is exactly the interim caveat this order exists to retire."
+    }
+  ]
+}

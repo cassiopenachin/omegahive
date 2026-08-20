@@ -1,0 +1,94 @@
+{
+  "argv": [
+    "/home/cassio/work/sess-hip1-bench-qualify-0814/omegahive/taskbench/launch/cell-codex.sh",
+    "-m",
+    "gpt-5.6-luna",
+    "-s",
+    "workspace-write"
+  ],
+  "cell_id": "cell-51c285bb2c",
+  "changed_files": [
+    "scripts/hive-launch",
+    "scripts/hive-tooling-drill.sh"
+  ],
+  "diff": "diff --git a/scripts/hive-launch b/scripts/hive-launch\nindex cb9529c..665487a 100755\n--- a/scripts/hive-launch\n+++ b/scripts/hive-launch\n@@ -229,12 +229,54 @@ KICK\n # text is ever quoted onto a command line; the window runs the worker command with\n # it as the initial prompt. The pane NAME is the registry \u2014 no registry file.\n launch_cmd=\"$HIVE_WORKER_CMD \\\"\\$HIVE_KICKOFF\\\"\"\n+manual_completion() {\n+  local tmux_error=\"$1\"\n+  cat >&2 <<RECOVERY\n+hive-launch: window creation failed after spine seeding; the task is a half-launch.\n+  tmux error: $tmux_error\n+  Do not rerun hive-launch: the board is already assigned and the clones/wrapper exist.\n+\n+Manual completion (WORKER.md \u00a7Launch): create the named window, then give the worker\n+the kickoff below. The worker must read WORKER.md, accept the task through its wrapper,\n+and continue from the already provisioned clones.\n+\n+  session: $HIVE_TMUX_SESSION\n+  window:  $TASK\n+  cwd:     $WS_ROOT\n+  wrapper: $WRAPPER\n+  command: $launch_cmd\n+\n+----- filled kickoff -----\n+$KICKOFF\n+----- end kickoff -----\n+\n+Run the remaining window step from an attached tmux client (append/free-slot\n+semantics; do not choose an index):\n+\n+  HIVE_KICKOFF=\\$(cat <<'HIVE_KICKOFF_TEXT'\n+$KICKOFF\n+HIVE_KICKOFF_TEXT\n+)\n+  tmux new-window -a -t '$HIVE_TMUX_SESSION' -n '$TASK' -c '$WS_ROOT' \\\\\n+    -e HIVE_KICKOFF=\"\\$HIVE_KICKOFF\" '$launch_cmd'\n+RECOVERY\n+}\n+\n if tmux has-session -t \"$HIVE_TMUX_SESSION\" 2>/dev/null; then\n-  tmux new-window -t \"$HIVE_TMUX_SESSION\" -n \"$TASK\" -c \"$WS_ROOT\" \\\n-    -e HIVE_KICKOFF=\"$KICKOFF\" \"$launch_cmd\"\n+  # `-a` asks tmux to append after the target and select a free index. Supplying\n+  # only the session still lets tmux resolve a concrete occupied index under\n+  # some configurations; indices are not part of the task registry.\n+  if ! TMUX_ERROR=$(tmux new-window -a -t \"$HIVE_TMUX_SESSION\" -n \"$TASK\" -c \"$WS_ROOT\" \\\n+    -e HIVE_KICKOFF=\"$KICKOFF\" \"$launch_cmd\" 2>&1); then\n+    manual_completion \"$TMUX_ERROR\"\n+    exit 1\n+  fi\n else\n-  tmux new-session -d -s \"$HIVE_TMUX_SESSION\" -n \"$TASK\" -c \"$WS_ROOT\" \\\n-    -e HIVE_KICKOFF=\"$KICKOFF\" \"$launch_cmd\"\n+  if ! TMUX_ERROR=$(tmux new-session -d -s \"$HIVE_TMUX_SESSION\" -n \"$TASK\" -c \"$WS_ROOT\" \\\n+    -e HIVE_KICKOFF=\"$KICKOFF\" \"$launch_cmd\" 2>&1); then\n+    manual_completion \"$TMUX_ERROR\"\n+    exit 1\n+  fi\n fi\n echo \"  pane:   $HIVE_TMUX_SESSION:$TASK  (attach: tmux attach -t $HIVE_TMUX_SESSION)\"\n echo \"hive-launch: done.\"\ndiff --git a/scripts/hive-tooling-drill.sh b/scripts/hive-tooling-drill.sh\nindex abe7595..6c3cad8 100755\n--- a/scripts/hive-tooling-drill.sh\n+++ b/scripts/hive-tooling-drill.sh\n@@ -183,6 +183,50 @@ check \"kickoff names the project run\"           \"grep -qF 'run: $ARUN' '$SANDBOX\n check \"board shows task assigned on the run\"    \"[ \\\"\\$(bstatus '$ARUN' alpha-demo)\\\" = assigned ]\"\n check \"durable omegahive run untouched by launch\" \"[ -z \\\"\\$(bstatus omegahive alpha-demo)\\\" ]\"\n \n+echo\n+echo \"== occupied index: append allocation and half-launch recovery ==\"\n+# Reproduce the old failure shape by occupying an explicit index. The task name\n+# remains free, so a successful launch must append without disturbing this window.\n+tmux new-window -d -t \"$TMUX_SESSION:4\" -n occupied-slot -c \"$WS_ROOT\"\n+OORDER=$(add_order \"$APROJ\" \"2026-07-13-occupied-index\" \"occupied index\")\n+OWORKER=\"sess-occupied-${STAMP}\"\n+\"$SCRIPT_DIR/hive-launch\" \"$OORDER\" --worker \"$OWORKER\" >/dev/null\n+check \"occupied index remains present\" \"tmux list-windows -t '$TMUX_SESSION' -F '#{window_name}' | grep -qxF occupied-slot\"\n+check \"occupied index launch allocates the task window\" \"tmux list-windows -t '$TMUX_SESSION' -F '#{window_name}' | grep -qxF occupied-index\"\n+check \"occupied index task is assigned\" \"[ \\\"\\$(bstatus '$ARUN' occupied-index)\\\" = assigned ]\"\n+\n+# Force only the post-seeding new-window call to fail while delegating all other\n+# tmux operations to the real binary. This proves a seeded task prints its exact\n+# manual completion path instead of silently leaving the operator to archaeology.\n+TMUX_REAL=$(command -v tmux)\n+TMUX_SHIM_DIR=\"$SANDBOX/tmux-shim\"\n+mkdir -p \"$TMUX_SHIM_DIR\"\n+cat > \"$TMUX_SHIM_DIR/tmux\" <<EOF\n+#!/usr/bin/env bash\n+if [ \"\\$1\" = new-window ]; then\n+  echo \"simulated occupied target\" >&2\n+  exit 1\n+fi\n+exec \"$TMUX_REAL\" \"\\$@\"\n+EOF\n+chmod +x \"$TMUX_SHIM_DIR/tmux\"\n+RORDER=$(add_order \"$APROJ\" \"2026-07-13-half-launch\" \"half launch\")\n+RWORKER=\"sess-half-${STAMP}\"\n+RWRAP=\"$WRAPPERS/$RWORKER.sh\"\n+OLD_PATH=\"$PATH\"\n+export PATH=\"$TMUX_SHIM_DIR:$PATH\"\n+RECOVERY_OUT=\"\"\n+set +e\n+RECOVERY_OUT=$(\"$SCRIPT_DIR/hive-launch\" \"$RORDER\" --worker \"$RWORKER\" 2>&1)\n+RECOVERY_RC=$?\n+set -e\n+export PATH=\"$OLD_PATH\"\n+export RECOVERY_OUT\n+check \"half-launch window failure is non-zero\" \"[ '$RECOVERY_RC' -ne 0 ]\"\n+check \"half-launch prints filled kickoff\" \"printf '%s' \\\"\\$RECOVERY_OUT\\\" | grep -qF -- '----- filled kickoff -----'\"\n+check \"half-launch prints wrapper recovery path\" \"printf '%s' \\\"\\$RECOVERY_OUT\\\" | grep -qF '$RWRAP'\"\n+check \"half-launch remains assigned for manual finish\" \"[ \\\"\\$(bstatus '$ARUN' half-launch)\\\" = assigned ]\"\n+\n echo\n echo \"== project '$APROJ': accept -> block -> answer -> unblock -> result ==\"\n \"$AWRAP\" --type task.accepted --task alpha-demo >/dev/null\n",
+  "exit_code": 0,
+  "finished_utc": "2026-08-17T01:59:11Z",
+  "gateway_receipts": null,
+  "home_is_cell_root": true,
+  "labels": {
+    "harness": "codex-cli-0.147.0",
+    "model": "gpt-5.6-luna",
+    "vendor": "openai"
+  },
+  "outward_actions": {},
+  "progress": {
+    "exit": "2026-08-17T01:59:11Z",
+    "first_read": "unknown",
+    "first_response": "2026-08-17T01:57:21Z",
+    "first_verifier": "unknown",
+    "first_write": "2026-08-17T01:58:06Z",
+    "missing_surfaces": {
+      "first_read": "harness exposes no tool-call transcript; no read timestamp is observable",
+      "first_verifier": "candidate never invoked bin/bench-verify; a verifier it ran directly is invisible"
+    },
+    "sources": {
+      "exit": "runner wall clock at process reap",
+      "first_response": "timestamp of the first byte the agent wrote to stdout or stderr",
+      "first_write": "earliest mtime among files created or modified under code/ during the run"
+    },
+    "terminal_error": null
+  },
+  "pulse": null,
+  "resolved_identity": {
+    "available": true,
+    "cost_missing_surface": "this arm runs on a ChatGPT subscription; there is no per-run price to report and an estimate from a price table would not be one",
+    "how_primary_chosen": "codex reports one usage block per turn; the last is the total",
+    "is_error": false,
+    "num_turns": 1,
+    "provider": null,
+    "resolved_model": "gpt-5.6-luna",
+    "resolved_model_missing_surface": "codex exec --json reports no SERVER-resolved model id. The value above is the model Codex records having been configured with, read from its session rollout \u2014 a harness statement, not a gateway or API echo. Weigh it accordingly.",
+    "resolved_model_source": "codex session rollout",
+    "terminal_reason": null,
+    "thread_id": "01a00d70-0b11-7e10-bbaa-dea47ac7744b",
+    "total_cost_usd": null,
+    "usage": {
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 254720,
+      "input_tokens": 282555,
+      "output_tokens": 4333,
+      "reasoning_output_tokens": 1898
+    },
+    "usage_raw": {
+      "cache_write_input_tokens": 0,
+      "cached_input_tokens": 254720,
+      "input_tokens": 282555,
+      "output_tokens": 4333,
+      "reasoning_output_tokens": 1898
+    }
+  },
+  "started_utc": "2026-08-17T01:57:21Z",
+  "stderr_path": "run-remediation/stderr.txt",
+  "stdout_path": "run-remediation/stdout.txt",
+  "task_id": "launch-pane-fix",
+  "timed_out": false,
+  "usage": {
+    "available": true,
+    "reported": {
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 254720,
+      "input_tokens": 282555,
+      "output_tokens": 4333,
+      "reasoning_output_tokens": 1898
+    },
+    "source": "harness result envelope",
+    "total_cost_usd": null
+  },
+  "wall_ms": 109891,
+  "workspace_changed_files": [
+    "projects/omegahive/RUNBOOK.md",
+    "projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md"
+  ],
+  "workspace_diff": "diff --git a/projects/omegahive/RUNBOOK.md b/projects/omegahive/RUNBOOK.md\nindex d482690..349a456 100644\n--- a/projects/omegahive/RUNBOOK.md\n+++ b/projects/omegahive/RUNBOOK.md\n@@ -110,6 +110,14 @@ matters was pushed \u2014 the externalize rule): `rm -rf ~/work/<worker>` at leisur\n \n ## Dead worker recovery\n \n+If `hive-launch` reports **window creation failed after spine seeding**, it has made a\n+half-launch: the task is assigned and the worker clones/wrapper exist, but no pane was\n+created. Do not rerun the launcher (that is not recovery and the task is already owned).\n+Use the launcher's printed filled kickoff and remaining tmux command to create the task's\n+window with append/free-slot semantics, then let the worker follow WORKER.md and accept the\n+task through its issued wrapper. The pane name remains the registry; once the pane exists,\n+continue with the normal dead-worker checks below if the worker itself dies.\n+\n A worker session that dies, compacts into uselessness, or is lost to a host reboot is\n replaced, never resurrected:\n \ndiff --git a/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md b/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md\nnew file mode 100644\nindex 0000000..a98afdb\n--- /dev/null\n+++ b/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md\n@@ -0,0 +1,44 @@\n+# launch-pane-fix result\n+\n+## What shipped\n+\n+`scripts/hive-launch` now creates windows in an existing session with tmux append/free-slot\n+semantics (`new-window -a`), while retaining the task name as the only registry and keeping\n+the existing name-collision refusal. If window creation fails after seeding, the launcher\n+exits non-zero and prints the tmux error, the filled kickoff, the wrapper, and a copy/paste\n+manual completion command. The RUNBOOK dead-worker section now documents this half-launch\n+case. The tooling drill adds an occupied-index allocation case and a simulated post-seeding\n+failure assertion.\n+\n+## How verified\n+\n+The order-required `bin/bench-verify -- ...` invocation was attempted, but this checkout has\n+no `bin/bench-verify` (the command returned 127). The equivalent direct checks passed:\n+`bash -n scripts/hive-launch scripts/hive-tooling-drill.sh`, `shellcheck -x` on both scripts,\n+and `git diff --check`. The full tooling drill is intentionally not run here: the order\n+excludes its non-replayable tmux/spine leg because it can reach the operator's live tmux\n+server. The drill changes are written for the green-cell operator run.\n+\n+Before this change, the launcher targeted a session-only `new-window`; the order's captured\n+reproduction was an occupied derived index (`create window failed: index 4 in use`) after\n+`task.created`, `worker.registered`, and `task.assigned`, leaving an owned task with no pane\n+or delivered kickoff. The new drill occupies index 4 and checks that the named task still\n+gets a window; its shimmed failure checks the recovery print and assigned state.\n+\n+## To operate\n+\n+The ordering remains provision \u2192 spine seed \u2192 window creation. This preserves all existing\n+refusal paths and avoids changing provisioning or event semantics; the new failure branch\n+turns the remaining post-seed window failure into a documented manual finish. On failure,\n+copy the printed `tmux new-window -a` command from an attached client and use the printed\n+kickoff. Do not rerun `hive-launch`, because the task is already assigned.\n+\n+The project-config prerequisite was already present in the baseline checkout (project-aware\n+conf loading and per-project canonical clone resolution); no separate result report was\n+available in the supplied workspace to cite.\n+\n+## Reflection\n+\n+The important invariant is that a tmux index is an allocation detail, never task identity.\n+Appending fixes the collision class while the explicit recovery output makes a rare launch\n+failure legible and finishable without inventing board state or a registry file.\n"
+}

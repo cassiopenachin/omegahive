@@ -1,0 +1,232 @@
+diff --git a/docs/ptc-verdict.md b/docs/ptc-verdict.md
+new file mode 100644
+index 0000000..566d66b
+--- /dev/null
++++ b/docs/ptc-verdict.md
+@@ -0,0 +1,133 @@
++# PeTTaChainer verdict
++
++Date: 2026-08-16  
++PeTTaChainer: `02a85c63be6a735f50f50e1084a717b3256b8406`  
++PeTTa: `43705f5d9ff8958ffe7f0aa6777fb8477f2401f2`
++
++## Verdict
++
++**Broken with minimal reproduction.** At the pinned shas, the format-A input used
++by semantic-parser does not chain:
++
++| Mode | Status | Evidence |
++| --- | --- | --- |
++| Forward | **broken** | The exact seven-fact/three-rule probe produces no derived facts. |
++| Backward | **broken** | Queries return `[]`, including the direct fact and the one-step query. |
++
++The format-A rules use `(STV 1.0 0.9)`, as in the April findings. `compileadd`
++accepts them, but this does not make them executable by either chaining mode.
++Type definitions were excluded, as required by the April finding.
++
++## Reproduction
++
++The committed probe is [`scripts/ptc-repro.py`](../scripts/ptc-repro.py). It uses
++only the seven facts, three rules, and query shapes from the April format-A worked
++example. From a clean checkout, clone the two pinned repositories alongside one
++another as required by PeTTaChainer's `pyproject.toml`, then run:
++
++```bash
++git clone -b pinned deps/PeTTaChainer.bundle PeTTaChainer
++git clone -b pinned deps/PeTTa.bundle PeTTa
++cd PeTTaChainer
++uv sync --frozen --python 3.12
++uv run python ../plnbench/scripts/ptc-repro.py
++```
++
++The output is JSON with the raw forward results and backward results for the
++direct True, one-step True, and Unknown probes. The script does not modify either
++upstream checkout.
++
++## PeTTaChainer's own test suite
++
++The suite was run with `LC_ALL=C.UTF-8`, SWI-Prolog 10.1.5, Python 3.12.13, and
++the pinned PeTTa checkout. The repository's `pettachainer/metta/test.sh` reported
++the following verbatim summary:
++
++```text
++Summary: 5 passed, 45 failed
++```
++
++Per-file result (the `PASS`/`FAIL` lines emitted by `test.sh`):
++
++```text
++FAIL tests/test.metta
++FAIL tests/test_backward_dag_helpers.metta
++FAIL tests/test_backward_open_query_results.metta
++FAIL tests/test_base_rate_cache.metta
++FAIL tests/test_benchgen_metta.metta
++FAIL tests/test_best_first_runtime.metta
++PASS tests/test_chainer_add_atom.metta
++PASS tests/test_dispatch_determinism.metta
++FAIL tests/test_distribution_values.metta
++FAIL tests/test_evidence_semantics.metta
++FAIL tests/test_foldall_merged_outputs.metta
++FAIL tests/test_foldall_query_goal.metta
++FAIL tests/test_forward_backward_compose.metta
++PASS tests/test_forward_chainer.metta
++FAIL tests/test_forward_incremental_base_rates.metta
++FAIL tests/test_frontier_pooling.metta
++FAIL tests/test_height_average.metta
++FAIL tests/test_idealized_confidence.metta
++FAIL tests/test_implication_inversion.metta
++FAIL tests/test_implication_premise.metta
++FAIL tests/test_inheritance_aggregate_cycle.metta
++FAIL tests/test_inheritance_query_proof.metta
++FAIL tests/test_lifting_merge.metta
++FAIL tests/test_logic_config.metta
++FAIL tests/test_math.metta
++FAIL tests/test_member_compat.metta
++PASS tests/test_member_concept_node.metta
++FAIL tests/test_merged_subgoal_rule_application.metta
++FAIL tests/test_nary_conjuction.metta
++FAIL tests/test_negated_evidence_merge.metta
++FAIL tests/test_numeric_pattern_dist.metta
++FAIL tests/test_particle_values.metta
++FAIL tests/test_query_adds.metta
++FAIL tests/test_query_compute_in_compound.metta
++FAIL tests/test_query_materialize.metta
++FAIL tests/test_rectangle_area.metta
++FAIL tests/test_specializing_rule.metta
++FAIL tests/test_stv_implication_derived_ctv.metta
++FAIL tests/test_total_implication_aggregate.metta
++FAIL tests/test_var_head.metta
++FAIL examples/base_rate_acceptance_game_libpln.metta
++FAIL examples/base_rate_acceptance_game_pettachainer.metta
++FAIL examples/deductionrevision.metta
++FAIL examples/direct.metta
++FAIL examples/flyingraven.metta
++FAIL examples/raveninduction.metta
++FAIL examples/raveninduction_implication_pettachainer.metta
++FAIL examples/smokes.metta
++FAIL examples/toothbrush.metta
++```
++
++The other 45 files listed by `test.sh` failed; notably,
++`tests/test_forward_backward_compose.metta` failed. The separate Python unittest
++suite reported verbatim:
++
++```text
++Ran 16 tests in 0.510s
++FAILED (failures=5, errors=2)
++```
++
++The five failures are in `tests/test_pettachainer.py`; the two errors are in
++`tests/test_base_rate_acceptance_game.py`. The four validator tests and the
++remaining three PeTTaChainer tests passed.
++
++## Upstream disposition
++
++Issue filed on PeTTaChainer: [rTreutlein/PeTTaChainer#1](https://github.com/rTreutlein/PeTTaChainer/issues/1)
++(staged issue URL; the worker's `gh` recording is the outward-action artifact).
++
++The issue includes the exact pinned shas, the format-A probe, and the distinction
++between the STV rule input and the CTV-shaped examples in the repository tests.
++This overlaps plnbench `docs/known-issues.md` #2's PLN/PeTTa conversation: keep
++both data points together when the operator relays the finding.
++
++## Environment note
++
++The requested podman path was attempted but rootless podman could not initialize
++because `/run/user/1000/libpod` is read-only in this worker. The same locked
++environment was then run from isolated temporary checkouts on the host with the
++available Python 3.12.13 and SWI-Prolog 10.1.5. `uv sync --frozen` was satisfied
++from the local cache; no network fetch or upstream source modification occurred.
+diff --git a/mocks/gh.jsonl b/mocks/gh.jsonl
+new file mode 100644
+index 0000000..eb97078
+--- /dev/null
++++ b/mocks/gh.jsonl
+@@ -0,0 +1 @@
++{"argv": ["/home/cassio/work/taskbench/wave-2-luna-codex-2/cell-9605950bb4/bin/gh", "issue", "create", "--repo", "rTreutlein/PeTTaChainer", "--title", "Pinned format-A chaining fails in forward and backward modes", "--body", "At PeTTaChainer 02a85c63be6a735f50f50e1084a717b3256b8406 with PeTTa 43705f5d9ff8958ffe7f0aa6777fb8477f2401f2, the semantic-parser format-A probe from plnbench docs/april-findings.md fails. Seven facts and three rules are added with compileadd; type definitions are excluded. The rules use the documented STV wrapper. The True direct query, True one-step query, and Unknown query all return [] in backward mode, and forward_chain returns no derived facts. Repro: scripts/ptc-repro.py in the plnbench verdict commit. The own MeTTa suite is 5 passed, 45 failed; test_forward_backward_compose.metta fails. Please advise whether STV-valued rules are expected to chain at this pinned API or whether the format-A contract has changed."], "body": "At PeTTaChainer 02a85c63be6a735f50f50e1084a717b3256b8406 with PeTTa 43705f5d9ff8958ffe7f0aa6777fb8477f2401f2, the semantic-parser format-A probe from plnbench docs/april-findings.md fails. Seven facts and three rules are added with compileadd; type definitions are excluded. The rules use the documented STV wrapper. The True direct query, True one-step query, and Unknown query all return [] in backward mode, and forward_chain returns no derived facts. Repro: scripts/ptc-repro.py in the plnbench verdict commit. The own MeTTa suite is 5 passed, 45 failed; test_forward_backward_compose.metta fails. Please advise whether STV-valued rules are expected to chain at this pinned API or whether the format-A contract has changed.", "repo": "rTreutlein/PeTTaChainer", "stdin": "", "title": "Pinned format-A chaining fails in forward and backward modes"}
+diff --git a/scripts/ptc-repro.py b/scripts/ptc-repro.py
+new file mode 100644
+index 0000000..ab040aa
+--- /dev/null
++++ b/scripts/ptc-repro.py
+@@ -0,0 +1,63 @@
++#!/usr/bin/env python3
++"""Run the pinned PeTTaChainer format-A chaining probe.
++
++Run from a checkout with the PeTTaChainer virtualenv active, for example:
++  uv run --python 3.12 python scripts/ptc-repro.py
++
++The script deliberately uses the seven facts and three rules from
++docs/april-findings.md, including STV-valued rules and no type definitions.
++"""
++
++from __future__ import annotations
++
++import json
++
++from pettachainer import PeTTaChainer
++
++
++FACTS_AND_RULES = [
++    "(: bear_likes_dog (Like bear_1 dog_1) (STV 1.0 0.9))",
++    "(: cow_is_round (HasAttribute cow_1 round) (STV 1.0 0.9))",
++    "(: cow_likes_bear (Like cow_1 bear_1) (STV 1.0 0.9))",
++    "(: cow_needs_bear (Need cow_1 bear_1) (STV 1.0 0.9))",
++    "(: dog_needs_squirrel (Need dog_1 squirrel_1) (STV 1.0 0.9))",
++    "(: dog_sees_cow (See dog_1 cow_1) (STV 1.0 0.9))",
++    "(: squirrel_needs_dog (Need squirrel_1 dog_1) (STV 1.0 0.9))",
++    "(: round_likes_squirrel (Implication (Premises (HasAttribute $x round)) (Conclusions (Like $x squirrel_1))) (STV 1.0 0.9))",
++    "(: bear_round_squirrel_needs (Implication (Premises (HasAttribute bear_1 round) (Like bear_1 squirrel_1)) (Conclusions (Need squirrel_1 bear_1))) (STV 1.0 0.9))",
++    "(: cow_needs_dog_cold (Implication (Premises (Need cow_1 dog_1)) (Conclusions (HasAttribute cow_1 cold))) (STV 1.0 0.9))",
++]
++
++SEED_TERMS = [
++    "(Like bear_1 dog_1)",
++    "(HasAttribute cow_1 round)",
++    "(Like cow_1 bear_1)",
++    "(Need cow_1 bear_1)",
++    "(Need dog_1 squirrel_1)",
++    "(See dog_1 cow_1)",
++    "(Need squirrel_1 dog_1)",
++]
++
++QUERIES = {
++    "true_direct": "(: $prf (Need cow_1 bear_1) $tv)",
++    "true_one_step": "(: $prf (Like cow_1 squirrel_1) $tv)",
++    "unknown": "(: $prf (Like bear_1 squirrel_1) $tv)",
++}
++
++
++def main() -> None:
++    handler = PeTTaChainer()
++    for statement in FACTS_AND_RULES:
++        handler.add_atom(statement)
++
++    seeds = handler.select_facts(SEED_TERMS)
++    forward = handler.forward_chain(seeds, steps=50)
++    backward = {
++        name: handler.query(query, steps=50, timeout_sec=0)
++        for name, query in QUERIES.items()
++    }
++    print(json.dumps({"forward": forward, "backward": backward}, indent=2, default=str))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/verification.log b/verification.log
+new file mode 100644
+index 0000000..3d176ea
+--- /dev/null
++++ b/verification.log
+@@ -0,0 +1,11 @@
++2026-08-17T02:05:25Z
++2026-08-17T02:05:31Z
++2026-08-17T02:05:50Z
++2026-08-17T02:05:58Z
++2026-08-17T02:06:48Z
++2026-08-17T02:07:03Z
++2026-08-17T02:07:09Z
++2026-08-17T02:07:41Z
++2026-08-17T02:09:23Z
++2026-08-17T02:09:36Z
++2026-08-17T02:10:57Z

@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+# lib.sh — what every candidate-batch launcher does the same way. Sourced, never run.
+#
+# The launchers exist so that the operator assembles nothing at a shell. Model ids, endpoints,
+# settings, record ids and task lists are owned here; running a launcher IS the approval for
+# that batch's spend, and it never asks again.
+#
+# Everything in this file is shared BEHAVIOUR, not shared configuration: each wave states its
+# own model, harness and route as literals, because a batch whose identity came from a variable
+# somebody could re-point is a batch whose record cannot be trusted.
+
+# The corpus this study is pinned to. A literal, so a moved corpus refuses rather than quietly
+# measuring something else.
+# shellcheck disable=SC2034  # read by every launcher that sources this file
+readonly EXPECT_CORPUS_HASH="sha256:6bdbb73352bcf61bddef97ddd50c51d3dc1cdf283a42648ceb1086bab0a23085"
+
+# The precommitted cheapest/high-signal task, run FIRST for every bundle. Its completion is an
+# operator pause point — never permission to score a partial bundle as adequate.
+# shellcheck disable=SC2034  # read by every launcher that sources this file
+readonly FIRST_TASK="docs-triage"
+
+# A batch runs for hours and Claude Code updates itself. If it does so between two cells — or,
+# worse, between the two arms of the matched DeepSeek pair — the harness differs in a second way
+# that no record would show, because the build is captured once at launch. Exported here so
+# every launcher that sources this file inherits it. `autoUpdatesChannel` only selects a channel;
+# this variable is the only thing that stops the updater outright.
+export DISABLE_AUTOUPDATER=1
+
+say()  { printf '%s\n' "$*"; }
+step() { printf '\n== %s\n' "$*"; }
+die()  { printf '\nREFUSED: %s\n' "$*" >&2; exit 3; }
+
+need() { command -v "$1" >/dev/null 2>&1 || die "\`$1\` is not on PATH; $2"; }
+
+# Resolve the repo root from the launcher that sourced this file.
+lib_repo_root() { (cd "$(dirname "${BASH_SOURCE[1]}")/../.." && pwd); }
+
+# Claude Code's version string is "2.1.232 (Claude Code)"; read at launch, never remembered,
+# because the binary is a symlink that moves under you.
+claude_harness_version() {
+  local raw
+  raw="$(claude --version 2>/dev/null | head -1)" || true
+  [ -n "$raw" ] || die "\`claude --version\` printed nothing; cannot pin the harness"
+  printf 'claude-code-%s' "$(printf '%s' "$raw" | awk '{print $1}')"
+}
+
+codex_harness_version() {
+  local raw
+  raw="$(codex --version 2>/dev/null | head -1)" || true
+  [ -n "$raw" ] || die "\`codex --version\` printed nothing; cannot pin the harness"
+  printf 'codex-cli-%s' "$(printf '%s' "$raw" | awk '{print $NF}')"
+}
+
+reasonix_harness_version() {
+  local raw
+  raw="$(reasonix --version 2>/dev/null | head -1)" || true
+  [ -n "$raw" ] || die "\`reasonix --version\` printed nothing; cannot pin the harness"
+  printf 'reasonix-%s' "$(printf '%s' "$raw" | awk '{print $NF}')"
+}
+
+# The resolver's runtime directory, when /etc/resolv.conf points into it. Without this bind the
+# reviewer's sandbox resolves nothing and every review leg hangs until its timeout. Found the
+# hard way during the seed; preflight proves reachability, this is what makes it pass.
+resolver_bind() {
+  if [ -L /etc/resolv.conf ]; then
+    local target; target="$(readlink -f /etc/resolv.conf || true)"
+    case "$target" in /run/*) dirname "$target" ;; esac
+  fi
+}
+
+# The tool grant every Claude Code invocation in this study uses, and why it is not
+# `--permission-mode auto`.
+#
+# THE CAUSE, corrected after diagnosis. `auto` was not redefined between builds — it was
+# SILENTLY DOWNGRADED TO `default`. A migration in the binary clears the account's stored
+# auto-mode opt-in when the "auto is now the default" rollout reaches it; between that flip and
+# the operator re-accepting the dialog, `--permission-mode auto` is a no-op. The same migration
+# is present in 2.1.231, 2.1.232 and 2.1.233 alike, and the rollout merely happened to flip near
+# an upgrade — which is why it looked like a version regression and was not one. Under `--print`,
+# `default` turns every tool call into a denial, and the downgrade is invisible: empty stderr,
+# exit 0, `is_error: false`. It cost a batch before it was understood.
+#
+# WHY HEADLESS SHOULD AVOID `auto` ANYWAY, independent of that:
+#
+#   * It fails closed non-interactively. An unreachable classifier denies with retry guidance;
+#     a soft block that would prompt a human just denies; a long transcript aborts the agent
+#     outright once the classifier's own context is exceeded.
+#   * It puts a SECOND PAID MODEL INSIDE THE MEASUREMENT. Each non-fast-pathed tool call is a
+#     classifier request — latency, cost and non-determinism landing directly on a cell's score.
+#     A benchmark cell must not have another model's judgement in its loop.
+#
+# Edits inside the workspace fast-path around the classifier entirely, which is why
+# `acceptEdits` was never affected by any of this.
+#
+# So: grant the tools explicitly and accept edits. Verified on the current build with zero
+# denials across a full five-cell batch — 49 to 73 turns per cell — so the enumeration is not
+# pinching where real corpus work happens.
+#
+# ORDERING CONSTRAINT: `--allowedTools` is variadic and `--debug` takes an OPTIONAL argument;
+# either one placed last will swallow the kickoff the runner appends ("Input must be provided
+# either through stdin or as a prompt argument when using --print"). Use `--debug-file <path>`
+# if debugging is ever needed. Rule: no variadic or optional-argument flag immediately before
+# the prompt. `--permission-mode` closes this grant for exactly that reason.
+emit_claude_tool_grant() {
+  printf '         "--allowedTools", "Bash", "Edit", "Write", "Read", "Glob", "Grep",\n'
+  printf '         "NotebookEdit", "TodoWrite", "MultiEdit",\n'
+  printf '         "--permission-mode", "acceptEdits"]\n'
+}
+
+# The reviewer is IDENTICAL across every bundle and identical to the incumbent's: one pinned
+# strong-model configuration, blinded, on the operator's Anthropic subscription. It never
+# reaches OpenRouter, never learns candidate identity, and is emitted by this one function so
+# that no wave can drift it. A candidate-specific reviewer would invalidate the whole set.
+emit_reviewer_block() {
+  local claude_bin claude_home resolver
+  claude_bin="$(command -v claude)"
+  claude_home="$(dirname "$(readlink -f "$claude_bin")")"
+  resolver="$(resolver_bind)"
+  printf 'reviewer:\n'
+  printf '  argv: ["%s", "--model", "opus", "--print", "--output-format", "json",\n' "$claude_bin"
+  emit_claude_tool_grant
+  printf '  labels: {vendor: "anthropic", model: "opus", harness: "%s"}\n' "$(claude_harness_version)"
+  printf '  result_envelope: claude-code-json\n'
+  printf '  env_passthrough: ["LANG", "TERM"]\n'
+  printf '  timeout_s: 3600\n'
+  printf '  prompt_mode: argv\n'
+  printf '  sandbox_home: "%s"\n' "$HOME"
+  printf '  sandbox_ro_binds:\n'
+  printf '    - "%s"\n' "$claude_home"
+  printf '    - "%s"\n' "$(dirname "$claude_bin")"
+  [ -n "$resolver" ] && printf '    - "%s"\n' "$resolver"
+  # KNOWN HOLE, found by independent audit on 2026-08-16 and NOT closed for this study.
+  #
+  # `$HOME/.claude` is bound read-write so Claude Code has its credentials and session state.
+  # It also contains `$HOME/.claude/projects/`, which holds the full transcripts of the sessions
+  # that ORIGINALLY SOLVED every held-in task, in directories named after those tasks. A reviewer
+  # that went looking could read them. The `probe.json` `solution_denied` assertion tests one
+  # planted operator-only file and says nothing about this tree, so the record's isolation claim
+  # is narrower than it reads.
+  #
+  # Not closed here because the order names reviewer CONFIGURATION as something that invalidates
+  # a candidate set: narrowing this bind after four bundles have been graded would make the fifth
+  # incomparable to them. The hole is uniform across all 25 cells including the incumbent's, so
+  # it does not favour any bundle, and no reviewer stdout was retained to show whether it was
+  # ever used — which is itself part of the finding.
+  #
+  # The fix belongs in the next study's setup, before any cell is graded: bind only the
+  # credential and settings files this harness actually needs, never the whole config directory,
+  # and retain reviewer stdout so the question is answerable from the record instead of by rerun.
+  printf '  sandbox_rw_binds:\n'
+  printf '    - "%s/.claude"\n' "$HOME"
+  printf '    - "%s/.claude.json"\n' "$HOME"
+}
+
+# Where the materializer finds objects. Deployment facts, identical for every wave.
+emit_sources_block() {
+  local repo_root="$1"
+  printf 'workspace_repo_path: "%s"\n' "${TASKBENCH_WORKSPACE:-$repo_root/../hive}"
+  printf 'source_repos:\n'
+  printf '  cassiopenachin/omegahive: "%s"\n' "$repo_root"
+  printf '  cassiopenachin/plnbench: "%s"\n' "${TASKBENCH_PLNBENCH:-$HOME/src/SNET/plnbench}"
+  printf '  rTreutlein/PeTTaChainer: "%s"\n' "${TASKBENCH_PETTACHAINER:-$HOME/src/SNET/PeTTaChainer}"
+  printf '  trueagi-io/PeTTa: "%s"\n' "${TASKBENCH_PETTA:-$HOME/src/SNET/PeTTa}"
+}
+
+# One fresh record id, chosen here so that nobody has to pick one — picking one is an
+# opportunity to overwrite history.
+reserve_record() {
+  local repo_root="$1" base="$2" records_dir="$3"
+  (cd "$repo_root" && uv run --frozen taskbench next-record-id --base "$base" --out "$records_dir")
+}
+
+resume_target() {
+  local repo_root="$1" base="$2" records_dir="$3"
+  (cd "$repo_root" && uv run --frozen taskbench resume-target --base "$base" --out "$records_dir")
+}
+
+# The one place a batch's exit status is turned into words. Identical across waves so that an
+# operator reading one has read them all.
+report_status() {
+  local status="$1" record_dir="$2" work_root="$3" repo_root="$4"
+  step "Status"
+  case "$status" in
+    0)
+      say "EVERY CELL HAS A VERDICT AND THE RECORD VALIDATES."
+      say ""
+      say "Read the headline in:  $record_dir/aggregate.md"
+      say ""
+      say "A cell the environment killed — a rate limit, an auth failure, a reviewer that never"
+      say "answered — is INCONCLUSIVE, not red: it is not a model result. Re-run this same"
+      say "command to finish those; conclusive cells are carried forward, never repeated."
+      say ""
+      say "This is one bundle's five cells. It is not a qualification: the adequacy heuristic"
+      say "is applied across the whole matrix, and the M1c designation is the operator's, in a"
+      say "committed disposition. Nothing here qualifies anything on its own."
+      ;;
+    3)
+      say "PREFLIGHT REFUSED. No model was called, nothing was written, nothing to clean up."
+      say "Fix what it listed above and run this same command again."
+      ;;
+    *)
+      say "THE BATCH STOPPED (exit $status)."
+      say ""
+      say "Everything that completed is kept and nothing was overwritten:"
+      say "  record $record_dir"
+      say "  cells  $work_root"
+      say "Check it with:"
+      say "  cd $repo_root && uv run --frozen taskbench validate-record $record_dir"
+      say "Re-running the launcher opens a NEW record superseding this one."
+      ;;
+  esac
+}
+
+# Shared interrupt guarantee: an interruption keeps every completed cell and says so.
+install_interrupt_trap() {
+  local records_dir="$1" record_id="$2" work_root="$3"
+  # shellcheck disable=SC2317,SC2329  # invoked by the trap installed below
+  on_interrupt() {
+    printf '\n\nINTERRUPTED.\n' >&2
+    printf 'Every completed cell and every raw log are kept:\n' >&2
+    printf '  record %s/%s-%s\n' "$records_dir" "$(date +%F)" "$record_id" >&2
+    printf '  cells  %s\n' "$work_root" >&2
+    printf 'Nothing is restarted or overwritten. Re-running opens a NEW record that\n' >&2
+    printf 'supersedes this one; the partial record stays exactly as it is.\n' >&2
+    exit 130
+  }
+  trap on_interrupt INT TERM
+}

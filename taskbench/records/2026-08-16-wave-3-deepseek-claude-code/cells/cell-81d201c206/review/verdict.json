@@ -1,0 +1,57 @@
+{
+  "cell_id": "cell-81d201c206",
+  "dod_legs": [
+    {
+      "leg": "runbook-caveats",
+      "met": "yes",
+      "note": "Both restore steps lose the inert-bump caveat. Code repo: artefacts/docs/omegahive_recovery_runbook.md:90-96 now says the write path opens runs idempotently on first emit, keeping the open_run one-liner only as a fallback for dumps that predate the change. Workspace: artefacts/workspace.patch:12-31 replaces the '**Caveat (read this):** ... the omegahive run is **not** registered' block and reframes the 'wire the durable path once' section as a pre-change-dump fallback."
+    },
+    {
+      "leg": "result-report",
+      "met": "yes",
+      "note": "projects/omegahive/reports/2026-08-16-run-registration-result.md (artefacts/workspace.patch:35-144) carries What shipped / How verified / To operate / Reflection. Claims check out: 406 passing tests matches verifier/pytest.log:17 (4 new tests over a 402 baseline), ruff/mypy clean matches their logs, and the described gateway change matches artefacts/src/omegahive/gateway/gateway.py:96-100. Order item 2 is answered explicitly in To operate \u2014 registration comes as a side effect of the next real emit, no manual one-liner needed. It does not claim the out-of-scope legs: Reflection states the live runs row and the spine announcement are operator acts an offline replay cannot produce."
+    },
+    {
+      "leg": "pytest",
+      "met": "yes",
+      "note": "verifier/pytest.log:17 \u2014 406 passed, 1 warning (a pre-existing starlette/httpx deprecation)."
+    },
+    {
+      "leg": "ruff",
+      "met": "yes",
+      "note": "verifier/ruff.log:1 \u2014 All checks passed!"
+    },
+    {
+      "leg": "mypy",
+      "met": "yes",
+      "note": "verifier/mypy.log:6 \u2014 Success: no issues found in 149 source files."
+    },
+    {
+      "leg": "registration-property",
+      "met": "yes",
+      "note": "verifier/registration-property.log:1 \u2014 ok, every registration property case holds. Consistent with the implementation: open_run() sits at step 0 of Gateway.emit's transaction, ahead of the idempotency lookup (gateway.py:96-106), so a replayed emit on a run with events but no registry row still registers it."
+    },
+    {
+      "leg": "no-generation-semantics",
+      "met": "yes",
+      "note": "Stop-line not crossed. candidate.patch touches only gateway.py (a four-line insertion calling the pre-existing store.open_run()), two test files, and the docs runbook. No change to generation, GENERATION_MISMATCH, or cursor code, and no schema change beyond what open_run already does."
+    },
+    {
+      "leg": "never-bump-live",
+      "met": "yes",
+      "note": "Stop-line not crossed. bump-generation is invoked only against the scratch run 'cli-emit-registers-run' in tests (candidate.patch:146,164). The report's operator verification step is a read-only SELECT and explicitly warns against using bump-generation as a registration check because it mutates the live run's generation (artefacts/workspace.patch:109-114)."
+    },
+    {
+      "leg": "omegahive row demonstrably exists in runs (query evidence)",
+      "met": "not-applicable",
+      "note": "Out of scope per rubric \u2014 requires a live-spine mutation or deployed image. The attempt does not claim to have done it."
+    },
+    {
+      "leg": "announce result on the spine per WORKER.md",
+      "met": "not-applicable",
+      "note": "Out of scope per rubric \u2014 a spine emit. The report itself is written and graded."
+    }
+  ],
+  "verdict": "pass",
+  "would_have_shipped_defects": []
+}

@@ -1,0 +1,69 @@
+diff --git a/projects/omegahive/RUNBOOK.md b/projects/omegahive/RUNBOOK.md
+index d482690..349a456 100644
+--- a/projects/omegahive/RUNBOOK.md
++++ b/projects/omegahive/RUNBOOK.md
+@@ -110,6 +110,14 @@ matters was pushed — the externalize rule): `rm -rf ~/work/<worker>` at leisur
+ 
+ ## Dead worker recovery
+ 
++If `hive-launch` reports **window creation failed after spine seeding**, it has made a
++half-launch: the task is assigned and the worker clones/wrapper exist, but no pane was
++created. Do not rerun the launcher (that is not recovery and the task is already owned).
++Use the launcher's printed filled kickoff and remaining tmux command to create the task's
++window with append/free-slot semantics, then let the worker follow WORKER.md and accept the
++task through its issued wrapper. The pane name remains the registry; once the pane exists,
++continue with the normal dead-worker checks below if the worker itself dies.
++
+ A worker session that dies, compacts into uselessness, or is lost to a host reboot is
+ replaced, never resurrected:
+ 
+diff --git a/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md b/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md
+new file mode 100644
+index 0000000..a98afdb
+--- /dev/null
++++ b/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md
+@@ -0,0 +1,44 @@
++# launch-pane-fix result
++
++## What shipped
++
++`scripts/hive-launch` now creates windows in an existing session with tmux append/free-slot
++semantics (`new-window -a`), while retaining the task name as the only registry and keeping
++the existing name-collision refusal. If window creation fails after seeding, the launcher
++exits non-zero and prints the tmux error, the filled kickoff, the wrapper, and a copy/paste
++manual completion command. The RUNBOOK dead-worker section now documents this half-launch
++case. The tooling drill adds an occupied-index allocation case and a simulated post-seeding
++failure assertion.
++
++## How verified
++
++The order-required `bin/bench-verify -- ...` invocation was attempted, but this checkout has
++no `bin/bench-verify` (the command returned 127). The equivalent direct checks passed:
++`bash -n scripts/hive-launch scripts/hive-tooling-drill.sh`, `shellcheck -x` on both scripts,
++and `git diff --check`. The full tooling drill is intentionally not run here: the order
++excludes its non-replayable tmux/spine leg because it can reach the operator's live tmux
++server. The drill changes are written for the green-cell operator run.
++
++Before this change, the launcher targeted a session-only `new-window`; the order's captured
++reproduction was an occupied derived index (`create window failed: index 4 in use`) after
++`task.created`, `worker.registered`, and `task.assigned`, leaving an owned task with no pane
++or delivered kickoff. The new drill occupies index 4 and checks that the named task still
++gets a window; its shimmed failure checks the recovery print and assigned state.
++
++## To operate
++
++The ordering remains provision → spine seed → window creation. This preserves all existing
++refusal paths and avoids changing provisioning or event semantics; the new failure branch
++turns the remaining post-seed window failure into a documented manual finish. On failure,
++copy the printed `tmux new-window -a` command from an attached client and use the printed
++kickoff. Do not rerun `hive-launch`, because the task is already assigned.
++
++The project-config prerequisite was already present in the baseline checkout (project-aware
++conf loading and per-project canonical clone resolution); no separate result report was
++available in the supplied workspace to cite.
++
++## Reflection
++
++The important invariant is that a tmux index is an allocation detail, never task identity.
++Appending fixes the collision class while the explicit recovery output makes a rare launch
++failure legible and finishable without inventing board state or a registry file.

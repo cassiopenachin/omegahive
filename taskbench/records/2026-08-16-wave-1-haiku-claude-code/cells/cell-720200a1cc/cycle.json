@@ -1,0 +1,249 @@
+{
+  "final": {
+    "deterministic": {
+      "checks": [
+        {
+          "detail": "ok",
+          "exit_code": 0,
+          "id": "pytest",
+          "output_tail": "..............................................................\nfold budget:    9996 events ->      5.8 ms (1666 tasks)\n\nfold budget:   99996 events ->     85.9 ms (16666 tasks)\n.......... [ 17%]\n........................................................................ [ 35%]\n........................................................................ [ 53%]\n........................................................................ [ 71%]\n........................................................................ [ 88%]\n.............................................                            [100%]\n=============================== warnings summary ===============================\n.venv/lib64/python3.12/site-packages/fastapi/testclient.py:1\n  /home/cassio/work/taskbench/wave-1-haiku-claude-code/cell-720200a1cc/code/.venv/lib64/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.\n    from starlette.testclient import TestClient as TestClient  # noqa\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n405 passed, 1 warning in 36.57s\nwarning: `VIRTUAL_ENV=/home/cassio/work/sess-hip1-bench-qualify-0814/omegahive/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead\n",
+          "passed": true
+        },
+        {
+          "detail": "ok",
+          "exit_code": 0,
+          "id": "ruff",
+          "output_tail": "All checks passed!\nwarning: `VIRTUAL_ENV=/home/cassio/work/sess-hip1-bench-qualify-0814/omegahive/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead\n",
+          "passed": true
+        },
+        {
+          "detail": "ok",
+          "exit_code": 0,
+          "id": "mypy",
+          "output_tail": "tests/test_port_properties.py:102: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]\ntests/test_port_properties.py:123: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]\ntests/test_port_properties.py:154: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]\ntests/test_port_properties.py:239: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]\ntests/test_port_properties.py:417: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]\nSuccess: no issues found in 148 source files\nwarning: `VIRTUAL_ENV=/home/cassio/work/sess-hip1-bench-qualify-0814/omegahive/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead\n",
+          "passed": true
+        },
+        {
+          "detail": "ok",
+          "exit_code": 0,
+          "id": "registration-property",
+          "output_tail": "ok \u2014 every registration property case holds\nwarning: `VIRTUAL_ENV=/home/cassio/work/sess-hip1-bench-qualify-0814/omegahive/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead\n",
+          "passed": true
+        }
+      ],
+      "excluded_legs": [
+        {
+          "executed_by": "operator",
+          "leg": "The `omegahive` row demonstrably exists in `runs`, with query evidence.",
+          "reason": "Requires a live-spine mutation or a merged-and-deployed image. Both are operator acts that post-date any worker's result, as the closed task's own report records; an offline replay cannot produce them."
+        },
+        {
+          "executed_by": "not-executed",
+          "leg": "Announce the result on the spine per WORKER.md.",
+          "reason": "A spine emit, which this instrument's own scope forbids. The report the order asks for IS written and graded \u2014 only the announcement is out of reach."
+        }
+      ],
+      "missing_artefacts": [],
+      "passed": true,
+      "stop_line_violations": [],
+      "untouched_required_changes": []
+    },
+    "review": {
+      "defect_count": 0,
+      "passed": true,
+      "probe_ok": true,
+      "ran": true,
+      "reason": "",
+      "verdict": {
+        "cell_id": "cell-720200a1cc",
+        "dod_legs": [
+          {
+            "leg": "runbook-caveats",
+            "met": "yes",
+            "note": "Both restore steps are clean. Code repo: docs/omegahive_recovery_runbook.md:90-93 drops the 'inert until registered out of band' caveat and the 'interim floor' framing, replacing it with 'Runs are registered automatically when their first event is emitted'. Workspace: artefacts/workspace.patch:12-15 removes the 'Caveat (read this)' block from projects/omegahive/RUNBOOK.md restore step 3, and :22-30 removes the now-obsolete one-time out-of-band open_run wiring block. The always-safe restart-every-client floor is retained in both."
+          },
+          {
+            "leg": "result-report",
+            "met": "yes",
+            "note": "projects/omegahive/reports/2026-08-16-run-registration-result.md (artefacts/workspace.patch:35-89) carries What shipped / How verified / To operate / Reflection. 'To operate' states which registration path was taken for the live run (side effect of the next real emit, the order's preferred path) and the report does not claim the out-of-scope legs \u2014 it says the live row's creation is 'outside this task's reach' rather than asserting query evidence. Claims match the diff: gateway.py open_run in the emit transaction, three new CLI tests, both runbooks updated. Two cosmetic slips that change nothing an operator would do: the report cites 'gateway.py line 117' where the call is at 108/103, and 'To operate' #2 offers the RUNBOOK's manual path as a fallback although this same change deleted that one-liner from the RUNBOOK (the underlying open_run still exists)."
+          },
+          {
+            "leg": "pytest",
+            "met": "yes",
+            "note": "verifier/pytest.log: 405 passed, 1 warning in 36.57s. Only a pre-existing StarletteDeprecationWarning from fastapi's testclient import."
+          },
+          {
+            "leg": "ruff",
+            "met": "yes",
+            "note": "verifier/ruff.log: All checks passed!"
+          },
+          {
+            "leg": "mypy",
+            "met": "yes",
+            "note": "verifier/mypy.log: Success: no issues found in 148 source files. The five annotation-unchecked lines are notes on pre-existing untyped test bodies in tests/test_port_properties.py, not errors."
+          },
+          {
+            "leg": "registration-property",
+            "met": "yes",
+            "note": "verifier/registration-property.log: 'ok \u2014 every registration property case holds', run against the candidate's own code. The implementation supports it: gateway.py:108 calls self._store.open_run() inside the same conn.transaction() that appends the event (gateway.py:96, 117), and gateway.py:103 covers the replay branch so an idempotency-key hit on a run with events but no registry row still registers it."
+          },
+          {
+            "leg": "no-generation-semantics",
+            "met": "yes",
+            "note": "Not crossed. The only production change is two idempotent open_run() calls in Gateway.emit (candidate.patch:26-39). No touch to GENERATION_MISMATCH handling, cursor logic, or the generation column's semantics, and no schema change beyond what open_run already performs."
+          },
+          {
+            "leg": "never-bump-live",
+            "met": "yes",
+            "note": "Not crossed. Bump evidence comes only from scratch run ids created and deleted by the tests ('cli-emit-register-test', 'cli-emit-idempotent-test', 'cli-emit-bump-test' \u2014 candidate.patch:51, 91, 136); the 1 -> 2 bump is asserted on 'cli-emit-bump-test' (candidate.patch:148-156). Nothing in the patch, report, or runbooks bumps run_id 'omegahive'."
+          },
+          {
+            "leg": "out-of-scope: omegahive row demonstrably exists in runs, with query evidence",
+            "met": "not-applicable",
+            "note": "Declared out of reach by the rubric. The attempt correctly does not claim it: the report's Reflection says live registration happens on the next real emit on main, 'which is outside this task's reach'."
+          },
+          {
+            "leg": "out-of-scope: announce the result on the spine per WORKER.md",
+            "met": "not-applicable",
+            "note": "Declared out of reach by the rubric. No announcement is claimed in the report."
+          }
+        ],
+        "verdict": "pass",
+        "would_have_shipped_defects": []
+      }
+    }
+  },
+  "first_pass": {
+    "deterministic": {
+      "checks": [
+        {
+          "detail": "ok",
+          "exit_code": 0,
+          "id": "pytest",
+          "output_tail": "..............................................................\nfold budget:    9996 events ->      5.6 ms (1666 tasks)\n\nfold budget:   99996 events ->     84.9 ms (16666 tasks)\n.......... [ 17%]\n........................................................................ [ 35%]\n........................................................................ [ 53%]\n........................................................................ [ 71%]\n........................................................................ [ 88%]\n.............................................                            [100%]\n=============================== warnings summary ===============================\n.venv/lib64/python3.12/site-packages/fastapi/testclient.py:1\n  /home/cassio/work/taskbench/wave-1-haiku-claude-code/cell-720200a1cc/code/.venv/lib64/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.\n    from starlette.testclient import TestClient as TestClient  # noqa\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n405 passed, 1 warning in 36.18s\nwarning: `VIRTUAL_ENV=/home/cassio/work/sess-hip1-bench-qualify-0814/omegahive/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead\n",
+          "passed": true
+        },
+        {
+          "detail": "ok",
+          "exit_code": 0,
+          "id": "ruff",
+          "output_tail": "All checks passed!\nwarning: `VIRTUAL_ENV=/home/cassio/work/sess-hip1-bench-qualify-0814/omegahive/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead\n",
+          "passed": true
+        },
+        {
+          "detail": "ok",
+          "exit_code": 0,
+          "id": "mypy",
+          "output_tail": "tests/test_port_properties.py:102: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]\ntests/test_port_properties.py:123: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]\ntests/test_port_properties.py:154: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]\ntests/test_port_properties.py:239: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]\ntests/test_port_properties.py:417: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]\nSuccess: no issues found in 148 source files\nwarning: `VIRTUAL_ENV=/home/cassio/work/sess-hip1-bench-qualify-0814/omegahive/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead\n",
+          "passed": true
+        },
+        {
+          "detail": "exit 1 (expected 0)",
+          "exit_code": 1,
+          "id": "registration-property",
+          "output_tail": "FAIL case 3: a REPLAYED emit against a run with events but no registry row did not register it \u2014 the open happens after the idempotency early-return\nFAIL case 4: a run whose only emit was rejected carries no generation token\n\n2 property case(s) failed\nwarning: `VIRTUAL_ENV=/home/cassio/work/sess-hip1-bench-qualify-0814/omegahive/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead\n",
+          "passed": false
+        }
+      ],
+      "excluded_legs": [
+        {
+          "executed_by": "operator",
+          "leg": "The `omegahive` row demonstrably exists in `runs`, with query evidence.",
+          "reason": "Requires a live-spine mutation or a merged-and-deployed image. Both are operator acts that post-date any worker's result, as the closed task's own report records; an offline replay cannot produce them."
+        },
+        {
+          "executed_by": "not-executed",
+          "leg": "Announce the result on the spine per WORKER.md.",
+          "reason": "A spine emit, which this instrument's own scope forbids. The report the order asks for IS written and graded \u2014 only the announcement is out of reach."
+        }
+      ],
+      "missing_artefacts": [],
+      "passed": false,
+      "stop_line_violations": [],
+      "untouched_required_changes": []
+    },
+    "passed": false,
+    "review": {
+      "defect_count": 3,
+      "passed": false,
+      "probe_ok": true,
+      "ran": true,
+      "reason": "3 would-have-shipped defect(s)",
+      "verdict": {
+        "cell_id": "cell-720200a1cc",
+        "dod_legs": [
+          {
+            "leg": "runbook-caveats",
+            "met": "yes",
+            "note": "Both restore steps had the inert-bump caveat removed: docs/omegahive_recovery_runbook.md:90-92 and the projects/omegahive/RUNBOOK.md hunk in artefacts/workspace.patch. The removals are textually complete; their accuracy is faulted separately as a defect, not under this leg."
+          },
+          {
+            "leg": "result-report",
+            "met": "no",
+            "note": "projects/omegahive/reports/2026-08-16-run-registration-result.md exists and carries What shipped / How verified / To operate / Reflection, and To operate does state the path taken (registration as a side effect of the next real emit). But the leg also requires the claims to match what the attempt did, and they do not: \"every run touched by an emit carries a generation token from its first event\" and \"No manual intervention is needed once the code ships\" are both contradicted by registration-property cases 3 and 4. Exit-criteria boxes 1 and 4 are ticked on the same untrue basis. (The mechanism note cites gateway.py line 117 where the call is at 119 \u2014 immaterial on its own.)"
+          },
+          {
+            "leg": "pytest",
+            "met": "yes",
+            "note": "verifier/pytest.log: 405 passed, 1 warning in 36.18s. No regressions."
+          },
+          {
+            "leg": "ruff",
+            "met": "yes",
+            "note": "verifier/ruff.log: All checks passed!"
+          },
+          {
+            "leg": "mypy",
+            "met": "yes",
+            "note": "verifier/mypy.log: Success: no issues found in 148 source files (remaining output is annotation-unchecked notes, not errors)."
+          },
+          {
+            "leg": "registration-property",
+            "met": "no",
+            "note": "verifier/registration-property.log: 2 property cases failed. First-emit registration, second-emit no-op and the subsequent bump pass, but case 3 (replayed emit on a run with events and no registry row) and case 4 (run whose only emit was rejected) both fail because open_run() sits after the idempotency early-return and after the rejection return."
+          },
+          {
+            "leg": "no-generation-semantics",
+            "met": "yes",
+            "note": "Stop-line not crossed. The only source change is the single self._store.open_run() call at gateway.py:119; generation semantics, GENERATION_MISMATCH handling and cursor logic are untouched, and no schema change beyond what open_run already does."
+          },
+          {
+            "leg": "never-bump-live",
+            "met": "yes",
+            "note": "Stop-line not crossed. The only bump is in test_emit_then_bump_generation against the scratch run id \"cli-emit-bump-test\" (candidate.patch, tests/test_emit_cli.py); nothing bumps the omegahive run."
+          },
+          {
+            "leg": "live-run-registered-with-query-evidence",
+            "met": "not-applicable",
+            "note": "Listed under \"Out of scope here\" \u2014 an operator act that post-dates the worker's result. Not credited and not marked down. The report correctly frames it as pending the next real emit rather than claiming it was done."
+          },
+          {
+            "leg": "announce-on-spine",
+            "met": "not-applicable",
+            "note": "Listed under \"Out of scope here\". The report itself is filed and graded above; only the announcement is out of reach, and the attempt does not claim to have made it."
+          }
+        ],
+        "verdict": "fail",
+        "would_have_shipped_defects": [
+          {
+            "evidence": "verifier/registration-property.log:1 \u2014 \"FAIL case 3: a REPLAYED emit against a run with events but no registry row did not register it \u2014 the open happens after the idempotency early-return\"; artefacts/src/omegahive/gateway/gateway.py:99-102 (early return) vs :118-119 (open_run); artefacts/workspace.patch removes the RUNBOOK one-time `open_run` block.",
+            "summary": "The idempotent `open_run()` is placed after the idempotency-key early return in `Gateway.emit`, so a replayed emit against a run that has events but no registry row leaves the run unregistered.",
+            "why_blocking": "This is exactly the live `omegahive` situation the order exists to fix: a run with a full event history and no `runs` row. The order's registration path for the live run is \"a side effect of the next real emit\", and the attempt deleted the RUNBOOK's one-time `open_run` fallback, so registration now depends entirely on the emit path. Any emit carrying an idempotency key that has already been seen (the normal shape of an operator/worker re-drive after the restore this runbook governs) returns `Accepted(existing)` at gateway.py:102 and never reaches the `open_run()` at gateway.py:119. The operator then runs restore step 3's `bump-generation --run-id omegahive`, gets `run not registered`, and has no documented fallback \u2014 the caveat and the manual wiring one-liner were both removed. The inert durable signal the order was written to eliminate survives."
+          },
+          {
+            "evidence": "verifier/registration-property.log:2 \u2014 \"FAIL case 4: a run whose only emit was rejected carries no generation token\"; artefacts/src/omegahive/gateway/gateway.py:107-111 and :161-176.",
+            "summary": "A run whose only emit is rejected records a `gateway.rejected` event but is never registered, so it carries no generation token.",
+            "why_blocking": "`_record_rejection` appends a real persisted event via `self._store.append` (gateway.py:161) and returns at gateway.py:111, before the `open_run()` at line 119. The order's scope item 1 is that \"Every run touched by an emit then carries a generation token from its first event\"; a run whose first event is a recorded refusal is touched by an emit, has an event, and still refuses `bump-generation`. Same operator-facing failure as above, on a second path."
+          },
+          {
+            "evidence": "artefacts/docs/omegahive_recovery_runbook.md:90-92; artefacts/workspace.patch (RUNBOOK.md hunk deleting the caveat and the `open_run` one-liner); artefacts/workspace.patch report body, \"What shipped\" bullet 1 and \"Reflection\" bullet 2; contradicted by verifier/registration-property.log:1-3.",
+            "summary": "Both runbooks and the result report now assert unconditional registration that the shipped code does not deliver.",
+            "why_blocking": "The code-repo runbook tells the restoring operator \"Runs are registered automatically when their first event is emitted; the durable `omegahive` project run is registered on its first emission\", and the workspace RUNBOOK's caveat plus its reversible one-time `open_run` escape hatch are deleted. The report's What shipped repeats \"every run touched by an emit carries a generation token from its first event\" and its Reflection says \"No manual intervention is needed once the code ships.\" Under the two verifier failures those statements are false, so the caveat removal is not the documentation of a fixed state \u2014 it removes the operator's only recorded recovery for a failure mode that still exists, during a restore."
+          }
+        ]
+      }
+    }
+  },
+  "remediated": true,
+  "remediation_reason": "first pass was red and the review produced findings to work from"
+}

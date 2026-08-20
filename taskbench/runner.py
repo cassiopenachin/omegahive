@@ -59,6 +59,9 @@ class AgentSpec(BaseModel):
     transcript_jsonl: str | None = None
     #: How the kickoff reaches the agent: appended to argv, or written to TASK.md only.
     prompt_mode: str = "argv"
+    #: When the non-interfering diagnostic snapshot is taken, in seconds. The order fixes five
+    #: minutes; it is a field so a test does not have to wait five minutes to exercise it.
+    pulse_at_s: int = 300
     #: Set to `claude-code-json` when the command runs with `--output-format json`. The
     #: harness then reports its own resolved model id and token counts, and the record pins
     #: those rather than the friendly tier name the launch asked for — an alias is a request,
@@ -71,11 +74,18 @@ class AgentSpec(BaseModel):
 
 #: Objectively terminal errors — the run stopped for a reason that is not the model's
 #: judgment. Kept small and literal on purpose: a fuzzy list would relabel real failures.
+#:
+#: `529` was a bare number here, matched with `re.search` against 80KB of the harness's own
+#: output. A diff hunk header (`@@ -529,7 +529,9 @@`), a line number or a token count was
+#: enough to mark a perfectly healthy run terminal — and once the five-minute pulse started
+#: reading this list, `earliest_actionable_red` would promote that false positive to the
+#: EARLIEST possible basis and stamp a timestamp on it. It now needs an HTTP-ish context, which
+#: is the only form the condition actually appears in.
 TERMINAL_ERROR_PATTERNS: tuple[tuple[str, str], ...] = (
     ("credit_balance", r"credit balance is too low"),
     ("authentication", r"authentication_error|invalid[_ ]api[_ ]key"),
     ("rate_limit", r"rate[_ ]limit[_ ]error|429 Too Many Requests"),
-    ("overloaded", r"overloaded_error|529"),
+    ("overloaded", r"overloaded_error|(?:HTTP|status|code)\D{0,10}\b529\b"),
     ("context_overflow", r"prompt is too long|context[_ ]length[_ ]exceeded"),
     ("harness_crash", r"Traceback \(most recent call last\)"),
 )
@@ -100,6 +110,136 @@ class ProgressFacts:
             self.sources[fact] = source
         else:
             self.missing_surfaces[fact] = missing
+
+
+#: The four things a five-minute snapshot is allowed to say. Deliberately not a verdict
+#: vocabulary: none of these means pass or fail, and `progressing` never authorises a kill.
+PULSE_STATES = ("terminal-red", "progressing", "started", "indeterminate")
+
+
+@dataclass
+class DiagnosticPulse:
+    """A non-interfering snapshot of a run in flight, taken once at a fixed elapsed time.
+
+    Its purpose is escalation value, not accuracy about the outcome: a bundle whose failures
+    are legible at five minutes is cheaper to operate than one that looks fine until minute
+    ninety, *even when both end at the same pass count*. So the pulse reports only facts that
+    are already true — a terminal error the harness itself printed, a write that happened, a
+    verifier that ran — and says `indeterminate` rather than guessing when nothing is visible.
+
+    A wrong-but-still-developing patch is NOT knowable here, and calling one red at minute five
+    is the failure mode this vocabulary is shaped to prevent.
+    """
+
+    at_s: int
+    utc: str
+    state: str
+    observed: str
+
+    def to_json(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def classify_pulse(
+    *,
+    responded: bool,
+    wrote: bool,
+    ran_verifier: bool,
+    terminal_error: str | None,
+    exited: bool,
+) -> tuple[str, str]:
+    """The pulse vocabulary, as a pure function so its rules are testable without a subprocess.
+
+    Ordered most-certain-first. `terminal-red` requires the harness to have *said* something
+    terminal — it is never inferred from silence, because silence is what a thinking model and
+    a hung one have in common.
+    """
+    if terminal_error:
+        return "terminal-red", f"the harness reported a terminal condition: {terminal_error}"
+    if ran_verifier:
+        return "progressing", "the candidate has invoked bin/bench-verify at least once"
+    if wrote:
+        return "progressing", "at least one file under code/ has been created or modified"
+    if responded and exited:
+        return (
+            "indeterminate",
+            "the process has already exited without writing anything or reporting an error",
+        )
+    if responded:
+        return "started", "the harness has produced output but has not yet written or verified"
+    return (
+        "indeterminate",
+        "no output, no write and no verifier invocation are observable yet; a slow first token "
+        "and a stalled harness look identical from here",
+    )
+
+
+def earliest_actionable_red(
+    *,
+    pulse: dict[str, Any] | None,
+    progress: dict[str, Any],
+    finished_utc: str,
+    deterministic_failed: bool,
+    review_failed: bool,
+    review_finished_utc: str | None,
+) -> dict[str, str]:
+    """When the record *first* made a final red objectively actionable — and on what basis.
+
+    This is deliberately conservative and deliberately retrospective. The temptation is to
+    credit a bundle for looking bad early; the discipline is that a failure is only actionable
+    once an immutable receipt shows it, not once a human squinting at a transcript could have
+    guessed. A patch that is heading somewhere wrong at minute five is *not* knowable at minute
+    five, and labelling it so would turn this field into a second, worse pass rate.
+
+    So there are exactly three bases, in order of how early they can fire:
+
+    1. **The harness said so.** A terminal error caught by the five-minute pulse is actionable
+       at the pulse: authentication, credit, rate limit, context overflow, a crash. Nothing
+       about the model's judgment is involved, which is what makes it safe to call early.
+    2. **A deterministic gate failed.** Actionable when the run ended and the gates ran — the
+       first moment a machine, not a reader, could say so.
+    3. **The blinded review found it.** Actionable only when the review returned. A defect that
+       needs a strong model to see is not actionable before that model has spoken.
+    """
+    if pulse and pulse.get("state") == "terminal-red":
+        return {
+            "utc": str(pulse.get("utc")),
+            "basis": f"five-minute pulse: {pulse.get('observed')}",
+            "how_early": f"at the {pulse.get('at_s')}s snapshot",
+        }
+    terminal = progress.get("terminal_error")
+    if terminal:
+        return {
+            "utc": finished_utc,
+            "basis": (
+                f"the harness reported a terminal condition ({terminal}), visible in the run "
+                "record at exit"
+            ),
+            "how_early": "at process exit",
+        }
+    if deterministic_failed:
+        return {
+            "utc": finished_utc,
+            "basis": (
+                "a deterministic verifier failed; actionable as soon as the gates ran on the "
+                "finished tree, with no reader judgment involved"
+            ),
+            "how_early": "at process exit",
+        }
+    if review_failed:
+        return {
+            "utc": review_finished_utc or finished_utc,
+            "basis": (
+                "the blinded review found the defect; a defect that needs a strong model to "
+                "see is not actionable before that model has spoken"
+            ),
+            "how_early": "at review completion",
+        }
+    return {
+        "utc": UNKNOWN,
+        "basis": "no final red on this cell, so there is nothing to date",
+        "how_early": UNKNOWN,
+    }
 
 
 @dataclass
@@ -135,6 +275,12 @@ class CellRun:
     #: What the harness said it actually ran — resolved model id, provider, token counts.
     #: This, not the launch's alias, is the execution identity the record pins.
     resolved_identity: dict[str, Any] = field(default_factory=dict)
+    #: The five-minute snapshot, when the run lasted that long. Absent on a shorter run, which
+    #: is itself the answer: nothing to escalate about a cell that finished first.
+    pulse: dict[str, Any] | None = None
+    #: What OpenRouter said this cell cost, for the arms that go through the gateway. Filled in
+    #: after the run by reconciling the receipt recorder's JSONL; absent for subscription arms.
+    gateway_receipts: dict[str, Any] | None = None
 
     def to_json(self) -> dict:
         d = asdict(self)
@@ -179,11 +325,20 @@ def _pump(stream, path: Path, first_bytes: dict[str, float], key: str) -> None:
     A file's mtime cannot answer "when did the agent first respond": both log files are
     created at launch, and an mtime is the *last* write to that file. Reading the stream
     ourselves is the only way to get the fact the record claims to carry.
+
+    `read1`, not `read`. `read(4096)` blocks until it has four kilobytes *or the stream
+    closes* — so on a harness running `--print --output-format json`, which emits one envelope
+    at the very end, the "first byte" timestamp was really the exit timestamp, and any
+    mid-flight reader of this dict saw a process that had said nothing. That made the fact
+    silently wrong wherever it was interesting: `first_response` claimed a precision it did
+    not have, and the five-minute pulse would have called every buffered harness
+    `indeterminate` no matter how well it was going. `read1` returns as soon as any bytes are
+    available, which is what both callers already believed they were getting.
     """
     try:
         with open(path, "wb") as fh:
             while True:
-                chunk = stream.read(4096)
+                chunk = stream.read1(4096)
                 if not chunk:
                     break
                 first_bytes.setdefault(key, time.time())
@@ -211,15 +366,189 @@ def _kill_tree(proc: subprocess.Popen) -> None:
         proc.wait(timeout=15)
 
 
+def _parse_codex_jsonl(stdout_text: str) -> dict[str, Any]:
+    """Codex `exec --json` writes one JSON object per line and totals the turn at the end.
+
+    Shape pinned from a real `codex-cli 0.147.0` run on this host rather than from
+    documentation: `thread.started`, `turn.started`, `item.completed`, then either
+    `turn.completed` carrying `usage` or `turn.failed` carrying `error`.
+
+    **Codex reports no server-resolved model id.** The stream echoes nothing about which model
+    answered; only the session rollout file records the string Codex was configured with, which
+    is a request rather than an identity. That gap is named here instead of being papered over
+    with the launch alias, because a resolved id nobody resolved is precisely the fabrication
+    this record exists to make impossible.
+    """
+    usage: dict[str, Any] | None = None
+    failure: Any = None
+    turns = 0
+    thread_id = None
+    harness_model: dict[str, Any] | None = None
+    for line in stdout_text.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("type")
+        if kind == "thread.started":
+            thread_id = event.get("thread_id")
+        elif kind == "turn.completed":
+            turns += 1
+            if isinstance(event.get("usage"), dict):
+                usage = event["usage"]
+        elif kind == "turn.failed":
+            turns += 1
+            failure = event.get("error")
+        elif kind == "taskbench.harness_model":
+            # Emitted by `cell-codex.sh` after the run, read out of Codex's own session rollout.
+            # It is the harness's statement of the model it ran with, which is a weaker fact
+            # than the server-resolved id other arms report — and it is labelled as such below
+            # rather than quietly filling the same slot with the same authority.
+            harness_model = event
+
+    if usage is None and failure is None:
+        return {
+            "available": False,
+            "missing_surface": (
+                "no turn.completed or turn.failed event on stdout (did the command run with "
+                "--json?)"
+            ),
+        }
+    normalised = None
+    if usage:
+        # Codex's own field names, mapped onto the shape every other arm reports, so the
+        # aggregate does not have to special-case one vendor's spelling. The raw block is kept
+        # verbatim beside it.
+        normalised = {
+            "input_tokens": usage.get("input_tokens"),
+            "output_tokens": usage.get("output_tokens"),
+            "cache_read_input_tokens": usage.get("cached_input_tokens"),
+            "cache_creation_input_tokens": usage.get("cache_write_input_tokens"),
+            "reasoning_output_tokens": usage.get("reasoning_output_tokens"),
+        }
+    return {
+        "available": True,
+        # Codex's event stream carries no model id at all. Its session rollout does, and the
+        # wrapper hands it over — so the cell is attributable, which is what the record
+        # validator is protecting. The launch alias is still never promoted: this value comes
+        # from the harness's own record of the run, and `resolved_model_source` says so.
+        "resolved_model": (harness_model or {}).get("model"),
+        "resolved_model_source": (
+            (harness_model or {}).get("source", "codex session rollout")
+            if harness_model
+            else None
+        ),
+        "resolved_model_missing_surface": (
+            "codex exec --json reports no SERVER-resolved model id. The value above is the "
+            "model Codex records having been configured with, read from its session rollout — "
+            "a harness statement, not a gateway or API echo. Weigh it accordingly."
+            if harness_model
+            else "codex exec --json reports no server-resolved model id, and no session "
+            "rollout was available to read one from; the launch alias is a request, not an "
+            "identity, and is not promoted to one here"
+        ),
+        "provider": None,
+        "usage": normalised,
+        "usage_raw": usage,
+        "total_cost_usd": None,
+        "cost_missing_surface": (
+            "this arm runs on a ChatGPT subscription; there is no per-run price to report and "
+            "an estimate from a price table would not be one"
+        ),
+        "num_turns": turns,
+        "is_error": failure is not None,
+        "terminal_reason": failure,
+        "thread_id": thread_id,
+        "how_primary_chosen": "codex reports one usage block per turn; the last is the total",
+    }
+
+
+def _parse_reasonix_json(stdout_text: str) -> dict[str, Any]:
+    """Reasonix `-p --output-format json` writes one object; field names are read tolerantly.
+
+    Deliberately forgiving, and safe to be: this arm reaches DeepSeek through OpenRouter, so
+    its *scored* accounting comes from the gateway receipts, not from here. What this adds is
+    the harness's own view — turn count, its token totals — which is useful for the matched
+    comparison and load-bearing for nothing. A field it cannot find is reported absent.
+    """
+    envelope = None
+    for line in reversed(stdout_text.splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                candidate = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict):
+                envelope = candidate
+                break
+    if envelope is None:
+        return {
+            "available": False,
+            "missing_surface": (
+                "no JSON object on stdout (did the command run with --output-format json?)"
+            ),
+        }
+    usage = None
+    for key in ("usage", "tokens", "metrics"):
+        if isinstance(envelope.get(key), dict):
+            usage = envelope[key]
+            break
+
+    def pick(*names: str) -> Any:
+        for name in names:
+            if usage and name in usage:
+                return usage[name]
+        return None
+
+    return {
+        "available": True,
+        "resolved_model": envelope.get("model") or envelope.get("resolved_model"),
+        "provider": envelope.get("provider"),
+        "usage": {
+            "input_tokens": pick("input_tokens", "prompt_tokens", "prompt"),
+            "output_tokens": pick("output_tokens", "completion_tokens", "completion"),
+            "cache_read_input_tokens": pick("cache_read_input_tokens", "cache_hit_tokens",
+                                            "cached_tokens"),
+            "cache_creation_input_tokens": pick("cache_creation_input_tokens",
+                                                "cache_write_tokens"),
+        } if usage else None,
+        "usage_raw": usage,
+        "total_cost_usd": None,
+        "cost_missing_surface": (
+            "Reasonix does not report OpenRouter's server cost; this arm's spend comes from the "
+            "gateway receipts, and a harness-local figure would not be one"
+        ),
+        "num_turns": envelope.get("turns") or envelope.get("steps"),
+        "is_error": bool(envelope.get("error")),
+        "terminal_reason": envelope.get("error"),
+        "how_primary_chosen": "the last JSON object on stdout is Reasonix's run summary",
+    }
+
+
 def parse_result_envelope(kind: str | None, stdout_text: str) -> dict[str, Any]:
     """Read the harness's own end-of-run report, when it writes one.
 
     Returns `{"available": False, "missing_surface": ...}` rather than guessing. Nothing here
     infers: the resolved model id, the token counts and the error status are whatever the
     harness said they were.
+
+    Which arm's numbers come from where, because it is not uniform and the difference matters:
+    Haiku and Luna run on subscriptions and their token counts come from here; the three
+    OpenRouter arms are scored on gateway receipts instead, and their envelopes are corroboration
+    rather than evidence.
     """
     if kind is None:
         return {"available": False, "missing_surface": "launch config declared no result_envelope"}
+    if kind == "codex-jsonl":
+        return _parse_codex_jsonl(stdout_text)
+    if kind == "reasonix-json":
+        return _parse_reasonix_json(stdout_text)
     if kind != "claude-code-json":
         return {"available": False, "missing_surface": f"unknown result_envelope kind {kind!r}"}
 
@@ -260,6 +589,7 @@ def parse_result_envelope(kind: str | None, stdout_text: str) -> dict[str, Any]:
         "model_usage": model_usage,
         "usage": envelope.get("usage"),
         "total_cost_usd": envelope.get("total_cost_usd"),
+        "session_id": envelope.get("session_id"),
         "num_turns": envelope.get("num_turns"),
         "duration_ms": envelope.get("duration_ms"),
         "is_error": envelope.get("is_error"),
@@ -502,12 +832,40 @@ def run_cell(
         thread.daemon = True
         thread.start()
 
+    # The five-minute snapshot. A daemon timer, so it cannot hold the run open, and it only
+    # *reads* — no signal, no stdin, no file it did not create. A pulse that perturbed the run
+    # would be measuring itself.
+    pulse_holder: dict[str, DiagnosticPulse] = {}
+
+    def take_pulse() -> None:
+        now = time.time()
+        partial = ""
+        with contextlib.suppress(OSError):
+            partial = stdout_path.read_text(errors="replace")[-40000:]
+        with contextlib.suppress(OSError):
+            partial += stderr_path.read_text(errors="replace")[-40000:]
+        state, observed = classify_pulse(
+            responded=bool(first_bytes),
+            wrote=_earliest_write(mtimes_before, _tree_mtimes(mat.code)) is not None,
+            ran_verifier=verify_log.is_file(),
+            terminal_error=_detect_terminal_error(partial),
+            exited=proc.poll() is not None,
+        )
+        pulse_holder["pulse"] = DiagnosticPulse(
+            at_s=spec.pulse_at_s, utc=_utc(now), state=state, observed=observed
+        )
+
+    pulse_timer = threading.Timer(spec.pulse_at_s, take_pulse)
+    pulse_timer.daemon = True
+    pulse_timer.start()
+
     timed_out = False
     try:
         proc.wait(timeout=spec.timeout_s)
     except subprocess.TimeoutExpired:
         timed_out = True
         _kill_tree(proc)
+    pulse_timer.cancel()
     for thread in pumps:
         thread.join(timeout=30)
     end = time.time()
@@ -562,7 +920,9 @@ def run_cell(
 
     diff, changed = _capture_diff(mat.code)
     ws_diff, ws_changed = _capture_diff(mat.workspace)
+    taken = pulse_holder.get("pulse")
     return CellRun(
+        pulse=taken.to_json() if taken else None,
         workspace_diff=ws_diff,
         workspace_changed_files=ws_changed,
         outward_actions=_read_mock_log(logs / "mocks"),

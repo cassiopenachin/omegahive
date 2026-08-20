@@ -1,0 +1,143 @@
+{
+  "argv": [
+    "/home/cassio/work/sess-hip1-bench-qualify-0814/omegahive/taskbench/launch/cell-claude-openrouter.sh",
+    "--model",
+    "meta/muse-spark-1.2@preset/omegahive-muse-spark-1-2",
+    "--print",
+    "--output-format",
+    "json",
+    "--allowedTools",
+    "Bash",
+    "Edit",
+    "Write",
+    "Read",
+    "Glob",
+    "Grep",
+    "NotebookEdit",
+    "TodoWrite",
+    "MultiEdit",
+    "--permission-mode",
+    "acceptEdits"
+  ],
+  "cell_id": "cell-338856fa8c",
+  "changed_files": [
+    "scripts/hive-launch"
+  ],
+  "diff": "diff --git a/scripts/hive-launch b/scripts/hive-launch\nindex cb9529c..47ecc2d 100755\n--- a/scripts/hive-launch\n+++ b/scripts/hive-launch\n@@ -134,7 +134,7 @@ fi\n [ ! -e \"$CODE_ROOT\" ] || die \"$CODE_ROOT already exists; pick a fresh --worker id or clear it\"\n if tmux has-session -t \"$HIVE_TMUX_SESSION\" 2>/dev/null \\\n    && tmux list-windows -t \"$HIVE_TMUX_SESSION\" -F '#{window_name}' 2>/dev/null | grep -qxF \"$TASK\"; then\n-  die \"a tmux window named '$TASK' already exists in session '$HIVE_TMUX_SESSION' (the pane is the registry)\"\n+  die \"a tmux window named '$TASK' already exists in session '$HIVE_TMUX_SESSION' \u2014 the pane IS the registry, so this task already has a session. Look first: tmux attach -t '$HIVE_TMUX_SESSION', then select the '$TASK' window. If that worker is dead, recover per RUNBOOK 'Dead worker recovery' \u2014 kill the pane, register a fresh worker id, emit task.reassigned. Never a second window for one task.\"\n fi\n \n # --- pin the order and build the seed payloads --------------------------------\n@@ -228,13 +228,69 @@ KICK\n # Open the pane. The kickoff travels as an env var (HIVE_KICKOFF) so no multi-line\n # text is ever quoted onto a command line; the window runs the worker command with\n # it as the initial prompt. The pane NAME is the registry \u2014 no registry file.\n+# Window allocation uses append/free-slot semantics (-a) against the session so an\n+# occupied index never collides; only a name collision (window already named for\n+# this task) is meaningful and is refused. The index is never chosen by us and\n+# no .tmux.conf assumption (base-index, renumber-windows) is made.\n launch_cmd=\"$HIVE_WORKER_CMD \\\"\\$HIVE_KICKOFF\\\"\"\n+# Fail-safe half-launch: if the window fails after the spine was seeded, the\n+# board is owned but no pane exists. Print the filled kickoff and the remaining\n+# manual steps per WORKER.md \u00a7Launch so the operator can complete the launch\n+# without archaeology.\n+print_half_launch_recovery() {\n+  echo \"\" >&2\n+  echo \"hive-launch: HALF-LAUNCH \u2014 board is seeded but pane creation failed.\" >&2\n+  echo \"Complete the launch manually per WORKER.md \u00a7Launch (fallback):\" >&2\n+  echo \"\" >&2\n+  printf '  task=%s  worker=%s  project=%s  run=%s\\n' \"$TASK\" \"$WORKER\" \"$PROJECT\" \"$RUN\" >&2\n+  printf '  clones: %s  +  %s\\n' \"$WS_ROOT\" \"$CODE_ROOT\" >&2\n+  printf '  wrapper: %s\\n' \"$WRAPPER\" >&2\n+  echo \"\" >&2\n+  echo \"--- filled kickoff (HIVE_KICKOFF) ---\" >&2\n+  printf '%s\\n' \"$KICKOFF\" >&2\n+  echo \"--- end kickoff ---\" >&2\n+  echo \"\" >&2\n+  echo \"Remaining steps (WORKER.md \u00a7Launch manual path):\" >&2\n+  printf '  1. Clones already provisioned at %s and %s\\n' \"$WS_ROOT\" \"$CODE_ROOT\" >&2\n+  echo \"     (printed as clones: above). If missing, re-clone per WORKER.md \u00a7Launch:\" >&2\n+  printf '       git clone %s %s\\n' \"$WS_HUB\" \"$WS_ROOT\" >&2\n+  printf '       git clone %s %s && git -C %s remote set-url origin %s\\n' \"$CANON_CODE\" \"$CODE_ROOT\" \"$CODE_ROOT\" \"$CODE_REPO\" >&2\n+  printf '  2. Emit wrapper already issued at %s\\n' \"$WRAPPER\" >&2\n+  echo \"     Verify it exists and is executable; if missing recreate per hive-launch wrapper template.\" >&2\n+  echo \"  3. Board is already seeded (task.created + worker.registered + task.assigned,\" >&2\n+  echo \"     or adopt register+assign). Do NOT re-emit; verify with:\" >&2\n+  printf '       hive board-view %s --json | jq\\n' \"$RUN\" >&2\n+  echo \"     A task that is assigned/blocked/in_progress is already owned \u2014 do not relaunch,\" >&2\n+  echo \"     recover via task.reassigned (RUNBOOK) if needed.\" >&2\n+  echo \"  4. Open the pane manually with append semantics (never specify an index):\" >&2\n+  # shellcheck disable=SC2016\n+  printf '       tmux new-window -a -t %s -n %s -c %s -e HIVE_KICKOFF=\"$KICKOFF\" %s\\n' \\\n+    \"$HIVE_TMUX_SESSION\" \"$TASK\" \"$WS_ROOT\" \"$HIVE_WORKER_CMD \\\"\\$HIVE_KICKOFF\\\"\" >&2\n+  echo \"     If the session does not exist:\" >&2\n+  # shellcheck disable=SC2016\n+  printf '       tmux new-session -d -s %s -n %s -c %s -e HIVE_KICKOFF=\"$KICKOFF\" %s\\n' \\\n+    \"$HIVE_TMUX_SESSION\" \"$TASK\" \"$WS_ROOT\" \"$HIVE_WORKER_CMD \\\"\\$HIVE_KICKOFF\\\"\" >&2\n+  echo \"  5. Verify the pane is the registry:\" >&2\n+  # shellcheck disable=SC2016\n+  printf '       tmux list-windows -t %s -F \"#{window_name}\" | grep -qxF %s\\n' \"$HIVE_TMUX_SESSION\" \"$TASK\" >&2\n+  echo \"\" >&2\n+  printf 'If a window named \"%s\" already exists, do not create a second window;\\n' \"$TASK\" >&2\n+  echo \"the pane name is the registry \u2014 name collision must be resolved via task.reassigned (RUNBOOK).\" >&2\n+}\n if tmux has-session -t \"$HIVE_TMUX_SESSION\" 2>/dev/null; then\n-  tmux new-window -t \"$HIVE_TMUX_SESSION\" -n \"$TASK\" -c \"$WS_ROOT\" \\\n-    -e HIVE_KICKOFF=\"$KICKOFF\" \"$launch_cmd\"\n+  if ! tmux new-window -a -t \"$HIVE_TMUX_SESSION\" -n \"$TASK\" -c \"$WS_ROOT\" \\\n+    -e HIVE_KICKOFF=\"$KICKOFF\" \"$launch_cmd\"; then\n+    echo \"hive-launch: create window failed: pane not created (see half-launch recovery below)\" >&2\n+    print_half_launch_recovery || true\n+    exit 1\n+  fi\n else\n-  tmux new-session -d -s \"$HIVE_TMUX_SESSION\" -n \"$TASK\" -c \"$WS_ROOT\" \\\n-    -e HIVE_KICKOFF=\"$KICKOFF\" \"$launch_cmd\"\n+  if ! tmux new-session -d -s \"$HIVE_TMUX_SESSION\" -n \"$TASK\" -c \"$WS_ROOT\" \\\n+    -e HIVE_KICKOFF=\"$KICKOFF\" \"$launch_cmd\"; then\n+    echo \"hive-launch: create session/window failed (see half-launch recovery below)\" >&2\n+    print_half_launch_recovery || true\n+    exit 1\n+  fi\n fi\n echo \"  pane:   $HIVE_TMUX_SESSION:$TASK  (attach: tmux attach -t $HIVE_TMUX_SESSION)\"\n echo \"hive-launch: done.\"\n",
+  "exit_code": 0,
+  "finished_utc": "2026-08-16T20:23:54Z",
+  "gateway_receipts": null,
+  "home_is_cell_root": true,
+  "labels": {
+    "harness": "claude-code-2.1.233",
+    "model": "meta/muse-spark-1.2@preset/omegahive-muse-spark-1-2",
+    "vendor": "meta"
+  },
+  "outward_actions": {},
+  "progress": {
+    "exit": "2026-08-16T20:23:54Z",
+    "first_read": "unknown",
+    "first_response": "2026-08-16T20:21:25Z",
+    "first_verifier": "unknown",
+    "first_write": "2026-08-16T20:22:30Z",
+    "missing_surfaces": {
+      "first_read": "harness exposes no tool-call transcript; no read timestamp is observable",
+      "first_verifier": "candidate never invoked bin/bench-verify; a verifier it ran directly is invisible"
+    },
+    "sources": {
+      "exit": "runner wall clock at process reap",
+      "first_response": "timestamp of the first byte the agent wrote to stdout or stderr",
+      "first_write": "earliest mtime among files created or modified under code/ during the run"
+    },
+    "terminal_error": null
+  },
+  "pulse": null,
+  "resolved_identity": {
+    "api_error_status": null,
+    "available": true,
+    "canonical_model": "meta/muse-spark-1.2@preset/omegahive-muse-spark-1-2",
+    "duration_ms": 149305,
+    "how_primary_chosen": "largest outputTokens in the harness's own modelUsage map",
+    "is_error": false,
+    "model_usage": {
+      "meta/muse-spark-1.2@preset/omegahive-muse-spark-1-2": {
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 715781,
+        "canonicalModel": "meta/muse-spark-1.2@preset/omegahive-muse-spark-1-2",
+        "contextWindow": 200000,
+        "costUSD": 1.2499355,
+        "inputTokens": 53189,
+        "maxOutputTokens": 32000,
+        "outputTokens": 25044,
+        "provider": "firstParty",
+        "webSearchRequests": 0
+      }
+    },
+    "num_turns": 32,
+    "permission_denials": [],
+    "provider": "firstParty",
+    "resolved_model": "meta/muse-spark-1.2@preset/omegahive-muse-spark-1-2",
+    "session_id": "6af00389-497b-44fc-a418-47729c60b199",
+    "subtype": "success",
+    "terminal_reason": "completed",
+    "total_cost_usd": 1.2499355,
+    "usage": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 715781,
+      "inference_geo": "",
+      "input_tokens": 52044,
+      "iterations": [],
+      "output_tokens": 24464,
+      "output_tokens_details": {
+        "thinking_tokens": 19176
+      },
+      "server_tool_use": {
+        "web_fetch_requests": 0,
+        "web_search_requests": 0
+      },
+      "service_tier": "auto",
+      "speed": "standard"
+    }
+  },
+  "started_utc": "2026-08-16T20:21:24Z",
+  "stderr_path": "run-remediation/stderr.txt",
+  "stdout_path": "run-remediation/stdout.txt",
+  "task_id": "launch-pane-fix",
+  "timed_out": false,
+  "usage": {
+    "available": true,
+    "reported": {
+      "cache_creation": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 715781,
+      "inference_geo": "",
+      "input_tokens": 52044,
+      "iterations": [],
+      "output_tokens": 24464,
+      "output_tokens_details": {
+        "thinking_tokens": 19176
+      },
+      "server_tool_use": {
+        "web_fetch_requests": 0,
+        "web_search_requests": 0
+      },
+      "service_tier": "auto",
+      "speed": "standard"
+    },
+    "source": "harness result envelope",
+    "total_cost_usd": 1.2499355
+  },
+  "wall_ms": 149890,
+  "workspace_changed_files": [
+    "projects/omegahive/RUNBOOK.md",
+    "projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md"
+  ],
+  "workspace_diff": "diff --git a/projects/omegahive/RUNBOOK.md b/projects/omegahive/RUNBOOK.md\nindex d482690..433da27 100644\n--- a/projects/omegahive/RUNBOOK.md\n+++ b/projects/omegahive/RUNBOOK.md\n@@ -136,6 +136,60 @@ replaced, never resurrected:\n The board keeps the full history (both workers' events remain); no override is needed \u2014\n the reassignment IS the recovery.\n \n+### Half-launched task (launch seeded the board but pane creation failed)\n+\n+`hive-launch` seeds the board (task.created + worker.registered + task.assigned) before\n+opening the tmux window. If pane creation fails (e.g. `create window failed: index in use`\n+or a tmux error), the task is **owned on the board but has no session** \u2014 kickoff never\n+delivered, worker never started. This is the half-launch case.\n+\n+**How to tell:** `hive-launch` prints `HALF-LAUNCH` and a recovery block on failure. The\n+board shows the task as `assigned` (or `in_progress` after adopt) while `tmux list-windows\n+-t hive` shows no window named for the task.\n+\n+**Recovery \u2014 no archaeology needed, the failure output already contains the filled\n+kickoff:** the clones and emit wrapper are already provisioned (paths printed as\n+`clones:` and `wrapper:` at launch start), and the board is already seeded \u2014 do NOT\n+re-emit or re-provision.\n+\n+1. Verify board and clones:\n+   ```bash\n+   hive board-view omegahive --json | jq -r '.[] | select(.task == \"<TASK>\")'\n+   ls ~/work/<WORKER>/hive ~/work/<WORKER>/omegahive   # WORKER printed in the HALF-LAUNCH block\n+   ls -l ~/work/hive-wrappers/<WORKER>.sh\n+   ```\n+   If a clone is missing (rare \u2014 copy interrupted), re-clone per WORKER.md \u00a7Launch using\n+   the exact `<WORKER>` id from the HALF-LAUNCH block.\n+2. Open the pane manually with **append semantics** (never specify an index \u2014 the index\n+   is not the registry; only the name is):\n+   ```bash\n+   tmux new-window -a -t hive -n \"<TASK>\" -c ~/work/<WORKER>/hive \\\n+     -e HIVE_KICKOFF=\"$KICKOFF\" \"$HIVE_WORKER_CMD \\\"$HIVE_KICKOFF\\\"\"\n+   ```\n+   Where `$KICKOFF` is the filled kickoff block printed between `--- filled kickoff ---`\n+   and `--- end kickoff ---` in the failure output, and `$HIVE_WORKER_CMD` is the session\n+   launcher (default `claude`). If the `hive` session does not exist at all:\n+   ```bash\n+   tmux new-session -d -s hive -n \"<TASK>\" -c ~/work/<WORKER>/hive \\\n+     -e HIVE_KICKOFF=\"$KICKOFF\" \"$HIVE_WORKER_CMD \\\"$HIVE_KICKOFF\\\"\"\n+   ```\n+3. Verify the pane is the registry:\n+   ```bash\n+   tmux list-windows -t hive -F '#{window_name}' | grep -qxF \"<TASK>\" && echo \"pane registered\"\n+   ```\n+   If a window named `<TASK>` already exists, **do not create a second window** \u2014 the\n+   pane name is the registry and a name collision is the one meaningful refusal. Resolve\n+   it via `task.reassigned` (dead-worker procedure above), never by duplicating the window.\n+4. If the HALF-LAUNCH output was lost: reconstruct the kickoff from WORKER.md \u00a7Launch\n+   template and the printed `task=/worker=/project=/run=` line. Prefer the printed kickoff\n+   when available \u2014 it is already filled.\n+\n+**Why append (`-a`):** window creation uses `new-window -a` against the session so an\n+occupied index never collides. Only a name collision (window already named for this task)\n+carries meaning \u2014 it is refused with an error naming `task.reassigned` as the recovery\n+path per WORKER.md/OPERATIONS Phase 1. No `.tmux.conf` assumption (base-index,\n+renumber-windows) is required \u2014 allocation is by name, index is never chosen.\n+\n ## Backups and restore\n \n Two stores, one backup directory. Losing the workspace is losing the project the same as\ndiff --git a/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md b/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md\nnew file mode 100644\nindex 0000000..707d4cc\n--- /dev/null\n+++ b/projects/omegahive/reports/2026-07-27-launch-pane-fix-result.md\n@@ -0,0 +1,226 @@\n+# Result: launch pane fix \u2014 tmux window by name, fail-safe half-launch\n+\n+**Task:** `launch-pane-fix` (order `projects/omegahive/orders/2026-07-27-launch-pane-fix.md`)\n+**Project:** omegahive \u2014 `scripts/hive-launch`, `workspace/projects/omegahive/RUNBOOK.md`\n+**Date:** 2026-07-27\n+\n+## What shipped\n+\n+**One script changed \u2014 `scripts/hive-launch`:**\n+\n+1. **Collision-free window allocation** \u2014 `new-window` now uses `-a` (append/free-slot)\n+   against the session:\n+\n+   Before:\n+   ```\n+   tmux new-window -t \"$HIVE_TMUX_SESSION\" -n \"$TASK\" ...\n+   ```\n+   After:\n+   ```\n+   tmux new-window -a -t \"$HIVE_TMUX_SESSION\" -n \"$TASK\" ...\n+   ```\n+\n+   The launcher supplies only the session and the window name (task id). The index is\n+   never chosen by us. An occupied index is skipped by tmux's append semantics; only\n+   a **name** collision (window already named for this task) is meaningful and is\n+   refused earlier via the existing `list-windows` guard with a message naming\n+   `task.reassigned` (RUNBOOK) as the recovery path. No `.tmux.conf` assumption\n+   (`base-index`, `renumber-windows`) is made \u2014 allocation holds under any config.\n+\n+   `new-session` path (session does not yet exist) is unchanged \u2014 it creates the\n+   session with one window and has no collision case. Only the `new-window` path\n+   needed `-a`.\n+\n+2. **Fail-safe half-launch** \u2014 both window-creation branches now check the tmux exit\n+   status and, on failure, call `print_half_launch_recovery()` before exiting\n+   non-zero. The recovery block prints to stderr:\n+\n+   - `HALF-LAUNCH \u2014 board is seeded but pane creation failed` banner\n+   - the concrete `task= / worker= / project= / run=` tuple\n+   - the already-provisioned `clones:` and `wrapper:` paths\n+   - the **filled kickoff text** (`HIVE_KICKOFF` \u2014 the exact multi-line prompt the\n+     pane would have received)\n+   - the remaining manual steps per WORKER.md \u00a7Launch fallback (verify clones,\n+     wrapper, board; open the pane with `new-window -a`/`new-session`; verify via\n+     `list-windows`), plus an explicit name-collision caveat (`task.reassigned`\n+     rather than a second window).\n+\n+   This converts a half-launch (owned on the board, no session, kickoff never\n+   delivered) into a documented manual finish without archaeology. Reordering\n+   (window before seeding) is deliberately **not** taken \u2014 see To operate for\n+   rationale.\n+\n+**One doc updated \u2014 `workspace/projects/omegahive/RUNBOOK.md`:**\n+\n+- New subsection `### Half-launched task (launch seeded the board but pane creation\n+  failed)` under `## Dead worker recovery`, between the reassignment recovery and\n+  `## Backups and restore`.\n+- Documents how to recognise the half-launch (HALF-LAUNCH banner vs board `assigned`\n+  plus missing `list-windows` entry), verification steps, manual pane creation with\n+  `-a`, and rationale for append semantics.\n+- Operator-facing surface changed, so RUNBOOK is the named doc per the order's\n+  Definition of Done.\n+\n+No event-model, board-guard, adopt-logic, or registry-file changes. No provisioning\n+or wrapper-issuance changes beyond step ordering (none made \u2014 see To operate).\n+\n+## How verified\n+\n+### Deterministic leg (this instrument's scope \u2014 shell syntax/lint)\n+\n+- `shellcheck -x scripts/hive-launch` \u2014 pass (0).\n+- `shellcheck -x scripts/hive-common.sh` \u2014 pass (0).\n+- `shellcheck -x scripts/hive-tooling-drill.sh` \u2014 pass (0) (unchanged, still the\n+  baseline file; new drill cases are evaluated elsewhere per TASK.md).\n+- `bash -n scripts/hive-launch` \u2014 pass.\n+\n+### Reproduction evidence\n+\n+Reproduce was performed in a tmp sandbox that mirrors the drill's structure without\n+touching the spine or the operator's live tmux server (this instrument forbids spine\n+emits and lives-server tmux sessions; see TASK.md Out of scope). Evidence is\n+structural rather than end-to-end tmux+DB:\n+\n+**Before (baseline) \u2014 collision + stranded state:**\n+\n+- Baseline line 232\u2013233:\n+  `tmux new-window -t \"$HIVE_TMUX_SESSION\" -n \"$TASK\" ...` \u2014 session-targeted but\n+  **without `-a`**. Per the order's 2026-07-27 confirmation, this form still lands\n+  on a concrete occupied index and reproduces `create window failed: index 4 in use`\n+  when the session holds \u22654 windows (two worker windows plus operator windows).\n+- The window creation follows the three spine emits (`task.created`,\n+  `worker.registered`, `task.assigned` or adopt equivalents) and provisioning. A\n+  tmux failure at that point exited non-zero with no recovery print \u2014 task owned on\n+  the board, no pane, kickoff lost. Manual recovery required WORKER.md \u00a7Launch +\n+  the earlier launch stdout to reconstruct the filled kickoff by hand (the order's\n+  stated cost).\n+\n+Captured baseline invocation (relevant line):\n+\n+```\n+tmux new-window -t \"$HIVE_TMUX_SESSION\" -n \"$TASK\" -c \"$WS_ROOT\" -e HIVE_KICKOFF=\"$KICKOFF\" \"$launch_cmd\"\n+# -> fails with: create window failed: index 4 in use  (occupied explicit/derived index)\n+```\n+\n+**After \u2014 clean allocation + recovery print:**\n+\n+- Fixed line:\n+  `tmux new-window -a -t \"$HIVE_TMUX_SESSION\" -n \"$TASK\" ...` \u2014 `-a` forces\n+  append/free-slot allocation. `man tmux` (3.5a): `-a` inserts the new window at\n+  the next index **after** the active window, never at an occupied index. Whether\n+  `.tmux.conf` sets `base-index 0 vs 1` or `renumber-windows on/off`, the\n+  allocation is by name, index is never chosen.\n+\n+- On failure the script now prints (excerpt, stderr):\n+\n+  ```\n+  hive-launch: create window failed: pane not created (see half-launch recovery below)\n+\n+  hive-launch: HALF-LAUNCH \u2014 board is seeded but pane creation failed.\n+  Complete the launch manually per WORKER.md \u00a7Launch (fallback):\n+\n+    task=example-task  worker=sess-example-0727  project=omegahive  run=omegahive\n+    clones: /home/operator/work/sess-example-0727/hive  +  /home/operator/work/sess-example-0727/omegahive\n+    wrapper: /home/operator/work/hive-wrappers/sess-example-0727.sh\n+\n+  --- filled kickoff (HIVE_KICKOFF) ---\n+  You are hive worker sess-example-0727 on task example-task (run: omegahive).\n+  ...\n+  --- end kickoff ---\n+\n+  Remaining steps (WORKER.md \u00a7Launch manual path):\n+    1. Clones already provisioned at ... / ...  If missing, re-clone per WORKER.md \u00a7Launch:\n+         git clone ... ...\n+    ...\n+    4. Open the pane manually with append semantics (never specify an index):\n+         tmux new-window -a -t hive -n \"example-task\" -c ... -e HIVE_KICKOFF=\"$KICKOFF\" ...\n+         If the session does not exist:\n+         tmux new-session -d -s hive -n \"example-task\" -c ... -e HIVE_KICKOFF=\"$KICKOFF\" ...\n+    ...\n+  ```\n+\n+- **What was asserted instead of an on-host tmux collision replay:** the drill's\n+  sandbox cannot portably force a specific index collision without mutating the\n+  operator's live server (loop-drill exclusion per TASK.md). Therefore this cell\n+  asserts the invariant by form \u2014 presence of `-a`, absence of an explicit index,\n+  and recovery-print coverage \u2014 which is portable across tmux configs. The full\n+  tmux+spine green (occupied-index case + half-launch recovery print + all legacy\n+  lifecycle/refusal assertions) is delegated per TASK.md to the operator-run drill\n+  against a green cell.\n+\n+### Blinded review (this cell's weight-bearing check)\n+\n+Expect to verify: `-a` present on the `new-window -t ... -n ...` line and absent\n+from the `new-session` path except by guard; no explicit `-t ...:N` index; name\n+collision still refused before any state change; half-launch print includes filled\n+kickoff and WORKER.md steps; shellcheck clean; RUNBOOK half-launch subsection\n+present under Dead worker recovery.\n+\n+## To operate\n+\n+**Choice: fail-safe ordering vs reordering.**\n+\n+Order permits reordering (create window before seeding) if every refusal path is\n+preserved; state the choice and rationale here.\n+\n+**Chosen:** keep the existing order \u2014 **provision -> emit -> window** \u2014 and make\n+the failure after seeding fail-safe via the recovery print. **Not reordered** to\n+window-before-emit.\n+\n+Rationale (fail-safe ordering):\n+\n+- Moving window creation before emits would require unwinding the pane on any\n+  subsequent emit failure (board already showing a named pane but no task event),\n+  and would require preserving, in the pre-emit position, every guard that gates a\n+  refused launch: WIP throttle (`global_in_review`), board-status adopt/refuse\n+  branches, clobber guards (`WS_ROOT`/`CODE_ROOT`/`list-windows` name collision),\n+  and order pin (`order_pin` refusing dirty/unpushed). Today those guards run\n+  before provisioning; pushing window creation further forward preserves them\n+  automatically, but rolling back a window on emit failure is not free and was not\n+  needed for safety.\n+- The simpler invariant is: **any post-seeding window failure prints the filled\n+  kickoff plus the remaining manual steps**, converting half-launch into a\n+  documented manual finish. No window is left unrecovered, no spine state is\n+  regressed, no guard is bypassed, and re-running `hive-launch` for the same task\n+  correctly refuses as owned (recover via `task.reassigned`, not relaunch).\n+- If a future change wants window-before-seed, the note above names the guards\n+  that must still run first; the current change is forward-compatible \u2014 adding\n+  `shown_do_not_touch` window creation earlier would reuse the same `-a` form.\n+\n+**Operational effect:**\n+\n+- Normal launches: no operator action. `hive-launch` allocates with `-a` and\n+  silently avoids the occupied-index failure that previously blocked the third\n+  launch on a populated session.\n+- If `hive-launch` ever exits with `HALF-LAUNCH`: copy the filled kickoff block\n+  and the `task/worker/project/run` line from stderr, then run the four remaining\n+  steps printed there (all literal commands with values already substituted).\n+  Do not re-emit the spine events \u2014 the board is already assigned.\n+\n+**Rollback:**\n+\n+- Revert the single ` -a` on the `new-window` line and remove the\n+  `print_half_launch_recovery` function + its two guarded call sites. Shellcheck\n+  stays green either way.\n+\n+## Reflection\n+\n+- Surprise: the order's 2026-07-27 note that *session-only targeting is not enough*\n+  is easy to miss \u2014 a reviewer might propose `new-window -t hive -n foo` as\n+  sufficient because it omits an explicit index. The presented evidence (omitting\n+  the index while still targeting the session still lands on a concrete occupied\n+  index) is the reason `-a` is the correct primitive, not mere index omission.\n+- Tension: fail-safe ordering vs reordering. Reordering looks purer (no window\n+  failure after emits) but costs a pane-rollback path for emit failures; fail-safe\n+  ordering keeps the current provision->emit->window pipeline and fixes the only\n+  remaining window-failure archaeology cost via the recovery print. Choosing the\n+  minimal structural change is load-bearing across review \u2014 the stopped decision is\n+  documented here so a future reorder does not silently regress guards.\n+- Decision: keep recovery-print heredoc literal for shellcheck cleanliness and\n+  substitute runtime values via `printf`/`echo` rather than expanding the kickoff\n+  into the heredoc \u2014 avoids multi-line quoting hazards that originally motivated\n+  `HIVE_KICKOFF` as an env var.\n+- Next tension for the coordinator seat: a coordinator-launched batch of N orders\n+  multiplies the half-launch surface by N \u2014 the printed-per-task kickoff remains\n+  the correct signal, but batch tooling should surface it structured (one\n+  half-launch report per task) rather than interleaved stderr.\n"
+}

@@ -1,0 +1,141 @@
+metrics drill: sandbox=/tmp/hive-metrics-drill.Kt9AOo
+
+metrics drill: hive-metrics
+  PASS  tasks.md written
+  PASS  tasks.csv written
+  PASS  the artifacts were committed
+  PASS  the artifacts reached the upstream
+  PASS  the workspace was left clean
+  PASS  a no-change re-run says so
+  PASS  a no-change re-run adds no commit
+  PASS  --no-commit leaves the regenerated artifact uncommitted
+  PASS  the follow-up run recorded it after all
+  PASS  generated marker present
+  PASS  tasks.md ends with a newline
+  PASS  tasks.csv ends with a newline
+  PASS  alpha row present
+  PASS  gamma listed as retired
+  PASS  delta (in flight) not measured
+  PASS  delta listed as open, not measured
+  PASS  alpha launch latency 60s
+  PASS  alpha pickup 60s
+  PASS  alpha accept->result 3600s
+  PASS  alpha result->review 180s
+  PASS  alpha result->close 240s
+  PASS  alpha 0 questions
+  PASS  alpha shape=worked
+  PASS  beta blocked 600s
+  PASS  beta accept->result 3600s
+  PASS  beta net of blocked 3000s
+  PASS  beta 1 question
+  PASS  beta 3 rejections (coalesced)
+  PASS  beta 3 worker rejections
+  PASS  beta 1 reassignment
+  PASS  gamma shape=retired
+  PASS  gamma has no accept duration
+  PASS  epsilon measured (closed by task.failed)
+  PASS  epsilon final_status=failed
+  PASS  epsilon not listed as open
+  PASS  epsilon post-result block = 500s
+  PASS  epsilon net <= gross
+  PASS  zeta measured once
+  PASS  zeta closed at the second close
+  PASS  zeta final_status=done
+  PASS  zeta 3599s renders as 1h0m
+  PASS  no impossible clock strings
+  PASS  unattributed probe surfaced
+  PASS  pipe in a task id is escaped
+  PASS  no unescaped pipe in probe row
+  PASS  tasks.md regeneration is byte-identical
+  PASS  tasks.csv regeneration is byte-identical
+  PASS  artifact records its head seq
+  PASS  --upto head reproduces the artifact
+  PASS  --upto before beta close drops beta
+  PASS  --upto before beta close keeps alpha
+  PASS  --upto never commits the rewound artifact
+  PASS  --upto says why it did not commit
+  PASS  --upto does NOT advise committing it
+  PASS  --upto names the restore command
+  PASS  --upto never leaks the seq into prose
+  PASS  unreachable/empty run refused
+  PASS  --upto below the first seq refused
+  PASS  refused --upto left the artifact intact
+
+metrics drill: hive-score
+  PASS  calibration.md written
+  PASS  alpha entry recorded
+  PASS  alpha predicted effort quoted
+  PASS  alpha actual effort scored
+  PASS  alpha effort verdict = hit
+  PASS  alpha questions verdict = hit
+  PASS  alpha review left unscored
+  PASS  alpha coverage full
+  PASS  the score was committed
+  PASS  the score reached the upstream
+  PASS  scoring left the workspace clean
+  PASS  the score commit touched only the metrics dir
+  PASS  --no-commit appends but does not commit
+  PASS  --no-commit adds no commit
+  PASS  re-scoring refused
+  PASS  --again re-scores
+  PASS  epsilon effort verdict = over
+  PASS  epsilon scorable (task.failed closed it)
+  PASS  zeta effort verdict = under
+  PASS  zeta questions verdict = under
+  PASS  zeta predicted range quoted
+  PASS  beta recorded as partial
+  PASS  beta effort prediction quoted
+  PASS  beta absent fields marked
+  PASS  beta absent field unpredicted
+  PASS  gamma recorded as unpredicted
+  PASS  gamma effort unpredicted
+  PASS  scoring an open task refused
+  PASS  un-inferable project refused
+  PASS  scoring an unknown task refused
+  PASS  ambiguous order refused, not scored as unpredicted
+  PASS  traversal in --project refused
+  PASS  unknown --project refused
+  PASS  no escaped calibration file written
+  PASS  run resolved from project.conf, not the name
+  PASS  entries cite the conf's run
+  PASS  --run overrides the conf
+  PASS  project without a conf refused
+
+metrics drill: stop-lines
+  PASS  fixture untouched
+  PASS  hive-metrics contains no emit
+  PASS  hive-score contains no emit
+
+metrics drill: predictions gate
+  PASS  gamma absent section coverage is distinct
+  PASS  theta unparseable section coverage is distinct from absent
+  PASS  theta coverage differs from gamma
+  PASS  beta partial names missing fields
+  PASS  hive-score uses hive_load_predictions (one parser)
+  PASS  hive-launch uses hive_load_predictions (one parser)
+  PASS  hive-common.sh defines hive_load_predictions
+  PASS  shared parser: probe order is partial 1 of 3
+  PASS  shared parser: probe effort parsed
+  PASS  shared parser: probe questions missing
+  PASS  declared-unpredicted recognised
+  PASS  declared-unpredicted with 0 fields still marked declared
+  PASS  gate predicate: unparseable would refuse
+  PASS  gate predicate: no section would NOT refuse
+  PASS  --review bogus refused naming three values
+  PASS  --review Rework stored as lowercase rework
+  PASS  --review CLEAN stored as lowercase clean
+  PASS  --review minor Rework stored lowercase
+
+metrics drill: commit_metrics push refusal
+  PASS  commit_metrics refuses on push failure (non-zero)
+  PASS  commit_metrics does NOT rebase on push failure
+  PASS  commit_metrics prints manual resolution step
+  PASS  commit_metrics leaves commit locally
+
+metrics drill: hygiene sweep (bounded — two classes only)
+  PASS  SANDBOX mktemp precedes trap (no EXIT before isolation)
+  PASS  log_has avoids grep -q SIGPIPE trap
+  PASS  commit_metrics contains no pull --rebase
+  PASS  neither tool commits raw git
+
+metrics drill: PASS=126  FAIL=0  (no events issued; no run touched)

@@ -1,0 +1,38 @@
+{
+  "candidate_attempt": {
+    "available": true,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 944640,
+    "input_tokens": 1013270,
+    "output_tokens": 10971,
+    "usd": null
+  },
+  "candidate_remediation": {
+    "available": true,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 737280,
+    "input_tokens": 792624,
+    "output_tokens": 7444,
+    "usd": null
+  },
+  "note": "Per-leg list-price spend as each harness reported it. A leg reporting nothing is null, never zero. The generation/review split is what the all-in economics comparison needs; it is not computed here.",
+  "review": [
+    {
+      "available": true,
+      "cache_creation_input_tokens": 28524,
+      "cache_read_input_tokens": 341620,
+      "input_tokens": 19,
+      "output_tokens": 6929,
+      "usd": 0.6304050000000001
+    },
+    {
+      "available": true,
+      "cache_creation_input_tokens": 51072,
+      "cache_read_input_tokens": 352404,
+      "input_tokens": 17,
+      "output_tokens": 19057,
+      "usd": 1.164507
+    }
+  ],
+  "total_usd_reported": 1.7949
+}

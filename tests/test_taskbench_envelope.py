@@ -83,3 +83,109 @@ def test_a_non_result_json_line_is_not_mistaken_for_the_envelope():
     assert not parse_result_envelope(
         "claude-code-json", '{"type":"assistant","message":"working"}'
     )["available"]
+
+
+# --- Codex, shape pinned from a real codex-cli 0.147.0 run on this host ---------------------
+
+CODEX_OK = "\n".join([
+    '{"type":"thread.started","thread_id":"01a0020c-6401-7a83-b04b-6703116a5d05"}',
+    '{"type":"turn.started"}',
+    '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"ready"}}',
+    '{"type":"turn.completed","usage":{"input_tokens":12369,"cached_input_tokens":9984,'
+    '"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0}}',
+])
+
+CODEX_FAILED = "\n".join([
+    '{"type":"thread.started","thread_id":"t"}',
+    '{"type":"error","message":"Reconnecting... 2/5 (unexpected status 401 Unauthorized)"}',
+    '{"type":"turn.failed","error":{"message":"401 Unauthorized"}}',
+])
+
+
+def test_codex_usage_is_normalised_onto_the_shape_every_other_arm_reports():
+    e = parse_result_envelope("codex-jsonl", CODEX_OK)
+    assert e["available"]
+    assert e["usage"]["input_tokens"] == 12369
+    assert e["usage"]["cache_read_input_tokens"] == 9984
+    assert e["usage"]["output_tokens"] == 5
+    assert e["usage"]["reasoning_output_tokens"] == 0
+    # The vendor's own spelling is kept verbatim beside the normalised view.
+    assert e["usage_raw"]["cached_input_tokens"] == 9984
+
+
+def test_codex_does_not_get_to_pretend_it_resolved_a_model():
+    """The stream echoes no model id. Promoting the launch alias would fabricate the one fact
+    this record exists to make impossible."""
+    e = parse_result_envelope("codex-jsonl", CODEX_OK)
+    assert e["resolved_model"] is None
+    assert "not an identity" in e["resolved_model_missing_surface"]
+
+
+def test_a_subscription_arm_reports_no_cost_rather_than_a_zero():
+    e = parse_result_envelope("codex-jsonl", CODEX_OK)
+    assert e["total_cost_usd"] is None
+    assert "would not be one" in e["cost_missing_surface"]
+
+
+def test_a_failed_codex_turn_is_an_error_with_its_reason():
+    e = parse_result_envelope("codex-jsonl", CODEX_FAILED)
+    assert e["available"] and e["is_error"]
+    assert "401" in json.dumps(e["terminal_reason"])
+    assert e["usage"] is None
+
+
+def test_codex_without_the_json_flag_is_absent_not_empty():
+    e = parse_result_envelope("codex-jsonl", "ready\n")
+    assert not e["available"]
+    assert "--json" in e["missing_surface"]
+
+
+# --- Reasonix: corroboration, never evidence ------------------------------------------------
+
+
+def test_reasonix_usage_is_read_tolerantly_across_field_spellings():
+    body = json.dumps({
+        "model": "deepseek/deepseek-v4-flash-20260731", "turns": 4,
+        "usage": {"prompt_tokens": 10259, "cache_hit_tokens": 5504, "completion_tokens": 326},
+    })
+    e = parse_result_envelope("reasonix-json", f"chatter\n{body}\n")
+    assert e["available"]
+    assert e["usage"]["input_tokens"] == 10259
+    assert e["usage"]["cache_read_input_tokens"] == 5504
+    assert e["usage"]["output_tokens"] == 326
+    assert e["num_turns"] == 4
+
+
+def test_reasonix_never_supplies_a_gateway_cost():
+    body = json.dumps({"model": "m", "usage": {"prompt_tokens": 1}, "cost": 0.42})
+    e = parse_result_envelope("reasonix-json", body)
+    assert e["total_cost_usd"] is None
+    assert "gateway receipts" in e["cost_missing_surface"]
+
+
+def test_an_unknown_envelope_kind_is_still_refused():
+    e = parse_result_envelope("some-future-harness", "{}")
+    assert not e["available"]
+    assert "unknown result_envelope kind" in e["missing_surface"]
+
+
+def test_codex_reports_the_model_its_rollout_recorded_but_labels_what_kind_of_fact_it_is():
+    """Found by running a real Codex cell end to end: the event stream carries no model at all,
+    so `validate_record` refused the cell as unattributable — correctly. The rollout does record
+    one, and the wrapper hands it over. It fills the slot without claiming the authority of a
+    server-resolved id."""
+    stream = CODEX_OK + "\n" + json.dumps(
+        {"type": "taskbench.harness_model", "model": "gpt-5.6-luna",
+         "source": "codex session rollout"}
+    )
+    e = parse_result_envelope("codex-jsonl", stream)
+    assert e["resolved_model"] == "gpt-5.6-luna"
+    assert e["resolved_model_source"] == "codex session rollout"
+    assert "not a gateway or API echo" in e["resolved_model_missing_surface"]
+
+
+def test_without_a_rollout_codex_still_refuses_to_invent_one():
+    e = parse_result_envelope("codex-jsonl", CODEX_OK)
+    assert e["resolved_model"] is None
+    assert e["resolved_model_source"] is None
+    assert "no session rollout was available" in e["resolved_model_missing_surface"]

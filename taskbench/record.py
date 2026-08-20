@@ -29,7 +29,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from omegahive.port.keys import canonical_payload
 
@@ -198,10 +198,26 @@ def cell_is_conclusive(cell: Path) -> bool:
     return True
 
 
+#: A record carrying this file is not resumed from. Its contents are the reason.
+INVALIDATED = "INVALIDATED.md"
+
+
 def resumable_cells(prior_record: str | Path) -> dict[str, Path]:
-    """task id → cell directory, for every cell in a prior record worth carrying forward."""
+    """task id → cell directory, for every cell in a prior record worth carrying forward.
+
+    A record marked `INVALIDATED.md` yields nothing. The resume rule is deliberately reluctant —
+    re-running a genuine red is re-rolling the dice for a better number — but that rule assumes
+    the red is a model result. When an audit finds an instrument defect that produced the red,
+    the same reluctance becomes a trap: every rerun carries the defective cells forward verbatim
+    and the batch re-runs nothing at all. The order contemplates exactly this ("a common
+    instrument defect invalidates and reruns"), and before this marker existed there was no way
+    to say so. The marker is a committed file naming the defect, not a flag on a command line,
+    because invalidating evidence is a decision that has to survive the session that made it.
+    """
     root = Path(prior_record)
     out: dict[str, Path] = {}
+    if (root / INVALIDATED).is_file():
+        return out
     cells = root / "cells"
     if not cells.is_dir():
         return out
@@ -333,29 +349,166 @@ def write_cells_map(root: Path, rows: list[dict]) -> None:
     _atomic_write_text(root / "cells.json", json.dumps(rows, indent=2, sort_keys=True) + "\n")
 
 
+def rehydrate_config_from_cells(root: Path, config: dict) -> dict:
+    """Rebuild the render-only config keys from the committed cells.
+
+    `resolved_models`, `cycles` and `spend_by_leg` are assembled in memory while a batch runs
+    and are deliberately NOT written into `config.json`, which holds the record's pins. So a
+    re-render starts without them, and every one of them is load-bearing in the output: the
+    first-shot column, the after-one-repair column and the whole spend table. Rendering
+    without them does not fail — it quietly produces a WEAKER document that looks complete,
+    which is the worst of the available failures.
+
+    Everything below is read back out of the cells, where the facts actually live. Returns a
+    copy; the caller's config is not mutated.
+    """
+    out = dict(config)
+    cells = sorted(p for p in (root / "cells").glob("*") if p.is_dir())
+
+    def _load(path: Path) -> dict:
+        try:
+            return dict(json.loads(path.read_text()))
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    if not out.get("resolved_models"):
+        # `resolved_model` is the normalized field every harness adapter fills; Codex writes
+        # only that one, Claude Code writes it alongside `canonical_model`. Reading the
+        # Claude-Code-shaped key alone loses the Codex arm's identity entirely.
+        found = {
+            str(model)
+            for cell in cells
+            for name in ("run.json", "remediation-run.json")
+            if (model := (_load(cell / name).get("resolved_identity") or {}).get(
+                "resolved_model"
+            ))
+        }
+        if found:
+            out["resolved_models"] = sorted(found)
+
+    if not out.get("cycles"):
+        cycles: dict[str, Any] = {}
+        for cell in cells:
+            cycle = _load(cell / "cycle.json")
+            task = (cell / "task.txt").read_text().splitlines()[0].strip() if (
+                cell / "task.txt"
+            ).is_file() else None
+            if not cycle or not task:
+                continue
+            first = cycle.get("first_pass") or {}
+            cycles[task] = {
+                "first_passed": bool(
+                    (first.get("deterministic") or {}).get("passed")
+                    and (first.get("review") or {}).get("passed")
+                ),
+                "remediated": bool(cycle.get("remediated")),
+            }
+        if cycles:
+            out["cycles"] = cycles
+
+    if not out.get("spend_by_leg"):
+        totals: dict[str, float] = {}
+        for cell in cells:
+            spend = _load(cell / "spend.json")
+            for leg in ("candidate_attempt", "candidate_remediation"):
+                usd = (spend.get(leg) or {}).get("usd")
+                if usd is not None:
+                    totals[leg] = round(totals.get(leg, 0.0) + usd, 4)
+            for one in spend.get("review") or []:
+                if one.get("usd") is not None:
+                    totals["review"] = round(totals.get("review", 0.0) + one["usd"], 4)
+        if totals:
+            out["spend_by_leg"] = totals
+
+    return out
+
+
+class _Identity(NamedTuple):
+    name: str
+    provenance: str
+
+
+def _headline_identity(config: dict, labels: dict) -> _Identity:
+    """What ran, named from the strongest evidence the record actually holds.
+
+    Three tiers, and the difference between them is the whole point of the line:
+
+    1. **A gateway receipt.** OpenRouter's own record of the generation, naming the exact
+       model and the upstream that served it. Nothing the harness says can override it.
+    2. **The harness's own report** of what it resolved. Weaker — it is the harness quoting
+       itself — but it is still a resolution.
+    3. **Nothing**, in which case the alias is printed and labelled as a request.
+
+    Tier 2 has a trap that this study walked into. The harness's usage map is keyed by
+    whatever string the harness thinks in. When that string is a concrete model name
+    (`claude-haiku-4-5`), the map is real evidence — a silent fallback to a different model
+    would show up as a different key. When it is the alias the launch supplied, preset suffix
+    and all (`meta/muse-spark-1.2@preset/omegahive-muse-spark-1-2`), the map cannot
+    distinguish anything: it echoes the request back. Both are still the harness's own
+    accounting and both are reported as such, but the second is explicitly marked as unable
+    to identify what actually served the call — which is exactly why a gateway arm needs
+    tier 1.
+    """
+    requested = str(labels.get("model") or "")
+    vendor = str(labels.get("vendor") or "")
+
+    receipts = config.get("gateway_resolved") or {}
+    models = [m for m in (receipts.get("models") or []) if m and m != "None"]
+    upstreams = [u for u in (receipts.get("upstreams") or []) if u and u != "None"]
+    if models:
+        served = f" served by {', '.join(upstreams)}" if upstreams else ""
+        return _Identity(
+            ", ".join(models),
+            f"Requested as `--model {requested}`. The identifier above is from the gateway's "
+            f"own per-generation receipts{served} — not the harness's account of itself, and "
+            "not the alias.",
+        )
+
+    resolved = [m for m in (config.get("resolved_models") or []) if m]
+    if resolved:
+        # Only prefix the vendor when the model id does not already carry one, or the
+        # headline reads `meta/meta/muse-spark-1.2`.
+        names = ", ".join(
+            m if (not vendor or "/" in m) else f"{vendor}/{m}" for m in resolved
+        )
+        echoes = all(m == requested for m in resolved)
+        return _Identity(
+            names,
+            f"Requested as `--model {requested}`; the identifier above is what each run's own "
+            "report said it resolved to. An alias is a request, not an identity."
+            + (
+                " **Here the harness reported back exactly the alias it was given**, so this "
+                "line is evidence that the launch was configured as intended and NOT evidence "
+                "of which model served the calls. No gateway receipts accompany this record to "
+                "settle it."
+                if echoes else ""
+            ),
+        )
+
+    name = requested if (not vendor or "/" in requested) else f"{vendor}/{requested}"
+    return _Identity(
+        name,
+        "**No resolved model id was reported** — the identifier above is the alias the "
+        "launch requested, which is not evidence of what ran.",
+    )
+
+
 def render_aggregate(
     config: dict,
     corpus: LoadedCorpus,
     verdicts: list[TaskVerdict],
 ) -> str:
     labels = config["agent_labels"]
-    resolved = config.get("resolved_models") or []
+    identity = _headline_identity(config, labels)
     green = sum(1 for v in verdicts if v.passed)
     lines = [
         f"# Task-replay aggregate — {config['record_id']} ({config['date']})",
         "",
         f"Corpus `{config['corpus_version']}` (`{config['corpus_content_hash'][:19]}…`) · "
-        f"candidate **{labels.get('vendor')}/"
-        f"{', '.join(resolved) if resolved else labels.get('model')}** on "
+        f"candidate **{identity.name}** on "
         f"`{labels.get('harness')}` · reviewer **{config['reviewer_labels'].get('model')}**.",
         "",
-        (
-            f"Requested as `--model {labels.get('model')}`; the identifier above is what each "
-            "run's own report said it resolved to. An alias is a request, not an identity."
-            if resolved else
-            "**No resolved model id was reported** — the identifier above is the alias the "
-            "launch requested, which is not evidence of what ran."
-        ),
+        identity.provenance,
         "",
         f"**{green}/{len(verdicts)} task-level verdicts green.**",
         "",

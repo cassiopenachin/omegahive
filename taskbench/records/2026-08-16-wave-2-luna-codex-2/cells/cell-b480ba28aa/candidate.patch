@@ -1,0 +1,84 @@
+diff --git a/docs/omegahive_recovery_runbook.md b/docs/omegahive_recovery_runbook.md
+index 51ff606..75c87b0 100644
+--- a/docs/omegahive_recovery_runbook.md
++++ b/docs/omegahive_recovery_runbook.md
+@@ -87,11 +87,10 @@ silently skip events. Follow the ordering exactly.
+      ```sh
+      docker compose run --rm cli bump-generation --run-id <run>
+      ```
+-     The bump only works on a *registered* run; it refuses one that was never opened
+-     (`run not registered`). The durable `omegahive` project run is currently unregistered
+-     — the `hive emit` write path never opens runs — so the bump is inert until the run is
+-     registered out of band (`omegahive.port.open_run`). See the ops RUNBOOK for the
+-     one-liner; until then the restart floor below is the operative path.
++     The emit write path idempotently registers a run in the same transaction as its first
++     event, so the durable project run carries a generation token after its next real emit.
++     `bump-generation` still refuses a run that has never been opened (`run not registered`),
++     which prevents fabricating a generation for an untouched run.
+    - **Restart *every* client** — the always-safe interim floor, independent of the token.
+ 4. **Restart** coordinators/workers; each re-snapshots through the port.
+ 
+diff --git a/src/omegahive/gateway/gateway.py b/src/omegahive/gateway/gateway.py
+index 9b81ce6..61fce58 100644
+--- a/src/omegahive/gateway/gateway.py
++++ b/src/omegahive/gateway/gateway.py
+@@ -102,14 +102,18 @@ class Gateway:
+                         return Accepted(existing)
+                 # 2. serialize per run: advisory lock keyed in Postgres (never Python hash()).
+                 conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (self._store.run_id,))
+-                # 3. fold + gate against the run prefix under the lock.
++                # 3. Register the run in the same transaction as its first event. The
++                # idempotent insert is after the lock so concurrent first emits for one
++                # run share the write-path serialization and a replay still returned above.
++                self._store.open_run()
++                # 4. fold + gate against the run prefix under the lock.
+                 board = fold(self._store.read_run())
+                 rej = self._gate(board, actor, event_type, payload, task_id)
+                 if rej is not None:
+                     rid = self._record_rejection(actor, event_type, task_id, payload, rej,
+                                                  logical_ts)
+                     return Rejected(rej.code, rej.reason, rid)
+-                # 4. accept: append the op (with its key).
++                # 5. accept: append the op (with its key).
+                 ev = self._store.append(
+                     actor=actor, event_type=event_type, payload=payload, task_id=task_id,
+                     causation_id=causation_id, recipient=recipient, logical_ts=logical_ts,
+diff --git a/tests/test_write_path.py b/tests/test_write_path.py
+index 917578d..59123cf 100644
+--- a/tests/test_write_path.py
++++ b/tests/test_write_path.py
+@@ -42,6 +42,34 @@ def test_same_key_returns_existing_event_once(make_gateway):
+     assert len(assigns) == 1                                  # exactly one event
+ 
+ 
++def test_first_emit_registers_run_and_replay_is_noop(make_gateway):
++    """The write path creates the generation row before its first event, while a
++    same-key retry remains an idempotent no-op and the restore bump can use it."""
++    gateway, store = make_gateway(run_id="fresh-scratch-run")
++
++    first = gateway.emit(
++        actor=PLANNER,
++        event_type="goal.received",
++        payload={"text": "g"},
++        idempotency_key="first-goal",
++    )
++    assert isinstance(first, Accepted)
++    assert store.generation() == 1
++
++    replay = gateway.emit(
++        actor=PLANNER,
++        event_type="goal.received",
++        payload={"text": "g"},
++        idempotency_key="first-goal",
++    )
++    assert isinstance(replay, Accepted)
++    assert replay.event.event_id == first.event.event_id
++    assert len(store.read_run()) == 1
++
++    store.bump_generation()
++    assert store.generation() == 2
++
++
+ def test_replayed_key_is_not_regated(make_gateway):
+     """A replay of an already-committed op returns Accepted before any gate, even though
+     re-gating the now-owned task would reject it (§3 lookup-before-gate)."""
