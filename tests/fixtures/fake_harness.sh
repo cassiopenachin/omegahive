@@ -11,6 +11,12 @@
 #   nousage      write NOTHING, exit 0                            (unavailable surface)
 #   wrongmodel   write a usage file naming a DIFFERENT model      (the mismatch stop-line)
 #   crash        exit 1 before writing anything                   (early death)
+#   protocol     write a usage file, then run $HIVE_FAKE_SCRIPT  (the worker protocol)
+#
+# `protocol` is what makes the transport drill an end-to-end test rather than a mock: the
+# script it runs is an ordinary worker session's commands -- the issued emit wrapper, the
+# issued sync/publish wrapper, git in its own clones -- executed as a child of the real
+# supervisor, in the real task root, with the real constructed environment.
 #
 # The usage file it writes is deliberately a different SHAPE from Claude Code's
 # transcript — one JSON object per message, no per-content-block repetition — so a test
@@ -51,6 +57,11 @@ case "$BEHAVIOUR" in
   wrongmodel)  write_usage "some-other-model-9"; echo "fake harness ran a different model" >&2; exit 0 ;;
   nousage)     echo "fake harness wrote no usage surface"; exit 0 ;;
   crash)       echo "fake harness crashed before doing anything" >&2; exit 1 ;;
+  protocol)
+    write_usage "$MODEL"
+    [ -n "${HIVE_FAKE_SCRIPT:-}" ] || { echo "protocol behaviour needs HIVE_FAKE_SCRIPT" >&2; exit 64; }
+    bash "$HIVE_FAKE_SCRIPT"
+    exit $? ;;
   interrupted)
     # Wait to be signalled. The trap makes the exit status the conventional 128+SIGTERM
     # so the supervisor sees a non-zero code alongside its own interrupted flag.

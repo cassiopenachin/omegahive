@@ -320,6 +320,20 @@ bridge_publish_code() {  # bridge_publish_code <run-dir> <request-id>
     return
   fi
 
+  # A destination that is not a forge gets the push and an honest note instead of a PR.
+  # The drill runs against a local bare repository, and a `gh pr create --repo /path/to.git`
+  # is not a degraded PR -- it is a category error, and reporting it as a failure would
+  # make the drill's green depend on a network the drill does not have.
+  if ! printf '%s' "$remote" | grep -q 'github\.com'; then
+    receipt "$rd" "$id" accepted "published $branch at $tip -- no forge configured for $remote, so no pull request was opened" \
+      "$(jq -n --arg s "$tip" '{sha:$s, pr:null}')"
+    return
+  fi
+  if ! command -v gh >/dev/null 2>&1; then
+    receipt "$rd" "$id" accepted "published $branch at $tip -- gh is not installed, so no pull request was opened" \
+      "$(jq -n --arg s "$tip" '{sha:$s, pr:null}')"
+    return
+  fi
   url=$(GIT_TERMINAL_PROMPT=0 gh pr view "$branch" --repo "$remote" --json url -q .url 2>/dev/null || true)
   if [ -z "$url" ]; then
     url=$(GIT_TERMINAL_PROMPT=0 gh pr create --repo "$remote" --head "$branch" --base main \
