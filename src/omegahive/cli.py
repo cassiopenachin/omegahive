@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -736,57 +737,136 @@ def harness_routes_cmd(
         print(routes_to_text(rows), end="")
 
 
-@app.command("emit-relay")
-def emit_relay_cmd(
-    run_id: str = typer.Option(..., "--run-id", help="run to emit into, from the launch plan"),
-    actor_id: str = typer.Option(..., "--actor", help="worker actor id, from the launch plan"),
-    task_id: str = typer.Option(..., "--task", help="the task the plan fixes for this worker"),
+@app.command("head-seq")
+def head_seq_cmd(
+    run_id: str = typer.Argument(..., help="run to read the spine head of"),
 ) -> None:
-    """Emit ONE spooled worker request, read from stdin, under a stamped identity.
+    """Print the run's current spine head sequence, or `none` for an empty run.
 
-    This is the supervisor's half of the supervised-worker transport. The request says
-    what to emit; the run, the role (`worker`) and the actor come from the immutable
-    launch plan via the flags above, never from the request — and a request that tries to
-    carry any of them is refused by name.
+    This is the TURN CURSOR: the turn runner reads it immediately before starting a
+    harness, saves it, and the classifier then scopes its evidence to events strictly
+    after it. That scoping is the whole defence against a named risk of the `worker-turns`
+    order — reading a PRIOR turn's `task.blocked` as the current turn's exit — and it
+    needs the cursor to be a real read rather than a guess derived from a clock.
 
-    The result the worker sees is deliberately identical to the direct wrapper's:
-    `emitted · <type> · seq N` on success, `rejected: <CODE> <reason>` otherwise. A
-    worker on a supervised route runs exactly the protocol a worker on a direct route
-    runs, and does not need to know which one it is.
+    An unreadable spine is an error the caller must see, because "the cursor is 0" and
+    "we could not ask" produce very different classifications.
+    """
+    with connect() as conn:
+        head = EventLog(conn, LogicalClock(0), run_id, server_time=True).head_seq()
+    print(head if head is not None else "none")
+
+
+@app.command("harness-turn")
+def harness_turn_cmd(
+    scan_only: bool = typer.Option(
+        False, "--scan", help="scan the stream only; do not read the spine or classify"
+    ),
+) -> None:
+    """Scan one turn's retained harness stream and classify its exit. Reads no clock.
+
+    Takes a JSON request on stdin with keys `adapter`, `stream` (the retained structured
+    output verbatim), `exit_code`, `cursor`, `run`, `task`, `worker`, and prints the
+    normalized facts plus the exit record.
+
+    The stream travels on stdin rather than by path for the same reason the catalog does:
+    the operator tooling runs this CLI inside a container while the stream is a HOST file,
+    and piping its bytes keeps one execution model with no bind mount. It also means the
+    digest is taken over exactly the bytes the turn runner retained.
+
+    Determinism is the contract. The same stream, exit code and cursor produce a
+    byte-identical record every time, so re-classifying a saved turn is free and
+    re-classifying it twice can never disagree with itself. The one input that can change
+    between calls is the spine, and when it cannot be read at all the answer is
+    `unclassified(spine_unavailable)` with the harness evidence intact — never a
+    confident outcome derived from half the evidence.
     """
     import sys
 
-    from .harness.spool import SpoolRefusal, parse_request, validate_emit_request
+    from .harness.adapters import get_adapter
+    from .harness.records import RefusalError
+    from .harness.turns import classify, normalize_events, parse_stream
+
+    def refuse(code: str, message: str) -> None:
+        print(json.dumps({"ok": False, "code": code, "message": message}, sort_keys=True))
+        raise typer.Exit(code=1)
 
     try:
-        doc = parse_request(sys.stdin.read())
-        event_type, task, payload = validate_emit_request(doc, expected_task=task_id)
-    except SpoolRefusal as exc:
-        console.print(f"rejected: {exc.code} {exc.reason}")
-        raise typer.Exit(code=1) from exc
+        req = json.loads(sys.stdin.read())
+    except json.JSONDecodeError as exc:
+        refuse("REQUEST_MALFORMED", f"stdin is not valid JSON: {exc}")
+        return
+    if not isinstance(req, dict):
+        refuse("REQUEST_MALFORMED", "stdin must be a JSON object")
+        return
 
-    actor = Actor(role="worker", id=actor_id)
-    with connect_gateway() as conn:
-        with conn.transaction():
-            head_before = EventLog(conn, LogicalClock(0), run_id, server_time=True).head_seq()
-        port = HiveCoordinatorPort(actor, run_id, conn)
-        try:
-            result = port.emit(RawOp(event_type, payload, task))
-        except ValidationError as e:
-            console.print(f"rejected: INVALID_PAYLOAD · {_payload_error(e)}")
-            raise typer.Exit(code=1) from e
-        except UnknownEventType as e:
-            console.print(f"rejected: UNKNOWN_EVENT_TYPE · {e}")
-            raise typer.Exit(code=1) from e
-        conn.commit()
+    try:
+        adapter = get_adapter(str(req.get("adapter", "")))
+    except RefusalError as exc:
+        refuse(exc.code, exc.message)
+        return
 
-    if isinstance(result, Rejected):
-        console.print(f"rejected: {result.code} · {result.reason}")
-        raise typer.Exit(code=1)
-    deduped = (head_before is not None and result.event.seq is not None
-               and result.event.seq <= head_before)
-    verb = "already recorded (idempotent)" if deduped else "emitted"
-    console.print(f"{verb} · {event_type} · seq {result.event.seq}")
+    raw = req.get("stream")
+    raw = raw if isinstance(raw, str) else ""
+    records, malformed, truncated = parse_stream(raw)
+    facts = adapter.scan(records, raw=raw)
+    # `parse_stream` counts what the adapter never saw, so the counts are folded back on
+    # here rather than inside each adapter — one place, one rule, no adapter able to
+    # under-report the evidence it was handed.
+    facts = replace(facts, malformed=malformed, truncated=truncated)
+
+    if scan_only:
+        print(json.dumps({"ok": True, "facts": facts.to_json()}, sort_keys=True))
+        return
+
+    run = str(req.get("run", ""))
+    task = str(req.get("task", ""))
+    worker = str(req.get("worker", ""))
+    cursor = req.get("cursor")
+    cursor = cursor if isinstance(cursor, int) else None
+    exit_code = req.get("exit_code")
+    exit_code = exit_code if isinstance(exit_code, int) else None
+
+    events: list[dict] = []
+    spine_readable = True
+    try:
+        with connect() as conn:
+            rows = EventLog(conn, LogicalClock(0), run, server_time=True).read_run(run)
+        events = normalize_events(
+            [
+                {
+                    "seq": ev.seq,
+                    "run_id": ev.run_id,
+                    "task_id": ev.task_id,
+                    "event_type": ev.event_type,
+                    "actor": {"role": ev.actor.role, "id": ev.actor.id},
+                }
+                for ev in rows
+            ]
+        )
+    except Exception as exc:  # noqa: BLE001 - any failure to reach the spine is the same fact
+        # Deliberately broad: a refused connection, a migration mismatch and a DNS
+        # failure are one answer here — we could not read the authority that owns task
+        # disposition, so no classification is possible. The reason is printed so the
+        # operator sees which one it was.
+        spine_readable = False
+        print(f"harness-turn: spine unreadable ({exc})", file=sys.stderr)
+
+    record = classify(
+        spine_events=events,
+        facts=facts,
+        exit_code=exit_code,
+        cursor=cursor,
+        run=run,
+        task=task,
+        worker=worker,
+        spine_readable=spine_readable,
+    )
+    print(
+        json.dumps(
+            {"ok": True, "facts": facts.to_json(), "exit": record.to_json()}, sort_keys=True
+        )
+    )
 
 
 @app.command("harness-usage")

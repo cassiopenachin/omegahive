@@ -36,7 +36,19 @@ def test_a_v2_catalog_loads():
     cat = load_catalog(catalog_bytes())
     assert cat.schema_version == CATALOG_SCHEMA_VERSION
     assert cat.defaults.worker == "fake-subscription"
-    assert cat.routes[0].runner.worker_io == "direct"
+    assert cat.routes[0].runner.executable
+
+
+def test_a_pre_cutover_v2_catalog_is_told_to_migrate_rather_than_silently_trimmed():
+    """`worker_io` chose a transport. Dropping it quietly would change how a route
+    launches without the operator ever being told, so it refuses BY NAME."""
+    doc = catalog()
+    doc["routes"][0]["runner"]["worker_io"] = "supervised"
+    with pytest.raises(RefusalError) as exc:
+        load_catalog(raw(doc))
+    assert exc.value.code == "CATALOG_LEGACY_FIELDS"
+    assert "worker_io" in exc.value.message
+    assert "hive-routes" in exc.value.message and "migrate" in exc.value.message
 
 
 def test_a_v1_catalog_is_told_to_migrate_rather_than_field_by_field():

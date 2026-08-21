@@ -221,8 +221,83 @@ def extract_fake_usage_file(lines: Iterable[str]) -> UsageEvidence:
     )
 
 
+def extract_codex_turn_stream(lines: Iterable[str]) -> UsageEvidence:
+    """Codex's own `codex exec --json` stream: one `turn.completed.usage` per turn.
+
+    Measured against codex-cli 0.147.0 (probe, 2026-08-21). The block is per TURN, not
+    per message, so there is exactly one evidence row per completed turn and the
+    `message_id` is the turn's ordinal within this stream — an honest description of what
+    the harness reports rather than a per-message shape invented to look like the Claude
+    one.
+
+    Two of Codex's five counts fold into this schema and one does not:
+    `cached_input_tokens` is cache read, `cache_write_input_tokens` is cache write, and
+    `reasoning_output_tokens` is a SUBSET of `output_tokens` on this build, so it is
+    recorded in the row and deliberately not added to the total — adding it would double
+    count. `input_tokens` is reported inclusive of the cached part, so the cached part is
+    subtracted out to keep `input_tokens` meaning the same thing it means on every other
+    row in this module.
+
+    The model is absent because the stream never names it: `model_resolved` on a codex
+    execution stays `null` with a named reason, and no row here pretends otherwise.
+    """
+    records, bad = _iter_json_lines(lines)
+    rows = []
+    for i, rec in enumerate(records, start=1):
+        if rec.get("type") != "turn.completed":
+            continue
+        usage = rec.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        total_input = int(usage.get("input_tokens") or 0)
+        cache_read = int(usage.get("cached_input_tokens") or 0)
+        rows.append(
+            {
+                "message_id": f"turn-{i}",
+                "model": None,
+                "input_tokens": max(0, total_input - cache_read),
+                "cache_read_tokens": cache_read,
+                "cache_write_tokens": int(usage.get("cache_write_input_tokens") or 0),
+                "output_tokens": int(usage.get("output_tokens") or 0),
+                "reasoning_output_tokens": int(usage.get("reasoning_output_tokens") or 0),
+                "sidechain": False,
+            }
+        )
+    if not rows:
+        return unavailable(
+            "the codex stream carried no `turn.completed` usage block"
+            + (f" ({bad} unparseable line(s))" if bad else "")
+        )
+    totals = {
+        key: sum(r[key] for r in rows)
+        for key in ("input_tokens", "cache_read_tokens", "cache_write_tokens", "output_tokens")
+    }
+    notes = [
+        "codex reports usage per turn, not per message; one row per `turn.completed`",
+        "`input_tokens` is reported inclusive of the cached part and is recorded here "
+        "net of it, so the four counts do not double-count",
+        "`reasoning_output_tokens` is a subset of `output_tokens` on 0.147.0 and is kept "
+        "on the row without being added to the total",
+        "codex exposes no resolved model id in this stream; every row's model is null",
+    ]
+    if bad:
+        notes.append(f"{bad} unparseable line(s) in the stream")
+    return UsageEvidence(
+        usage=ExecutionUsage(
+            status="reported",
+            source="codex-turn-stream",
+            evidence_records=len(rows),
+            **totals,
+        ),
+        rows=rows,
+        main_chain_models=[],
+        notes=notes,
+    )
+
+
 _EXTRACTORS = {
     "claude-code-transcript": extract_claude_code_transcript,
+    "codex-turn-stream": extract_codex_turn_stream,
     "fake-usage-file": extract_fake_usage_file,
 }
 
