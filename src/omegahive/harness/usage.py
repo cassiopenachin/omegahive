@@ -269,7 +269,7 @@ def extract_codex_turn_stream(lines: Iterable[str]) -> UsageEvidence:
             + (f" ({bad} unparseable line(s))" if bad else "")
         )
     totals = {
-        key: sum(r[key] for r in rows)
+        key: sum(int(r[key] or 0) for r in rows)
         for key in ("input_tokens", "cache_read_tokens", "cache_write_tokens", "output_tokens")
     }
     notes = [

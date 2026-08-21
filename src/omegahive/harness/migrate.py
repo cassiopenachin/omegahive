@@ -172,15 +172,15 @@ def migrate_catalog(
         # cutover half runs anyway. Idempotent by design: a catalog with nothing left to
         # drop comes back byte-equal with a note saying so, which is what makes it safe
         # for an operator who is unsure whether they already ran it.
-        out = json.loads(json.dumps(data))
-        notes = []
-        for route in out.get("routes", []):
+        already: dict[str, Any] = json.loads(json.dumps(data))
+        cut: list[str] = []
+        for route in already.get("routes", []):
             if isinstance(route, dict):
-                notes += cutover_route(route)
-        if not notes:
-            notes = ["already schema_version 2 and post-cutover; nothing to migrate"]
-        RouteCatalog(**out)
-        return out, notes
+                cut += cutover_route(route)
+        if not cut:
+            cut = ["already schema_version 2 and post-cutover; nothing to migrate"]
+        RouteCatalog(**already)
+        return already, cut
     if version != CATALOG_SCHEMA_VERSION_V1:
         raise RefusalError(
             "CATALOG_MALFORMED",
