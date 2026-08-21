@@ -256,7 +256,20 @@ def shell_env(dep, **over) -> dict:
     env.update(dep["tmux_env"])
     env.pop("TMUX", None)
     env.pop("TMUX_PANE", None)
+    # A git identity, named here rather than inherited. `hive-answer` commits the answer
+    # into the operator's workspace clone with ordinary `git commit`, which needs one — and
+    # a developer machine supplies it from ~/.gitconfig while CI does not. That is exactly
+    # the "passes locally, fails on CI" shape the deployment fixture's own clean-HOME
+    # comment already warns about, and it caught this file on its first CI run. The two
+    # config layers are closed for the same reason: the tests must depend on what is set
+    # here and on nothing ambient.
     env.update({
+        "GIT_AUTHOR_NAME": "drill operator",
+        "GIT_AUTHOR_EMAIL": "drill@example.invalid",
+        "GIT_COMMITTER_NAME": "drill operator",
+        "GIT_COMMITTER_EMAIL": "drill@example.invalid",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
         "HIVE_TMUX_SESSION": dep["tmux_session"],
         "OMEGAHIVE_DATABASE_URL": dep["db"],
         "OMEGAHIVE_GATEWAY_DATABASE_URL": "",
@@ -1227,7 +1240,7 @@ RETIRED = ("hive-supervise", "worker_io", "HIVE_EXEC_ROOT", "HIVE_SPOOL_TIMEOUT"
 # retired names is live in any of these, some part of the product came back.
 LAUNCH_PATH = (
     "scripts/hive-launch", "scripts/hive-answer", "scripts/hive-common.sh",
-    "scripts/hive-routes", "scripts/hive-tooling-drill.sh",
+    "scripts/hive-routes",
     "schemas/route-catalog.example.json",
     "src/omegahive/harness/adapters.py", "src/omegahive/harness/plan.py",
     "src/omegahive/harness/turns.py", "src/omegahive/harness/__init__.py",
@@ -1247,6 +1260,10 @@ LAUNCH_PATH = (
 DELIBERATE_EXCEPTIONS = (
     "src/omegahive/harness/records.py",
     "src/omegahive/harness/migrate.py",
+    # The drill NAMES them to build a pre-cutover catalog and prove `hive-routes migrate`
+    # removes them. A test harness may name what it verifies; that is the difference
+    # between a reference and a survival.
+    "scripts/hive-tooling-drill.sh",
 )
 
 
@@ -1292,6 +1309,10 @@ def test_the_two_deliberate_exceptions_are_the_only_ones_and_are_still_doing_the
         text = (REPO / rel).read_text()
         assert "worker_io" in text
         assert "retired" in text.lower() or "cutover" in text.lower()
+    # And the drill's exception is only earned while it still exercises the migration.
+    drill = (REPO / "scripts" / "hive-tooling-drill.sh").read_text()
+    assert "hive-routes\" migrate" in drill or "hive-routes migrate" in drill
+    assert "dropped runner.worker_io" in drill
 
 
 def test_the_supervisor_and_its_spool_are_gone_from_the_tree():

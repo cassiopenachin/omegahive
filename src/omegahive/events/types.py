@@ -438,10 +438,20 @@ class ExecutionRouteApproved(BaseModel):
     # it. Provenance, not a judgment: both are authorized.
     route_source: Literal["default", "override"] | None = None
     # `sha256:<hex>` over the resolved NON-SECRET runner configuration — executable,
-    # static argument vector, inherited environment NAMES, worker I/O mode. It answers
-    # "is this the same runner configuration as last time" and deliberately not "is this
-    # runner safe", which nothing here can know. Never a value out of an environment.
+    # static argument vector, inherited environment NAMES. It answers "is this the same
+    # runner configuration as last time" and deliberately not "is this runner safe",
+    # which nothing here can know. Never a value out of an environment.
+    #
+    # The `worker-turns` cutover removed the transport field from that canonical form, so
+    # a route's fingerprint changes across the cutover even where the operator changed
+    # nothing: the resolved configuration really did change shape.
     runner_fingerprint: str | None = None
+    # HISTORICAL (pre-`worker-turns`): which transport carried this worker's spine writes
+    # and publication. `supervised` meant a privileged resident mediator performed them
+    # from outside the runner; that product is retired and a configured runner is now
+    # responsible for ordinary worker function itself. Retained, unset, and never
+    # backfilled, so events emitted before 2026-08-21 replay unchanged — a reader tells
+    # the two eras apart by its presence, which is more honest than a rewrite.
     worker_io: Literal["direct", "supervised"] | None = None
     # The doctrine's status vocabulary, recorded at launch so a later reader knows how
     # much the model and usage facts on this execution are worth.

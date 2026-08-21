@@ -283,10 +283,12 @@ def test_a_ref_must_be_path_at_sha(field: str, ref: str):
         ExecutionRouteApproved(**approved(**{field: ref}))
 
 
-def test_a_post_cutover_launch_carries_a_route_instead_of_a_binding():
-    """The shape every launch has emitted since 2026-08-20: no binding file, no boundary
-    block, no token prediction — a pinned order, the route's provenance, and a
-    fingerprint of the resolved non-secret runner configuration."""
+def test_a_2026_08_20_launch_still_validates_with_its_transport_field():
+    """The shape launches emitted between the runner-trust and `worker-turns` cutovers:
+    no binding file, no boundary block, no token prediction — a pinned order, the route's
+    provenance, a fingerprint, and a `worker_io` naming the transport that carried the
+    worker. `worker_io` is retired and nothing emits it any more, but events that carry it
+    must keep replaying, so it stays accepted and is never backfilled."""
     ev = ExecutionRouteApproved(**approved(
         binding=None, binding_ref=None, predicted_total_tokens=None,
         order_ref=ORDER_REF, route_source="override",
@@ -296,6 +298,18 @@ def test_a_post_cutover_launch_carries_a_route_instead_of_a_binding():
     assert ev.binding is None and ev.binding_ref is None
     assert ev.route_source == "override"
     assert ev.worker_io == "supervised"
+
+
+def test_a_post_cutover_launch_carries_no_transport_field_at_all():
+    """And its absence is not a default: there is one transport now, so naming it would
+    be recording a choice nobody makes."""
+    ev = ExecutionRouteApproved(**approved(
+        binding=None, binding_ref=None, predicted_total_tokens=None,
+        order_ref=ORDER_REF, route_source="default",
+        runner_fingerprint="sha256:" + "ef" * 32,
+        model_identity_evidence="observed", usage_evidence="observed",
+    ))
+    assert ev.worker_io is None
 
 
 def test_a_pre_cutover_launch_still_validates_so_the_log_replays():

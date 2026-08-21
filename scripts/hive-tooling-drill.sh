@@ -1398,7 +1398,11 @@ check "sha-answer: reused the existing window rather than opening a second" \
 # A prepared turn is not a run turn. Wait for turn 002 to actually finish in that pane and
 # check what it did — without this the whole resume half of the drill would pass against a
 # window that opened and did nothing.
-wait_until 30 "[ -s '$WORK/$SHAWORKER/run/turns/002/exit.json' ]" || true
+# Wait for the CLAIM to be released, not for exit.json. `exit.json` is written partway
+# through the postlude — before the usage extraction, the terminal payload and the emit —
+# so a check gated on it races the rest of the runner. The claim is removed last, which
+# makes its absence the one true "this turn is over" signal.
+wait_until 60 "[ -s '$WORK/$SHAWORKER/run/turns/002/exit.json' ] && [ ! -e '$WORK/$SHAWORKER/run/turns/002/claim' ]" || true
 check "sha-answer: turn 002 really ran in the pane" \
   "[ -s '$WORK/$SHAWORKER/run/turns/002/exit.json' ]"
 check "sha-answer: turn 002 invoked the harness's native resume" \
