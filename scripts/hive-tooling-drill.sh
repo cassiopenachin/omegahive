@@ -212,6 +212,19 @@ cleanup() {
   echo
   echo "drill: runs=$ARUN,$BRUN,$GRUN  PASS=$PASS  FAIL=$FAIL  (scratch events remain under those runs)"
   [ "$FAIL" -eq 0 ] || echo "drill: FAILURES PRESENT"
+  # A drill that DIED is not a drill that passed, and this summary is the only thing
+  # anyone reads. Under `set -e` an unguarded command failure — a stale path, a missing
+  # binary — aborts the script mid-run, and the EXIT trap then printed `PASS=n FAIL=0`,
+  # which reads exactly like a clean sweep of a suite that never finished. That is what
+  # happened after the emit wrapper moved into the task root: twelve stale paths, the run
+  # stopping at the first of them, and three consecutive green-looking reports of a drill
+  # that had covered two thirds of itself. The completion marker is set by the last line
+  # of the script; anything else is a truncation and says so.
+  if [ -z "${DRILL_COMPLETED:-}" ]; then
+    echo "drill: DID NOT COMPLETE — the script aborted before its final section."
+    echo "  PASS=$PASS counts only what ran. Treat this as a FAILURE, not a partial pass:"
+    echo "  the sections after the abort did not run and their result is unknown."
+  fi
 }
 trap cleanup EXIT
 
@@ -267,6 +280,9 @@ HUB="$SANDBOX/hub.git"
 WS="$SANDBOX/ws"
 CANON="$SANDBOX/canon"       # CANON_ROOT: holds canonical checkouts, named by REPO (CANON/<repo>)
 WORK="$SANDBOX/work"
+# Legacy: no script writes here any more (a worker's emit wrapper lives inside its own
+# task root, because a runner scoped to that root cannot execute a file outside it). It is
+# still exported below so a sourced script that reads WRAPPER_DIR does not trip on nounset.
 WRAPPERS="$SANDBOX/wrappers"
 
 git init --quiet --bare "$HUB"
@@ -374,6 +390,15 @@ EOF
 export HIVE_TMUX_SESSION="$TMUX_SESSION"
 export HIVE_ROUTE_CATALOG="$DRILL_CATALOG"
 export HIVE_EXEC_ROOT="$SANDBOX/exec"
+# The drill exercises the SHIPPED operator path, which reaches the CLI through the
+# container. HIVE_CLI_CMD would route it to the host instead, where the stack's .env names
+# the database by a hostname that only resolves inside the container — so an operator with
+# that variable exported got a wall of tracebacks from a drill that was testing their shell
+# rather than this repository. It is unset here for the same reason every other deployment
+# variable above is pinned: what the drill tests must not depend on where it is run from.
+# To drill a branch before rebuilding the image, override OMEGAHIVE_COMPOSE with a
+# `-f <override>.yml` pointing `cli` at a branch image tag — never this.
+unset HIVE_CLI_CMD
 export WS_HUB="$HUB"
 export OPS_WS="$WS"
 export CANON_ROOT="$CANON"
@@ -808,7 +833,7 @@ echo "== one parser, two callers: the D1-dialect order agrees at launch and at s
 # DoD (c): the SAME input yields the SAME verdict from both callers. The launch
 # above already refused this order as unparseable (0 of 3 fields); driving it
 # to a close now proves hive-score's independently-computed coverage agrees.
-BADWRAP="$WRAPPERS/sess-predbad-${STAMP}.sh"
+BADWRAP="$WORK/sess-predbad-${STAMP}/run/emit"
 "$BADWRAP" --type task.accepted --task "$BADTASK" >/dev/null
 "$BADWRAP" --type task.result_posted --task "$BADTASK" \
   --payload "$(jq -cn --arg r "projects/$APROJ/reports/2026-07-13-$BADTASK-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
@@ -823,7 +848,7 @@ echo "== adopt a pre-seeded ready task (register + assign only, no task.created)
 AAORDER=$(add_order "$APROJ" "2026-07-13-drill-adopt" "drill adopt")
 ATASK="drill-adopt"
 AAWORKER="sess-adopt-${STAMP}"
-AAWRAP="$WRAPPERS/$AAWORKER.sh"
+AAWRAP="$WORK/$AAWORKER/run/emit"
 raw_emit "$ARUN" human operator task.created --task "$ATASK" \
   --payload "$(jq -cn '{title:"drill adopt", task_type:"task", acceptance:"seeded pin"}')"
 check "pre-seeded task is ready" "[ \"\$(bstatus '$ARUN' '$ATASK')\" = ready ]"
@@ -900,7 +925,7 @@ expect_fail_msg "launch refuses a session name outside the id charset" "unsafe H
   env HIVE_TMUX_SESSION="drill:evil" "$SCRIPT_DIR/hive-launch" "$BSORDER" --worker "sess-badsession-${STAMP}"
 check "the unsafe-session refusal seeded no board state" "[ -z \"\$(bstatus '$ARUN' drill-badsession)\" ]"
 check "the unsafe-session refusal provisioned nothing"   "[ ! -e '$WORK/sess-badsession-${STAMP}' ]"
-check "no wrapper was issued for the refused launch"     "[ ! -e '$WRAPPERS/sess-badsession-${STAMP}.sh' ]"
+check "no task root was provisioned for the refused launch" "[ ! -e '$WORK/sess-badsession-${STAMP}' ]"
 expect_fail_msg "answer refuses the same unsafe session name" "unsafe HIVE_TMUX_SESSION" \
   env HIVE_TMUX_SESSION="drill:evil" "$SCRIPT_DIR/hive-answer" drill-drained "should never land"
 check "the refused answer wrote nothing to the order" \
@@ -1075,7 +1100,7 @@ NSTASK="drill-noscore"
 NSORDER=$(add_order "$APROJ" "2026-07-13-$NSTASK" "no score")
 NSWORKER="sess-noscore-${STAMP}"
 "$SCRIPT_DIR/hive-launch" "$NSORDER" --worker "$NSWORKER" >/dev/null
-NSWRAP="$WRAPPERS/$NSWORKER.sh"
+NSWRAP="$WORK/$NSWORKER/run/emit"
 "$NSWRAP" --type task.accepted --task "$NSTASK" >/dev/null
 "$NSWRAP" --type task.result_posted --task "$NSTASK" \
   --payload "$(jq -cn --arg r "projects/$APROJ/reports/2026-07-13-$NSTASK-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
@@ -1110,7 +1135,7 @@ RRTASK="drill-review-required"
 RRORDER=$(add_order "$APROJ" "2026-07-13-$RRTASK" "review required")
 RRWORKER="sess-reviewreq-${STAMP}"
 "$SCRIPT_DIR/hive-launch" "$RRORDER" --worker "$RRWORKER" >/dev/null
-RRWRAP="$WRAPPERS/$RRWORKER.sh"
+RRWRAP="$WORK/$RRWORKER/run/emit"
 "$RRWRAP" --type task.accepted --task "$RRTASK" >/dev/null
 "$RRWRAP" --type task.result_posted --task "$RRTASK" \
   --payload "$(jq -cn --arg r "projects/$APROJ/reports/2026-07-13-$RRTASK-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
@@ -1133,7 +1158,7 @@ RRTASK2="drill-review-required-2"
 RRORDER2=$(add_order "$APROJ" "2026-07-13-$RRTASK2" "review required 2")
 RRWORKER2="sess-reviewreq2-${STAMP}"
 "$SCRIPT_DIR/hive-launch" "$RRORDER2" --worker "$RRWORKER2" >/dev/null
-RRWRAP2="$WRAPPERS/$RRWORKER2.sh"
+RRWRAP2="$WORK/$RRWORKER2/run/emit"
 "$RRWRAP2" --type task.accepted --task "$RRTASK2" >/dev/null
 "$RRWRAP2" --type task.result_posted --task "$RRTASK2" \
   --payload "$(jq -cn --arg r "projects/$APROJ/reports/2026-07-13-$RRTASK2-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
@@ -1148,7 +1173,7 @@ RFTASK="drill-reviewfail"
 RFORDER=$(add_order "$APROJ" "2026-07-13-$RFTASK" "review fail refusal")
 RFWORKER="sess-reviewfail-${STAMP}"
 "$SCRIPT_DIR/hive-launch" "$RFORDER" --worker "$RFWORKER" >/dev/null
-RFWRAP="$WRAPPERS/$RFWORKER.sh"
+RFWRAP="$WORK/$RFWORKER/run/emit"
 "$RFWRAP" --type task.accepted --task "$RFTASK" >/dev/null
 "$RFWRAP" --type task.result_posted --task "$RFTASK" \
   --payload "$(jq -cn --arg r "projects/$APROJ/reports/2026-07-13-$RFTASK-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
@@ -1192,7 +1217,7 @@ ORTASK="drill-onerow"
 ORORDER=$(add_order "$APROJ" "2026-07-13-$ORTASK" "one row")
 ORWORKER="sess-onerow-${STAMP}"
 "$SCRIPT_DIR/hive-launch" "$ORORDER" --worker "$ORWORKER" >/dev/null
-ORWRAP="$WRAPPERS/$ORWORKER.sh"
+ORWRAP="$WORK/$ORWORKER/run/emit"
 "$ORWRAP" --type task.accepted --task "$ORTASK" >/dev/null
 "$ORWRAP" --type task.result_posted --task "$ORTASK" \
   --payload "$(jq -cn --arg r "projects/$APROJ/reports/2026-07-13-$ORTASK-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
@@ -1256,7 +1281,7 @@ SATASK="drill-shape-a"
 SAORDER=$(add_order "$APROJ" "2026-07-13-$SATASK" "legacy shape a")
 SAWORKER="sess-shapea-${STAMP}"
 "$SCRIPT_DIR/hive-launch" "$SAORDER" --worker "$SAWORKER" >/dev/null
-SAWRAP="$WRAPPERS/$SAWORKER.sh"
+SAWRAP="$WORK/$SAWORKER/run/emit"
 "$SAWRAP" --type task.accepted --task "$SATASK" >/dev/null
 "$SAWRAP" --type task.result_posted --task "$SATASK" \
   --payload "$(jq -cn --arg r "projects/$APROJ/reports/2026-07-13-$SATASK-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
@@ -1278,7 +1303,7 @@ SBTASK="drill-shape-b"
 SBORDER=$(add_order "$APROJ" "2026-07-13-$SBTASK" "legacy shape b")
 SBWORKER="sess-shapeb-${STAMP}"
 "$SCRIPT_DIR/hive-launch" "$SBORDER" --worker "$SBWORKER" >/dev/null
-SBWRAP="$WRAPPERS/$SBWORKER.sh"
+SBWRAP="$WORK/$SBWORKER/run/emit"
 "$SBWRAP" --type task.accepted --task "$SBTASK" >/dev/null
 "$SBWRAP" --type task.result_posted --task "$SBTASK" \
   --payload "$(jq -cn --arg r "projects/$APROJ/reports/2026-07-13-$SBTASK-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
@@ -1412,7 +1437,7 @@ check "suffix task does not touch the longer order" "! grep -q 'resolves uniquel
 EORDER=$(add_order "$APROJ" "2026-07-13-drill-empty" "drill empty")
 EWORKER="sess-empty-${STAMP}"
 "$SCRIPT_DIR/hive-launch" "$EORDER" --worker "$EWORKER" >/dev/null 2>&1
-EWRAP="$WRAPPERS/$EWORKER.sh"
+EWRAP="$WORK/$EWORKER/run/emit"
 "$EWRAP" --type task.accepted --task drill-empty >/dev/null 2>&1
 "$EWRAP" --type task.result_posted --task drill-empty --payload "$(jq -cn '{artifact_refs:[]}')" >/dev/null 2>&1
 check "empty-result task reached in_review" "[ \"\$(bstatus '$ARUN' drill-empty)\" = in_review ]"
@@ -1427,4 +1452,8 @@ expect_fail "answer refuses when push fails" "$SCRIPT_DIR/hive-answer" "drill-dr
 git -C "$WS" remote set-url origin "$HUB"
 
 echo
+# The completion marker the EXIT trap checks. It is the LAST statement for a reason: if
+# anything above aborts the script, this never runs and the summary says the drill did not
+# complete instead of reporting a partial pass as a sweep.
+DRILL_COMPLETED=1
 [ "$FAIL" -eq 0 ]

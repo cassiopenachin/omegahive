@@ -207,8 +207,33 @@ REQ=$(jq -n \
 
 # Resolved ONCE and reused. `--check` and the real launch call the same resolver with the
 # same request, so a preflight cannot describe a launch that would not happen.
-PLAN_JSON=$(printf '%s' "$REQ" | hive harness-resolve) \
-  || die "the route was refused; nothing was created or emitted (see the code above)"
+#
+# The refusal is JSON on STDOUT — `{"ok": false, "code": ..., "message": ...}` — which a
+# plain command substitution captures and then throws away. That is how this line came to
+# say "see the code above" when there was no code above: the one thing an operator needs,
+# the stable code and the message naming what IS known, went into a variable and then into
+# the bin. Stderr is kept in its own file rather than merged, because compose writes its
+# provider banner there on SUCCESS and merging it would corrupt the plan — the same trap
+# `board_json_strict` documents one file over.
+resolve_err=$(mktemp "${TMPDIR:-/tmp}/hive-resolve.XXXXXX") \
+  || die "cannot create a temporary file for resolver diagnostics"
+if ! PLAN_JSON=$(printf '%s' "$REQ" | hive harness-resolve 2>"$resolve_err"); then
+  REFUSAL_CODE=$(printf '%s' "$PLAN_JSON" | jq -r 'select(.ok == false) | .code // empty' 2>/dev/null || true)
+  if [ -n "$REFUSAL_CODE" ]; then
+    REFUSAL_MSG=$(printf '%s' "$PLAN_JSON" | jq -r '.message // empty')
+    rm -f "$resolve_err"
+    die "route refused [$REFUSAL_CODE]
+
+  $REFUSAL_MSG
+
+  Nothing was created, nothing was cloned, and nothing was emitted."
+  fi
+  cat "$resolve_err" >&2
+  printf '%s\n' "$PLAN_JSON" >&2
+  rm -f "$resolve_err"
+  die "the route could not be resolved (output above); nothing was created or emitted."
+fi
+rm -f "$resolve_err"
 EXEC_ID=$(printf '%s' "$PLAN_JSON" | jq -r '.execution_id')
 ROUTE_NAME=$(printf '%s' "$PLAN_JSON" | jq -r '.identity.route')
 WORKER_IO=$(printf '%s' "$PLAN_JSON" | jq -r '.worker_io')
@@ -217,7 +242,15 @@ EXECUTABLE=$(printf '%s' "$PLAN_JSON" | jq -r '.executable')
 if [ -n "$CHECK_ONLY" ]; then
   echo "hive-launch --check: task=$TASK worker=$WORKER project=$PROJECT (no side effects)"
   echo "  order:   $REL@$SHA"
-  printf '%s' "$REQ" | hive harness-resolve --check | sed 's/^/  /' || exit 1
+  # Same shape as the launch path above, so the two read alike: on a refusal, name the
+  # stable code rather than leaving the operator to read it out of a JSON blob.
+  if ! CHECK_OUT=$(printf '%s' "$REQ" | hive harness-resolve --check 2>&1); then
+    printf '%s\n' "$CHECK_OUT" | sed 's/^/  /' >&2
+    CHECK_CODE=$(printf '%s' "$CHECK_OUT" | jq -r 'select(.ok == false) | .code // empty' 2>/dev/null || true)
+    [ -z "$CHECK_CODE" ] || echo "hive-launch --check: route refused [$CHECK_CODE]" >&2
+    exit 1
+  fi
+  printf '%s\n' "$CHECK_OUT" | sed 's/^/  /'
   # The same host-side check the real launch makes, on the same helper, BEFORE the
   # version probe below. A preflight that printed "NOT INSTALLED" and then exited 0
   # would tell a human the truth and an automation the opposite, and the whole point of

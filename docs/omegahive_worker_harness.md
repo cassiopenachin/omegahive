@@ -391,7 +391,26 @@ scripts/hive-supervise --drain ~/work/hive-exec/<worker>
 | `HIVE_ROUTE_CATALOG` | `~/.config/omegahive/routes.json` | this host's route catalog |
 | `HIVE_EXEC_ROOT` | `$WORK_ROOT/hive-exec` | supervisor state, one dir per worker, outside every task root |
 | `HIVE_SPOOL_TIMEOUT` | `180` | seconds a supervised worker waits for a receipt before failing loudly |
-| `HIVE_CLI_CMD` | unset | run the CLI directly instead of in the container (tests, and the window between deploying a branch and rebuilding the image) |
+| `HIVE_CLI_CMD` | unset | run the CLI directly instead of in the container. **Set it for one window and unset it after** — see below |
+
+### `HIVE_CLI_CMD` is a window, not a setting
+
+It exists for the gap between deploying a branch and rebuilding the `cli` image, and for
+the test suites, which export a host-reachable `OMEGAHIVE_DATABASE_URL` alongside it.
+
+**Unset it once the image is rebuilt.** Left exported, it routes every hive tool's CLI
+call to the host — and the stack's `.env` names the database by its *compose service*
+hostname, which resolves only inside the container. The result is
+`failed to resolve host 'postgres'` at the bottom of a traceback that never mentions the
+variable. Correcting a wrong value is not the fix; a correctly-spelled one fails more
+reliably than a broken one, because a broken one sometimes falls back to something that
+works. The shell layer now names it as the first suspect when a CLI call fails that way,
+but the remedy is `unset HIVE_CLI_CMD` and removing it from the shell profile.
+
+To drill or launch against a branch before rebuilding, override the compose command
+instead — `OMEGAHIVE_COMPOSE="podman compose -f docker-compose.yml -f <override>.yml"`
+with the override pointing `cli` at a branch image tag. That keeps every call inside the
+container, where the deployment's own configuration is the one in force.
 
 ## 10. What this deliberately does not do
 
