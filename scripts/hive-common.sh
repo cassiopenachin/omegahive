@@ -596,6 +596,25 @@ hive() {
 emit() {  # emit <role> <actor> <type> [--task <t>] [--payload <json>]
   local role="$1" actor="$2" type="$3"; shift 3
   local out
+  # HIVE_CLI_CMD is the same seam `hive()` honours: run the CLI directly rather than in
+  # the container. It used to be missing HERE, which made the operator's documented
+  # pre-rebuild path ("export HIVE_CLI_CMD=... until you rebuild the image") silently
+  # false for `hive-launch`: its board reads went to the checkout and its board WRITES
+  # went to the stale image, so a launch half-worked and refused on a payload field the
+  # image had not learned yet. One seam, honoured everywhere it can be.
+  if [ -n "${HIVE_CLI_CMD:-}" ]; then
+    # shellcheck disable=SC2086  # HIVE_CLI_CMD is legitimately several words
+    if ! out=$( $HIVE_CLI_CMD emit --run-id "$RUN" --role "$role" --actor "$actor" \
+        --type "$type" "$@" 2>&1 ); then
+      echo "$out" >&2
+      die "emit failed: $type (role=$role actor=$actor) — the cause is in the output above.
+  A GOVERNANCE refusal prints a line starting 'rejected: <CODE>'.
+  Anything else is this host or its config. HIVE_CLI_CMD is set to '$HIVE_CLI_CMD';
+  unset it to go back to the containerized path."
+    fi
+    echo "$out"
+    return 0
+  fi
   require_omega_dir
   resolve_compose
   # Capture stderr too: a stack/DB outage is a runtime failure whose error only
