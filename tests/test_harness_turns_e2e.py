@@ -882,8 +882,9 @@ git -C "$WS" -c user.name=w -c user.email=w@x add -A
 git -C "$WS" -c user.name=w -c user.email=w@x commit --quiet -m "report"
 say "$("$HIVE" publish workspace 2>&1)"
 SHA=$(git -C "$WS" rev-parse HEAD)
-say "$("$EMIT" --type task.result_posted --task {TASK} \\
-  --payload "{{\\"artifact_refs\\": [{{\\"ref\\": \\"projects/{PROJECT}/reports/2026-08-21-{TASK}-result.md@$SHA\\", \\"quality\\": \\"ok\\"}}]}}" 2>&1)"
+REF="projects/{PROJECT}/reports/2026-08-21-{TASK}-result.md@$SHA"
+PAYLOAD=$(printf '{{"artifact_refs": [{{"ref": "%s", "quality": "ok"}}]}}' "$REF")
+say "$("$EMIT" --type task.result_posted --task {TASK} --payload "$PAYLOAD" 2>&1)"
 '''
 
 

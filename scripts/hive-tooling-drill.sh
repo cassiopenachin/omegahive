@@ -1016,8 +1016,17 @@ CHKOUT="$("$SCRIPT_DIR/hive-launch" "$CHKORDER" --worker "sess-routechk-${STAMP}
 printf '%s\n' "$CHKOUT" | sed 's/^/    /'
 check "--check names the default route and says it is the default" \
   "printf '%s' \"\$CHKOUT\" | grep -qE 'route:.*drill-default.*\\(default\\)'"
-check "--check names the resolved runner and its worker I/O" \
-  "printf '%s' \"\$CHKOUT\" | grep -qE 'runner:.*worker I/O: direct'"
+check "--check names the resolved runner" \
+  "printf '%s' \"\$CHKOUT\" | grep -qF 'runner:      $WORKER_CMD'"
+# The preflight has to answer the resume question BEFORE a launch. An operator who learns
+# at answer time that a route cannot be woken has learned it too late — and one whose
+# route can be woken should be able to see that without reading adapter source.
+check "--check states the turn it would run" \
+  "printf '%s' \"\$CHKOUT\" | grep -qE 'turn: +initial #001'"
+check "--check states the resume capability" \
+  "printf '%s' \"\$CHKOUT\" | grep -qE 'resume: +supported'"
+check "--check names the worker's own direct commands" \
+  "printf '%s' \"\$CHKOUT\" | grep -qF 'run directly by the worker'"
 check "--check probes the INSTALLED harness for a version" \
   "printf '%s' \"\$CHKOUT\" | grep -qF 'harness: 0.0.1'"
 check "--check provisioned nothing"  "[ ! -e '$WORK/sess-routechk-${STAMP}' ]"
@@ -1083,6 +1092,8 @@ check "hive-routes refuses the disabled route with a reason" \
   "printf '%s' \"\$ROUTESOUT\" | grep -qF 'REFUSED [ROUTE_DISABLED]'"
 check "hive-routes prints no environment value, only names" \
   "! printf '%s' \"\$ROUTESOUT\" | grep -qF '$HUB'"
+check "hive-routes answers the resume question per route" \
+  "printf '%s' \"\$ROUTESOUT\" | grep -qE 'resume: +supported'"
 
 echo
 echo "== a regeneration/scoring failure is LOUD but never makes a completed close look failed =="

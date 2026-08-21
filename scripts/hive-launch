@@ -182,6 +182,12 @@ writes 'hive emit --run-id \$RUN --role worker --actor \$WORKER ...', run '$WRAP
 with only the remaining flags (--type/--task/--payload). Never use raw hive emit.
 Commit your code work on branch $CODE_BRANCH; the publication commands take the branch,
 the destination and the credentials from the launch and accept none from you.
+You run as a series of TURNS. This message starts turn 001; your process is expected to
+end, and the operator continues you in a new turn of the same session when an answer lands
+or when a turn ended without a result. Externalize your state to committed files before
+every exit, and follow WORKER.md's Finishing sequence in order — review the complete local
+diff before opening the PR, then wait out the first CI run, repair within your order's
+budget, integrate main once, and only then post the result.
 Container tooling on this host is '$HIVE_COMPOSE' (resolved at launch; WORKER.md's
 setup block writes it as 'podman compose' because deployment #0 runs podman —
 use the command named here). Begin by reading both files, then emit

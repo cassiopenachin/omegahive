@@ -56,12 +56,15 @@ def _row(route: RouteEntry, *, default: bool, present: bool | None,
         "adapter": route.adapter,
         "billing_market": route.billing_market,
         "credential_pool": route.credential_pool,
-        "worker_io": route.runner.worker_io,
         "executable": route.runner.executable,
         "executable_present": present,
         "runner_args": list(route.runner.args),
         "inherit_env": list(route.runner.inherit_env),
         "runner_fingerprint": route.runner.fingerprint(),
+        # Resolved through the adapter, not guessed: `codex exec resume` refuses several
+        # options `codex exec` accepts, so "can this route be resumed" is a property of
+        # the operator's own argument vector and has to be computed from it.
+        "resume": _resume_status(route),
         "has_price_basis": route.price_basis is not None,
         "note": route.note,
     }
@@ -126,6 +129,28 @@ def evaluate_routes(
     return rows
 
 
+def _resume_status(route) -> str:
+    """`supported`, or the exact reason this route cannot be woken.
+
+    Built by asking the adapter, with a placeholder session id, so the answer is the same
+    one `hive-answer` will get. A route that cannot even build an initial turn (malformed
+    runner args) reports that here too — it is the same class of fact and an operator
+    reading a catalog check wants both.
+    """
+    from omegahive.harness.adapters import LaunchContext, get_adapter
+    from omegahive.harness.records import RefusalError
+
+    ctx = LaunchContext(
+        kickoff="", cwd="", task_root="", execution_id="", session_id="probe",
+        resume_session_id="probe",
+    )
+    try:
+        plan = get_adapter(route.adapter).build_resume(route, ctx)
+    except RefusalError as exc:
+        return f"REFUSED [{exc.code}] {exc.message}"
+    return "supported" if plan.resumable else (plan.resume_unsupported_reason or "supported")
+
+
 def routes_to_json(rows: list[dict[str, Any]]) -> str:
     return json.dumps(rows, indent=2, sort_keys=True)
 
@@ -150,7 +175,12 @@ def routes_to_text(rows: list[dict[str, Any]]) -> str:
             found = "presence not checked"
         else:
             found = "found on PATH" if r["executable_present"] else "NOT FOUND on PATH"
-        out.append(f"    runner: {r['executable']}  ({found})   worker I/O: {r['worker_io']}")
+        out.append(f"    runner: {r['executable']}  ({found})")
+        # Whether this route can be WOKEN, answered here rather than at answer time. An
+        # operator who discovers a route is unresumable when a blocked worker needs an
+        # answer has discovered it too late, and the remedy — rewriting the route's args —
+        # is a catalog edit they would rather make before a launch.
+        out.append(f"      resume: {r['resume']}")
         if r["runner_args"]:
             out.append(f"      args: {r['runner_args']}")
         if r["inherit_env"]:
