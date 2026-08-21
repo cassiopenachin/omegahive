@@ -19,9 +19,13 @@
       "note": "the incumbent worker tier and this example's worker default; no per-token list price applies to a subscription route, so price_basis is absent rather than zero",
       "runner": {
         "executable": "claude",
-        "args": ["--permission-mode", "auto"],
-        "inherit_env": ["CLAUDE_CONFIG_DIR"],
-        "worker_io": "direct"
+        "args": [
+          "--permission-mode",
+          "auto"
+        ],
+        "inherit_env": [
+          "CLAUDE_CONFIG_DIR"
+        ]
       }
     },
     {
@@ -37,9 +41,13 @@
       "note": "cheap-tier candidate, subscription-billed, same runner as the tier above",
       "runner": {
         "executable": "claude",
-        "args": ["--permission-mode", "auto"],
-        "inherit_env": ["CLAUDE_CONFIG_DIR"],
-        "worker_io": "direct"
+        "args": [
+          "--permission-mode",
+          "auto"
+        ],
+        "inherit_env": [
+          "CLAUDE_CONFIG_DIR"
+        ]
       }
     },
     {
@@ -52,18 +60,19 @@
       "billing_market": "subscription",
       "credential_pool": "pool-b",
       "enabled": true,
-      "note": "A NATIVE-SANDBOX ROUTE, and the reason worker_io exists. The args are the measured filesystem boundary: a permission profile that reads everywhere, denies the operator's credential stores and the shared stack, and grants write nowhere - the adapter adds the task root and both clones' .git directories at launch, because only the launch knows them, and because this harness marks .git read-only inside a workspace-write root by default. Egress is deliberately OFF: the operator has not ruled on whether destination-scoped networking satisfies the P4 risk, and a supervised worker does not need it. worker_io is 'supervised' because inside that sandbox the container socket, the workspace hub and every forge credential are unreachable - so the supervisor performs this worker's emits, its workspace sync and its publications from outside the boundary. That is a stronger deployment, not a weaker one.",
+      "note": "A NATIVE-SANDBOX ROUTE. Everything in `args` is the OPERATOR's: the `exec` subcommand this adapter requires, plus whatever sandbox, permission profile or feature flags this deployment chose. Hive resolves it, records its fingerprint, appends only --json, the pinned model and the prompt, and inserts `resume <thread-id>` after `exec` on a resume turn. Hive does NOT widen it. Before the worker-turns cutover the launcher merged each worker root and both clones' .git directories into this table so a worker could commit, which made the launcher the author of a deployment's posture; now the grant is written here, by the operator, where it is visible. Note the shape: this profile grants write under the parent of every worker root because a worker that can edit but not `git commit` is not a worker, and Codex marks .git read-only inside a workspace-write root by default. Egress stays OFF. Finally, `codex exec resume` on 0.147.0 rejects -s/--sandbox, -C/--cd, --add-dir and -p/--profile: a route carrying one of those can be launched and cannot be resumed, and hive-answer refuses by name rather than dropping it. This route uses only -c overrides, so it stays resumable.",
       "runner": {
         "executable": "codex",
         "args": [
           "exec",
           "-c",
-          "default_permissions=\"hive-worker\"",
+          "default_permissions=\"example-worker\"",
           "-c",
-          "permissions.hive-worker.filesystem={\"/\"=\"read\",\"~/.ssh\"=\"deny\",\"~/.aws\"=\"deny\",\"~/.netrc\"=\"deny\",\"~/.git-credentials\"=\"deny\",\"~/.config/gh\"=\"deny\",\"~/.config/omegahive\"=\"deny\",\"~/.local/share/omegahive\"=\"deny\"}"
+          "permissions.example-worker.filesystem={\"/\"=\"read\",\"~/work\"=\"write\",\"~/.ssh\"=\"deny\",\"~/.aws\"=\"deny\",\"~/.netrc\"=\"deny\",\"~/.git-credentials\"=\"deny\",\"~/.config/gh\"=\"deny\",\"~/.config/omegahive\"=\"deny\",\"~/.local/share/omegahive\"=\"deny\"}"
         ],
-        "inherit_env": ["CODEX_HOME"],
-        "worker_io": "supervised"
+        "inherit_env": [
+          "CODEX_HOME"
+        ]
       }
     },
     {
@@ -88,9 +97,12 @@
       "note": "TWO THINGS AT ONCE. It is a harness this build has never heard of, launching on the built-in 'generic' adapter from configuration alone - so a new CLI, a wrapper script, a container invocation or a VM entry point needs no code change to become runnable, at the honest cost that its model identity is recorded as declared and its usage as unavailable. And it bills against the api market with a provider credential inherited BY NAME: provider access is deployment posture and the operator's to decide. What may never be inherited under any configuration is a Hive authority credential - the database, gateway and reserved-role DSNs - which refuses at catalog load. The price_basis is what makes a historical cost derivable later without consulting a catalog that has since changed.",
       "runner": {
         "executable": "example-harness",
-        "args": ["--headless"],
-        "inherit_env": ["EXAMPLE_PROVIDER_CREDENTIAL_NAME"],
-        "worker_io": "direct"
+        "args": [
+          "--headless"
+        ],
+        "inherit_env": [
+          "EXAMPLE_PROVIDER_CREDENTIAL_NAME"
+        ]
       }
     },
     {
@@ -107,8 +119,7 @@
       "runner": {
         "executable": "example-harness",
         "args": [],
-        "inherit_env": [],
-        "worker_io": "direct"
+        "inherit_env": []
       }
     }
   ]

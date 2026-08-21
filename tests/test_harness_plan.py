@@ -164,7 +164,20 @@ def test_the_kickoff_is_elided_from_the_preflight_but_counted():
     assert BASE["kickoff"] in doc["argv"]
 
 
-def test_the_preflight_states_the_worker_io_mode():
-    text = preflight_text(to_json(
-        plan(route(runner=runner(worker_io="supervised"))), kickoff=BASE["kickoff"]))
-    assert "supervised" in text
+def test_the_preflight_states_the_turn_and_the_resume_capability():
+    """`--check` has to answer "what would this launch do" in full, and since the
+    `worker-turns` cutover that includes whether the route can be woken again — an
+    operator who learns at answer time that a route cannot resume has learned it too
+    late."""
+    text = preflight_text(to_json(plan(), kickoff=BASE["kickoff"]))
+    assert "turn:" in text and "initial" in text
+    assert "resume:" in text
+    assert "structured output: jsonl" in text
+    assert "worker cmds:" in text and "publish code" in text
+
+
+def test_the_preflight_names_the_exact_reason_a_route_cannot_resume():
+    r = route(name="codex-x", harness="codex", adapter="codex",
+              runner=runner(executable="codex", args=["exec", "-s", "workspace-write"]))
+    text = preflight_text(to_json(plan(r), kickoff=BASE["kickoff"]))
+    assert "REFUSED" in text and "sandbox_mode" in text

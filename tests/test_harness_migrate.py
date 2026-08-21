@@ -59,26 +59,73 @@ def test_the_known_claude_code_invocation_becomes_a_runner_block():
     runner = out["routes"][0]["runner"]
     assert runner["executable"] == "claude"
     assert runner["args"] == ["--permission-mode", "auto"]
-    assert runner["worker_io"] == "direct"
+    assert "worker_io" not in runner, "the supervised transport is retired"
 
 
-def test_codex_migrates_to_a_supervised_sandboxed_runner():
-    out, _ = migrated(v1_route(name="codex-sol-subscription", harness="codex",
-                               adapter="codex", model="gpt-5.6-sol"))
+def test_codex_migrates_to_the_bare_exec_subcommand_and_no_hive_authored_sandbox():
+    """Hive used to write its own `hive-worker` permission profile into every migrated
+    catalog and then widen it from inside the adapter so a worker could commit. That made
+    the launcher the author of a deployment's posture, which the runner-trust doctrine
+    gives back to the operator."""
+    out, notes = migrated(v1_route(name="codex-sol-subscription", harness="codex",
+                                   adapter="codex", model="gpt-5.6-sol"))
     runner = out["routes"][0]["runner"]
     assert runner["executable"] == "codex"
-    assert runner["worker_io"] == "supervised", (
-        "inside this sandbox the container socket, the hub and every forge credential "
-        "are unreachable; the supervisor supplies those outcomes"
+    assert runner["args"] == ["exec"]
+    assert runner["inherit_env"] == ["CODEX_HOME"]
+    assert "worker_io" not in runner
+    assert not any("hive-worker" in a for a in runner["args"])
+    _ = notes
+
+
+# --- the worker-turns cutover, within v2 ---------------------------------------------
+
+def _v2(args, worker_io="supervised"):
+    return {
+        "schema_version": 2,
+        "captured_at": "2026-08-16",
+        "defaults": {"worker": "r"},
+        "routes": [{
+            "name": "r", "model_vendor": "openai", "provider": "openai", "model": "m",
+            "harness": "codex", "adapter": "codex", "billing_market": "subscription",
+            "credential_pool": "pool", "enabled": True,
+            "runner": {"executable": "codex", "args": args, "inherit_env": ["CODEX_HOME"],
+                       "worker_io": worker_io},
+        }],
+    }
+
+
+def test_a_pre_cutover_v2_catalog_loses_worker_io_and_the_retired_codex_profile():
+    fs = 'permissions.hive-worker.filesystem={"/"="read","~/.ssh"="deny"}'
+    out, notes = migrate_catalog(_v2([
+        "exec", "-c", 'default_permissions="hive-worker"', "-c", fs,
+        "-c", 'sandbox_mode="workspace-write"',
+    ]))
+    runner = out["routes"][0]["runner"]
+    assert "worker_io" not in runner
+    assert runner["args"] == ["exec", "-c", 'sandbox_mode="workspace-write"'], (
+        "only the two argument pairs naming the retired hive-worker profile are removed; "
+        "every operator-authored argument survives verbatim"
     )
-    joined = " ".join(runner["args"])
-    assert "exec" in runner["args"]
-    assert "default_permissions" in joined
-    assert '"~/.ssh"="deny"' in joined
-    assert "network_proxy" not in joined, "egress stays OFF: that decision is the operator's"
-    assert "--sandbox" not in runner["args"], (
-        "--sandbox OVERRIDES the permission profile; that was measured on 0.147.0"
-    )
+    assert any("worker_io" in n for n in notes)
+    assert any("hive-worker" in n for n in notes)
+
+
+def test_the_cutover_preserves_a_differently_named_permission_profile():
+    """`hive-worker` is removed because Hive wrote it. A profile the operator named is
+    theirs, and a migration that also took it would be an opinion, not a migration."""
+    fs = 'permissions.acme.filesystem={"/"="read"}'
+    out, _ = migrate_catalog(_v2(["exec", "-c", 'default_permissions="acme"', "-c", fs]))
+    assert out["routes"][0]["runner"]["args"] == [
+        "exec", "-c", 'default_permissions="acme"', "-c", fs,
+    ]
+
+
+def test_the_cutover_is_idempotent_and_says_so():
+    out, _ = migrate_catalog(_v2(["exec"]))
+    again, notes = migrate_catalog(out)
+    assert again == out
+    assert notes == ["already schema_version 2 and post-cutover; nothing to migrate"]
 
 
 def test_an_unknown_harness_migrates_to_a_runner_the_operator_can_correct():

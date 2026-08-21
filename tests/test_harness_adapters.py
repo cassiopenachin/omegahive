@@ -15,7 +15,6 @@ from harness_fixtures import route, runner
 from omegahive.harness.adapters import (
     BASE_ENV_ALLOWLIST,
     LaunchContext,
-    _merge_codex_writable_roots,
     get_adapter,
 )
 from omegahive.harness.records import RefusalError, RouteEntry
@@ -129,59 +128,112 @@ def test_path_is_always_allowlisted_because_env_dash_i_needs_it():
     assert "PATH" in BASE_ENV_ALLOWLIST
 
 
-# --- codex: the task-root write grants ------------------------------------------------
+# --- the turn contract: initial and resume argv, for both shipped harnesses ----------
 
-FS = (
-    'permissions.hive-worker.filesystem={"/"="read","~/.ssh"="deny"}'
-)
-
-
-def test_codex_merges_the_task_root_into_the_routes_own_filesystem_table():
-    """Measured on codex-cli 0.147.0: a SECOND `-c` on the same table key replaces the
-    first rather than merging, so appending our roots that way would silently drop the
-    operator's deny entries. The adapter opens the table instead."""
-    out = _merge_codex_writable_roots(["exec", "-c", FS], ["/work/x", "/work/x/hive/.git"])
-    assert out[:2] == ["exec", "-c"]
-    merged = out[2]
-    assert '"~/.ssh"="deny"' in merged, "the operator's denies must survive the merge"
-    assert '"/"="read"' in merged
-    assert '"/work/x"="write"' in merged
-    assert '"/work/x/hive/.git"="write"' in merged
-    assert "--add-dir" not in out
+def test_claude_initial_turn_uses_the_batch_structured_interface():
+    """Never an interactive TUI. A pane running a TUI produces no structured stream, so
+    its exit could only be classified by guessing — which is the thing this build refuses
+    to do."""
+    r = entry(adapter="claude-code", harness="claude-code", runner=runner(executable="claude"))
+    plan = get_adapter("claude-code").build(r, CTX)
+    assert "-p" in plan.argv
+    assert plan.argv[plan.argv.index("--output-format") + 1] == "stream-json"
+    assert "--verbose" in plan.argv
+    assert plan.argv[plan.argv.index("--session-id") + 1] == CTX.session_id
+    assert plan.structured_format == "jsonl"
+    assert plan.resumable
 
 
-def test_codex_falls_back_to_add_dir_when_the_route_declares_no_profile():
-    out = _merge_codex_writable_roots(["exec", "--sandbox", "workspace-write"], ["/work/x"])
-    assert out == ["exec", "--sandbox", "workspace-write", "--add-dir", "/work/x"]
+def test_claude_resume_turn_names_the_recorded_session_and_pins_nothing_new():
+    r = entry(adapter="claude-code", harness="claude-code", runner=runner(executable="claude"))
+    ctx = LaunchContext(**{**CTX.__dict__, "resume_session_id": "abc-123",
+                           "kickoff": "the answer landed"})
+    plan = get_adapter("claude-code").build_resume(r, ctx)
+    assert plan.argv[plan.argv.index("--resume") + 1] == "abc-123"
+    assert "--session-id" not in plan.argv, "a resume must not pin a NEW session id"
+    assert plan.argv[-1] == "the answer landed"
 
 
-def test_codex_grants_the_task_root_and_both_dot_git_directories():
-    """Codex marks `.git` READ-ONLY inside a workspace-write root by default, so a worker
-    could edit files and then die at `git commit` (boundary report, 2026-08-20 gate 4)."""
+def test_a_resume_without_a_recorded_session_refuses_rather_than_starting_fresh():
+    """A fresh session wearing the old one's turn number looks like continuity and is a
+    new context — the worst of both."""
+    r = entry(adapter="claude-code", harness="claude-code", runner=runner(executable="claude"))
+    with pytest.raises(RefusalError) as exc:
+        get_adapter("claude-code").build_resume(r, CTX)
+    assert exc.value.code == "RESUME_SESSION_MISSING"
+
+
+def test_codex_initial_turn_is_exec_json_and_carries_the_operators_args_verbatim():
     r = entry(adapter="codex", harness="codex",
-              runner=runner(executable="codex", args=["exec", "-c", FS]))
+              runner=runner(executable="codex", args=["exec", "-c", 'sandbox_mode="read-only"']))
     plan = get_adapter("codex").build(r, CTX)
-    merged = next(a for a in plan.argv if a.startswith("permissions."))
-    assert f'"{TASK_ROOT}"="write"' in merged
-    assert f'"{TASK_ROOT}/hive/.git"="write"' in merged
-    assert f'"{TASK_ROOT}/omegahive/.git"="write"' in merged
+    assert plan.argv[:4] == ["codex", "exec", "-c", 'sandbox_mode="read-only"']
+    assert "--json" in plan.argv
+    assert plan.argv[-1] == CTX.kickoff
 
 
-def test_a_malformed_codex_filesystem_table_refuses_rather_than_being_ignored():
+def test_codex_resume_inserts_resume_and_the_thread_id_after_exec():
     r = entry(adapter="codex", harness="codex",
-              runner=runner(executable="codex",
-                            args=["exec", "-c", "permissions.p.filesystem=not-a-table"]))
+              runner=runner(executable="codex", args=["exec", "-c", 'sandbox_mode="read-only"']))
+    ctx = LaunchContext(**{**CTX.__dict__, "resume_session_id": "01a02564-4ad4-7320-b356-3b3"})
+    plan = get_adapter("codex").build_resume(r, ctx)
+    assert plan.argv[:4] == ["codex", "exec", "resume", "01a02564-4ad4-7320-b356-3b3"]
+    assert plan.argv[4:6] == ["-c", 'sandbox_mode="read-only"']
+
+
+def test_codex_route_args_must_start_with_exec_or_the_pane_would_go_interactive():
+    r = entry(adapter="codex", harness="codex", runner=runner(executable="codex", args=[]))
     with pytest.raises(RefusalError) as exc:
         get_adapter("codex").build(r, CTX)
     assert exc.value.code == "RUNNER_ARGS_MALFORMED"
 
 
-def test_codex_usage_is_unavailable_with_a_named_reason_not_a_zero():
+def test_a_codex_route_using_dash_s_can_launch_and_refuses_to_resume():
+    """Measured on 0.147.0: `codex exec resume` rejects `-s`. Dropping it silently would
+    wake the worker under a sandbox the operator did not choose, so the refusal names the
+    option AND its `-c` equivalent."""
+    r = entry(adapter="codex", harness="codex",
+              runner=runner(executable="codex", args=["exec", "-s", "workspace-write"]))
+    plan = get_adapter("codex").build(r, CTX)
+    assert plan.argv[:4] == ["codex", "exec", "-s", "workspace-write"]
+    assert not plan.resumable
+    assert "sandbox_mode" in (plan.resume_unsupported_reason or "")
+
+    ctx = LaunchContext(**{**CTX.__dict__, "resume_session_id": "t-1"})
+    with pytest.raises(RefusalError) as exc:
+        get_adapter("codex").build_resume(r, ctx)
+    assert exc.value.code == "RESUME_ARGS_UNSUPPORTED"
+
+
+def test_codex_no_longer_widens_the_operators_sandbox_with_write_grants():
+    """The pre-cutover adapter merged the task root and both `.git` dirs into the route's
+    own filesystem table. Under the runner-trust doctrine the runner's reach is the
+    operator's to configure; a launcher that widens it is deciding deployment posture from
+    inside itself."""
+    fs = 'permissions.p.filesystem={"/"="read"}'
+    r = entry(adapter="codex", harness="codex",
+              runner=runner(executable="codex", args=["exec", "-c", fs]))
+    plan = get_adapter("codex").build(r, CTX)
+    assert plan.argv[3] == fs, "the operator's table comes through byte-identical"
+    assert "--add-dir" not in plan.argv
+    assert not any(TASK_ROOT in a for a in plan.argv[1:-1])
+
+
+def test_codex_reports_usage_and_declares_its_model_because_the_stream_says_so():
+    """0.147.0 emits `turn.completed.usage` and never names a resolved model."""
     r = entry(adapter="codex", harness="codex", runner=runner(executable="codex", args=["exec"]))
     plan = get_adapter("codex").build(r, CTX)
-    assert plan.usage_evidence == "unavailable"
-    assert plan.usage_extractor == "none"
+    assert plan.usage_evidence == "observed"
+    assert plan.usage_extractor == "codex-turn-stream"
+    assert plan.model_identity_evidence == "declared"
     assert plan.unproven_reason
+
+
+def test_generic_refuses_to_resume_by_name():
+    r = entry(harness="some-new-cli", adapter="generic", runner=runner(executable="x"))
+    with pytest.raises(RefusalError) as exc:
+        get_adapter("generic").build_resume(r, CTX)
+    assert exc.value.code == "RESUME_UNSUPPORTED"
 
 
 # --- version parsing ------------------------------------------------------------------

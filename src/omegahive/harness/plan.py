@@ -26,6 +26,7 @@ from typing import Any
 from omegahive.events.types import ExecutionIdentity, PriceBasis
 from omegahive.harness.adapters import LaunchContext, LaunchPlan, get_adapter
 from omegahive.harness.records import (
+    RefusalError,
     RouteEntry,
     catalog_digest,
     load_catalog,
@@ -51,6 +52,13 @@ class ResolvedPlan:
     run_dir: str
     cwd: str
     code_root: str
+    # Which turn this plan describes. An `initial` turn carries the kickoff and pins a
+    # fresh session id; a `resume` turn carries the resume prompt and wakes the native
+    # session an earlier turn recorded. They are the same plan shape on purpose — one
+    # lifecycle, one record, one classifier, whichever one ran.
+    turn_kind: str = "initial"
+    turn_id: str = "001"
+    resume_session_id: str = ""
 
 
 def execution_id_for(*, task: str, order_ref: str, purpose: str, attempt: int) -> str:
@@ -88,8 +96,22 @@ def resolve(
     run_dir: str = "",
     session_id: str,
     parent_env: Mapping[str, str],
+    turn_kind: str = "initial",
+    turn_id: str = "001",
+    resume_session_id: str = "",
 ) -> ResolvedPlan:
-    """Resolve the catalog and build the plan. Raises `RefusalError` to refuse."""
+    """Resolve the catalog and build the plan for ONE turn. Raises `RefusalError`.
+
+    `turn_kind` selects which of the adapter's two builders runs. Both go through this
+    one function so that a resume cannot describe a route, an environment or an identity
+    the initial launch would not have used: the catalog is still the authorization, and
+    a resume is not a second, weaker launch path.
+    """
+    if turn_kind not in ("initial", "resume"):
+        raise RefusalError(
+            "TURN_KIND_UNKNOWN",
+            f"a turn is 'initial' or 'resume', got {turn_kind!r}",
+        )
     catalog = load_catalog(catalog_raw)
     route, route_source = resolve_route(catalog, route_name)
     adapter = get_adapter(route.adapter)
@@ -105,8 +127,11 @@ def resolve(
         parent_env=parent_env,
         code_root=code_root,
         run_dir=run_dir,
+        resume_session_id=resume_session_id,
     )
-    launch = adapter.build(route, ctx)
+    launch = (
+        adapter.build(route, ctx) if turn_kind == "initial" else adapter.build_resume(route, ctx)
+    )
 
     return ResolvedPlan(
         route=route,
@@ -125,6 +150,9 @@ def resolve(
         run_dir=run_dir,
         cwd=cwd,
         code_root=code_root,
+        turn_kind=turn_kind,
+        turn_id=turn_id,
+        resume_session_id=resume_session_id,
     )
 
 
@@ -175,7 +203,6 @@ def to_json(plan: ResolvedPlan, *, kickoff: str) -> dict[str, Any]:
         "identity": plan.identity.model_dump(mode="json"),
         "route_source": plan.route_source,
         "runner_fingerprint": plan.runner_fingerprint,
-        "worker_io": plan.route.runner.worker_io,
         "executable": plan.route.runner.executable,
         "price_basis": plan.price_basis.model_dump(mode="json") if plan.price_basis else None,
         "argv": plan.launch.argv,
@@ -191,6 +218,17 @@ def to_json(plan: ResolvedPlan, *, kickoff: str) -> dict[str, Any]:
         "model_identity_evidence": plan.launch.model_identity_evidence,
         "usage_evidence": plan.launch.usage_evidence,
         "unproven_reason": plan.launch.unproven_reason,
+        "structured_format": plan.launch.structured_format,
+        "activity_jq": plan.launch.activity_jq,
+        "resumable": plan.launch.resumable,
+        "resume_unsupported_reason": plan.launch.resume_unsupported_reason,
+        "turn_kind": plan.turn_kind,
+        "turn_id": plan.turn_id,
+        # The native session this turn WAKES (empty on an initial turn) and the session it
+        # will be findable under. Kept as two fields because they answer two questions:
+        # one is provenance for the resume, the other is where the usage surface lives.
+        "resume_session_id": plan.resume_session_id,
+        "session_id": plan.resume_session_id or plan.launch.usage_hint.get("session_id", ""),
         "task_root": plan.task_root,
         "run_dir": plan.run_dir,
         "cwd": plan.cwd,
@@ -211,7 +249,6 @@ def route_metadata(doc: dict[str, Any]) -> dict[str, Any]:
     return {
         "route_source": doc["route_source"],
         "runner_fingerprint": doc["runner_fingerprint"],
-        "worker_io": doc["worker_io"],
         "model_identity_evidence": doc["model_identity_evidence"],
         "usage_evidence": doc["usage_evidence"],
     }
@@ -235,7 +272,7 @@ def preflight_text(doc: dict[str, Any]) -> str:
         f"  model:     {ident['model']}   (exact, from the catalog)",
         f"  harness:   {ident['harness']}   adapter: {ident['adapter']}",
         f"  billing:   {ident['billing_market']}   credential pool: {ident['credential_pool']}",
-        f"runner:      {doc['executable']}   worker I/O: {doc['worker_io']}",
+        f"runner:      {doc['executable']}",
         f"  fingerprint {doc['runner_fingerprint']}",
     ]
     pb = doc.get("price_basis")
@@ -256,6 +293,16 @@ def preflight_text(doc: dict[str, Any]) -> str:
         f"argv:        {doc['argv_redacted']}",
         f"env names:   {' '.join(doc['env_names']) or '<empty>'}   (values never printed)",
         f"version cmd: {' '.join(doc['version_argv'])}",
+        f"turn:        {doc['turn_kind']} #{doc['turn_id']}   "
+        f"structured output: {doc['structured_format']}",
+        "resume:      "
+        + (
+            "supported — hive-answer wakes this route's native session"
+            if doc["resumable"]
+            else f"REFUSED — {doc['resume_unsupported_reason']}"
+        ),
+        "worker cmds: emit / sync workspace / publish workspace / publish code, "
+        "run directly by the worker",
         f"model id:    {doc['model_identity_evidence']}"
         f"   usage: {doc['usage_evidence']}   extractor {doc['usage_extractor']}",
     ]

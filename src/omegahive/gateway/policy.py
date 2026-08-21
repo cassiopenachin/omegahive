@@ -40,10 +40,13 @@ EMIT_AUTHORITY: dict[str, set[str]] = {
     "instrument": {
         "promotion.created", "promotion.suppressed", "metric.threshold_crossed",
         "review.passed", "review.failed",
-        # The launcher-owned supervisor observing a harness process. Deliberately NOT
-        # the worker role: the supervisor watches the session, it does not speak for it,
-        # and a worker that could author its own consumption facts is exactly the
-        # self-reporting this instrument replaces.
+        # The launcher's turn runner observing a harness process. Deliberately NOT the
+        # worker role: it watches the turn, it does not speak for it, and a worker that
+        # could author its own consumption facts is exactly the self-reporting this
+        # instrument replaces. That separation is what makes the exit classification
+        # trustworthy — `execution.finished` carries a `classification` derived from the
+        # worker's own spine events, and the identity that writes it structurally cannot
+        # author one of them.
         "execution.started", "execution.finished",
     },
     # the human tier (operator + design partner): reporting, plus the lifecycle ops it

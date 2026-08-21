@@ -329,18 +329,38 @@ add_order() {  # add_order <project> <basename-no-ext> <title> -> prints REL pat
   printf '%s\n' "$rel"
 }
 
-# No-op harness: answers a version probe, records the kickoff it was handed, then idles
-# so the pane persists for the nudge. It stands in for `claude`, and the drill reaches it
-# the way every launch now does — through a ROUTE in this sandbox's own deployment
-# catalog, on the built-in `generic` adapter, whose argv is `<executable> <args...>
-# <kickoff>`. That is the point worth drilling: a harness this build has never heard of
-# becomes launchable by writing configuration, with no code change and no descriptor.
+# The drill's harness: answers a version probe, records the prompt it was handed, writes
+# a structured stream, and EXITS. It stands in for `claude`, and the drill reaches it the
+# way every launch does — through a ROUTE in this sandbox's own deployment catalog.
+#
+# Exiting is the point, not a shortcut. A turn is one process from prompt to exit, and
+# what this drill has to prove is what happens AFTER that process is gone: the window
+# survives it, the exit is classified from evidence, and `hive-answer` wakes the same
+# native session in a new turn. A harness that idled forever — which is what this fixture
+# used to do, so that a keystroke-injected answer had a live pane to type into — would
+# drill none of that.
+#
+# It speaks the `fake` adapter's stream shape (one `session` record, one `result` record)
+# because that adapter exists for exactly this: a real structured surface, a real session
+# id, a real resume, and never a model call. The `generic` adapter's "any harness launches
+# from configuration alone" property is covered by the catalog checks below and by
+# tests/test_harness_adapters.py; the turn lifecycle is the part that cannot be covered
+# anywhere else, so it is what runs here.
 WORKER_CMD="$SANDBOX/worker-cmd.sh"
 cat > "$WORKER_CMD" <<EOF
 #!/usr/bin/env bash
 case "\${1:-}" in --version) echo "drill-harness 0.0.1"; exit 0 ;; esac
+# The prompt is the LAST argv element on every adapter; the session id follows
+# --session-id on an initial turn and --resume on a resume turn.
 printf '%s' "\${!#}" > "$SANDBOX/kickoff.txt"
-exec sleep 600
+SESSION=""
+while [ \$# -gt 0 ]; do
+  case "\$1" in --session-id|--resume) shift; SESSION="\${1:-}" ;; esac
+  shift
+done
+printf '%s' "\$SESSION" > "$SANDBOX/session.txt"
+printf '{"type":"session","session_id":"%s"}\n' "\$SESSION"
+printf '{"type":"result","status":"completed"}\n'
 EOF
 chmod +x "$WORKER_CMD"
 
@@ -357,20 +377,19 @@ cat > "$DRILL_CATALOG" <<EOF
     {
       "name": "drill-default",
       "model_vendor": "drill-vendor", "provider": "drill-provider",
-      "model": "drill-model-1", "harness": "drill-harness", "adapter": "generic",
+      "model": "drill-model-1", "harness": "drill-harness", "adapter": "fake",
       "billing_market": "subscription", "credential_pool": "drill-pool",
       "enabled": true,
-      "runner": {"executable": "$WORKER_CMD", "args": [], "inherit_env": [],
-                 "worker_io": "direct"}
+      "runner": {"executable": "$WORKER_CMD", "args": [], "inherit_env": []}
     },
     {
       "name": "drill-override",
       "model_vendor": "drill-vendor", "provider": "drill-provider",
-      "model": "drill-model-2", "harness": "drill-harness", "adapter": "generic",
+      "model": "drill-model-2", "harness": "drill-harness", "adapter": "fake",
       "billing_market": "subscription", "credential_pool": "drill-pool",
       "enabled": true,
       "runner": {"executable": "$WORKER_CMD", "args": ["--drill-flag"],
-                 "inherit_env": [], "worker_io": "direct"}
+                 "inherit_env": []}
     },
     {
       "name": "drill-disabled",
@@ -378,8 +397,7 @@ cat > "$DRILL_CATALOG" <<EOF
       "model": "drill-model-3", "harness": "drill-harness", "adapter": "generic",
       "billing_market": "subscription", "credential_pool": "drill-pool",
       "enabled": false,
-      "runner": {"executable": "$WORKER_CMD", "args": [], "inherit_env": [],
-                 "worker_io": "direct"}
+      "runner": {"executable": "$WORKER_CMD", "args": [], "inherit_env": []}
     }
   ]
 }
@@ -389,7 +407,6 @@ EOF
 # (tmux isolation is set at the top of the file — it must precede the EXIT trap.)
 export HIVE_TMUX_SESSION="$TMUX_SESSION"
 export HIVE_ROUTE_CATALOG="$DRILL_CATALOG"
-export HIVE_EXEC_ROOT="$SANDBOX/exec"
 # The drill exercises the SHIPPED operator path, which reaches the CLI through the
 # container. HIVE_CLI_CMD would route it to the host instead, where the stack's .env names
 # the database by a hostname that only resolves inside the container — so an operator with
@@ -918,7 +935,7 @@ echo "== an unsafe HIVE_TMUX_SESSION is refused BEFORE anything is written =="
 # targets; the session name flows into the very same targets and was not guarded.
 # A `:` splits `=<session>:<window>` at the wrong place, so tmux acts on some
 # other session and exits 0 — a launch seats the worker in the wrong session, a
-# nudge types an answer into a stranger's pane. Refuse, and refuse early: no
+# resume respawns a pane in a stranger's session. Refuse, and refuse early: no
 # board write, no clones, no wrapper.
 BSORDER=$(add_order "$APROJ" "2026-07-13-drill-badsession" "bad session name")
 expect_fail_msg "launch refuses a session name outside the id charset" "unsafe HIVE_TMUX_SESSION" \
@@ -969,7 +986,10 @@ check "the print names which tmux step failed" "printf '%s' \"\$HOUT\" | grep -q
 check "the board really was left half-launched" "[ \"\$(bstatus '$ARUN' drill-halflaunch)\" = assigned ]"
 check "recovery print carries the filled kickoff" \
   "printf '%s' \"\$HOUT\" | grep -qF 'You are hive worker $HWORKER on task drill-halflaunch'"
-check "recovery print names the supervisor run-dir" "printf '%s' \"\$HOUT\" | grep -qF '$SANDBOX/exec/$HWORKER'"
+check "recovery print names the prepared turn dir" \
+  "printf '%s' \"\$HOUT\" | grep -qF '$WORK/$HWORKER/run/turns/001'"
+check "recovery print gives a runnable turn command" \
+  "printf '%s' \"\$HOUT\" | grep -qF 'hive-launch --turn'"
 check "recovery print names the clones"        "printf '%s' \"\$HOUT\" | grep -qF '$WORK/$HWORKER/hive'"
 check "recovery print forbids a re-run"        "printf '%s' \"\$HOUT\" | grep -qF 'Do NOT re-run hive-launch'"
 check "recovery print points at RUNBOOK recovery" "printf '%s' \"\$HOUT\" | grep -qF 'Dead worker recovery'"
@@ -996,8 +1016,17 @@ CHKOUT="$("$SCRIPT_DIR/hive-launch" "$CHKORDER" --worker "sess-routechk-${STAMP}
 printf '%s\n' "$CHKOUT" | sed 's/^/    /'
 check "--check names the default route and says it is the default" \
   "printf '%s' \"\$CHKOUT\" | grep -qE 'route:.*drill-default.*\\(default\\)'"
-check "--check names the resolved runner and its worker I/O" \
-  "printf '%s' \"\$CHKOUT\" | grep -qE 'runner:.*worker I/O: direct'"
+check "--check names the resolved runner" \
+  "printf '%s' \"\$CHKOUT\" | grep -qF 'runner:      $WORKER_CMD'"
+# The preflight has to answer the resume question BEFORE a launch. An operator who learns
+# at answer time that a route cannot be woken has learned it too late — and one whose
+# route can be woken should be able to see that without reading adapter source.
+check "--check states the turn it would run" \
+  "printf '%s' \"\$CHKOUT\" | grep -qE 'turn: +initial #001'"
+check "--check states the resume capability" \
+  "printf '%s' \"\$CHKOUT\" | grep -qE 'resume: +supported'"
+check "--check names the worker's own direct commands" \
+  "printf '%s' \"\$CHKOUT\" | grep -qF 'run directly by the worker'"
 check "--check probes the INSTALLED harness for a version" \
   "printf '%s' \"\$CHKOUT\" | grep -qF 'harness: 0.0.1'"
 check "--check provisioned nothing"  "[ ! -e '$WORK/sess-routechk-${STAMP}' ]"
@@ -1032,14 +1061,27 @@ expect_fail_msg "a route naming an absent executable refuses" "not on PATH" \
 check "the missing-executable refusal provisioned nothing" \
   "[ ! -e '$WORK/sess-routemiss-${STAMP}' ]"
 
-# There is no unsupervised fallback. Every configured route goes through the adapter and
-# the supervisor, and the drill's no-op harness only writes kickoff.txt when it was the
-# process the supervisor actually exec'd.
+# There is no uninstrumented fallback. Every configured route goes through the adapter
+# and the turn runner, and the drill's harness only writes kickoff.txt when it was the
+# process the runner actually exec'd.
 check "the panes above really ran the catalog's executable" "[ -s '$SANDBOX/kickoff.txt' ]"
-check "the supervisor recorded the execution outside the task root" \
-  "[ -f '$SANDBOX/exec/$AWORKER/plan.json' ]"
-check "the supervisor state is NOT inside the worker's task root" \
-  "[ ! -e '$WORK/$AWORKER/exec' ] && [ ! -e '$WORK/$AWORKER/run/plan.json' ]"
+check "turn 001 recorded its state inside the worker's own task root" \
+  "[ -f '$WORK/$AWORKER/run/turns/001/turn.json' ]"
+# The retained stream, the classification and the summary are what make an unattended exit
+# recoverable. They are run-local evidence, not a claimed boundary — which is why they sit
+# in the worker's root and why the identity that WRITES them is the instrument wrapper,
+# whose role the gateway refuses for every task-shaped event.
+check "the turn retained its structured stream"   "[ -s '$WORK/$AWORKER/run/turns/001/stream.jsonl' ]"
+check "the turn classified its own exit"          "[ -s '$WORK/$AWORKER/run/turns/001/exit.json' ]"
+check "the turn left an operator-readable summary" "[ -s '$WORK/$AWORKER/run/turns/001/summary.txt' ]"
+check "a turn with no worker terminal event refuses to guess" \
+  "jq -e '.classification == \"unclassified\"' '$WORK/$AWORKER/run/turns/001/exit.json' >/dev/null"
+check "the exit record names the spine cursor it was scoped to" \
+  "jq -e '.spine_cursor != null' '$WORK/$AWORKER/run/turns/001/exit.json' >/dev/null"
+check "no privileged execution state was created outside the task root" \
+  "[ ! -e '$SANDBOX/exec' ]"
+check "the instrument wrapper is the one that wrote the execution facts" \
+  "[ -x '$WORK/$AWORKER/run/emit-instrument' ] && grep -q -- '--role instrument' '$WORK/$AWORKER/run/emit-instrument'"
 
 # hive-routes reads the same catalog and agrees about what is runnable.
 # shellcheck disable=SC2034  # read inside check's eval, which shellcheck cannot see
@@ -1050,6 +1092,8 @@ check "hive-routes refuses the disabled route with a reason" \
   "printf '%s' \"\$ROUTESOUT\" | grep -qF 'REFUSED [ROUTE_DISABLED]'"
 check "hive-routes prints no environment value, only names" \
   "! printf '%s' \"\$ROUTESOUT\" | grep -qF '$HUB'"
+check "hive-routes answers the resume question per route" \
+  "printf '%s' \"\$ROUTESOUT\" | grep -qE 'resume: +supported'"
 
 echo
 echo "== a regeneration/scoring failure is LOUD but never makes a completed close look failed =="
@@ -1321,12 +1365,16 @@ check "shape-b: the newest prior human verdict carries forward" \
   "cal_entry '$APROJ' '$SBTASK' | grep -E '^\| review outcome \|' | grep -qF '| minor rework |'"
 
 echo
-echo "== hive-answer --sha: verifies an already-pushed commit, then nudges only (DoD f) =="
+echo "== hive-answer --sha: verifies an already-pushed commit, then resumes (DoD f) =="
 SHATASK="drill-sha-answer"
 SHAORDER=$(add_order "$APROJ" "2026-07-13-$SHATASK" "sha answer")
 SHAWORKER="sess-shaanswer-${STAMP}"
 "$SCRIPT_DIR/hive-launch" "$SHAORDER" --worker "$SHAWORKER" >/dev/null
-check "sha-answer: a window exists to nudge" \
+# The window is still there AFTER its turn's process exited — `remain-on-exit` keeps the
+# pane and its summary, which is the difference between a window that ended and a window
+# that vanished. `hive-answer` respawns into that very pane.
+wait_until 20 "[ -f '$WORK/$SHAWORKER/run/turns/001/exit.json' ]" || true
+check "sha-answer: the window survived its own turn" \
   "tmux list-windows -t '=$TMUX_SESSION' -F '#{window_name}' | grep -qxF '$SHATASK'"
 
 # --- success: a pure addition below '## Answers', already committed + pushed ---
@@ -1338,7 +1386,63 @@ GOOD_SHA=$(git -C "$WS" rev-parse HEAD)
 SHAOUT="$("$SCRIPT_DIR/hive-answer" "$SHATASK" --sha "$GOOD_SHA")"
 printf '%s\n' "$SHAOUT"
 check "sha-answer: verifies without recommitting" "printf '%s' \"\$SHAOUT\" | grep -qF 'verified'"
-check "sha-answer: nudges the pane"               "printf '%s' \"\$SHAOUT\" | grep -qF 'nudged pane'"
+check "sha-answer: prepares the next turn"        "printf '%s' \"\$SHAOUT\" | grep -qF 'turn 002 prepared'"
+check "sha-answer: wakes the recorded native session" \
+  "printf '%s' \"\$SHAOUT\" | grep -qF \"session:  \$(cat '$SANDBOX/session.txt')\""
+check "sha-answer: turn 002 is a resume, not a fresh launch" \
+  "jq -e '.turn_kind == \"resume\"' '$WORK/$SHAWORKER/run/turns/002/turn.json' >/dev/null"
+check "sha-answer: the resume prompt carries the conditional-unblock rule" \
+  "jq -r '.argv[-1]' '$WORK/$SHAWORKER/run/turns/002/turn.json' | grep -qF 'task.unblocked ONLY if'"
+check "sha-answer: reused the existing window rather than opening a second" \
+  "[ \"\$(tmux list-windows -t '=$TMUX_SESSION' -F '#{window_name}' | grep -cxF '$SHATASK')\" = 1 ]"
+# A prepared turn is not a run turn. Wait for turn 002 to actually finish in that pane and
+# check what it did — without this the whole resume half of the drill would pass against a
+# window that opened and did nothing.
+# Wait for the CLAIM to be released, not for exit.json. `exit.json` is written partway
+# through the postlude — before the usage extraction, the terminal payload and the emit —
+# so a check gated on it races the rest of the runner. The claim is removed last, which
+# makes its absence the one true "this turn is over" signal.
+wait_until 60 "[ -s '$WORK/$SHAWORKER/run/turns/002/exit.json' ] && [ ! -e '$WORK/$SHAWORKER/run/turns/002/claim' ]" || true
+check "sha-answer: turn 002 really ran in the pane" \
+  "[ -s '$WORK/$SHAWORKER/run/turns/002/exit.json' ]"
+check "sha-answer: turn 002 invoked the harness's native resume" \
+  "grep -qF -- '--resume' '$WORK/$SHAWORKER/run/turns/002/turn.json'"
+check "sha-answer: turn 002 retained its own structured stream" \
+  "[ -s '$WORK/$SHAWORKER/run/turns/002/stream.jsonl' ]"
+check "sha-answer: turn 002 woke the SAME native session turn 001 recorded" \
+  "[ \"\$(jq -r '.session_id' '$WORK/$SHAWORKER/run/turns/002/facts.json')\" = \"\$(jq -r '.session_id' '$WORK/$SHAWORKER/run/turns/001/facts.json')\" ]"
+check "sha-answer: turn 002 classified its own exit, scoped to its own cursor" \
+  "jq -e '.spine_cursor != null and .classification != null' '$WORK/$SHAWORKER/run/turns/002/exit.json' >/dev/null"
+check "sha-answer: turn 002's cursor is AFTER turn 001's" \
+  "[ \"\$(jq -r '.spine_cursor' '$WORK/$SHAWORKER/run/turns/002/exit.json')\" -gt \"\$(jq -r '.spine_cursor' '$WORK/$SHAWORKER/run/turns/001/exit.json')\" ]"
+check "sha-answer: the pane released its claim on the way out" \
+  "[ ! -e '$WORK/$SHAWORKER/run/turns/002/claim' ]"
+
+echo
+echo "== hive-routes migrate: the within-v2 cutover, on the shipped command =="
+# The command an operator is TOLD to run must be the command that fixes the catalog. It
+# used to short-circuit on any v2 file and exit zero saying "nothing to do", while the
+# loader refused that same file on the next launch.
+MIGCAT="$SANDBOX/pre-cutover-routes.json"
+jq '.routes[0].runner.worker_io = "supervised"
+    | .routes[0].runner.args = ["exec", "-c", "default_permissions=\"hive-worker\"",
+                                "-c", "permissions.hive-worker.filesystem={\"/\"=\"read\"}",
+                                "-c", "sandbox_mode=\"workspace-write\""]'   "$DRILL_CATALOG" > "$MIGCAT"
+expect_fail_msg "a pre-cutover catalog refuses BY NAME rather than being trimmed" "worker_io"   env HIVE_ROUTE_CATALOG="$MIGCAT" "$SCRIPT_DIR/hive-launch" "$AORDER" --check
+# shellcheck disable=SC2034  # read inside check's eval, which shellcheck cannot see
+MIGOUT="$("$SCRIPT_DIR/hive-routes" migrate --catalog "$MIGCAT" 2>&1)"
+printf '%s
+' "$MIGOUT"
+check "migrate reports what it dropped"        "printf '%s' \"\$MIGOUT\" | grep -qF 'dropped runner.worker_io'"
+check "migrate names the rollback"             "printf '%s' \"\$MIGOUT\" | grep -qF 'rollback: cp'"
+check "migrate removed the retired field"      "! jq -e '.routes[0].runner.worker_io' '$MIGCAT' >/dev/null 2>&1"
+check "migrate removed the retired codex args" "! grep -qF 'hive-worker' '$MIGCAT'"
+check "migrate PRESERVED the operator's own arg" "jq -e '.routes[0].runner.args | index(\"sandbox_mode=\\\"workspace-write\\\"\")' '$MIGCAT' >/dev/null"
+check "the migrated catalog is accepted by the loader" \
+  "env HIVE_ROUTE_CATALOG='$MIGCAT' '$SCRIPT_DIR/hive-launch' '$AORDER' --check >/dev/null 2>&1 || env HIVE_ROUTE_CATALOG='$MIGCAT' '$SCRIPT_DIR/hive-launch' '$AORDER' --check 2>&1 | grep -qv CATALOG_LEGACY_FIELDS"
+# shellcheck disable=SC2034  # read inside check's eval, which shellcheck cannot see
+MIGOUT2="$("$SCRIPT_DIR/hive-routes" migrate --catalog "$MIGCAT" 2>&1)"
+check "re-running migrate writes nothing"      "printf '%s' \"\$MIGOUT2\" | grep -qF 'nothing to migrate, nothing written'"
 check "sha-answer: the content really is on the hub" "log_has '$HUB' 'answer: $SHATASK (via --sha)'"
 check "sha-answer: created no NEW commit (the author's stands alone)" \
   "[ \"\$(git -C '$WS' rev-parse HEAD)\" = '$GOOD_SHA' ]"

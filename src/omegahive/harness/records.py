@@ -41,8 +41,12 @@ from omegahive.events.types import ExecutionIdentity, PriceBasis
 # Bumped only on a breaking change. A record whose version this build does not know
 # refuses rather than being read on a guess — a misread route is a misbilled launch.
 # v1 carried per-route permission-boundary pins (`binding_id`, `binding_digest`) and a
-# `credential_mode` gate; v2 replaces all three with the `runner` block. `hive-routes
-# migrate` is the production path between them.
+# `credential_mode` gate; v2 replaces all three with the `runner` block. v2 itself was
+# trimmed by the `worker-turns` cutover — the `runner.worker_io` choice and the retired
+# `hive-worker` Codex permission arguments are gone — without a version bump, because
+# `extra="forbid"` makes a catalog still carrying them refuse with the field named, and
+# `hive-routes migrate` drops them in place. `hive-routes migrate` is the production path
+# for both steps.
 CATALOG_SCHEMA_VERSION = 2
 CATALOG_SCHEMA_VERSION_V1 = 1
 
@@ -97,7 +101,7 @@ class RefusalError(Exception):
 class RunnerSpec(BaseModel):
     """How this deployment actually starts the harness. Argv, never a shell string.
 
-    Four fields and no fifth, because every additional field is a place a shell could
+    Three fields and no fourth, because every additional field is a place a shell could
     re-enter. `executable` plus `args` is the whole command; an operator who wants a
     container, a VM, a sandbox wrapper or a bare binary writes exactly that here and
     Hive runs it. The adapter appends the dynamic elements it knows the harness needs —
@@ -108,11 +112,15 @@ class RunnerSpec(BaseModel):
     or on the spine. A provider credential name may be listed deliberately; a Hive
     authority credential name refuses.
 
-    `worker_io` says whether the worker can perform its own spine writes and git
-    publication (`direct`) or needs the supervisor to bridge them (`supervised`). It is
-    a statement about the runner's reach, not a ranking: a native sandbox that closes
-    the container socket and the hub is `supervised`, and that is a stronger deployment,
-    not a weaker one.
+    There is deliberately no `worker_io` field any more. It used to choose between the
+    worker performing its own spine writes and git publication (`direct`) and a
+    privileged resident mediator performing them on its behalf (`supervised`). The
+    mediator is retired: under the accepted runner doctrine a configured full-worker
+    runner must itself supply ordinary worker function — read/edit/test/commit, governed
+    emit, workspace sync and publication, code push and PR — and a runner that withholds
+    them is a runner the operator must change, not a hole for Hive to keep a trusted
+    process patching. A route that cannot emit, sync or publish now produces an honest
+    block from the worker rather than a second transport.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -120,7 +128,6 @@ class RunnerSpec(BaseModel):
     executable: str
     args: list[str] = Field(default_factory=list)
     inherit_env: list[str] = Field(default_factory=list)
-    worker_io: Literal["direct", "supervised"] = "direct"
 
     @field_validator("executable")
     @classmethod
@@ -164,13 +171,19 @@ class RunnerSpec(BaseModel):
         a reader can check, and says nothing about whether that configuration is safe,
         which nobody here can check. Environment NAMES are inside the fingerprint;
         values were never available to it.
+
+        The `worker-turns` cutover removed `worker_io` from the canonical form, so a
+        route's fingerprint changes across that boundary even when the operator changed
+        nothing. That is correct and intended: the resolved runner configuration really
+        did change shape, and a fingerprint that pretended otherwise would answer its one
+        question wrongly. Historical events keep the value they were emitted with; no
+        event is rewritten.
         """
         canonical = json.dumps(
             {
                 "executable": self.executable,
                 "args": list(self.args),
                 "inherit_env": sorted(self.inherit_env),
-                "worker_io": self.worker_io,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -312,10 +325,47 @@ def load_catalog(raw: bytes) -> RouteCatalog:
             "pinned a permission-boundary descriptor per route, which this build no "
             "longer reads",
         )
+    legacy = _legacy_fields(data)
+    if legacy:
+        raise RefusalError(
+            "CATALOG_LEGACY_FIELDS",
+            "this catalog still carries fields the `worker-turns` cutover retired: "
+            + ", ".join(legacy)
+            + ". Run `hive-routes migrate` (it writes a timestamped backup beside the "
+            "original first, and preserves every operator-authored runner argument and "
+            "route identity exactly). The refusal is by name rather than a silent drop "
+            "because a dropped `worker_io` would change how a route is launched without "
+            "the operator ever being told",
+        )
     try:
         return RouteCatalog(**data)
     except ValidationError as exc:
         raise RefusalError("CATALOG_MALFORMED", _first_error(exc)) from exc
+
+
+# Fields a pre-cutover v2 catalog may still carry, and where each one used to live. They
+# are named rather than pattern-matched so the refusal can tell an operator exactly what
+# `hive-routes migrate` will do to their file.
+LEGACY_RUNNER_FIELDS = ("worker_io",)
+
+
+def _legacy_fields(data: Any) -> list[str]:
+    """Retired field paths present in a raw catalog document, in stable order."""
+    found: list[str] = []
+    routes = data.get("routes")
+    if not isinstance(routes, list):
+        return found
+    for i, route in enumerate(routes):
+        if not isinstance(route, dict):
+            continue
+        runner = route.get("runner")
+        if not isinstance(runner, dict):
+            continue
+        name = route.get("name") if isinstance(route.get("name"), str) else f"#{i}"
+        for field_name in LEGACY_RUNNER_FIELDS:
+            if field_name in runner:
+                found.append(f"routes[{name}].runner.{field_name}")
+    return found
 
 
 def resolve_route(catalog: RouteCatalog, name: str | None) -> tuple[RouteEntry, str]:

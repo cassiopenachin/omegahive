@@ -66,12 +66,22 @@ def test_the_redacted_example_loads_and_resolves():
     )
 
 
-def test_the_example_demonstrates_both_worker_io_modes():
-    """`worker_io` is the whole reason a sandboxed harness is launchable at all, so the
-    template an operator copies must show what a supervised route looks like."""
+def test_the_example_shows_a_native_sandbox_route_the_operator_owns():
+    """The `worker-turns` cutover removed `worker_io` and the whole supervised transport.
+    What the template must now show instead is a route whose sandbox is written by the
+    OPERATOR — Hive resolves and records it and never widens it — so an operator copying
+    this file learns where that decision lives."""
     catalog = load_catalog(EXAMPLE.read_bytes())
-    modes = {r.runner.worker_io for r in catalog.routes}
-    assert modes == {"direct", "supervised"}
+    sandboxed = next(r for r in catalog.routes if r.harness == "codex")
+    assert sandboxed.runner.args[0] == "exec", "the codex adapter builds on `exec`"
+    assert not any("hive-worker" in a for a in sandboxed.runner.args), (
+        "the retired hive-worker profile must not come back in the template an operator "
+        "copies; the profile name is the operator's to choose"
+    )
+    assert not any(a in ("-s", "--sandbox", "--add-dir") for a in sandboxed.runner.args), (
+        "the example route must stay resumable: `codex exec resume` rejects these on "
+        "0.147.0, so a template using them would ship an unresumable worker"
+    )
 
 
 def test_the_example_demonstrates_the_generic_adapter():
@@ -88,7 +98,7 @@ def test_the_example_contains_no_credential_shaped_values():
     key, or host path in should fail here rather than in a git history.
     """
     lowered = EXAMPLE.read_text().lower()
-    for marker in ("sk-", "/home/", "/users/", "postgres://", "ghp_"):
+    for marker in ("sk-ant", "sk-proj", "/home/", "/users/", "postgres://", "ghp_"):
         assert marker not in lowered, (
             f"the redacted catalog example contains {marker!r} — it must carry no "
             "credential, account id, or host path"

@@ -1,13 +1,19 @@
 # Worker execution harness — operator guide
 
-What this document covers: how a worker launch chooses what runs it, how the worker
-reaches the spine and the git remotes from wherever that runner puts it, and what the
-operator has to do to run all of it.
+What this document covers: how a worker launch chooses what runs it, how ONE TURN of
+that worker runs and ends, how the worker reaches the spine and the git remotes from
+wherever the runner puts it, and what the operator has to do to run all of it.
 
-**The one-sentence shape:** the operator's deployment catalog says what this host can
-run and how; `hive-launch` resolves one route from it, provisions the worker one task
-root, issues that worker its emit and publication commands, and hands the resolved argv
-to a supervisor that records what actually ran and what it consumed.
+**The one-sentence shape:** the operator's deployment catalog says what this host can run
+and how; `hive-launch` resolves one route from it, provisions the worker one task root,
+issues that worker its emit and publication commands, and runs one **turn** of the harness
+in the task's tmux window, recording what ran, what it consumed, and how it ended.
+
+**A turn is one harness process, from a kickoff or resume prompt to process exit.** The
+process is *expected* to end — that is the lifecycle, not a failure. What survives it is
+the durable native session id, the workspace state, the report and the spine; those are
+the worker. `hive-launch` starts the first turn and `hive-answer` starts every later one,
+through the same code, so a resumed worker is never on a second, weaker path.
 
 **Configuration is authorization.** A route present in the catalog with `enabled: true`
 is blessed for ordinary work, and an operator-entered `--route` is blessed for one
@@ -52,15 +58,14 @@ whichever entry came first.
 
 ### The `runner` block
 
-Four fields and no fifth, because every additional field is a place a shell could
+Three fields and no fourth, because every additional field is a place a shell could
 re-enter:
 
 ```json
 "runner": {
   "executable": "claude",
   "args": ["--permission-mode", "auto"],
-  "inherit_env": ["CLAUDE_CONFIG_DIR"],
-  "worker_io": "direct"
+  "inherit_env": ["CLAUDE_CONFIG_DIR"]
 }
 ```
 
@@ -76,18 +81,43 @@ re-enter:
   refuses at catalog load — the database, gateway and reserved-role DSNs and the
   notifier's bot token are Hive's own authority and are not inheritable under any
   configuration.
-* **`worker_io`** is `direct` or `supervised`. See §4. It is a statement about the
-  runner's reach, not a ranking: a native sandbox that closes the container socket and
-  the hub is `supervised`, and that is a stronger deployment, not a weaker one.
+There is no fourth field, and in particular no `worker_io`. It used to choose between a
+worker performing its own spine writes and publication and a privileged resident mediator
+performing them on its behalf. **A configured full-worker runner is now responsible for
+ordinary worker function** — read/edit/test/commit, governed emit, workspace sync and
+publication, code push and PR — and a runner that withholds one of those is a runner the
+operator changes. A catalog still carrying `worker_io` refuses by name
+(`CATALOG_LEGACY_FIELDS`) with `hive-routes migrate` as the remedy; it is refused rather
+than dropped because a silent drop would change how a route launches without telling
+anybody.
+
+**Codex routes:** the adapter builds on `codex exec`, so a codex route's `args` must begin
+with `exec`. Note also that `codex exec resume` does not accept `-s/--sandbox`, `-C/--cd`,
+`--add-dir` or `-p/--profile` (measured on 0.147.0): a route carrying one of those can be
+launched and **cannot be resumed**, and `hive-answer` refuses by name rather than dropping
+the option — dropping it would wake the worker under a configuration the operator did not
+choose. Use the `-c` equivalents (`-c sandbox_mode="workspace-write"`) to stay resumable.
+`hive-launch --check` prints the resume capability, so this is knowable before a launch
+rather than at answer time.
 
 ### Adapters improve observation; they are not a harness allowlist
 
-| adapter | what it buys | model identity | usage |
-|---|---|---|---|
-| `claude-code` | pins `--session-id`, so the transcript is findable without guessing | `observed` | `observed` |
-| `codex` | merges the task root and both clones' `.git` into the route's permission profile | `declared` | `unavailable` |
-| `generic` | runs the operator's argv and appends the kickoff last | `declared` | `unavailable` |
-| `fake` | a fixture for the drills; never a model | `observed` | `observed` |
+Every shipped adapter answers the same four questions — build an initial turn's argv,
+build a resume turn's argv from a recorded native session id, scan a retained structured
+stream into lifecycle/session/model/usage facts, and render that stream for the pane.
+What differs is how much a given harness lets it see:
+
+| adapter | structured stream | session identity | resume | model identity | usage |
+|---|---|---|---|---|---|
+| `claude-code` | `-p --output-format stream-json --verbose` | `--session-id` pins it; a resume keeps the same id | `--resume <id>` | `observed` | `observed` |
+| `codex` | `codex exec --json` | `thread.started.thread_id` | `codex exec resume <id>` (see the caveat above) | `declared` | `observed` |
+| `generic` | none | none | **refuses by name** | `declared` | `unavailable` |
+| `fake` | a fixture stream for the drills; never a model | pinned | yes | `observed` | `observed` |
+
+The `generic` row is the honest one. With no native resume command there is nothing to
+wake, so a resume refuses (`RESUME_UNSUPPORTED`) rather than starting a fresh session
+wearing the old turn's number — which would look like continuity and be a new context,
+the worst of both.
 
 **A harness this build has never heard of launches on `generic` from configuration
 alone.** The cost is stated rather than hidden: nothing can read a resolved model id or
@@ -149,22 +179,30 @@ route:       codex-sol-subscription   (override)
   model:     gpt-5.6-sol   (exact, from the catalog)
   harness:   codex   adapter: codex
   billing:   subscription   credential pool: openai-subscription-primary
-runner:      codex   worker I/O: supervised
+runner:      codex
   fingerprint sha256:d1244557c962f276...
 price basis: none on this route (subscription-billed; cost is window weight)
 task root:   /home/…/work/sess-worker-transport-0820
   code       …/omegahive
   workspace  …/hive
   run-local  …/run
-argv:        ['codex', 'exec', '-c', 'default_permissions="hive-worker"', …, '<kickoff: 1772 chars, 19 lines>']
+argv:        ['codex', 'exec', '-c', 'sandbox_mode="workspace-write"', '--json', …, '<kickoff: 1772 chars, 19 lines>']
 env names:   HOME LANG PATH …   (values never printed)
 version cmd: codex --version
-model id:    declared   usage: unavailable   extractor none
-  caveat:    codex usage and resolved-model surfaces are not established on this deployment
+turn:        initial #001   structured output: jsonl
+resume:      supported — hive-answer wakes this route's native session
+worker cmds: emit / sync workspace / publish workspace / publish code, run directly by the worker
+model id:    declared   usage: observed   extractor codex-turn-stream
+  caveat:    codex 0.147.0 reports no resolved model id in its structured stream
 harness:     0.147.0  (probe: codex --version)
 ```
 
-## 4. One task root, and two ways a worker reaches the world
+The `resume:` line is why this preflight is worth reading before a launch and not only
+after one. A route whose arguments `codex exec resume` will not accept prints
+`resume:      REFUSED — …` with the offending option and its `-c` equivalent named, so an
+operator learns it here rather than the first time a worker needs an answer.
+
+## 4. One task root, one transport, and the turn directory
 
 Every launch provisions **one root** per worker:
 
@@ -172,61 +210,76 @@ Every launch provisions **one root** per worker:
 $WORK_ROOT/<worker>/          the task root — everything the worker may write
   hive/                       the workspace clone
   <project>/                  the code clone, already on branch worker/<task>
-  run/                        the run-local interface: emit, hive, spool/, receipts/
+  run/                        emit, emit-instrument, hive
+    turns/001/                one directory per turn (see below)
 ```
 
 A route's native sandbox or external wrapper can scope the worker to exactly this
 directory. Hive records the resolved configuration and does **not** claim that a direct
 same-user route is isolated by it.
 
-The supervisor's own state lives **outside** that root, under `$HIVE_EXEC_ROOT/<worker>`
-(default `~/work/hive-exec/<worker>`), and that placement is the structural rule the whole
-design rests on: **a worker may modify anything inside its writable root — including
-these wrappers, its git config and its hooks — so no trusted-side decision may read a
-file from there.** The immutable launch plan, the relay wrapper carrying the worker's
-identity, and the terminal fact are all kept out of reach.
-
-### The two commands a worker is given
-
-The kickoff names both by path and says nothing about which side of the boundary performs
-the network operation, because the worker runs the same protocol either way:
+### The three commands a worker is given
 
 ```
 <task-root>/run/emit --type <t> --task <task> --payload <json>
 <task-root>/run/hive sync workspace | publish workspace | publish code
 ```
 
-| | `direct` | `supervised` |
-|---|---|---|
-| emit | the containerized CLI, in the worker's own process | one request into `run/spool`, then a bounded wait for a receipt |
-| sync workspace | `git pull --rebase` | the supervisor bundles the hub's `main` into the task root; the wrapper fetches and rebases **inside** the boundary |
-| publish | `git push` + `gh` with the worker's own credentials | the worker bundles its commits; the supervisor validates and pushes with trusted-side credentials |
-| result seen by the worker | `emitted · <type> · seq N` / `rejected: <CODE> <reason>` | identical |
+All of them run **in the worker's own process**: `emit` calls the governed CLI, `sync
+workspace` is ordinary `git fetch` + rebase, and publication is `git push` plus `gh` with
+whatever credentials the runner can reach. The worker sees `emitted · <type> · seq N` or
+`rejected: <CODE> <reason>` on the same call, and `rejected:` is the branch point the
+worker protocol already handles.
 
-**A supervised request says WHAT, never WHO or WHERE.** Run, role and actor are stamped
-from the launch plan; every path, branch, destination, refspec and credential for a
-publication comes from the same place. A request naming `run_id`, `role`, `actor`,
-`branch`, `remote`, `refspec`, `path` or any of their friends is refused **by name**
-(`REQUEST_FIELD_FORBIDDEN`) rather than silently dropped, because "your field was
-ignored" and "your field was rejected" have very different remedies. A request for
-another task is refused (`REQUEST_TASK_MISMATCH`) rather than rewritten: the worker
-protocol has the worker name its own task on every emit, and rewriting a mismatch would
-hide a real confusion behind a correct-looking event.
+**If a configured runner cannot emit, sync, publish, invoke an authored reviewer or reach
+CI, the worker records that and blocks or fails honestly.** Hive does not widen the
+runner, cross the boundary on its behalf, or silently reroute it. That is the doctrine's
+consequence and it is deliberate: the previous design kept a privileged resident process
+supplying those capabilities from outside a sandbox, and that process accumulated a
+request queue, a receipt protocol, a trusted publication path, the process lifecycle and
+the terminal record — until a missing installed copy of it made a launched pane vanish
+with no record at all (2026-08-21, `prune-projection-v2`). What replaced it is a runner
+the operator configures to be able to work, and an honest block when it cannot.
 
-**The trusted side never executes worker content.** Worker commits cross the boundary as
-a git **bundle** — a file — read into a fresh bare repository with hooks, credential
-helpers, pack-object hooks and global/system config disabled. Ancestry and the allowed
-path diff are validated, and only then is it pushed. Nothing is ever checked out. A
-worker-owned `.git` is worker-*controlled input*, and this is the one place that could
-have bitten.
+### The turn directory
 
-Workspace publication is restricted to `projects/<project>/reports/*-<task>-result*.md`
-and `projects/<project>/questions/*.md`, and it **preserves the worker's own commit
-sha**, so a `path@sha` pin taken before publishing resolves on the hub afterwards. A
-non-fast-forward refuses with the remedy named: sync, rebase, retry.
+```
+run/turns/<n>/
+  turn.json      the resolved plan for THIS turn, plus run/worker/task identity
+  started.json   the started payload, once emitted
+  stream.jsonl   the harness's structured output, retained verbatim
+  harness.log    the harness's own stderr
+  facts.json     the normalized scan: session, model, version, usage, terminal reason
+  exit.json      the classification and the evidence behind it
+  finished.json  the terminal payload — written before emitting, replayed on retry
+  summary.txt    the summary the pane keeps after the process is gone
+  usage.json     the per-message rows behind the totals (never message content)
+  claim          the running runner's pid; an ATOMIC claim, and the liveness signal
+  pid            the same pid, as a readable companion to the claim
+```
+
+`claim` is created with `set -o noclobber`, which makes create-or-fail one syscall — what
+an atomic claim needs and what a `[ -f ]` test followed by a write is not. Two runners on
+one turn would share the stream file, overwrite each other's terminal payload and, because
+they would capture different cursors, emit two DIFFERENT `execution.finished` payloads for
+one turn, which content-addressed idempotency cannot collapse. A claim whose holder is
+gone is taken over rather than honoured: a single kill must not strand a seat forever.
+
+This is **recovery and provenance evidence, not a claimed hostile-process boundary**, and
+it is described that way on purpose. The worker can write to it. What actually stops a
+worker from authoring its own execution facts is the gateway's role policy on the far side
+of the CLI: the `worker` role may emit no `execution.*` event and the `instrument` role may
+emit no `task.*` event, and that holds wherever a wrapper sits. `run/emit-instrument` is
+the turn runner's own wrapper and carries `--role instrument`.
+
+A malformed, missing or truncated stream is **preserved and reported**, never repaired by
+parsing the assistant's final prose. A lifecycle fact derived from model output is not an
+observation.
 
 **No forge, hub, gateway or database credential is ever placed in the child's
-environment, the task root, a clone, a request, a receipt or an event.**
+environment, the task root, a clone or an event.** The child environment is built from an
+allowlist plus the route's own `inherit_env` names; a Hive authority credential is
+refused at the catalog and dropped at the adapter, belt and braces.
 
 ## 5. Launching, and what lands on the spine
 
@@ -241,16 +294,20 @@ Three facts, three authors:
 | Event | Role | Emitted by | When |
 |---|---|---|---|
 | `execution.route_approved` | `human` (operator) | `hive-launch` | **before `task.assigned`** |
-| `execution.started` | `instrument` | `hive-supervise` | after the child process actually exists |
-| `execution.finished` | `instrument` | `hive-supervise` | success, failure, interruption, or recovery |
+| `execution.started` | `instrument` | the turn runner | after the harness process actually exists |
+| `execution.finished` | `instrument` | the turn runner | when that process stops, however it stops |
 
 The ordering is load-bearing: a task can never be found to have been worked without a
-recorded, attributable decision about what would work it. The roles are load-bearing
-too — the supervisor is issued its own `--role instrument` wrapper, so the process
-watching a session is structurally incapable of speaking for it. On a supervised route it
-is issued a *second* wrapper carrying the worker's identity, used only for relaying that
-worker's own requests; delivering someone's words and speaking for them are different
-things, and the two wrappers keep them different.
+recorded, attributable decision about what would work it. The roles are load-bearing too —
+the turn runner uses its own `--role instrument` wrapper, so the process watching a turn is
+structurally incapable of speaking for it. That is exactly what makes the exit
+classification below worth reading: it is derived from the worker's own spine events, by an
+identity that could not have authored one of them.
+
+`execution.started` does double duty. Its own sequence is the turn's **spine cursor**: it
+lands before the harness can write anything, so every event this turn's worker emits is
+strictly after it, and the classifier can scope its read without a second query and without
+a clock.
 
 All three are **non-board**: they record what ran, not what happened to a task. Existing
 runs replay unchanged because the reducer folds nothing from them.
@@ -261,23 +318,95 @@ runs replay unchanged because the reducer folds nothing from them.
 (the pinned order, and what the execution id is derived from), `catalog_digest`,
 `identity{route, model_vendor, provider, model, harness, billing_market,
 credential_pool, adapter}`, `route_source` (`default`|`override`),
-`runner_fingerprint`, `worker_io`, `model_identity_evidence`, `usage_evidence`,
-`price_basis?`.
+`runner_fingerprint`, `model_identity_evidence`, `usage_evidence`, `price_basis?`.
 
 `started`: the same `execution_id`/`purpose`/`attempt`/`identity`, plus
-`harness_version` (probed, not assumed), `model_requested`, `started_at`.
+`harness_version` (probed, not assumed), `model_requested`, `started_at`, `turn_id`,
+`turn_kind` (`initial`|`resume`), `resumed_session_id?`.
 
-`finished`: the same identity block, plus `outcome`
-(`success`|`failure`|`interrupted`), `outcome_certainty` (`certain`|`uncertain`),
-`exit_code`, `finished_at`, `model_resolved`, `model_evidence`, `usage`, `price_basis`.
+`finished`: the same identity block, plus the PROCESS view — `outcome`
+(`success`|`failure`|`interrupted`), `outcome_certainty`, `exit_code`, `finished_at`,
+`model_resolved`, `model_evidence`, `usage`, `price_basis` — and the TASK view added by
+the turn cutover: `classification`, `classification_reason`, `task_disposition`,
+`terminal_event_seq`, `harness_terminal_kind`, `harness_terminal_reason`, `spine_cursor`,
+`spine_basis`, `harness_failed_after_disposition`, `turn_id`, `turn_kind`, `session_id`,
+`stream_digest`, `stream_records`, `stream_malformed`, `stream_truncated`.
+
+`outcome` is unchanged and still means what it always meant: did the *process* end
+cleanly. `classification` is the separate question of how the turn ended *for the task*.
+Keeping both is what stops an OS exit code from ever becoming a `task.failed`, and it
+means no reader that has always filtered on `outcome` has to learn a second sense of
+`success`. Every new field is absent on pre-cutover events, and that absence is its own
+answer — it means "written before the classifier existed", never `posted`.
+
+### Classifying a turn's exit — two authorities, and a refusal
+
+The spine owns **task disposition**; the harness's structured output owns **process
+termination**; neither may speak for the other. After the harness exits, the spine is read
+at a consistent point after the turn's saved cursor, scoped to the same run, task and
+worker, and to events **strictly after** that cursor. Only an accepted event counts — and
+a present event *is* an accepted one, because the spine stores what it accepted and
+nothing else.
+
+| Spine evidence after the cursor | Harness evidence | Classification |
+|---|---|---|
+| newest `task.result_posted` | any terminal result | `posted` |
+| `task.blocked` | any terminal result | `blocked` |
+| `task.failed` | any terminal result | `failed` |
+| no task disposition | explicit structured budget exhaustion | `budget` |
+| no task disposition | explicit structured harness failure | `failed` at execution level; task state unchanged |
+| no task disposition | clean harness completion | `unclassified`: missing worker terminal event |
+| no task disposition | missing/malformed/truncated harness result | `unclassified`: insufficient evidence |
+| conflicting task dispositions in one turn | anything | `unclassified`: protocol violation |
+
+A later `task.result_posted` revision is still `posted` — newest wins. A task disposition
+wins the primary classification even if the harness then errors during shutdown, and that
+harness failure stays on the record as `harness_failed_after_disposition`. If the spine is
+unreadable at all, the answer is `unclassified(spine_unavailable)` with the harness
+evidence intact — a confident outcome derived from half the evidence would be the worst
+possible record.
+
+**A readable spine with no cursor is refused too**, and this is the subtle one. If the
+pre-turn head read failed but the spine recovered before the turn ended, reading "all of
+history instead" is not a degraded answer: every event this worker ever emitted for this
+task looks current, so a turn that said nothing gets confidently classified from a block
+an hour old. That is `unclassified(cursor_unavailable)`. It costs an unclassified on a
+rare turn; the alternative costs a wrong answer that looks right.
+
+A harness that never started — a failed `--version` probe — is `unclassified` for the same
+reason and not `failed`: there is no structured terminal to read and no cursor was ever
+taken, so a `failed` there would be a classification derived from a preflight exit code.
+
+**What never happens:** an OS exit code becoming `task.failed`; a worker-owned task event
+being synthesized; budget inferred from assistant prose or a broad error-message regex;
+any classification read off a branch name, a report's contents or the terminal screen. A
+vendor adapter may normalize only **measured, allowlisted** structured fields — on
+claude 2.1.238 that is `terminal_reason: "budget_exhausted"` and a
+`rate_limit_event.rate_limit_info.status == "rejected"`, and on codex 0.147.0 there is no
+structured budget signal at all, so a usage-limit exit there is `unknown`, never a
+fabricated budget pass.
+
+Classification is deterministic and idempotent over the saved stream and cursor:
+re-running it on the retained bytes produces byte-identical normalized evidence, which is
+what makes a later reconciliation a *re*-conciliation rather than a second, competing
+answer.
+
+`budget` and `unclassified` are **execution** outcomes. They do not move the board, they
+do not impersonate the worker, and there is no new task status for them. What they do is
+raise attention: the notifier fires on an `execution.finished` classified `failed`,
+`budget` or `unclassified` — exactly the exits with no `task.*` event behind them — and
+stays silent for `posted` and `blocked`, which already notified through their own event.
 
 The identity block is carried on **all three** rather than joined from the approval, so
 every fact answers the capacity dimensions on its own and a `finished` whose approval is
 missing is still a complete record.
 
 **`runner_fingerprint` is provenance, not a verdict.** It is `sha256` over the resolved
-non-secret runner configuration — executable, static argv, inherited environment *names*,
-worker I/O mode. It answers "is this the same runner configuration as last time", which a
+non-secret runner configuration — executable, static argv, inherited environment *names*.
+(The turn cutover removed the transport field from that canonical form, so a route's
+fingerprint changes across the cutover even where the operator changed nothing; the
+resolved configuration really did change shape, and historical events keep the value they
+were emitted with.) It answers "is this the same runner configuration as last time", which a
 reader can check. It says nothing about whether that configuration is safe, which nothing
 here can know. An automatic harness update moves `harness_version` and is recorded; it is
 not a refusal.
@@ -297,30 +426,41 @@ honest than a manufactured value.
   zeros is indistinguishable from a free execution, and every later cost number inherits
   the lie.
 * **A `success` may not contradict its own model evidence.** If the harness reports a
-  model different from the pinned one, the fact cannot be a success — the supervisor
+  model different from the pinned one, the fact cannot be a success — the turn runner
   records terminal failure and never falls back.
 
 ## 6. What each installed harness can prove
 
-The honest state on deployment #0, 2026-08-20.
+The honest state on deployment #0, **measured against the installed binaries on
+2026-08-21** by free no-work probes — not read from vendor documentation and not inferred.
 
-| | Claude Code | Codex |
+| | Claude Code 2.1.238 | Codex 0.147.0 |
 |---|---|---|
-| Installed here | yes, 2.1.238 | yes, codex-cli 0.147.0 |
-| Exact model pinnable | yes, `--model claude-opus-5` takes full ids, not just aliases | yes, `--model` |
-| Resolved model readable | **yes** — every assistant record in its own transcript carries `message.model` | **no extractor built** |
-| Usage readable | **yes** — provider-reported input / cache-read / cache-write / output per message | **no extractor built** |
-| Costs an extra call | **no** — the transcript is written anyway | n/a |
+| Batch interface | `-p --output-format stream-json --verbose` | `codex exec --json` |
+| Native resume | `--resume <id>`, and the session id **stays the same** | `codex exec resume <id>` |
+| Session identity in the stream | `system/init.session_id`, repeated on every record | `thread.started.thread_id` |
+| Resolved model readable | **yes** — `system/init.model`, and `message.model` per assistant record | **no** — the stream never names it |
+| Harness version in the stream | **yes** — `system/init.claude_code_version` | no |
+| Usage readable | **yes** — provider counts on the terminal `result` record, and per message in the transcript | **yes** — `turn.completed.usage`, per turn |
+| Terminal reason | `result.terminal_reason` + `subtype` | `turn.completed` / `turn.failed` |
+| Structured budget signal | **yes** — `terminal_reason: "budget_exhausted"`, and `rate_limit_event.rate_limit_info.status == "rejected"` | **none** |
+| Costs an extra call | **no** — both streams are written anyway | no |
 
-Claude Code's surface is `<config>/projects/<cwd-slug>/<session-id>.jsonl`, and the
-supervisor **pins the session id** at launch (`--session-id`) so it knows exactly which
-file to read rather than guessing by mtime.
+Two entries in that table are load-bearing refusals rather than features.
 
-**The Codex row is a recorded unknown, not a launch gate.** Codex writes a session
-rollout carrying both facts; reading it is unbuilt work. Until it is built, a Codex
-execution records its consumption as `unavailable` with that reason. Inventing numbers is
-the one thing the design refuses to do — and "we cannot read this harness's token counts"
-is neither a safety question nor a reason to refuse a launch.
+**Codex has no structured budget signal on 0.147.0.** A usage-limit exit there is
+recorded as `unknown` and lands in `failed` or `unclassified` with the raw evidence
+preserved. It is never a `budget` pass, because a fabricated one would look exactly like a
+measured one and would tell an operator to wait for a window that may not be the problem.
+
+**Claude's `blocking_limit` and `rapid_refill_breaker` are CONTEXT limits, not spend
+limits** on this build, so they classify as `failed`. Folding them into `budget` would
+send the same operator waiting for the same wrong window.
+
+Claude Code's per-message usage surface is `<config>/projects/<cwd-slug>/<session-id>.jsonl`.
+An initial turn **pins the session id** (`--session-id`) so the runner knows exactly which
+file to read rather than guessing by mtime; a resume turn reads the same file, because the
+installed build keeps the id across `--resume`.
 
 ### The counting hazard, if you ever parse a transcript yourself
 
@@ -344,9 +484,19 @@ omegahive executions <run> --json --where billing_market=subscription --where ou
 ```
 
 Filterable dimensions: `task`, `execution_id`, `model_vendor`, `provider`, `model`,
-`harness`, `billing_market`, `credential_pool`, `route`, `purpose`, `outcome`. An
-unknown dimension is a refusal, not an empty result — "no rows" and "you misspelled the
-dimension" must not look alike.
+`harness`, `billing_market`, `credential_pool`, `route`, `purpose`, `outcome`,
+`classification`, `turn_kind`. An unknown dimension is a refusal, not an empty result —
+"no rows" and "you misspelled the dimension" must not look alike.
+
+**One row per TURN, keyed `(execution_id, turn_id)`.** An execution id names one (task,
+pinned order, purpose, attempt); a worker may run several turns inside it — an initial one
+that exhausted its budget, then a resume that posted. Keying on the execution id alone let
+the later turn overwrite the earlier, so a reader saw one posted execution while the budget
+exit, its consumption and its evidence vanished. `execution.route_approved` is emitted once
+per execution, before any turn exists; its facts are applied to every turn of that
+execution, which is correct on its own terms — the operator approved a route for the
+execution and every turn inside it ran on that approval. A pre-cutover fact carries no
+`turn_id`, keys as `(eid, None)`, and produces exactly the one row it always did.
 
 Rows carry tokens and the approval-time price basis. **Cost is derived by the reader,
 never authored here**: the moment a projection writes a dollar figure, that figure
@@ -359,38 +509,60 @@ reason for the operator to change its configuration; it never disables a route b
 
 ## 8. Recovery
 
-If tmux or the host dies mid-execution, the supervisor cannot observe the end. Sweep it:
+**A turn that ended is not a worker that died.** The window keeps its summary
+(`remain-on-exit`), the turn directory keeps the evidence, and the native session is still
+resumable. To continue that worker:
 
 ```bash
-scripts/hive-supervise --reconcile ~/work/hive-exec
+scripts/hive-answer <task> "<the answer>"          # a decision landed
+scripts/hive-answer <task> --resume-only "<why>"   # the turn died; wake it anyway
 ```
 
-Such an execution is recorded as `interrupted` with `outcome_certainty: uncertain` and
-`unavailable` usage naming the reason. Writing a confident `failure` there would be a
-guess wearing a fact's clothes.
+`--resume-only` is for a turn that ended `budget`, harness-failed or `unclassified`. It
+appends nothing to the order, asks for no `task.unblocked`, records the operator's reason
+on the turn, and wakes the same native session. It is recovery from a process outcome, not
+reassignment — the worker, the seat and the board state are unchanged.
 
-Terminal emission is idempotent: the payload is written to `finished.json` **before**
-it is emitted and re-emitted byte-for-byte on any later attempt, so a retry, a resumed
-pane, and a reconcile sweep all converge on one event rather than a family of
-near-duplicates.
+It refuses, with the exact reason and the recovery choices, when a turn is still live
+(two turns would race the same session), when the board state is terminal or in review,
+when the worker or session mapping is ambiguous, when the adapter cannot resume that route,
+or when no turn ever recorded a session id. That last one is an **evidence gap**, and it is
+named as one: a fresh session wearing the old turn's number would look like continuity and
+be a new context. The remedy is a fresh seat (RUNBOOK 'Dead worker recovery'), never a
+relaunch onto an owned task — and the answer itself is already committed and pushed, so
+nothing is lost while that is sorted out.
 
-A supervised worker's outstanding requests survive the same way. A restarted supervisor
-drains the spool **before** the child exists, so a resumed worker finds them answered
-rather than waiting out a timeout on a receipt nobody was going to write. Replaying an
-emit is safe: the request bytes are identical and the spine's content-derived idempotency
-key collapses the repeat. To drain one worker's spool without starting anything:
+**If the host dies mid-turn**, the terminal fact was never emitted. The evidence is still
+on disk, and re-running the pane command recovers it:
 
 ```bash
-scripts/hive-supervise --drain ~/work/hive-exec/<worker>
+scripts/hive-launch --turn ~/work/<worker>/run/turns/<n>
 ```
+
+**That RE-CLASSIFIES; it does not re-run the model.** A turn directory holding a stream
+but no terminal fact is one whose process died between running and recording, so the
+runner classifies the evidence it left — against the cursor that turn actually started
+from, which `started.json` carries for exactly this purpose — and records the process view
+as `interrupted` with `outcome_certainty: uncertain` and no exit code, because the process
+that could have reported one is gone. Re-running the harness there would spend a second
+model call, destroy the only copy of what the first one said, and answer against a window
+that had already moved past events the first turn itself emitted.
+
+A turn that already has its terminal fact simply replays it. Both paths are idempotent by
+construction: the payload is written to `finished.json` **before** it is emitted and
+re-emitted byte-for-byte on any later attempt, and the classification is deterministic
+over the same saved stream and cursor. A retry, a respawned pane and a manual replay all
+converge on one event rather than a family of near-duplicates.
+
+**An unrecorded terminal fact is never a green exit.** If the emit fails the runner exits
+70 and says where the payload is; a pane that closed green over a turn the spine has no
+record of is the one outcome this whole path exists to prevent.
 
 ## 9. Deployment variables
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `HIVE_ROUTE_CATALOG` | `~/.config/omegahive/routes.json` | this host's route catalog |
-| `HIVE_EXEC_ROOT` | `$WORK_ROOT/hive-exec` | supervisor state, one dir per worker, outside every task root |
-| `HIVE_SPOOL_TIMEOUT` | `180` | seconds a supervised worker waits for a receipt before failing loudly |
 | `HIVE_CLI_CMD` | unset | run the CLI directly instead of in the container. **Set it for one window and unset it after** — see below |
 
 ### `HIVE_CLI_CMD` is a window, not a setting
@@ -433,7 +605,17 @@ Named here so the next reader does not go looking:
   the signed per-order launch binding.
 - **2026-08-20** — rewritten for the runner-trust cutover (`worker-transport`). The
   launch binding, the permission-boundary descriptor, the credential-mode gate and the
-  enforcement migration are gone; catalog v2, the `runner` block, `worker_io`, the
-  `generic` adapter, the task root and the supervisor-mediated transport are new. The
-  retired product's operator guide, `omegahive_worker_boundary.md`, is kept as historical
-  evidence and labelled as such.
+  enforcement migration are gone; catalog v2, the `runner` block, the `generic` adapter,
+  the task root and a supervisor-mediated transport are new. The retired product's
+  operator guide, `omegahive_worker_boundary.md`, is kept as historical evidence and
+  labelled as such.
+- **2026-08-21** — rewritten for the turn cutover (`worker-turns`). §4's second transport,
+  its request queue, its receipt protocol, its trusted publication bridge and the
+  `runner.worker_io` field that selected it are gone: the configured runner is responsible
+  for ordinary worker function, and a runner that withholds it produces an honest block.
+  New: the **turn** as the lifecycle unit, the batch/resume contract both shipped adapters
+  implement, the turn directory, the two-authority exit classifier and its
+  `classification`/`unclassified` result on `execution.finished`, and §6's measured
+  vendor table. `hive-answer` resumes either harness from its native session and gains
+  `--resume-only`. Sections 5 and 6 are the ones to re-read; a pre-cutover event still
+  replays unchanged and is described in §5.

@@ -351,3 +351,103 @@ def test_executions_to_json_is_stable_and_round_trips(lifecycle):
 
 def test_executions_to_json_of_no_rows_is_an_empty_array():
     assert json.loads(executions_to_json([])) == []
+
+
+# --- one row per TURN, not one per execution ------------------------------------------
+#
+# An execution id names one (task, pinned order, purpose, attempt). A worker may run
+# several TURNS inside it — an initial one that exhausted its budget, then a resume that
+# posted. Keying rows on the execution id alone let the later turn overwrite the earlier
+# one, so a capacity reader saw one posted execution and the budget exit, its consumption
+# and its evidence vanished.
+
+TURN_EID = "turned-task-a1-abcdef0123"
+
+
+@pytest.fixture
+def two_turns(make_event):
+    """One execution, one approval, and two complete turns inside it."""
+    def _make():
+        return [
+            make_event("execution.route_approved", approved_payload(TURN_EID),
+                       task_id="t1", role="human", agent="operator", seq=1),
+            make_event("execution.started",
+                       started_payload(TURN_EID, turn_id="001", turn_kind="initial"),
+                       task_id="t1", role="instrument", agent="launcher", seq=2),
+            make_event("execution.finished",
+                       finished_payload(
+                           TURN_EID, turn_id="001", turn_kind="initial",
+                           classification="budget",
+                           classification_reason="harness: budget_exhausted",
+                           usage={**USAGE, "input_tokens": 100}),
+                       task_id="t1", role="instrument", agent="launcher", seq=3),
+            make_event("execution.started",
+                       started_payload(TURN_EID, turn_id="002", turn_kind="resume"),
+                       task_id="t1", role="instrument", agent="launcher", seq=4),
+            make_event("execution.finished",
+                       finished_payload(
+                           TURN_EID, turn_id="002", turn_kind="resume",
+                           classification="posted",
+                           classification_reason="spine: task.result_posted",
+                           usage={**USAGE, "input_tokens": 200}),
+                       task_id="t1", role="instrument", agent="launcher", seq=5),
+        ]
+    return _make
+
+
+def test_two_turns_of_one_execution_are_two_rows(two_turns):
+    rows = execution_rows(two_turns())
+    assert len(rows) == 2, "a resume must not overwrite the turn it resumed"
+    by_turn = {r["turn_id"]: r for r in rows}
+    assert by_turn["001"]["classification"] == "budget"
+    assert by_turn["002"]["classification"] == "posted"
+    assert by_turn["001"]["turn_kind"] == "initial"
+    assert by_turn["002"]["turn_kind"] == "resume"
+
+
+def test_a_budget_turns_consumption_is_not_swallowed_by_a_later_posted_turn(two_turns):
+    """The reason this matters: the budget exit's tokens were really spent, and a capacity
+    view showing only the posted turn under-counts the task by exactly what the failed
+    attempt cost."""
+    rows = execution_rows(two_turns())
+    assert sorted(r["usage"]["input_tokens"] for r in rows) == [100, 200]
+
+
+def test_the_approval_reaches_every_turn_of_its_execution(two_turns):
+    """The operator approved a route for the execution; every turn inside it ran on that
+    approval, and a turn row missing the catalog digest would read as hand-recovered."""
+    rows = execution_rows(two_turns())
+    assert all(r["approved"] for r in rows)
+    assert all(r["catalog_digest"] == CATALOG_DIGEST for r in rows)
+    assert all(r["model"] == IDENTITY["model"] for r in rows)
+    assert not any(r["turn_id"] is None for r in rows), (
+        "the turn-less approval row is redundant once its turns arrive and must not "
+        "become a phantom extra row in every capacity count"
+    )
+
+
+def test_a_pre_cutover_execution_still_produces_exactly_one_row(lifecycle):
+    """The change must be invisible to a historical reader rather than a
+    re-interpretation of their data: no `turn_id` means one row, as it always did."""
+    rows = execution_rows(lifecycle())
+    assert len(rows) == 1
+    assert rows[0]["turn_id"] is None
+    assert rows[0]["classification"] is None, (
+        "absent means 'written before the classifier existed', never 'posted'"
+    )
+    assert rows[0]["outcome"] == "success", "the process view is untouched"
+
+
+def test_an_approval_with_no_turns_is_still_a_row(make_event):
+    """`approved, never started` is a real state and a capacity reader has to see it."""
+    rows = execution_rows([
+        make_event("execution.route_approved", approved_payload(TURN_EID),
+                   task_id="t1", role="human", agent="operator", seq=1),
+    ])
+    assert len(rows) == 1
+    assert rows[0]["approved"] and not rows[0]["started"]
+
+
+def test_filtering_by_classification_selects_turns_not_executions(two_turns):
+    rows = filter_rows(execution_rows(two_turns()), {"classification": "budget"})
+    assert [r["turn_id"] for r in rows] == ["001"]

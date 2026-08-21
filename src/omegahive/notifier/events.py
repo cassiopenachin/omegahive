@@ -1,12 +1,23 @@
 """Which spine events are attention events, and what a notification carries.
 
-The four trigger types (hive-native ops §2 item 4 / §4): `task.reported` with
+The four task trigger types (hive-native ops §2 item 4 / §4): `task.reported` with
 `kind=question`, `task.blocked`, `task.escalated`, and `task.result_posted` (the result
-that prompts the operator's close action — added by the heartbeat follow-up order).
+that prompts the operator's close action — added by the heartbeat follow-up order). Plus
+one execution trigger, added by `worker-turns`: an `execution.finished` whose turn ended
+with NO task event behind it.
+
+That fifth trigger is gated to exactly the gap it fills. A turn that ends `posted` or
+`blocked` already produced its own `task.*` notification, so notifying again would be two
+messages about one event — the surest way to make a channel stop being read. A turn that
+ends `failed` at the execution level, exhausts its `budget`, or comes back
+`unclassified` has no task event by construction: the worker never got to say anything,
+which is precisely why somebody has to be told. Pre-cutover `execution.finished` events
+carry no classification at all and stay silent, as they always were.
+
 Everything else is silence — the notifier stays deliberately narrow (the temptation to
 notify on everything is how notification channels die). `kind` is read only to gate
-`task.reported`; no other branch reads report content, honouring the pre-registered smell
-test (§4).
+`task.reported`, and `classification` only to gate `execution.finished`; no other branch
+reads payload content, honouring the pre-registered smell test (§4).
 
 A `Notification` carries only pointers: event type, task id, the actor who emitted it,
 the run (the project), and — depending on the event — a **ref path** (question/result,
@@ -30,7 +41,16 @@ _TRIGGERS: dict[str, tuple[str, str]] = {
     "task.escalated": ("escalated", "⬆"),
     "task.reported": ("question", "❓"),          # gated on kind=question below
     "task.result_posted": ("result", "📄"),        # fourth trigger — a result landed
+    # Fifth trigger, gated below on classification: a turn that ended with no task event.
+    # Glyph is shape-distinct from the other four (⏻ power symbol) rather than colour-
+    # coded, like the rest of this table.
+    "execution.finished": ("exit", "⏻"),
 }
+
+# The exit classifications that need attention, and the only ones. `posted` and `blocked`
+# are excluded because their own task event already notified; a pre-cutover event with no
+# classification at all is excluded because absence is not a classification.
+ATTENTION_CLASSIFICATIONS = frozenset({"failed", "budget", "unclassified"})
 
 
 @dataclass(frozen=True)
@@ -76,6 +96,11 @@ def notification_from(event: Event) -> Notification | None:
     payload = event.payload
     if event.event_type == "task.reported" and payload.get("kind") != "question":
         return None
+    if (
+        event.event_type == "execution.finished"
+        and payload.get("classification") not in ATTENTION_CLASSIFICATIONS
+    ):
+        return None
 
     ref: str | None = None
     reason: str | None = None
@@ -95,6 +120,13 @@ def notification_from(event: Event) -> Notification | None:
         reason = r if isinstance(r, str) and r else None
         dr = payload.get("decision_ref")
         ref = dr if isinstance(dr, str) and dr else None
+    elif event.event_type == "execution.finished":
+        # The classification and why, in one line. Refs-not-bulk applies here as
+        # everywhere: the retained stream stays on the host, and its path is not a
+        # workspace ref, so nothing points at it from a message.
+        cls = payload.get("classification")
+        why = payload.get("classification_reason")
+        reason = f"{cls}: {why}" if isinstance(why, str) and why else str(cls)
 
     return Notification(
         label=label,

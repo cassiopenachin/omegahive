@@ -8,7 +8,9 @@ the single send schedule — **one heartbeat total**, not one per run.
 
 What a run's tally tracks:
   - `counts`: attention events observed since the last heartbeat, per type (reset each
-    heartbeat). Head delta is analogous — both are "since the previous heartbeat".
+    heartbeat). Head delta is analogous — both are "since the previous heartbeat". A
+    pre-`worker-turns` state file has no `exit` key and loads with it at zero; `.get`
+    everywhere is what makes that additive rather than a migration.
   - `open_blocks`: `task.blocked` seen without a subsequent `task.unblocked`, per task id,
     with a first-seen timestamp (the event's wall time if the envelope carries one, else
     the tick time). Task ids only — no refs, no content, no titles.
@@ -35,9 +37,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from ..events.envelope import Event
+from .events import ATTENTION_CLASSIFICATIONS
 
-# the four attention types the heartbeat tallies, in message order.
-_COUNT_KEYS = ("question", "blocked", "escalated", "result")
+# the attention types the heartbeat tallies, in message order. `exit` was added by
+# `worker-turns`: a turn that ended with no worker terminal event. It is counted here for
+# the same reason it is notified — a run whose workers keep dying unrecorded looks quiet
+# on every other counter, which is the exact shape a stalled run makes.
+_COUNT_KEYS = ("question", "blocked", "escalated", "result", "exit")
 
 
 def _empty_counts() -> dict[str, int]:
@@ -73,6 +79,11 @@ class RunHeartbeat:
             self.counts["escalated"] = self.counts.get("escalated", 0) + 1
         elif et == "task.result_posted":
             self.counts["result"] = self.counts.get("result", 0) + 1
+        elif et == "execution.finished":
+            # Gated on the same classifications the ping is gated on, so the tally and
+            # the channel can never disagree about what counted as attention.
+            if event.payload.get("classification") in ATTENTION_CLASSIFICATIONS:
+                self.counts["exit"] = self.counts.get("exit", 0) + 1
 
     def roll(self, head: int | None) -> None:
         """A heartbeat just went out: record this run's current head and reset the tally.

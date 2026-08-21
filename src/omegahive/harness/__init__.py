@@ -4,14 +4,16 @@ The boundary this package draws, in one line each:
 
   records.py   the one record — the operator-owned deployment route catalog
   migrate.py   a v1 catalog becomes a v2 one, without changing what it says
-  plan.py      catalog + route + adapter -> one resolved plan, or one named refusal
+  plan.py      catalog + route + adapter -> one resolved TURN plan, or one refusal
   adapters.py  a route becomes an argv vector; an unknown adapter NAME fails closed
-  spool.py     the supervised worker's request/receipt shapes
+  turns.py     one turn's harness facts + the spine -> one classification, or a refusal
   usage.py     what a harness reported it consumed, or an honest `unavailable`
 
-Nothing here reads a file, a clock, or a database. The shell launcher and the
-supervisor own the side effects; this package owns the decisions, which is what makes
-the no-model preflight and the launch share one code path.
+Nothing here reads a file, a clock, or a database. The shell launcher owns the side
+effects — provisioning, the tmux window, running the harness, retaining its stream,
+reading the spine — and this package owns the decisions, which is what makes the
+no-model preflight and the launch share one code path, and what makes re-classifying a
+saved stream and cursor produce byte-identical evidence.
 """
 
 from omegahive.harness.records import (

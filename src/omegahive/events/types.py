@@ -213,8 +213,8 @@ class PromotionSuppressed(BaseModel):  # defined for registry completeness; not 
 # three different truth conditions:
 #
 #   execution.route_approved  a HUMAN decision        — attributable to the signing actor
-#   execution.started         an INSTRUMENT observation — the child actually started
-#   execution.finished        an INSTRUMENT observation — the child actually stopped
+#   execution.started         an INSTRUMENT observation — the turn actually started
+#   execution.finished        an INSTRUMENT observation — the turn stopped, and how
 #
 # All three are non-board (NON_BOARD_WHITELIST): they record what ran, they do not move
 # a task. route_approved therefore precedes `task.assigned` without needing the task to
@@ -438,10 +438,20 @@ class ExecutionRouteApproved(BaseModel):
     # it. Provenance, not a judgment: both are authorized.
     route_source: Literal["default", "override"] | None = None
     # `sha256:<hex>` over the resolved NON-SECRET runner configuration — executable,
-    # static argument vector, inherited environment NAMES, worker I/O mode. It answers
-    # "is this the same runner configuration as last time" and deliberately not "is this
-    # runner safe", which nothing here can know. Never a value out of an environment.
+    # static argument vector, inherited environment NAMES. It answers "is this the same
+    # runner configuration as last time" and deliberately not "is this runner safe",
+    # which nothing here can know. Never a value out of an environment.
+    #
+    # The `worker-turns` cutover removed the transport field from that canonical form, so
+    # a route's fingerprint changes across the cutover even where the operator changed
+    # nothing: the resolved configuration really did change shape.
     runner_fingerprint: str | None = None
+    # HISTORICAL (pre-`worker-turns`): which transport carried this worker's spine writes
+    # and publication. `supervised` meant a privileged resident mediator performed them
+    # from outside the runner; that product is retired and a configured runner is now
+    # responsible for ordinary worker function itself. Retained, unset, and never
+    # backfilled, so events emitted before 2026-08-21 replay unchanged — a reader tells
+    # the two eras apart by its presence, which is more honest than a rewrite.
     worker_io: Literal["direct", "supervised"] | None = None
     # The doctrine's status vocabulary, recorded at launch so a later reader knows how
     # much the model and usage facts on this execution are worth.
@@ -481,15 +491,31 @@ class ExecutionRouteApproved(BaseModel):
 class ExecutionStarted(BaseModel):
     """An instrument observation: the child process actually started.
 
-    Emitted by the supervisor AFTER the harness process exists, never before — a
-    `started` that precedes the fork is a prediction, and the whole point of the split
-    from `route_approved` is that this one is measured.
+    Emitted AFTER the harness process exists, never before — a `started` that precedes
+    the fork is a prediction, and the whole point of the split from `route_approved` is
+    that this one is measured.
+
+    Its own sequence is also the turn's SPINE CURSOR: it is on the spine before the
+    harness can write anything, so every event this turn's worker emits lands strictly
+    after it. That is what lets the classifier scope its read without a second query and
+    without a clock.
     """
 
     execution_id: str
     purpose: Literal["work", "review"]
     attempt: int = Field(ge=1)
     identity: ExecutionIdentity
+    # Which turn of this worker, and whether it started fresh or woke a native session.
+    # Absent on every pre-cutover event.
+    #
+    # There is deliberately no `spine_cursor` here. This event's OWN sequence is the
+    # cursor — it lands before the harness can write anything — so carrying the number
+    # would be carrying a fact the row already is, and two copies of one fact eventually
+    # disagree. The runner keeps its own local copy in `started.json` for recovery, where
+    # a killed process's window has to be readable without a spine query.
+    turn_id: str | None = None
+    turn_kind: Literal["initial", "resume"] | None = None
+    resumed_session_id: str | None = None
     # HISTORICAL (pre-cutover): the permission boundary the supervisor re-verified on
     # disk before the child existed. Unset since 2026-08-20; retained so pre-cutover
     # events replay unchanged.
@@ -514,11 +540,29 @@ class ExecutionStarted(BaseModel):
 
 
 class ExecutionFinished(BaseModel):
-    """An instrument observation: the child process stopped, and what it consumed.
+    """An instrument observation: one harness turn stopped, and what it consumed.
 
-    `outcome_certainty` exists because the supervisor cannot always know. A process it
-    reaped itself is `certain`; one found already gone at reconcile time is `uncertain`,
-    and saying so is the honest record the order asks for.
+    `outcome` is and remains the PROCESS view — did the harness process end cleanly, in
+    error, or interrupted. It is deliberately unchanged across the `worker-turns`
+    cutover so that every pre-cutover event still validates, replays and means exactly
+    what it meant when it was written, and so no capacity reader has to learn that an
+    old `success` secretly acquired a new sense.
+
+    `classification` is the field the cutover ADDED, and it answers a different question:
+    how did this turn end **for the task**. It is derived from two authorities that are
+    never allowed to speak for each other — the spine owns task disposition, the
+    harness's own structured output owns process termination — and it is `unclassified`
+    whenever those two together do not determine an answer. That refusal is part of the
+    result type, not a warning: an execution that cannot say how it ended must say THAT,
+    rather than round to the nearest confident-sounding word.
+
+    Every added field is optional and absent on historical events. `classification` being
+    `None` is exactly what a pre-cutover record looks like, and no reader may read that
+    absence as `posted` — nothing here backfills, and nothing here rewrites.
+
+    `outcome_certainty` exists because the observer cannot always know. A process it
+    reaped itself is `certain`; one found already gone is `uncertain`, and saying so is
+    the honest record.
     """
 
     execution_id: str
@@ -535,6 +579,41 @@ class ExecutionFinished(BaseModel):
     model_evidence: Literal["harness-reported", "none"] = "none"
     usage: ExecutionUsage
     price_basis: PriceBasis | None = None
+
+    # --- turn evidence (added by `worker-turns`; absent on every pre-cutover event) ---
+    #
+    # NONE of these move the task board. `budget` and `unclassified` are execution
+    # outcomes; a turn that ends in either leaves the task exactly where the worker left
+    # it, and the operator is told so they can decide. Manufacturing a `task.failed` from
+    # a process outcome is the one thing this whole record exists to make unnecessary.
+    classification: Literal["posted", "blocked", "failed", "budget", "unclassified"] | None = None
+    classification_reason: str | None = None
+    # The worker-owned event that decided it, when there was one, and its sequence.
+    task_disposition: str | None = None
+    terminal_event_seq: int | None = Field(default=None, ge=1)
+    # The harness's own last word, normalized, plus the vendor string verbatim.
+    harness_terminal_kind: (
+        Literal["completed", "error", "budget", "missing", "malformed"] | None
+    ) = None
+    harness_terminal_reason: str | None = None
+    # The spine position saved immediately BEFORE the turn started, and whether the
+    # spine could be read after it. Scoping to events strictly after this cursor is what
+    # stops a PRIOR turn's `task.blocked` from being read as this turn's exit.
+    spine_cursor: int | None = Field(default=None, ge=0)
+    spine_basis: Literal["read", "unavailable"] | None = None
+    # A task disposition wins the primary classification even if the harness then errors
+    # during shutdown; the harness failure stays here as the secondary fact it is.
+    harness_failed_after_disposition: bool | None = None
+    # Which turn of this worker, and the native session id it can be resumed from.
+    turn_id: str | None = None
+    turn_kind: Literal["initial", "resume"] | None = None
+    session_id: str | None = None
+    # The retained structured stream: how much of it there was and what it hashes to.
+    # Provenance, not content — no assistant text ever reaches the spine.
+    stream_digest: str | None = None
+    stream_records: int | None = Field(default=None, ge=0)
+    stream_malformed: int | None = Field(default=None, ge=0)
+    stream_truncated: bool | None = None
 
     @field_validator("execution_id")
     @classmethod
@@ -555,7 +634,7 @@ class ExecutionFinished(BaseModel):
         """A harness-reported model that differs from the pinned one cannot be a success.
 
         The stop-line is "a mismatch refuses or records terminal failure; it never falls
-        back". The supervisor enforces it, and this makes the spine structurally unable
+        back". The turn runner enforces it, and this makes the spine structurally unable
         to hold the contradiction even if a future caller forgets — the fact and its own
         evidence cannot disagree.
         """

@@ -56,7 +56,10 @@ _MAX_HEARTBEAT_CHARS = 3800
 
 # Attention counts in a run's heartbeat line, in message order. The glyphs are the same
 # shape-distinct vocabulary the pings use — no colour carries meaning anywhere here.
-_COUNT_GLYPHS = (("question", "❓"), ("blocked", "⛔"), ("escalated", "⬆"), ("result", "📄"))
+_COUNT_GLYPHS = (
+    ("question", "❓"), ("blocked", "⛔"), ("escalated", "⬆"), ("result", "📄"),
+    ("exit", "⏻"),
+)
 
 # who + what: the verb phrase per trigger type. The "about-what" (basename or reason) is
 # appended after a colon by _sentence().
@@ -65,6 +68,9 @@ _VERB = {
     "task.result_posted": "posted a result on",
     "task.blocked": "is blocked on",
     "task.escalated": "escalated",
+    # The turn ended and left no task event behind it, so the execution record is the
+    # only thing that can say what happened.
+    "execution.finished": "ended a turn with no worker terminal event on",
 }
 
 
@@ -122,7 +128,7 @@ def _sentence(n: Notification, base_url: str | None = None) -> str:
                 tail += f" (+{n.extra_refs} more)"
             return head + tail
         return head
-    # blocked / escalated: the reason is the human signal
+    # blocked / escalated / exit: the reason is the human signal
     if n.reason:
         return f"{head}: {escape(n.reason)}"
     return head

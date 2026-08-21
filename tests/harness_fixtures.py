@@ -24,7 +24,6 @@ def runner(**over: Any) -> dict[str, Any]:
         "executable": FAKE_HARNESS,
         "args": [],
         "inherit_env": ["HIVE_FAKE_BEHAVIOUR", "HIVE_FAKE_USAGE_FILE"],
-        "worker_io": "direct",
     }
     base.update(over)
     return base

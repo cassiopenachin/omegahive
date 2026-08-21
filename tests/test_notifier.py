@@ -764,7 +764,7 @@ def test_heartbeat_counts_reflect_observed_attention(tmp_path):
     assert "omegahive +0/24h · ❓1 ⛔0 ⬆0 📄1" in sender.sent[-1]
     # the window resets after the heartbeat
     assert store.load_heartbeat().for_run(RUN).counts == dict.fromkeys(
-        ("question", "blocked", "escalated", "result"), 0
+        ("question", "blocked", "escalated", "result", "exit"), 0
     )
 
 
