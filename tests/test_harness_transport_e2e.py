@@ -119,9 +119,17 @@ def deployment(tmp_path):
 
     usage_file = tmp_path / "fake-usage.jsonl"
     script = tmp_path / "worker-script.sh"
+    # A HOME with no gitconfig, and both other git config layers closed. Without this the
+    # suite passes on a developer machine and fails on CI, which is what happened: the
+    # sync wrapper's rebase depended on an ambient committer identity, and where there
+    # was none it left the clone detached with the worker's commit off HEAD.
+    clean_home = tmp_path / "clean-home"
+    clean_home.mkdir()
     env = {
         "PATH": os.environ["PATH"],
-        "HOME": os.environ.get("HOME", str(tmp_path)),
+        "HOME": str(clean_home),
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
         "HIVE_FAKE_BEHAVIOUR": "protocol",
         "HIVE_FAKE_SCRIPT": str(script),
         "HIVE_FAKE_USAGE_FILE": str(usage_file),
@@ -133,7 +141,7 @@ def deployment(tmp_path):
     entries = [route(runner=runner(
         worker_io="supervised",
         inherit_env=["HIVE_FAKE_BEHAVIOUR", "HIVE_FAKE_SCRIPT", "HIVE_FAKE_USAGE_FILE",
-                     "HIVE_SPOOL_TIMEOUT"]))]
+                     "HIVE_SPOOL_TIMEOUT", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"]))]
     request = {
         "catalog_b64": base64.b64encode(json.dumps(catalog(*entries)).encode()).decode(),
         "route": None,
@@ -509,6 +517,8 @@ say "RETRY:$("$HIVE" publish workspace 2>&1)"
 
     hub_files = git(deployment["hub"], "ls-tree", "-r", "--name-only", "main").stdout
     assert REPORT in hub_files and "2026-08-20-other.md" in hub_files
+    # The report is on HEAD, on a branch, with no rebase left in progress.
+    assert "HEAD (no branch)" not in git(deployment["ws_root"], "status", "-sb").stdout
 
 
 def test_publish_code_pushes_the_launch_recorded_branch(deployment):
@@ -818,3 +828,135 @@ say "EDIT:$("$HIVE" publish workspace 2>&1)" || true
     assert "changed-not-added:" in text, text
     on_hub = git(deployment["hub"], "show", f"main:{existing}").stdout
     assert "edited" not in on_hub, "the other worker's question must be unchanged"
+
+
+# =====================================================================================
+# 8. What CI found that a developer machine could not (2026-08-21)
+# =====================================================================================
+
+def test_a_failed_rebase_restores_the_clone_instead_of_leaving_it_detached(deployment):
+    """The defect underneath the CI failure, in the form that survives the fix.
+
+    `git rebase` stops by checking out the upstream and then applying commits. When an
+    apply fails it leaves a DETACHED HEAD at the upstream with a rebase in progress — so
+    the worker's own commit is no longer on HEAD, `git status` is bewildering, and
+    anything that reads HEAD next operates on the wrong thing. The wrapper must put the
+    clone back where it found it and say so.
+    """
+    # The hub writes the same report path with different content: the rebase will conflict.
+    write(deployment["hub_seed"] / REPORT, "# Someone else got there first\n")
+    git(deployment["hub_seed"], "add", "-A")
+    git(deployment["hub_seed"], "commit", "--quiet", "-m", "conflicting write")
+    git(deployment["hub_seed"], "push", "--quiet", str(deployment["hub"]), "main")
+
+    worker_script(deployment, f'''
+mkdir -p "$WS/projects/{PROJECT}/reports"
+printf '# My result\\n' > "$WS/{REPORT}"
+git -C "$WS" add -A
+git -C "$WS" -c user.name=w -c user.email=w@x commit --quiet -m "my result"
+say "MINE:$(git -C "$WS" rev-parse HEAD)"
+say "SYNC:$("$HIVE" sync workspace 2>&1)" || true
+say "AFTER:$(git -C "$WS" rev-parse HEAD)"
+say "BRANCH:$(git -C "$WS" status -sb | head -1)"
+say "FILE:$(cat "$WS/{REPORT}")"
+''')
+    assert run_supervisor(deployment).returncode == 0
+    text = out(deployment)
+    mine = next(ln.split(":", 1)[1] for ln in text.splitlines() if ln.startswith("MINE:"))
+    after = next(ln.split(":", 1)[1] for ln in text.splitlines() if ln.startswith("AFTER:"))
+
+    assert "your clone was restored" in text, text
+    assert after == mine, f"the worker's commit must still be HEAD after a failed sync: {text}"
+    assert "HEAD (no branch)" not in text, f"the clone must not be left detached: {text}"
+    assert "# My result" in text, "the worker's own file must still be in the worktree"
+
+
+def test_a_publication_that_carries_nothing_is_refused_by_the_TRUSTED_side(deployment):
+    """The defect that made the one above SILENT, and the worse of the two.
+
+    A clone sitting exactly at the hub's main produces a valid bundle, passes the
+    ancestry check, and pushes cleanly — a no-op. Reporting that as `published <sha>`
+    told the worker its report was on the hub when the hub had never received it.
+
+    The construction is the real one, not the easy one. There is a worker-side guard
+    ("HEAD is already contained in origin/main") and it is NOT what failed: in the CI
+    case the clone's `origin/main` was STALE — sync writes the hub's tip to
+    `refs/remotes/hub/main` and never touches `origin/main` — so HEAD was not contained
+    in it and the guard passed. Syncing with no local commits reproduces exactly that
+    state, which is why this test asserts the refusal came from the supervisor's own
+    receipt rather than from the wrapper.
+    """
+    write(deployment["hub_seed"] / f"projects/{PROJECT}/questions/2026-08-20-moved.md", "# M\n")
+    git(deployment["hub_seed"], "add", "-A")
+    git(deployment["hub_seed"], "commit", "--quiet", "-m", "hub moves")
+    git(deployment["hub_seed"], "push", "--quiet", str(deployment["hub"]), "main")
+
+    worker_script(deployment, '''
+say "SYNC:$("$HIVE" sync workspace 2>&1)"
+say "STALE:$(git -C "$WS" rev-parse origin/main)"
+say "HEAD:$(git -C "$WS" rev-parse HEAD)"
+say "PUB:$("$HIVE" publish workspace 2>&1)" || true
+''')
+    assert run_supervisor(deployment).returncode == 0
+    text = out(deployment)
+    stale = next(ln.split(":", 1)[1] for ln in text.splitlines() if ln.startswith("STALE:"))
+    head = next(ln.split(":", 1)[1] for ln in text.splitlines() if ln.startswith("HEAD:"))
+    assert stale != head, (
+        "this test is only meaningful if the worker-side guard is bypassed, which needs a "
+        f"stale origin/main; it was not stale: {text}"
+    )
+    assert "NOTHING_TO_PUBLISH" in text, text
+    assert "PUB:published" not in text, f"a no-op push must never read as a publication: {text}"
+    # The refusal came from the supervisor, on the trusted side of the boundary.
+    spool = (deployment["exec_dir"] / "spool.log").read_text()
+    assert "NOTHING_TO_PUBLISH" in spool, spool
+
+
+def test_a_code_branch_with_no_commits_of_its_own_is_refused_the_same_way(deployment):
+    """The same rule in the form a pull-request branch takes: a branch with no commit of
+    its own is nothing to review, and saying it was published is the same lie.
+
+    Here the worker-side guard is the one that fires — the code clone's `origin/main` is
+    current, so it catches the case before a request is even written. The assertion is on
+    the OUTCOME rather than on which layer refused, because both layers implement the
+    same rule and the worker cannot tell them apart.
+    """
+    worker_script(deployment, '''
+say "PUB:$("$HIVE" publish code 2>&1)" || true
+''')
+    assert run_supervisor(deployment).returncode == 0
+    text = out(deployment)
+    assert "nothing to publish" in text.lower(), text
+    assert "PUB:published" not in text, text
+    assert CODE_BRANCH not in git(deployment["code_remote"], "branch", "--list").stdout
+
+
+def test_the_sync_rebase_needs_no_ambient_git_identity(deployment):
+    """The root cause, asserted directly. The child runs with a HOME that has no
+    gitconfig and both other config layers closed (see the fixture) — which is what a
+    constructed environment looks like, and what CI is. The rebase is the transport's own
+    plumbing, so it carries its own committer identity rather than borrowing the host's.
+    """
+    write(deployment["hub_seed"] / f"projects/{PROJECT}/questions/2026-08-20-moved.md", "# M\n")
+    git(deployment["hub_seed"], "add", "-A")
+    git(deployment["hub_seed"], "commit", "--quiet", "-m", "hub moves")
+    git(deployment["hub_seed"], "push", "--quiet", str(deployment["hub"]), "main")
+
+    worker_script(deployment, f'''
+mkdir -p "$WS/projects/{PROJECT}/reports"
+printf '# Result\\n' > "$WS/{REPORT}"
+git -C "$WS" add -A
+git -C "$WS" -c user.name=w -c user.email=w@x commit --quiet -m "result"
+say "IDENTITY:$(git -C "$WS" config --get user.email || echo NONE)"
+say "SYNC:$("$HIVE" sync workspace 2>&1)"
+say "COMMITTER:$(git -C "$WS" log -1 --format=%cn)"
+say "SUBJECT:$(git -C "$WS" log -1 --format=%s)"
+''')
+    assert run_supervisor(deployment).returncode == 0
+    text = out(deployment)
+    assert "IDENTITY:NONE" in text, f"the fixture must supply no ambient identity: {text}"
+    assert "workspace synced" in text, text
+    assert "SUBJECT:result" in text, "the worker's commit must survive the rebase"
+    assert f"COMMITTER:hive worker {deployment['worker']}" in text, (
+        "the rebase names itself as the committer rather than borrowing the host's"
+    )

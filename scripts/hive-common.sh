@@ -281,10 +281,39 @@ CODE_ROOT="$CODE_ROOT"
 CODE_BRANCH="$CODE_BRANCH"
 RUN_DIR="$RUN_DIR"
 WORKER_IO="$WORKER_IO"
+WORKER="$WORKER"
 BRIDGEVARS
   cat >> "$BRIDGE" <<'BRIDGEBODY'
 SPOOL="$RUN_DIR/spool"; RECEIPTS="$RUN_DIR/receipts"
 TIMEOUT="${HIVE_SPOOL_TIMEOUT:-180}"
+
+# `git rebase` needs a COMMITTER identity, and this rebase is the transport's own
+# plumbing acting on the worker's behalf — not authorship, which the rebase preserves.
+# Depending on ambient git config for it was a real defect: a supervised worker runs
+# under a constructed environment with no operator gitconfig in reach, so on any host
+# without a global identity the rebase died, left the clone DETACHED mid-rebase with the
+# worker's commit no longer on HEAD, and the next publication carried nothing. Naming an
+# identity here makes the sync work the same way everywhere, and makes it honest about
+# who performed it.
+git_as_worker() {  # git_as_worker <git args...>
+  git -c "user.name=hive worker $WORKER" -c "user.email=$WORKER@workers.invalid" "$@"
+}
+
+# A rebase that fails must leave the clone where it found it. Without the abort, git
+# stops with a detached HEAD at the upstream and a rebase in progress — so the worker's
+# own commits are not on HEAD, `git status` is confusing, and anything that reads HEAD
+# next (a publication, above all) silently operates on the wrong thing.
+rebase_onto() {  # rebase_onto <repo> <upstream>
+  local out
+  if out=$(git_as_worker -C "$1" rebase "$2" 2>&1); then
+    return 0
+  fi
+  printf '%s\n' "$out" >&2
+  git -C "$1" rebase --abort >/dev/null 2>&1 || true
+  echo "hive: rebase onto $2 failed; your clone was restored to where it was." >&2
+  echo "  Resolve whatever the error above names, then run 'sync workspace' again." >&2
+  return 1
+}
 
 usage() { sed -n '3,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
@@ -332,7 +361,9 @@ bundle_ref() {  # bundle_ref <repo> <ref> <out>
 
 sync_workspace() {
   if [ "$WORKER_IO" = "direct" ]; then
-    git -C "$WS_ROOT" pull --rebase --quiet || { echo "hive: git pull --rebase failed" >&2; exit 1; }
+    git -C "$WS_ROOT" fetch --quiet origin main \
+      || { echo "hive: git fetch failed" >&2; exit 1; }
+    rebase_onto "$WS_ROOT" FETCH_HEAD || exit 1
     echo "workspace synced to $(git -C "$WS_ROOT" rev-parse --short HEAD)"
     return
   fi
@@ -345,13 +376,7 @@ sync_workspace() {
   # config and hooks have no trusted authority. The trusted side only produced a file.
   git -C "$WS_ROOT" fetch --quiet "$bundle" 'refs/heads/main:refs/remotes/hub/main' \
     || { echo "hive: could not read the sync bundle at $bundle" >&2; exit 1; }
-  if [ -n "$(git -C "$WS_ROOT" status --porcelain)" ]; then
-    git -C "$WS_ROOT" rebase --quiet refs/remotes/hub/main \
-      || { echo "hive: rebase onto the hub's main failed; resolve and retry" >&2; exit 1; }
-  else
-    git -C "$WS_ROOT" rebase --quiet refs/remotes/hub/main \
-      || { echo "hive: rebase onto the hub's main failed; resolve and retry" >&2; exit 1; }
-  fi
+  rebase_onto "$WS_ROOT" refs/remotes/hub/main || exit 1
   echo "workspace synced to $(git -C "$WS_ROOT" rev-parse --short HEAD)"
 }
 

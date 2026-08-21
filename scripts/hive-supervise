@@ -294,6 +294,17 @@ bridge_publish_workspace() {  # bridge_publish_workspace <run-dir> <request-id>
       *)                                             bad="$bad $f" ;;
     esac
   done < <(tgit -C "$repo" diff --name-status --no-renames refs/heads/main refs/heads/incoming)
+  # A publication that carries nothing of the worker's is not a publication, and calling
+  # it one is worse than refusing: the worker is told its report is on the hub when the
+  # hub never received it. That is exactly what happened when a failed rebase left a
+  # clone detached at the hub's own main — the bundle was valid, the ancestry check
+  # passed, the push was a clean no-op, and the receipt said "published". A green that
+  # survives the mechanism being disabled is the one kind of green worth hunting.
+  if [ -z "$(tgit -C "$repo" diff --name-only refs/heads/main refs/heads/incoming)" ]; then
+    receipt "$rd" "$id" rejected "rejected: NOTHING_TO_PUBLISH your commit changes no file the hub does not already have, so this publication would carry nothing of yours. Check that your work is on HEAD (a failed rebase can leave it behind), then retry."
+    return
+  fi
+
   if [ -n "$bad" ]; then
     receipt "$rd" "$id" rejected "rejected: PATH_NOT_ALLOWED workspace publication may add or modify projects/$project/reports/*-$task-result*.md and may only ADD projects/$project/questions/*.md; it may delete nothing. Refused:$bad"
     return
@@ -340,6 +351,13 @@ bridge_publish_code() {  # bridge_publish_code <run-dir> <request-id>
   fi
   if ! tgit -C "$repo" merge-base refs/heads/main refs/heads/incoming >/dev/null 2>&1; then
     receipt "$rd" "$id" rejected "rejected: UNRELATED_HISTORY your branch shares no ancestor with $remote main, so it is not a change to this repository. Rebase onto origin/main and retry."
+    return
+  fi
+  # The same rule as workspace publication, in the form a branch takes: a pull request
+  # with no commit of its own is nothing to review, and reporting it as published would
+  # tell a worker its branch is up when nothing of its work is on it.
+  if [ "$(tgit -C "$repo" rev-list --count refs/heads/main..refs/heads/incoming)" = "0" ]; then
+    receipt "$rd" "$id" rejected "rejected: NOTHING_TO_PUBLISH your branch carries no commit that $remote main does not already have. Check that your work is on $branch (a failed rebase can leave it behind), then retry."
     return
   fi
 
