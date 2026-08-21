@@ -313,20 +313,67 @@ add_order() {  # add_order <project> <basename-no-ext> <title> -> prints REL pat
   printf '%s\n' "$rel"
 }
 
-# no-op worker command: records the kickoff it was handed, then idles so the pane
-# persists for the nudge. Stands in for `claude`.
+# No-op harness: answers a version probe, records the kickoff it was handed, then idles
+# so the pane persists for the nudge. It stands in for `claude`, and the drill reaches it
+# the way every launch now does — through a ROUTE in this sandbox's own deployment
+# catalog, on the built-in `generic` adapter, whose argv is `<executable> <args...>
+# <kickoff>`. That is the point worth drilling: a harness this build has never heard of
+# becomes launchable by writing configuration, with no code change and no descriptor.
 WORKER_CMD="$SANDBOX/worker-cmd.sh"
 cat > "$WORKER_CMD" <<EOF
 #!/usr/bin/env bash
-printf '%s' "\$1" > "$SANDBOX/kickoff.txt"
+case "\${1:-}" in --version) echo "drill-harness 0.0.1"; exit 0 ;; esac
+printf '%s' "\${!#}" > "$SANDBOX/kickoff.txt"
 exec sleep 600
 EOF
 chmod +x "$WORKER_CMD"
 
+# The deployment catalog IS the authorization (runner-trust doctrine, 2026-08-20). The
+# drill writes its own, in the sandbox, so nothing here can touch the operator's.
+DRILL_CATALOG="$SANDBOX/routes.json"
+cat > "$DRILL_CATALOG" <<EOF
+{
+  "schema_version": 2,
+  "captured_at": "2026-08-20",
+  "note": "drill sandbox catalog — never the operator's",
+  "defaults": {"worker": "drill-default"},
+  "routes": [
+    {
+      "name": "drill-default",
+      "model_vendor": "drill-vendor", "provider": "drill-provider",
+      "model": "drill-model-1", "harness": "drill-harness", "adapter": "generic",
+      "billing_market": "subscription", "credential_pool": "drill-pool",
+      "enabled": true,
+      "runner": {"executable": "$WORKER_CMD", "args": [], "inherit_env": [],
+                 "worker_io": "direct"}
+    },
+    {
+      "name": "drill-override",
+      "model_vendor": "drill-vendor", "provider": "drill-provider",
+      "model": "drill-model-2", "harness": "drill-harness", "adapter": "generic",
+      "billing_market": "subscription", "credential_pool": "drill-pool",
+      "enabled": true,
+      "runner": {"executable": "$WORKER_CMD", "args": ["--drill-flag"],
+                 "inherit_env": [], "worker_io": "direct"}
+    },
+    {
+      "name": "drill-disabled",
+      "model_vendor": "drill-vendor", "provider": "drill-provider",
+      "model": "drill-model-3", "harness": "drill-harness", "adapter": "generic",
+      "billing_market": "subscription", "credential_pool": "drill-pool",
+      "enabled": false,
+      "runner": {"executable": "$WORKER_CMD", "args": [], "inherit_env": [],
+                 "worker_io": "direct"}
+    }
+  ]
+}
+EOF
+
 # --- environment the scripts read (deployment layer overridden to the sandbox) --
 # (tmux isolation is set at the top of the file — it must precede the EXIT trap.)
 export HIVE_TMUX_SESSION="$TMUX_SESSION"
-export HIVE_WORKER_CMD="$WORKER_CMD"
+export HIVE_ROUTE_CATALOG="$DRILL_CATALOG"
+export HIVE_EXEC_ROOT="$SANDBOX/exec"
 export WS_HUB="$HUB"
 export OPS_WS="$WS"
 export CANON_ROOT="$CANON"
@@ -345,7 +392,7 @@ echo
 echo "== project '$APROJ': launch (project inferred from order path) =="
 AORDER=$(add_order "$APROJ" "2026-07-13-alpha-demo" "alpha demo")
 AWORKER="sess-alpha-${STAMP}"
-AWRAP="$WRAPPERS/$AWORKER.sh"
+AWRAP="$WORK/$AWORKER/run/emit"
 "$SCRIPT_DIR/hive-launch" "$AORDER" --worker "$AWORKER"
 check "worker workspace clone provisioned"     "[ -d '$WORK/$AWORKER/hive/.git' ]"
 check "code clone provisioned (dir named after project)" "[ -d '$WORK/$AWORKER/$APROJ/.git' ]"
@@ -425,7 +472,7 @@ echo "== SECOND project '$BPROJ': full lifecycle on its own run =="
 # beta's run, and close acts on beta's board — all inferred, no env pointing at it.
 BORDER=$(add_order "$BPROJ" "2026-07-13-beta-demo" "beta demo")
 BWORKER="sess-beta-${STAMP}"
-BWRAP="$WRAPPERS/$BWORKER.sh"
+BWRAP="$WORK/$BWORKER/run/emit"
 "$SCRIPT_DIR/hive-launch" "$BORDER" --worker "$BWORKER" >/dev/null
 check "beta: code clone named after beta"        "[ -d '$WORK/$BWORKER/$BPROJ/.git' ]"
 check "beta: origin re-pointed to beta CODE_REPO" "git -C '$WORK/$BWORKER/$BPROJ' remote get-url origin | grep -q 'github.invalid/cassiopenachin/$BPROJ'"
@@ -554,7 +601,7 @@ echo "== long task id: launch -> close (wrap-proof JSON read path) =="
 LTASK="drill-a-very-long-task-id-that-would-wrap-the-narrow-rendered-task-column"
 LORDER=$(add_order "$APROJ" "2026-07-13-$LTASK" "long id")
 LWORKER="sess-longid-${STAMP}"
-LWRAP="$WRAPPERS/$LWORKER.sh"
+LWRAP="$WORK/$LWORKER/run/emit"
 "$SCRIPT_DIR/hive-launch" "$LORDER" --worker "$LWORKER" >/dev/null
 check "long id: launch -> assigned (JSON read, not table)" "[ \"\$(bstatus '$ARUN' '$LTASK')\" = assigned ]"
 "$LWRAP" --type task.accepted --task "$LTASK" >/dev/null
@@ -897,7 +944,7 @@ check "the print names which tmux step failed" "printf '%s' \"\$HOUT\" | grep -q
 check "the board really was left half-launched" "[ \"\$(bstatus '$ARUN' drill-halflaunch)\" = assigned ]"
 check "recovery print carries the filled kickoff" \
   "printf '%s' \"\$HOUT\" | grep -qF 'You are hive worker $HWORKER on task drill-halflaunch'"
-check "recovery print names the wrapper"       "printf '%s' \"\$HOUT\" | grep -qF '$WRAPPERS/$HWORKER.sh'"
+check "recovery print names the supervisor run-dir" "printf '%s' \"\$HOUT\" | grep -qF '$SANDBOX/exec/$HWORKER'"
 check "recovery print names the clones"        "printf '%s' \"\$HOUT\" | grep -qF '$WORK/$HWORKER/hive'"
 check "recovery print forbids a re-run"        "printf '%s' \"\$HOUT\" | grep -qF 'Do NOT re-run hive-launch'"
 check "recovery print points at RUNBOOK recovery" "printf '%s' \"\$HOUT\" | grep -qF 'Dead worker recovery'"
@@ -911,29 +958,73 @@ expect_fail_msg "a half-launched task does refuse a re-launch, as the print warn
   "$SCRIPT_DIR/hive-launch" "$HORDER" --worker "sess-halflaunch-2-${STAMP}"
 
 echo
-echo "== the launched pane is autonomous by default (and the override still wins) =="
-# A pane that opens on an interactive permission prompt is not a launched task:
-# the ceremony ends, the work waits for someone to attend it. The default worker
-# command therefore carries the autonomy flag. The drill cannot start a real
-# session, so it asserts the COMMAND the launcher issues: with HIVE_WORKER_CMD
-# unset, the tmux stub above fails window creation and the half-launch print shows
-# the exact invocation that would have run — flag included.
-DEF_CMD=$( env -u HIVE_WORKER_CMD bash -euo pipefail -c \
-  "source '$SCRIPT_DIR/hive-common.sh'; printf '%s' \"\$HIVE_WORKER_CMD\"" )
-check "the default worker command carries the autonomy flag" \
-  "printf '%s' \"$DEF_CMD\" | grep -qF -- '--permission-mode auto'"
-OVR_CMD=$( HIVE_WORKER_CMD='some-other-cli --flag' bash -euo pipefail -c \
-  "source '$SCRIPT_DIR/hive-common.sh'; printf '%s' \"\$HIVE_WORKER_CMD\"" )
-check "HIVE_WORKER_CMD overrides the default outright" "[ \"$OVR_CMD\" = 'some-other-cli --flag' ]"
-AORDER2=$(add_order "$APROJ" "2026-07-13-drill-autonomy" "autonomy default")
-# shellcheck disable=SC2034  # consumed by `check`, which evals its condition string
-AUTOOUT="$(PATH="$STUB_BIN:$PATH" env -u HIVE_WORKER_CMD \
-  "$SCRIPT_DIR/hive-launch" "$AORDER2" --worker "sess-autonomy-${STAMP}" 2>&1)" || true
-check "the ISSUED invocation carries the autonomy flag" \
-  "printf '%s' \"\$AUTOOUT\" | grep -qF -- '$DEF_CMD \"\$HIVE_KICKOFF\"'"
-# And the drill's own override is what has been driving every pane above: the
-# no-op worker command only writes kickoff.txt if it was the command actually run.
-check "the drill's HIVE_WORKER_CMD override really drove the panes" "[ -s '$SANDBOX/kickoff.txt' ]"
+echo "== the route catalog is the authorization: default, override, and the refusals =="
+# What replaced the HIVE_WORKER_CMD deployment string (runner-trust doctrine, 2026-08-20).
+# Every launch above used this catalog's `defaults.worker`; the checks below are the rest
+# of the contract — an operator override for one launch, and the cheap deterministic
+# refusals that are all a launch still makes before any model work.
+
+# The preflight resolves the same request the launch does, with no clone, no spine write
+# and no token spent.
+CHKORDER=$(add_order "$APROJ" "2026-07-13-drill-routecheck" "route check")
+CHKOUT="$("$SCRIPT_DIR/hive-launch" "$CHKORDER" --worker "sess-routechk-${STAMP}" --check 2>&1)"
+printf '%s\n' "$CHKOUT" | sed 's/^/    /'
+check "--check names the default route and says it is the default" \
+  "printf '%s' \"\$CHKOUT\" | grep -qE 'route:.*drill-default.*\\(default\\)'"
+check "--check names the resolved runner and its worker I/O" \
+  "printf '%s' \"\$CHKOUT\" | grep -qE 'runner:.*worker I/O: direct'"
+check "--check probes the INSTALLED harness for a version" \
+  "printf '%s' \"\$CHKOUT\" | grep -qF 'harness: 0.0.1'"
+check "--check provisioned nothing"  "[ ! -e '$WORK/sess-routechk-${STAMP}' ]"
+check "--check wrote nothing to the board" "[ -z \"\$(bstatus '$ARUN' drill-routecheck)\" ]"
+
+# The override: authorized for ONE launch, and it creates and amends nothing.
+CAT_BEFORE=$(cksum < "$DRILL_CATALOG")
+OVRORDER=$(add_order "$APROJ" "2026-07-13-drill-routeovr" "route override")
+"$SCRIPT_DIR/hive-launch" "$OVRORDER" --route drill-override \
+  --worker "sess-routeovr-${STAMP}" >/dev/null
+check "--route launches on the named route -> assigned" \
+  "[ \"\$(bstatus '$ARUN' drill-routeovr)\" = assigned ]"
+check "--route amended no workspace file" "[ -z \"\$(git -C '$WS' status --porcelain)\" ]"
+check "--route did not touch the catalog"  "[ \"$CAT_BEFORE\" = \"\$(cksum < '$DRILL_CATALOG')\" ]"
+
+# The refusals that remain, and nothing else.
+BADRTORDER=$(add_order "$APROJ" "2026-07-13-drill-routebad" "route unknown")
+expect_fail_msg "an unknown route refuses by name" "ROUTE_UNKNOWN" \
+  "$SCRIPT_DIR/hive-launch" "$BADRTORDER" --route nope --worker "sess-routebad-${STAMP}"
+expect_fail_msg "a disabled route refuses rather than launching" "ROUTE_DISABLED" \
+  "$SCRIPT_DIR/hive-launch" "$BADRTORDER" --route drill-disabled --worker "sess-routebad-${STAMP}"
+check "a refused launch provisioned nothing" "[ ! -e '$WORK/sess-routebad-${STAMP}' ]"
+
+# A missing executable is a cheap deterministic failure and refuses BEFORE anything is
+# created — the doctrine keeps exactly this class and no more.
+MISSCAT="$SANDBOX/routes-missing.json"
+jq '.routes[0].runner.executable = "/nonexistent/harness"' "$DRILL_CATALOG" > "$MISSCAT"
+MISSORDER=$(add_order "$APROJ" "2026-07-13-drill-routemiss" "route missing exe")
+expect_fail_msg "a route naming an absent executable refuses" "not on PATH" \
+  env HIVE_ROUTE_CATALOG="$MISSCAT" "$SCRIPT_DIR/hive-launch" "$MISSORDER" \
+    --worker "sess-routemiss-${STAMP}"
+check "the missing-executable refusal provisioned nothing" \
+  "[ ! -e '$WORK/sess-routemiss-${STAMP}' ]"
+
+# There is no unsupervised fallback. Every configured route goes through the adapter and
+# the supervisor, and the drill's no-op harness only writes kickoff.txt when it was the
+# process the supervisor actually exec'd.
+check "the panes above really ran the catalog's executable" "[ -s '$SANDBOX/kickoff.txt' ]"
+check "the supervisor recorded the execution outside the task root" \
+  "[ -f '$SANDBOX/exec/$AWORKER/plan.json' ]"
+check "the supervisor state is NOT inside the worker's task root" \
+  "[ ! -e '$WORK/$AWORKER/exec' ] && [ ! -e '$WORK/$AWORKER/run/plan.json' ]"
+
+# hive-routes reads the same catalog and agrees about what is runnable.
+# shellcheck disable=SC2034  # read inside check's eval, which shellcheck cannot see
+ROUTESOUT="$("$SCRIPT_DIR/hive-routes" 2>&1)"
+check "hive-routes marks the worker default" \
+  "printf '%s' \"\$ROUTESOUT\" | grep -qF 'drill-default  <- worker default'"
+check "hive-routes refuses the disabled route with a reason" \
+  "printf '%s' \"\$ROUTESOUT\" | grep -qF 'REFUSED [ROUTE_DISABLED]'"
+check "hive-routes prints no environment value, only names" \
+  "! printf '%s' \"\$ROUTESOUT\" | grep -qF '$HUB'"
 
 echo
 echo "== a regeneration/scoring failure is LOUD but never makes a completed close look failed =="
@@ -946,7 +1037,7 @@ SFTASK="drill-scorefail"
 SFORDER=$(add_order "$APROJ" "2026-07-13-$SFTASK" "score failure")
 SFWORKER="sess-scorefail-${STAMP}"
 "$SCRIPT_DIR/hive-launch" "$SFORDER" --worker "$SFWORKER" >/dev/null
-SFWRAP="$WRAPPERS/$SFWORKER.sh"
+SFWRAP="$WORK/$SFWORKER/run/emit"
 "$SFWRAP" --type task.accepted --task "$SFTASK" >/dev/null
 "$SFWRAP" --type task.result_posted --task "$SFTASK" \
   --payload "$(jq -cn --arg r "projects/$APROJ/reports/2026-07-13-$SFTASK-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null

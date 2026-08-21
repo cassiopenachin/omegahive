@@ -231,7 +231,7 @@ def test_route_then_start_then_finish_in_order(rig):
     approved, started, finished = rows
     assert started[2] == "e2e-task"
     assert finished[2] == "e2e-task"
-    assert started[3]["harness_version"] == "fake-harness"
+    assert started[3]["harness_version"] == "9.9.9"
 
     fin = finished[3]
     assert fin["outcome"] == "success"

@@ -31,7 +31,10 @@ set -euo pipefail
 : "${WS_HUB:=$HOME/repos/hive-workspace.git}"      # local workspace hub (clone source, push target)
 : "${OPS_WS:=$HOME/workspaces/hive}"               # operator's workspace clone: order files, project confs, answers
 : "${WORK_ROOT:=$HOME/work}"                       # per-worker working trees live under here
-: "${WRAPPER_DIR:=$HOME/work/hive-wrappers}"       # per-seat emit wrappers (proto-credentials)
+# A worker's emit wrapper now lives INSIDE its own task root ($WORK_ROOT/<worker>/run),
+# because a runner that scopes the worker to that root cannot execute a file outside it.
+# WRAPPER_DIR is kept only so an old deployment's export does not break a sourced script.
+: "${WRAPPER_DIR:=$HOME/work/hive-wrappers}"       # legacy; no current script writes here
 : "${HIVE_TMUX_SESSION:=hive}"                     # tmux session that holds the worker panes
 # There is deliberately no HIVE_WORKER_CMD here any more. The command a worker runs is
 # a ROUTE fact — the catalog's `runner` block names the executable, its static arguments
@@ -187,6 +190,13 @@ COMPOSE="\${OMEGAHIVE_COMPOSE:-$HIVE_COMPOSE}"
 # \`cd\` rather than \`env -C\`: -C is GNU coreutils >= 8.28 and does not exist on
 # macOS or the BSDs, so every wrapper issued to a non-GNU host failed at first use.
 # A subshell-free cd is exactly equivalent and portable everywhere.
+# The same seam every operator tool has: HIVE_CLI_CMD runs the CLI directly instead of
+# in the container. It is what works between deploying a branch and rebuilding the image,
+# and what lets the drills exercise this exact file with no container.
+if [ -n "\${HIVE_CLI_CMD:-}" ]; then
+  # shellcheck disable=SC2086  # HIVE_CLI_CMD is legitimately several words
+  exec \$HIVE_CLI_CMD emit --run-id "$RUN" --role worker --actor "$WORKER" "\$@"
+fi
 cd "${OMEGA_DIR}" || { echo "wrapper: cannot enter ${OMEGA_DIR}" >&2; exit 1; }
 # shellcheck disable=SC2086  # COMPOSE is legitimately two words ("podman compose")
 exec \$COMPOSE run --rm -T cli \\
@@ -406,6 +416,10 @@ issue_supervisor_interface() {
 # role=instrument: this identity may emit execution.* and NOTHING task-shaped.
 set -euo pipefail
 COMPOSE="\${OMEGAHIVE_COMPOSE:-$HIVE_COMPOSE}"
+if [ -n "\${HIVE_CLI_CMD:-}" ]; then
+  # shellcheck disable=SC2086  # HIVE_CLI_CMD is legitimately several words
+  exec \$HIVE_CLI_CMD emit --run-id "$RUN" --role instrument --actor "supervisor-$WORKER" "\$@"
+fi
 cd "${OMEGA_DIR}" || { echo "supervisor wrapper: cannot enter ${OMEGA_DIR}" >&2; exit 1; }
 # shellcheck disable=SC2086  # COMPOSE is legitimately two words ("podman compose")
 exec \$COMPOSE run --rm -T cli \\
@@ -420,6 +434,10 @@ SUPWRAP
 # worker's writable root; the request on stdin says what to emit and may not say who.
 set -euo pipefail
 COMPOSE="\${OMEGAHIVE_COMPOSE:-$HIVE_COMPOSE}"
+if [ -n "\${HIVE_CLI_CMD:-}" ]; then
+  # shellcheck disable=SC2086  # HIVE_CLI_CMD is legitimately several words
+  exec \$HIVE_CLI_CMD emit-relay --run-id "$RUN" --actor "$WORKER" --task "$TASK"
+fi
 cd "${OMEGA_DIR}" || { echo "relay wrapper: cannot enter ${OMEGA_DIR}" >&2; exit 1; }
 # shellcheck disable=SC2086  # COMPOSE is legitimately two words ("podman compose")
 exec \$COMPOSE run --rm -T cli \\
@@ -437,15 +455,23 @@ RELAYWRAP
 # warning's first word as the harness version. Observed 2026-08-14: a preflight reported
 # `harness: sh:`. On the spine that would be a `harness_version` fact naming a shell.
 #
-# So: prefer the first line whose first token STARTS WITH A DIGIT, which is what every
-# version string this stack has seen looks like (`2.1.232 (Claude Code)`,
-# `fake-harness 9.9.9` is caught by the fallback). Fall back to the old rule when no line
-# qualifies, because a harness with an unusual banner should still record something
-# rather than nothing — and `unknown` remains the caller's floor.
+# And the version is not always the first token: `claude --version` prints
+# `2.1.231 (Claude Code)` while `codex --version` prints `codex-cli 0.147.0`. A rule that
+# takes the first token records the product name for the second, and a harness_version
+# fact naming a product is a false fact on a durable log.
+#
+# So: scan every token and take the first that PARSES as a version (a leading digit,
+# optionally after a `v`, then at least one dotted component). Fall back to the first
+# token of the first non-empty line when nothing qualifies, because a harness with an
+# unusual banner should still record something rather than nothing — and `unknown`
+# remains the caller's floor. The Python twin is `Adapter.parse_version`.
 harness_version_from() {  # harness_version_from  (reads probe output on stdin)
   awk '
-    NF && $1 ~ /^[0-9]/ { print $1; found = 1; exit }
-    NF && !first        { first = $1 }
+    NF {
+      for (i = 1; i <= NF; i++)
+        if ($i ~ /^v?[0-9]+(\.[0-9]+)+/) { print $i; found = 1; exit }
+      if (!first) first = $1
+    }
     END { if (!found && first) print first }
   '
 }

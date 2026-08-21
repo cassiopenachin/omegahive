@@ -41,19 +41,11 @@ log() { echo "hive-supervise: $*" >&2; }
 # there collapses a board read to the empty string and re-creates a live task.
 command -v jq >/dev/null 2>&1 || die "jq is required by hive-supervise"
 
-# The stack CLI. `hive()` (hive-common.sh) is the containerized path every operator tool
-# uses; HIVE_CLI_CMD overrides it with a direct invocation, which is what lets the
-# fixture-driven end-to-end test drive this exact script with no container and no
-# network. The override is a test seam, not a second code path — both land on the same
-# `omegahive` command.
-hive_cli() {
-  if [ -n "${HIVE_CLI_CMD:-}" ]; then
-    # shellcheck disable=SC2086  # HIVE_CLI_CMD is legitimately several words
-    $HIVE_CLI_CMD "$@"
-  else
-    hive "$@"
-  fi
-}
+# The stack CLI is `hive()` from hive-common.sh: the containerized path every operator
+# tool uses, with HIVE_CLI_CMD overriding it to a direct invocation. That override is what
+# lets the fixture-driven end-to-end tests drive this exact script with no container and
+# no network, and it is what an operator uses between deploying a branch and rebuilding
+# the image. It is one seam on one code path, not a second implementation.
 
 # --- run-dir layout (OUTSIDE the worker's task root) --------------------------------
 #   plan.json        the resolved plan plus the launch-fixed bridge block
@@ -192,14 +184,22 @@ tgit() {  # tgit <git args...>
       "$@"
 }
 
+receipts_dir() { jq -r '.run_dir' "$1/plan.json"; }
+
 receipt() {  # receipt <run-dir> <request-id> <status> <message> [data-json]
   local rd="$1" id="$2" status="$3" message="$4" data="${5:-null}"
-  local rdir; rdir=$(jq -r '.run_dir' "$rd/plan.json")/receipts
-  mkdir -p "$rdir"
-  jq -n --arg s "$status" --arg m "$message" --argjson d "$data" \
-    '{status:$s, message:$m, data:$d}' > "$rdir/$id.json.tmp"
-  mv "$rdir/$id.json.tmp" "$rdir/$id.json"
-  printf '%s\t%s\t%s\n' "$id" "$status" "$message" >> "$rd/spool.log"
+  local rdir; rdir="$(receipts_dir "$rd")/receipts"
+  # Written to a temp name and moved, so a worker polling for its receipt never reads a
+  # half-written one. Every step here can fail — the receipts directory is inside the
+  # WORKER's writable root, and a worker that removes or chmods it must not be able to
+  # kill the process that records its execution. So the failure is logged, not fatal.
+  if ! { mkdir -p "$rdir" \
+         && jq -n --arg s "$status" --arg m "$message" --argjson d "$data" \
+              '{status:$s, message:$m, data:$d}' > "$rdir/$id.json.tmp" \
+         && mv "$rdir/$id.json.tmp" "$rdir/$id.json"; }; then
+    log "WARNING could not write a receipt for request $id into $rdir ($status: $message)"
+  fi
+  printf '%s\t%s\t%s\n' "$id" "$status" "$message" >> "$rd/spool.log" || true
 }
 
 # --- bridge: sync workspace ----------------------------------------------------------
@@ -356,52 +356,71 @@ workspace is the authoritative description of this branch." 2>&1) || {
 # what genuinely has no receipt — and because the request file is removed last, a
 # supervisor killed between the emit and the removal re-sends identical bytes, which the
 # spine's content-derived idempotency key collapses onto the original event.
+# One request, dispatched. Called ONLY from the `if !` below, which suspends errexit for
+# everything it reaches: a bridge operation is a dozen git commands against repositories a
+# worker partly controls, and any one of them failing must produce a refused receipt
+# rather than killing the supervisor before it can record the execution's terminal fact.
+handle_request() {  # handle_request <run-dir> <request-id> <request-file>
+  local rd="$1" id="$2" f="$3" kind op out
+  if ! kind=$(jq -r '.kind // empty' "$f" 2>/dev/null); then
+    receipt "$rd" "$id" rejected "rejected: REQUEST_MALFORMED not valid JSON"
+    return 0
+  fi
+  case "$kind" in
+    emit)
+      # Validation and the emit are ONE call, in the CLI, so there is exactly one
+      # spelling of "what a request may say" and it is the one under test.
+      if out=$("$rd/emit-worker.sh" < "$f" 2>&1); then
+        receipt "$rd" "$id" accepted "$out"
+      else
+        receipt "$rd" "$id" rejected "$out"
+      fi
+      ;;
+    bridge)
+      op=$(jq -r '.op // empty' "$f")
+      # Guard the shape here too: a bridge request has exactly `kind` and `op`, and
+      # anything else is an attempt to choose a path, a branch or a destination.
+      if [ "$(jq -r '[keys[]] | map(select(. != "kind" and . != "op")) | length' "$f")" != "0" ]; then
+        receipt "$rd" "$id" rejected "rejected: REQUEST_FIELD_FORBIDDEN a bridge request carries only kind and op; the source, branch, destination and credential come from the launch plan"
+      else
+        case " $BRIDGE_OPS " in
+          *" $op "*)
+            case "$op" in
+              sync-workspace)    bridge_sync_workspace "$rd" "$id" ;;
+              publish-workspace) bridge_publish_workspace "$rd" "$id" ;;
+              publish-code)      bridge_publish_code "$rd" "$id" ;;
+            esac ;;
+          *)
+            receipt "$rd" "$id" rejected "rejected: BRIDGE_OP_UNKNOWN no bridge operation named '$op'; this worker may ask for: $BRIDGE_OPS" ;;
+        esac
+      fi
+      ;;
+    *)
+      receipt "$rd" "$id" rejected "rejected: REQUEST_KIND_UNKNOWN no request kind '$kind'"
+      ;;
+  esac
+}
+
 drain_spool() {  # drain_spool <run-dir>
-  local rd="$1" run_dir spool f id kind op out
+  local rd="$1" run_dir spool f id rdir
   run_dir=$(jq -r '.run_dir // empty' "$rd/plan.json")
   [ -n "$run_dir" ] || return 0
   spool="$run_dir/spool"
   [ -d "$spool" ] || return 0
+  rdir="$run_dir/receipts"
   for f in "$spool"/*.json; do
     [ -f "$f" ] || continue
     id=$(basename "$f" .json)
-    if ! kind=$(jq -r '.kind // empty' "$f" 2>/dev/null); then
-      receipt "$rd" "$id" rejected "rejected: REQUEST_MALFORMED not valid JSON"
-      rm -f "$f"; continue
+    if ! handle_request "$rd" "$id" "$f"; then
+      # The handler is meant to answer every request itself. Reaching here means it died
+      # on something unforeseen, and an unanswered request would leave the worker
+      # blocked until its wrapper times out — so it gets an answer anyway.
+      [ -f "$rdir/$id.json" ] || receipt "$rd" "$id" rejected \
+        "rejected: SUPERVISOR_ERROR the supervisor failed while handling this request; see the pane"
     fi
-    case "$kind" in
-      emit)
-        # Validation and the emit are ONE call, in the CLI, so there is exactly one
-        # spelling of "what a request may say" and it is the one under test.
-        if out=$("$rd/emit-worker.sh" < "$f" 2>&1); then
-          receipt "$rd" "$id" accepted "$out"
-        else
-          receipt "$rd" "$id" rejected "$out"
-        fi
-        ;;
-      bridge)
-        op=$(jq -r '.op // empty' "$f")
-        # Guard the shape here too: a bridge request has exactly `kind` and `op`, and
-        # anything else is an attempt to choose a path, a branch or a destination.
-        if [ "$(jq -r '[keys[]] | map(select(. != "kind" and . != "op")) | length' "$f")" != "0" ]; then
-          receipt "$rd" "$id" rejected "rejected: REQUEST_FIELD_FORBIDDEN a bridge request carries only kind and op; the source, branch, destination and credential come from the launch plan"
-        else
-          case " $BRIDGE_OPS " in
-            *" $op "*)
-              case "$op" in
-                sync-workspace)    bridge_sync_workspace "$rd" "$id" ;;
-                publish-workspace) bridge_publish_workspace "$rd" "$id" ;;
-                publish-code)      bridge_publish_code "$rd" "$id" ;;
-              esac ;;
-            *)
-              receipt "$rd" "$id" rejected "rejected: BRIDGE_OP_UNKNOWN no bridge operation named '$op'; this worker may ask for: $BRIDGE_OPS" ;;
-          esac
-        fi
-        ;;
-      *)
-        receipt "$rd" "$id" rejected "rejected: REQUEST_KIND_UNKNOWN no request kind '$kind'"
-        ;;
-    esac
+    # Removed LAST, so a supervisor killed between the emit and this line re-sends
+    # identical bytes on restart, which the spine's content-derived idempotency key
+    # collapses onto the original event.
     rm -f "$f"
   done
 }
@@ -514,7 +533,7 @@ HARNESS_VERSION=$(printf '%s\n' "$VERSION_OUT" | harness_version_from)
 # outstanding requests already answered rather than waiting out a timeout on a receipt
 # that was never going to come. Replaying an emit is safe: the request bytes are
 # identical, and the spine's content-derived idempotency key collapses the repeat.
-drain_spool "$RUN_DIR_ARG"
+drain_spool "$RUN_DIR_ARG" || log "WARNING the pre-start spool drain failed"
 
 # --- 3. start the child, then say so ------------------------------------------------
 # The child is backgrounded so the supervisor keeps a pid to observe — but a plain `&`
@@ -569,7 +588,7 @@ trap on_signal INT TERM HUP
 
 CHILD_RC=0
 while kill -0 "$CHILD" 2>/dev/null; do
-  drain_spool "$RUN_DIR_ARG"
+  drain_spool "$RUN_DIR_ARG" || log "WARNING a spool drain failed; the worker's next call will retry"
   sleep 0.2
 done
 # `wait` returns >128 when interrupted by a trapped signal; the second wait reaps the
@@ -581,7 +600,7 @@ fi
 trap - INT TERM HUP
 # One last pass: a request written in the child's final moments still gets its receipt,
 # even though nobody is waiting for it any more. It is the record that matters.
-drain_spool "$RUN_DIR_ARG"
+drain_spool "$RUN_DIR_ARG" || log "WARNING the final spool drain failed"
 
 # --- 5. read the consumption surface ------------------------------------------------
 # Never fatal. An unreadable surface is `unavailable` with a named reason, which is a
@@ -621,7 +640,7 @@ extract_usage() {
   fi
 
   local out
-  if ! out=$( hive_cli harness-usage --extractor "$USAGE_EXTRACTOR" \
+  if ! out=$( hive harness-usage --extractor "$USAGE_EXTRACTOR" \
                 --pinned-model "$PINNED_MODEL" < "$src" ); then
     USAGE_JSON=$(jq -c -n --arg r "the usage extractor failed to run" \
       '{status:"unavailable", reason:$r}')

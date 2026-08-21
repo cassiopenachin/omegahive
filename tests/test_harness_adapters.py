@@ -185,17 +185,6 @@ def test_codex_usage_is_unavailable_with_a_named_reason_not_a_zero():
 
 
 # --- version parsing ------------------------------------------------------------------
-
-@pytest.mark.parametrize(
-    ("out", "want"),
-    [
-        ("2.1.231 (Claude Code)", "2.1.231"),
-        ("codex-cli 0.147.0", "codex-cli"),
-        # The real 2026-08-14 failure: an unrelated warning reached stderr first and the
-        # naive rule recorded `sh:` as the harness version.
-        ("sh: warning: setlocale failed\n0.9.1", "0.9.1"),
-        ("", ""),
-    ],
-)
-def test_version_parsing_prefers_a_line_that_starts_with_a_digit(out, want):
-    assert get_adapter("generic").parse_version(out) == want
+# The rule itself, and its agreement with the shell twin, live in
+# `tests/test_hive_common.py`: the shell function is what a preflight and the supervisor
+# actually run, so the pair is asserted where both can be executed.

@@ -33,11 +33,17 @@ What an adapter returns, and why each piece is here:
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from omegahive.harness.records import RefusalError, RouteEntry, is_hive_authority_env
+
+# What counts as a version token in a `--version` banner: a leading digit (optionally
+# after a `v`) followed by at least one dotted component. `0.147.0` and `v2.1.231` match;
+# `codex-cli`, `sh:` and a bare `2026` do not.
+_VERSION_SHAPE = re.compile(r"^v?\d+(\.\d+)+")
 
 # The only environment variables a worker process inherits, unless its route names more
 # by name. Everything else is dropped.
@@ -143,28 +149,32 @@ class Adapter:
         return [route.runner.executable, "--version"]
 
     def parse_version(self, output: str) -> str:
-        """The first token that looks like a version, else the first token at all.
+        """The first token on any line that LOOKS like a version, else the first token.
 
-        `claude --version` prints `2.1.231 (Claude Code)`; taking the first token keeps
-        the recorded value a version rather than a product banner.
+        Two real banners, two shapes: `claude --version` prints `2.1.231 (Claude Code)`
+        and `codex --version` prints `codex-cli 0.147.0`. Taking the first token of the
+        first line records `2.1.231` for one and the product name `codex-cli` for the
+        other — a harness_version fact naming a product is a false fact on a durable log,
+        so the scan looks at every token and takes the first that parses as a version.
 
-        The digit preference is not cosmetic. The probe merges stderr so that a harness
-        which fails to start can say why — which means an unrelated warning
-        (`bash: warning: setlocale: ...`) can land on the first line, and the naive rule
+        The preference is not cosmetic. The probe merges stderr so that a harness which
+        fails to start can say why — which means an unrelated warning
+        (`bash: warning: setlocale: ...`) can land on the first line, and a naive rule
         records that warning's first word as the harness version. Observed 2026-08-14 on
-        a real preflight, which reported `harness: sh:`. A version fact naming a shell is
-        worse than no fact. The shell twin is `harness_version_from` in hive-common.sh.
+        a real preflight, which reported `harness: sh:`. The shell twin is
+        `harness_version_from` in hive-common.sh; the two are asserted to agree in
+        `tests/test_hive_common.py`.
         """
         first = ""
         for raw in output.splitlines():
             line = raw.strip()
             if not line:
                 continue
-            token = line.split()[0]
-            if token[:1].isdigit():
-                return token
+            for token in line.split():
+                if _VERSION_SHAPE.match(token):
+                    return token
             if not first:
-                first = token
+                first = line.split()[0]
         return first
 
 

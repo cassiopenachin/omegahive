@@ -132,7 +132,8 @@ def deployment(tmp_path):
 
     entries = [route(runner=runner(
         worker_io="supervised",
-        inherit_env=["HIVE_FAKE_BEHAVIOUR", "HIVE_FAKE_SCRIPT", "HIVE_FAKE_USAGE_FILE"]))]
+        inherit_env=["HIVE_FAKE_BEHAVIOUR", "HIVE_FAKE_SCRIPT", "HIVE_FAKE_USAGE_FILE",
+                     "HIVE_SPOOL_TIMEOUT"]))]
     request = {
         "catalog_b64": base64.b64encode(json.dumps(catalog(*entries)).encode()).decode(),
         "route": None,
@@ -196,6 +197,16 @@ def deployment(tmp_path):
         "task_root": task_root, "ws_root": ws_root, "code_root": code_root,
         "run_dir": run_dir, "exec_dir": exec_dir, "script": script, "env": env,
     }
+
+
+def set_child_env(dep, **pairs) -> None:
+    """The child's environment is fixed in plan.json at RESOLVE time by the route's
+    allowlist; the supervisor never merges its own in. So a test that needs a different
+    value sets it where a real deployment variable would be: in the resolved plan."""
+    path = dep["exec_dir"] / "plan.json"
+    plan = json.loads(path.read_text())
+    plan["env"].update(pairs)
+    path.write_text(json.dumps(plan))
 
 
 def run_supervisor(dep, *, timeout=300) -> subprocess.CompletedProcess:
@@ -671,7 +682,7 @@ def test_the_lifecycle_facts_are_the_same_shape_on_a_supervised_route(deployment
     assert kinds == ["execution.started", "execution.finished"]
     started = next(r[3] for r in events(deployment) if r[0] == "execution.started")
     finished = next(r[3] for r in events(deployment) if r[0] == "execution.finished")
-    assert started["harness_version"] == "fake-harness"
+    assert started["harness_version"] == "9.9.9"
     assert started["identity"]["route"] == "fake-subscription"
     assert finished["outcome"] == "success"
     assert finished["usage"]["status"] == "reported"
@@ -686,3 +697,34 @@ def test_the_supervisor_still_cannot_speak_as_the_worker(deployment):
     assert f'--actor "supervisor-{deployment["worker"]}"' in text
     relay = (deployment["exec_dir"] / "emit-worker.sh").read_text()
     assert "emit-relay" in relay and deployment["worker"] in relay
+
+
+def test_a_worker_cannot_kill_its_own_supervisor_by_breaking_its_receipts_dir(deployment):
+    """Found by reading the drain as code rather than by running it.
+
+    The receipts directory is inside the WORKER's writable root. Every step of writing a
+    receipt can therefore be made to fail by the worker — and under `set -e` a failure
+    inside the drain loop would exit the supervisor before it could record the
+    execution's terminal fact, which is the one outcome that whole script exists to
+    prevent. So a broken receipts directory is logged and the run continues.
+    """
+    seed_board(deployment)
+    set_child_env(deployment, HIVE_SPOOL_TIMEOUT="3")
+    receipts = deployment["run_dir"] / "receipts"
+    worker_script(deployment, f'''
+chmod 0500 "{receipts}"
+"$EMIT" --type task.accepted --task {TASK} >/dev/null 2>&1 || true
+chmod 0700 "{receipts}"
+say "worker finished its turn"
+''')
+    proc = run_supervisor(deployment)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "worker finished its turn" in out(deployment)
+    assert "could not write a receipt" in proc.stderr, proc.stderr
+
+    kinds = [r[0] for r in events(deployment)]
+    assert "execution.finished" in kinds, (
+        "the terminal fact must be recorded even when the worker broke its own transport"
+    )
+    # And the emit itself still happened: the receipt is the worker's copy, not the record.
+    assert "task.accepted" in kinds
