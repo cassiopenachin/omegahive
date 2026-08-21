@@ -128,8 +128,10 @@ WS_ROOT="$TASK_ROOT/hive"
 CODE_ROOT="$TASK_ROOT/$PROJECT"           # code clone named after the project (omegahive keeps its historical dir)
 RUN_DIR="$TASK_ROOT/run"                  # run-local interface: wrappers, spool, receipts
 EXEC_DIR="$HIVE_EXEC_ROOT/$WORKER"        # the supervisor's state — OUTSIDE the task root
-SUP_WRAPPER="$EXEC_DIR/emit.sh"           # the supervisor's instrument write path
-RELAY_WRAPPER="$EXEC_DIR/emit-worker.sh"  # the supervisor's relay of a supervised worker's emits
+# The supervisor's two write paths (`emit.sh`, instrument; `emit-worker.sh`, the relay of
+# a supervised worker's own emits) are named and written by `issue_supervisor_interface`
+# in hive-common.sh, from $EXEC_DIR. They are deliberately not variables here: one
+# spelling, in the function that writes them.
 WRAPPER="$RUN_DIR/emit"                   # the worker's own emit command, inside its root
 BRIDGE="$RUN_DIR/hive"                    # the worker's sync/publish command (supervised routes)
 CODE_BRANCH="worker/$TASK"                # the publication branch, fixed by the plan
@@ -216,6 +218,11 @@ if [ -n "$CHECK_ONLY" ]; then
   echo "hive-launch --check: task=$TASK worker=$WORKER project=$PROJECT (no side effects)"
   echo "  order:   $REL@$SHA"
   printf '%s' "$REQ" | hive harness-resolve --check | sed 's/^/  /' || exit 1
+  # The same host-side check the real launch makes, on the same helper, BEFORE the
+  # version probe below. A preflight that printed "NOT INSTALLED" and then exited 0
+  # would tell a human the truth and an automation the opposite, and the whole point of
+  # one resolver is that the two paths cannot disagree.
+  require_executable "$EXECUTABLE" "$ROUTE_NAME"
   # The version probe is the one thing the resolver cannot answer: it must ask the
   # installed harness. Doing it here keeps `--check` a complete preflight — an operator
   # learns that a harness is missing from the check, not from a dead pane.
@@ -229,8 +236,15 @@ if [ -n "$CHECK_ONLY" ]; then
   if VOUT=$("${VARGV[@]}" 2>&1); then
     printf '%s\n' "$(printf '%s\n' "$VOUT" | harness_version_from)  (probe: ${VARGV[*]})"
   else
-    printf 'NOT INSTALLED — `%s` failed:\n' "${VARGV[*]}"
+    # The executable exists (checked above) and could not answer `--version`. That is not
+    # a refusal to launch — the doctrine's cheap deterministic set is presence, not
+    # behaviour — but it is not a clean preflight either, so it exits non-zero and says
+    # which of the two happened.
+    printf 'PRESENT BUT DID NOT ANSWER `%s`:\n' "${VARGV[*]}"
     printf '%s\n' "$VOUT" | sed 's/^/    /'
+    printf '  the route resolves and the executable exists; its version probe failed, so\n'
+    printf '  this preflight is INCOMPLETE. Launching is still possible.\n'
+    exit 1
   fi
   exit 0
 fi

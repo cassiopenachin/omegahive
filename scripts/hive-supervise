@@ -269,21 +269,33 @@ bridge_publish_workspace() {  # bridge_publish_workspace <run-dir> <request-id>
     return
   fi
 
-  # The allowed path diff, taken against the hub's main. `reports/` is narrowed to THIS
-  # task's result files so one worker cannot publish over another's report; `questions/`
-  # is this project's whole directory, because a question is named by date and topic and
-  # not by task.
+  # The allowed path diff, taken against the hub's main, by STATUS as well as by path.
+  #
+  # `reports/` is narrowed to THIS task's result files, so one worker cannot publish over
+  # another's report, and added-or-modified is right there: a revision rewrites the file
+  # in place. `questions/` cannot be narrowed the same way — a question is named by date
+  # and topic, not by task — so it is narrowed by status instead: a worker may ADD a
+  # question and may not modify or delete one. Without that, this project's whole
+  # questions directory would be writable by every worker in it, and a pending question
+  # someone is waiting on could be deleted by an unrelated task.
+  #
+  # A deletion is refused everywhere, including under `reports/`. Rename detection is off
+  # in this fresh trusted repository (git's default), so a file renamed OUT of the allowed
+  # set appears as a deletion of its source path and is caught here rather than slipping
+  # through as an addition somewhere legal.
   bad=""
-  while IFS= read -r f; do
+  while IFS=$'\t' read -r st f; do
     [ -n "$f" ] || continue
-    case "$f" in
-      "projects/$project/reports/"*"-$task-result"*.md) ;;
-      "projects/$project/questions/"*.md) ;;
-      *) bad="$bad $f" ;;
+    case "$st$f" in
+      D*)                                            bad="$bad deleted:$f" ;;
+      [AM]"projects/$project/reports/"*"-$task-result"*.md) ;;
+      A"projects/$project/questions/"*.md) ;;
+      *"projects/$project/questions/"*.md)           bad="$bad changed-not-added:$f" ;;
+      *)                                             bad="$bad $f" ;;
     esac
-  done < <(tgit -C "$repo" diff --name-only refs/heads/main refs/heads/incoming)
+  done < <(tgit -C "$repo" diff --name-status --no-renames refs/heads/main refs/heads/incoming)
   if [ -n "$bad" ]; then
-    receipt "$rd" "$id" rejected "rejected: PATH_NOT_ALLOWED workspace publication is limited to projects/$project/reports/*-$task-result*.md and projects/$project/questions/*.md; your commit also touches:$bad"
+    receipt "$rd" "$id" rejected "rejected: PATH_NOT_ALLOWED workspace publication may add or modify projects/$project/reports/*-$task-result*.md and may only ADD projects/$project/questions/*.md; it may delete nothing. Refused:$bad"
     return
   fi
 
@@ -314,6 +326,22 @@ bridge_publish_code() {  # bridge_publish_code <run-dir> <request-id>
     return
   fi
   tip=$(tgit -C "$repo" rev-parse refs/heads/incoming)
+
+  # The branch must be RELATED to the published history. Not "must contain main" — a pull
+  # request perfectly well sits behind main — but it must share a merge base with it. A
+  # worker owns its own `.git` and can build an orphan commit with no ancestor in the
+  # repository at all; bundling that and asking for a publication would push an unrelated
+  # history onto the launch-recorded branch, and the push itself would not object because
+  # the branch is new. `git push` already refuses a non-fast-forward over an EXISTING
+  # branch; this is the case it cannot see.
+  if ! tgit -C "$repo" rev-parse --verify --quiet refs/heads/main >/dev/null; then
+    receipt "$rd" "$id" rejected "rejected: PUBLISH_NO_BASE the trusted side could not read main from $remote, so it cannot tell whether your branch belongs to this repository"
+    return
+  fi
+  if ! tgit -C "$repo" merge-base refs/heads/main refs/heads/incoming >/dev/null 2>&1; then
+    receipt "$rd" "$id" rejected "rejected: UNRELATED_HISTORY your branch shares no ancestor with $remote main, so it is not a change to this repository. Rebase onto origin/main and retry."
+    return
+  fi
 
   if ! tgit -C "$repo" push --quiet origin "refs/heads/incoming:refs/heads/$branch" >/dev/null 2>&1; then
     receipt "$rd" "$id" rejected "rejected: PUBLISH_REFUSED the remote refused $branch (not a fast-forward?); rebase on origin/main and retry"

@@ -458,7 +458,10 @@ git -C "$WS" add -A
 git -C "$WS" -c user.name=w -c user.email=w@x commit --quiet -m "sneak"
 say "$("$HIVE" publish workspace 2>&1)" || true
 ''')
-    assert run_supervisor(deployment).returncode != 0 or True
+    # The worker absorbs the bridge refusal itself (`|| true` in its script), so the
+    # supervisor's own outcome is a clean success. An earlier version of this line read
+    # `!= 0 or True`, which cannot fail and therefore checked nothing.
+    assert run_supervisor(deployment).returncode == 0
     text = out(deployment)
     assert "PATH_NOT_ALLOWED" in text, text
     assert "OPERATIONS.md" in text
@@ -728,3 +731,90 @@ say "worker finished its turn"
     )
     # And the emit itself still happened: the receipt is the worker's copy, not the record.
     assert "task.accepted" in kinds
+
+
+# =====================================================================================
+# 7. What the independent review found (2026-08-20), each with the case that catches it
+# =====================================================================================
+
+def test_publish_code_refuses_a_branch_with_no_ancestor_in_the_repository(deployment):
+    """A worker owns its own `.git` and can build an ORPHAN commit — history with no
+    ancestor in the repository at all. Bundled and published, that would land unrelated
+    history on the launch-recorded branch, and `git push` would not object because the
+    branch is new. `push` only refuses a non-fast-forward over an EXISTING branch; this
+    is the case it cannot see, and the workspace path already checked its equivalent.
+
+    The check is a shared merge base, not "contains main": a pull request perfectly well
+    sits behind main, and requiring otherwise would force a rebase every time main moved.
+    """
+    worker_script(deployment, '''
+git -C "$CODE" checkout --quiet --orphan rewritten
+git -C "$CODE" rm -rq --cached . 2>/dev/null || true
+printf 'not this repository\\n' > "$CODE/README.md"
+git -C "$CODE" add -A
+git -C "$CODE" -c user.name=w -c user.email=w@x commit --quiet -m "orphan"
+git -C "$CODE" branch -f "''' + CODE_BRANCH + '''" HEAD
+say "$("$HIVE" publish code 2>&1)" || true
+''')
+    assert run_supervisor(deployment).returncode == 0
+    assert "UNRELATED_HISTORY" in out(deployment), out(deployment)
+    remote_branches = git(deployment["code_remote"], "branch", "--list").stdout
+    assert CODE_BRANCH not in remote_branches, (
+        "unrelated history must not reach the launch-recorded branch"
+    )
+
+
+def test_publish_workspace_refuses_a_deletion_even_under_an_allowed_path(deployment):
+    """A worker may write its own report. It may not remove anything — including another
+    worker's report, which the path rule alone would already refuse, and its own, which
+    it would not. Rename detection is off in the trusted repository, so a file renamed
+    OUT of the allowed set arrives here as a deletion of its source path."""
+    # Seed a report belonging to a DIFFERENT task on the hub.
+    other = f"projects/{PROJECT}/reports/2026-01-01-other-task-result.md"
+    write(deployment["hub_seed"] / other, "# Someone else's result\n")
+    git(deployment["hub_seed"], "add", "-A")
+    git(deployment["hub_seed"], "commit", "--quiet", "-m", "other worker's report")
+    git(deployment["hub_seed"], "push", "--quiet", str(deployment["hub"]), "main")
+
+    worker_script(deployment, f'''
+"$HIVE" sync workspace >/dev/null 2>&1
+git -C "$WS" rm -q "{other}"
+git -C "$WS" -c user.name=w -c user.email=w@x commit --quiet -m "tidy up"
+say "$("$HIVE" publish workspace 2>&1)" || true
+''')
+    assert run_supervisor(deployment).returncode == 0
+    text = out(deployment)
+    assert "PATH_NOT_ALLOWED" in text and "deleted:" in text, text
+    hub_files = git(deployment["hub"], "ls-tree", "-r", "--name-only", "main").stdout
+    assert other in hub_files, "the other worker's report must still be on the hub"
+
+
+def test_publish_workspace_lets_a_worker_ADD_a_question_but_not_change_one(deployment):
+    """`questions/` cannot be narrowed by task — a question is named by date and topic —
+    so it is narrowed by STATUS instead. Without that, this project's whole questions
+    directory is writable by every worker in it, and a pending question someone is
+    waiting on could be edited or removed by an unrelated task."""
+    existing = f"projects/{PROJECT}/questions/2026-01-01-someone-elses.md"
+    write(deployment["hub_seed"] / existing, "# Their question\n")
+    git(deployment["hub_seed"], "add", "-A")
+    git(deployment["hub_seed"], "commit", "--quiet", "-m", "a pending question")
+    git(deployment["hub_seed"], "push", "--quiet", str(deployment["hub"]), "main")
+
+    worker_script(deployment, f'''
+"$HIVE" sync workspace >/dev/null 2>&1
+printf '# Mine\\n' > "$WS/{QUESTION}"
+git -C "$WS" add -A
+git -C "$WS" -c user.name=w -c user.email=w@x commit --quiet -m "my question"
+say "ADD:$("$HIVE" publish workspace 2>&1)"
+printf 'edited\\n' >> "$WS/{existing}"
+git -C "$WS" add -A
+git -C "$WS" -c user.name=w -c user.email=w@x commit --quiet -m "edit theirs"
+say "EDIT:$("$HIVE" publish workspace 2>&1)" || true
+''')
+    assert run_supervisor(deployment).returncode == 0
+    text = out(deployment)
+    assert "ADD:published" in text, text
+    assert "EDIT:" in text and "PATH_NOT_ALLOWED" in text, text
+    assert "changed-not-added:" in text, text
+    on_hub = git(deployment["hub"], "show", f"main:{existing}").stdout
+    assert "edited" not in on_hub, "the other worker's question must be unchanged"
