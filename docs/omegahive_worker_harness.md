@@ -254,8 +254,16 @@ run/turns/<n>/
   finished.json  the terminal payload — written before emitting, replayed on retry
   summary.txt    the summary the pane keeps after the process is gone
   usage.json     the per-message rows behind the totals (never message content)
-  pid            present only while the turn is live
+  claim          the running runner's pid; an ATOMIC claim, and the liveness signal
+  pid            the same pid, as a readable companion to the claim
 ```
+
+`claim` is created with `set -o noclobber`, which makes create-or-fail one syscall — what
+an atomic claim needs and what a `[ -f ]` test followed by a write is not. Two runners on
+one turn would share the stream file, overwrite each other's terminal payload and, because
+they would capture different cursors, emit two DIFFERENT `execution.finished` payloads for
+one turn, which content-addressed idempotency cannot collapse. A claim whose holder is
+gone is taken over rather than honoured: a single kill must not strand a seat forever.
 
 This is **recovery and provenance evidence, not a claimed hostile-process boundary**, and
 it is described that way on purpose. The worker can write to it. What actually stops a
@@ -357,6 +365,17 @@ harness failure stays on the record as `harness_failed_after_disposition`. If th
 unreadable at all, the answer is `unclassified(spine_unavailable)` with the harness
 evidence intact — a confident outcome derived from half the evidence would be the worst
 possible record.
+
+**A readable spine with no cursor is refused too**, and this is the subtle one. If the
+pre-turn head read failed but the spine recovered before the turn ended, reading "all of
+history instead" is not a degraded answer: every event this worker ever emitted for this
+task looks current, so a turn that said nothing gets confidently classified from a block
+an hour old. That is `unclassified(cursor_unavailable)`. It costs an unclassified on a
+rare turn; the alternative costs a wrong answer that looks right.
+
+A harness that never started — a failed `--version` probe — is `unclassified` for the same
+reason and not `failed`: there is no structured terminal to read and no cursor was ever
+taken, so a `failed` there would be a classification derived from a preflight exit code.
 
 **What never happens:** an OS exit code becoming `task.failed`; a worker-owned task event
 being synthesized; budget inferred from assistant prose or a broad error-message regex;
@@ -465,9 +484,19 @@ omegahive executions <run> --json --where billing_market=subscription --where ou
 ```
 
 Filterable dimensions: `task`, `execution_id`, `model_vendor`, `provider`, `model`,
-`harness`, `billing_market`, `credential_pool`, `route`, `purpose`, `outcome`. An
-unknown dimension is a refusal, not an empty result — "no rows" and "you misspelled the
-dimension" must not look alike.
+`harness`, `billing_market`, `credential_pool`, `route`, `purpose`, `outcome`,
+`classification`, `turn_kind`. An unknown dimension is a refusal, not an empty result —
+"no rows" and "you misspelled the dimension" must not look alike.
+
+**One row per TURN, keyed `(execution_id, turn_id)`.** An execution id names one (task,
+pinned order, purpose, attempt); a worker may run several turns inside it — an initial one
+that exhausted its budget, then a resume that posted. Keying on the execution id alone let
+the later turn overwrite the earlier, so a reader saw one posted execution while the budget
+exit, its consumption and its evidence vanished. `execution.route_approved` is emitted once
+per execution, before any turn exists; its facts are applied to every turn of that
+execution, which is correct on its own terms — the operator approved a route for the
+execution and every turn inside it ran on that approval. A pre-cutover fact carries no
+`turn_id`, keys as `(eid, None)`, and produces exactly the one row it always did.
 
 Rows carry tokens and the approval-time price basis. **Cost is derived by the reader,
 never authored here**: the moment a projection writes a dollar figure, that figure
@@ -504,16 +533,30 @@ relaunch onto an owned task — and the answer itself is already committed and p
 nothing is lost while that is sorted out.
 
 **If the host dies mid-turn**, the terminal fact was never emitted. The evidence is still
-on disk, and re-running the pane command replays it:
+on disk, and re-running the pane command recovers it:
 
 ```bash
 scripts/hive-launch --turn ~/work/<worker>/run/turns/<n>
 ```
 
-That is idempotent by construction: the payload is written to `finished.json` **before**
-it is emitted and re-emitted byte-for-byte on any later attempt, and the classification is
-deterministic over the same saved stream and cursor. A retry, a respawned pane and a
-manual replay all converge on one event rather than a family of near-duplicates.
+**That RE-CLASSIFIES; it does not re-run the model.** A turn directory holding a stream
+but no terminal fact is one whose process died between running and recording, so the
+runner classifies the evidence it left — against the cursor that turn actually started
+from, which `started.json` carries for exactly this purpose — and records the process view
+as `interrupted` with `outcome_certainty: uncertain` and no exit code, because the process
+that could have reported one is gone. Re-running the harness there would spend a second
+model call, destroy the only copy of what the first one said, and answer against a window
+that had already moved past events the first turn itself emitted.
+
+A turn that already has its terminal fact simply replays it. Both paths are idempotent by
+construction: the payload is written to `finished.json` **before** it is emitted and
+re-emitted byte-for-byte on any later attempt, and the classification is deterministic
+over the same saved stream and cursor. A retry, a respawned pane and a manual replay all
+converge on one event rather than a family of near-duplicates.
+
+**An unrecorded terminal fact is never a green exit.** If the emit fails the runner exits
+70 and says where the payload is; a pane that closed green over a turn the spine has no
+record of is the one outcome this whole path exists to prevent.
 
 ## 9. Deployment variables
 

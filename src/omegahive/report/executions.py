@@ -48,23 +48,61 @@ _LIFECYCLE = ("execution.route_approved", "execution.started", "execution.finish
 
 
 def execution_rows(events: Iterable[Event]) -> list[dict[str, Any]]:
-    """Fold the lifecycle facts into one row per execution, in first-seen order.
+    """Fold the lifecycle facts into one row per TURN, in first-seen order.
 
-    Tolerant by construction: an execution with only a `finished` (a hand-recovered run,
-    a truncated log) still produces a complete row, because identity is denormalized
-    onto every fact. That tolerance is why the projection can be trusted during exactly
-    the incidents a capacity reader cares about.
+    Per turn, not per execution, and that distinction is the whole of this function's
+    subtlety. An execution id names one (task, pinned order, purpose, attempt); a worker
+    may run several TURNS inside it — an initial one that exhausted its budget, then a
+    resume that posted. Keying rows on the execution id alone made the later turn
+    overwrite the earlier one, so a capacity reader saw one posted execution and the
+    budget exit, its consumption and its evidence simply vanished. The key is therefore
+    `(execution_id, turn_id)`.
+
+    Pre-cutover facts carry no `turn_id`, so they key as `(eid, None)` and produce exactly
+    the one row they always did. That is why the change is invisible to a historical
+    reader rather than a re-interpretation of their data.
+
+    `execution.route_approved` is emitted ONCE per execution, before any turn exists, so
+    it cannot be keyed by turn. Its data is collected first and applied to every turn of
+    that execution — which is correct on its own terms: the operator approved a route for
+    the execution, and every turn inside it ran on that approval.
+
+    Tolerant by construction: a turn with only a `finished` (a hand-recovered run, a
+    truncated log) still produces a complete row, because identity is denormalized onto
+    every fact. That tolerance is why the projection can be trusted during exactly the
+    incidents a capacity reader cares about.
     """
-    rows: dict[str, dict[str, Any]] = {}
-    for ev in sorted(events, key=lambda e: (e.seq if e.seq is not None else 0)):
+    ordered = sorted(events, key=lambda e: (e.seq if e.seq is not None else 0))
+
+    # Pass one: the approval per execution. It has no turn of its own and belongs to all
+    # of them.
+    approvals: dict[str, dict[str, Any]] = {}
+    for ev in ordered:
+        if ev.event_type != "execution.route_approved":
+            continue
+        payload = ev.payload or {}
+        eid = payload.get("execution_id")
+        if isinstance(eid, str) and eid:
+            approvals[eid] = payload
+
+    rows: dict[tuple[str, str | None], dict[str, Any]] = {}
+    for ev in ordered:
         if ev.event_type not in _LIFECYCLE:
             continue
         payload = ev.payload or {}
         eid = payload.get("execution_id")
         if not isinstance(eid, str) or not eid:
             continue
+        turn = payload.get("turn_id")
+        turn = turn if isinstance(turn, str) and turn else None
+        if ev.event_type == "execution.route_approved":
+            # An approval alone still deserves a row — "approved, never started" is a real
+            # and important state — but it must not create a SECOND row once its turns
+            # arrive. It seeds the turn-less key, which a pre-cutover pair shares and a
+            # post-cutover turn does not; the reconciliation happens at the end.
+            turn = None
         row = rows.setdefault(
-            eid,
+            (eid, turn),
             {
                 "execution_id": eid,
                 "run": ev.run_id,
@@ -74,6 +112,7 @@ def execution_rows(events: Iterable[Event]) -> list[dict[str, Any]]:
                 "route": None, "model_vendor": None, "provider": None, "model": None,
                 "harness": None, "billing_market": None, "credential_pool": None,
                 "adapter": None,
+                "turn_id": turn,
                 "approved": False, "started": False, "finished": False,
                 "binding_ref": None, "catalog_digest": None,
                 "predicted_total_tokens": None,
@@ -89,7 +128,7 @@ def execution_rows(events: Iterable[Event]) -> list[dict[str, Any]]:
                 "task_disposition": None, "terminal_event_seq": None,
                 "harness_terminal_kind": None, "harness_terminal_reason": None,
                 "spine_cursor": None, "spine_basis": None,
-                "turn_id": None, "turn_kind": None, "session_id": None,
+                "turn_kind": None, "session_id": None,
                 "stream_digest": None, "stream_records": None,
             },
         )
@@ -144,7 +183,39 @@ def execution_rows(events: Iterable[Event]) -> list[dict[str, Any]]:
                 if payload.get(k) is not None:
                     row[k] = payload[k]
 
-    return list(rows.values())
+    # The approval's data reaches every turn of its execution. A post-cutover execution's
+    # turn-less approval row is then redundant — its turns carry everything it held — so
+    # it is dropped rather than left as a phantom extra row in every capacity count.
+    out = []
+    for (eid, turn), row in rows.items():
+        approval = approvals.get(eid)
+        if approval is not None and not row["approved"]:
+            _apply_approval(row, approval)
+        if turn is None and any(k[0] == eid and k[1] is not None for k in rows):
+            continue
+        out.append(row)
+    return out
+
+
+def _apply_approval(row: dict[str, Any], payload: dict[str, Any]) -> None:
+    """Copy an execution's approval facts onto one of its turns."""
+    row["approved"] = True
+    identity = payload.get("identity")
+    if isinstance(identity, dict):
+        for k in (
+            "route", "model_vendor", "provider", "model", "harness",
+            "billing_market", "credential_pool", "adapter",
+        ):
+            if identity.get(k) is not None and row.get(k) is None:
+                row[k] = identity[k]
+    for k in ("binding_ref", "catalog_digest", "predicted_total_tokens"):
+        if row.get(k) is None:
+            row[k] = payload.get(k)
+    if row.get("price_basis") is None and payload.get("price_basis") is not None:
+        row["price_basis"] = payload["price_basis"]
+    for k in ("purpose", "attempt"):
+        if row.get(k) is None:
+            row[k] = payload.get(k)
 
 
 def filter_rows(rows: list[dict[str, Any]], filters: dict[str, str]) -> list[dict[str, Any]]:

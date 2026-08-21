@@ -27,6 +27,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -79,7 +80,34 @@ def write(path: Path, text: str) -> None:
 
 
 @pytest.fixture
-def deployment(tmp_path):
+def tmux_isolation():
+    """A private tmux server for this file, and nothing of the operator's.
+
+    Without this the suite runs `hive-answer` against the DEFAULT server and the
+    operator's own `hive` session — which is not a hypothetical: an early run of this file
+    created a `drill-task` window in the live session and left nine orphaned sessions
+    behind it. Two guards, both needed:
+
+      * `TMUX_TMPDIR` moves the socket, so every tmux call — the tests' and
+        `hive-answer`'s alike — lands on a server holding only this file's sessions;
+      * `TMUX`/`TMUX_PANE` are dropped, so a suite started from inside tmux does not
+        inherit a client and resolve targets against it.
+
+    The socket directory is a SHORT path under the system temp dir rather than pytest's
+    `tmp_path`: tmux binds `$TMUX_TMPDIR/tmux-<uid>/default` through `sockaddr_un`, whose
+    `sun_path` is 104 bytes on macOS and 108 on Linux — a kernel limit, not a tunable —
+    and pytest's per-test directory names are long enough to reach it.
+    """
+    socket_dir = tempfile.mkdtemp(prefix="hts-")
+    env = {"TMUX_TMPDIR": socket_dir}
+    yield env
+    subprocess.run(["tmux", "kill-server"], capture_output=True,
+                   env={**os.environ, **env, "TMUX": "", "TMUX_PANE": ""})
+    shutil.rmtree(socket_dir, ignore_errors=True)
+
+
+@pytest.fixture
+def deployment(tmp_path, tmux_isolation):
     """A whole simulated deployment: a hub, a code remote, a task root, turn 001."""
     db = _db_url()
     run_id = "drill-" + uuid.uuid4().hex[:8]
@@ -201,6 +229,8 @@ def deployment(tmp_path):
     (turn_dir / "turn.json").write_text(json.dumps(plan))
 
     return {
+        "tmux_env": tmux_isolation,
+        "tmux_session": "hts-" + uuid.uuid4().hex[:8],
         "db": db, "run_id": run_id, "worker": worker, "plan": plan, "session_id": session_id,
         "tmp": tmp_path, "hub": hub, "hub_seed": hub_seed, "code_remote": code_remote,
         "ops_ws": ops_ws, "work_root": work_root, "task_root": task_root,
@@ -221,7 +251,13 @@ def resolve_turn(catalog_doc, request: dict) -> dict:
 
 def shell_env(dep, **over) -> dict:
     env = dict(os.environ)
+    # The tmux isolation FIRST, and never overridable by a caller's kwargs by accident:
+    # a test that forgets it would act on the operator's live server.
+    env.update(dep["tmux_env"])
+    env.pop("TMUX", None)
+    env.pop("TMUX_PANE", None)
     env.update({
+        "HIVE_TMUX_SESSION": dep["tmux_session"],
         "OMEGAHIVE_DATABASE_URL": dep["db"],
         "OMEGAHIVE_GATEWAY_DATABASE_URL": "",
         "HIVE_CLI_CMD": " ".join(_omegahive_cmd()),
@@ -523,16 +559,86 @@ def test_an_unreadable_spine_refuses_to_classify_and_keeps_the_evidence(deployme
     """`unclassified(spine_unavailable)` with the harness half intact. A confident outcome
     derived from half the evidence would be the worst possible record."""
     seed_board(deployment)
+    cli = deployment["tmp"] / "hive-cli"
+    cli.write_text(cli.read_text().replace(deployment["db"], "postgres://127.0.0.1:1/nope"))
     env = shell_env(deployment, OMEGAHIVE_DATABASE_URL="postgres://127.0.0.1:1/nope")
-    # The instrument wrapper cannot emit either, so the fact stays on disk — which is
-    # exactly the recovery state the file is for.
     proc = run_turn(deployment, env=env)
+
     exit_record = json.loads((deployment["turn_dir"] / "exit.json").read_text())
     assert exit_record["classification"] == "unclassified"
     assert exit_record["spine_basis"] == "unavailable"
-    assert exit_record["harness_terminal_kind"] == "completed"
+    assert exit_record["harness_terminal_kind"] == "completed", (
+        "the half we COULD read is still recorded"
+    )
+    assert (deployment["turn_dir"] / "finished.json").exists(), (
+        "the terminal payload is preserved for replay"
+    )
+    # The instrument wrapper could not emit either, so no `execution.finished` reached the
+    # spine — and a pane that closed GREEN over a turn the spine has no record of is the
+    # single outcome this whole path exists to prevent.
+    assert proc.returncode == 70, proc.stdout + proc.stderr
+    assert "FAILED to emit execution.finished" in proc.stderr
+
+
+def test_a_killed_turn_is_recovered_from_its_evidence_not_run_again(deployment):
+    """A turn whose process died between running and recording. Re-running the harness
+    would spend a second model call, destroy the only copy of what the first one said, and
+    classify against a cursor taken AFTER events the first turn itself emitted."""
+    seed_board(deployment)
+    worker_script(deployment, f'''
+"$EMIT" --type task.accepted --task {TASK} >/dev/null 2>&1
+"$EMIT" --type task.blocked --task {TASK} \\
+  --payload '{{"reason": "needs a decision", "needs": "decision"}}' >/dev/null 2>&1
+''')
+    assert run_turn(deployment).returncode == 0
+    td = deployment["turn_dir"]
+    stream_before = (td / "stream.jsonl").read_text()
+    cursor_before = json.loads((td / "started.json").read_text())["spine_cursor"]
+
+    # Rewind to the state a SIGKILL between the run and the classification leaves behind.
+    for name in ("finished.json", "exit.json", "facts.json", "summary.txt"):
+        (td / name).unlink()
+
+    proc = run_turn(deployment)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "RECOVERING" in proc.stderr
+    assert "harness is NOT run again" in proc.stderr
+    assert (td / "stream.jsonl").read_text() == stream_before, "the evidence is intact"
+
+    exit_record = json.loads((td / "exit.json").read_text())
+    assert exit_record["spine_cursor"] == cursor_before, (
+        "classified against the window the dead process ran in, not a fresh one"
+    )
+    assert exit_record["classification"] == "blocked"
+    payload = finished(deployment)
+    assert payload["outcome"] == "interrupted"
+    assert payload["outcome_certainty"] == "uncertain"
+    assert payload["exit_code"] is None, "no process is left to report one"
+
+
+def test_a_second_runner_on_one_turn_is_refused_atomically(deployment):
+    """Two runners would share a stream file, overwrite each other's terminal payload,
+    and — capturing different cursors — emit two DIFFERENT payloads for one turn, which
+    content-addressed idempotency cannot collapse."""
+    seed_board(deployment)
+    (deployment["turn_dir"] / "claim").write_text(str(os.getpid()))
+    proc = run_turn(deployment)
+    assert proc.returncode != 0
+    assert "already being run by pid" in proc.stderr
+    assert not (deployment["turn_dir"] / "stream.jsonl").exists(), (
+        "the refused runner must not have touched the live turn's evidence"
+    )
+
+
+def test_a_stale_claim_from_a_dead_runner_is_taken_over(deployment):
+    """A claim whose holder is gone must not strand a turn forever — a single kill would
+    then cost the seat, which is worse than the race the claim protects against."""
+    seed_board(deployment)
+    (deployment["turn_dir"] / "claim").write_text("999999")
+    proc = run_turn(deployment)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
     assert (deployment["turn_dir"] / "finished.json").exists()
-    assert proc.returncode == 0
+    assert not (deployment["turn_dir"] / "claim").exists(), "released on the way out"
 
 
 def test_reclassifying_a_saved_turn_yields_byte_identical_evidence(deployment):
@@ -599,8 +705,7 @@ def block_the_worker(dep) -> None:
 
 def test_hive_answer_appends_the_answer_and_prepares_a_resume_turn(deployment):
     block_the_worker(deployment)
-    env = shell_env(deployment, HIVE_TMUX_SESSION="hive-drill-" + uuid.uuid4().hex[:6])
-    proc = run_answer(deployment, "use event time", env=env)
+    proc = run_answer(deployment, "use event time")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "appended to" in proc.stdout
     assert "turn 002 prepared" in proc.stdout, proc.stdout
@@ -621,10 +726,13 @@ def test_hive_answer_appends_the_answer_and_prepares_a_resume_turn(deployment):
 
 
 def test_a_resume_turn_wakes_the_same_native_session(deployment):
+    """Built here rather than through `hive-answer`, deliberately: `hive-answer` also
+    RUNS the turn it prepares, in the task's pane, and a test that then ran the same turn
+    directory itself would be racing the pane it just asked for — two runners writing one
+    turn's evidence. What `hive-answer` prepares is asserted in the tests above; what a
+    resume turn DOES is asserted here, on a turn nothing else is running."""
     block_the_worker(deployment)
-    env = shell_env(deployment, HIVE_TMUX_SESSION="hive-drill-" + uuid.uuid4().hex[:6])
-    assert run_answer(deployment, "yes", env=env).returncode == 0
-    turn_dir = deployment["run_dir"] / "turns" / "002"
+    turn_dir = make_resume_turn(deployment, "002")
     assert "--resume" in json.loads((turn_dir / "turn.json").read_text())["argv"]
 
     set_child_env(deployment, turn_dir, HIVE_FAKE_BEHAVIOUR="success")
@@ -646,8 +754,7 @@ def test_resume_only_appends_no_answer_and_asks_for_no_unblock(deployment):
     assert finished(deployment)["classification"] == "budget"
 
     before = (deployment["ops_ws"] / ORDER).read_text()
-    env = shell_env(deployment, HIVE_TMUX_SESSION="hive-drill-" + uuid.uuid4().hex[:6])
-    proc = run_answer(deployment, "--resume-only", "five hour window reset", env=env)
+    proc = run_answer(deployment, "--resume-only", "five hour window reset")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "no answer appended" in proc.stdout
     assert (deployment["ops_ws"] / ORDER).read_text() == before
@@ -670,11 +777,25 @@ def test_a_resume_refuses_while_a_turn_is_still_live(deployment):
     """Two live turns of one worker would race for the same native session, and their
     execution facts would be indistinguishable afterwards."""
     block_the_worker(deployment)
-    (deployment["turn_dir"] / "pid").write_text(str(os.getpid()))
+    live = make_resume_turn(deployment, "002")
+    (live / "claim").write_text(str(os.getpid()))
     proc = run_answer(deployment, "yes")
     assert proc.returncode != 0
     assert "LIVE turn" in proc.stderr
     assert "already on the hub" in proc.stderr, "the answer is not lost; say so"
+
+
+def test_a_finished_turn_is_not_live_however_its_pid_file_reads(deployment):
+    """The pid-reuse window. A runner's pid is freed the instant it exits and the kernel
+    may hand the same number to something unrelated; a resume refused because a stranger
+    now holds that number is a refusal the operator cannot act on. The terminal fact
+    settles it: a turn that recorded one is over."""
+    block_the_worker(deployment)
+    assert (deployment["turn_dir"] / "finished.json").exists()
+    (deployment["turn_dir"] / "claim").write_text(str(os.getpid()))
+    proc = run_answer(deployment, "yes")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "turn 002 prepared" in proc.stdout
 
 
 def test_a_resume_refuses_from_a_terminal_board_state(deployment):
@@ -734,6 +855,53 @@ def test_a_resume_refuses_when_the_adapter_cannot_resume_that_route(deployment):
     )
 
 
+def test_resume_only_refuses_a_turn_that_ended_blocked(deployment):
+    """`--resume-only` recovers a PROCESS outcome. A worker that blocked said what it
+    meant to say, and the operator's next act is an answer — waking it with no answer
+    would put it straight back where it was."""
+    block_the_worker(deployment)
+    proc = run_answer(deployment, "--resume-only", "just because")
+    assert proc.returncode != 0
+    assert "ended 'blocked'" in proc.stderr
+    assert f'hive-answer \'{TASK}\'' in proc.stderr, "the refusal names the right command"
+    assert not (deployment["run_dir"] / "turns" / "002").exists()
+
+
+def test_resume_only_refuses_a_turn_that_ended_posted(deployment):
+    seed_board(deployment)
+    worker_script(deployment, f'''
+"$EMIT" --type task.accepted --task {TASK} >/dev/null 2>&1
+"$EMIT" --type task.result_posted --task {TASK} \\
+  --payload '{{"artifact_refs": [{{"ref": "r.md@{"a" * 40}", "quality": "ok"}}]}}' >/dev/null 2>&1
+''')
+    assert run_turn(deployment).returncode == 0
+    proc = run_answer(deployment, "--resume-only", "just because")
+    assert proc.returncode != 0
+    # The board check fires first here, and that is the better message anyway.
+    assert "in_review" in proc.stderr or "ended 'posted'" in proc.stderr
+
+
+def test_a_resume_refuses_when_the_route_now_names_a_different_harness(deployment):
+    """A session id is not a portable token. The route is re-resolved from the CURRENT
+    catalog, so an operator who re-pointed it at another vendor between turns would
+    otherwise get a confident resume command built from the wrong vendor's id."""
+    block_the_worker(deployment)
+    doc = json.loads(deployment["catalog"].read_text())
+    doc["routes"][0].update({"adapter": "codex", "harness": "codex"})
+    doc["routes"][0]["runner"] = {
+        "executable": str(REPO / "tests" / "fixtures" / "fake_harness.sh"),
+        "args": ["exec"],
+        "inherit_env": [],
+    }
+    deployment["catalog"].write_text(json.dumps(doc))
+
+    proc = run_answer(deployment, "yes")
+    assert proc.returncode != 0
+    assert "minted by 'fake'" in proc.stderr
+    assert "not portable between harnesses" in proc.stderr
+    assert not (deployment["run_dir"] / "turns" / "002").exists()
+
+
 def test_a_resume_refuses_an_unowned_task_rather_than_guessing_a_worker(deployment):
     env = dict(os.environ)
     env.update({"OMEGAHIVE_DATABASE_URL": deployment["db"],
@@ -759,17 +927,39 @@ def tmux_available() -> bool:
 
 @pytest.fixture
 def tmux_session(deployment):
+    """The scratch session name this deployment's tooling will use, on the private
+    server. Torn down with the server itself by `tmux_isolation`."""
     if not tmux_available():
         pytest.skip("tmux is not installed")
-    name = "hive-drill-" + uuid.uuid4().hex[:8]
-    yield name
-    subprocess.run(["tmux", "kill-session", "-t", f"={name}"], capture_output=True)
+    return deployment["tmux_session"]
 
 
-def tmux_windows(session) -> list[str]:
+def pane_command(dep, session, window) -> str:
+    """The command tmux has recorded for a window's pane, live or dead.
+
+    `#{pane_start_command}` survives the process exiting, which matters here: a turn is
+    expected to END, so by the time a test looks, the pane may already be dead with its
+    summary on screen. Asserting on a live `pane_current_command` would make these tests
+    race the very lifecycle they are checking.
+    """
+    proc = subprocess.run(
+        ["tmux", "list-panes", "-t", f"={session}:={window}", "-F",
+         "#{pane_start_command}"],
+        capture_output=True, text=True,
+        env={**os.environ, **dep["tmux_env"], "TMUX": "", "TMUX_PANE": ""})
+    return proc.stdout
+
+
+def pane_runs_turn(dep, session, turn_id) -> bool:
+    cmd = pane_command(dep, session, TASK)
+    return "--turn" in cmd and str(dep["run_dir"] / "turns" / turn_id) in cmd
+
+
+def tmux_windows(dep, session) -> list[str]:
     proc = subprocess.run(
         ["tmux", "list-windows", "-t", f"={session}", "-F", "#{window_name}"],
-        capture_output=True, text=True)
+        capture_output=True, text=True,
+        env={**os.environ, **dep["tmux_env"], "TMUX": "", "TMUX_PANE": ""})
     return proc.stdout.split() if proc.returncode == 0 else []
 
 
@@ -777,13 +967,20 @@ def test_a_resume_creates_the_window_when_the_previous_pane_is_gone(deployment, 
     """`hive-answer` must work when the old pane exited or disappeared: the durable state
     is the turn directory and the native session, never the window."""
     block_the_worker(deployment)
-    env = shell_env(deployment, HIVE_TMUX_SESSION=tmux_session)
-    assert tmux_windows(tmux_session) == [], "no session yet — the pane really is gone"
+    env = shell_env(deployment)
+    assert tmux_windows(deployment, tmux_session) == [], (
+        "no session yet — the pane really is gone"
+    )
 
     proc = run_answer(deployment, "yes", env=env)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "session recreated" in proc.stdout
-    assert TASK in tmux_windows(tmux_session)
+    assert TASK in tmux_windows(deployment, tmux_session)
+    # A window existing is not the claim. The claim is that THIS window is running THIS
+    # turn — a pane left over from anything else would satisfy the assertion above.
+    assert pane_runs_turn(deployment, tmux_session, "002"), (
+        "the recreated window must be running the prepared resume turn"
+    )
 
 
 def test_a_resume_reuses_the_existing_window_rather_than_opening_a_second(
@@ -792,12 +989,18 @@ def test_a_resume_reuses_the_existing_window_rather_than_opening_a_second(
     window for one task would corrupt it."""
     block_the_worker(deployment)
     subprocess.run(["tmux", "new-session", "-d", "-s", tmux_session, "-n", TASK,
-                    "sh", "-c", "sleep 300"], capture_output=True, check=True)
-    env = shell_env(deployment, HIVE_TMUX_SESSION=tmux_session)
-    proc = run_answer(deployment, "yes", env=env)
+                    "sh", "-c", "sleep 300"], capture_output=True, check=True,
+                   env={**os.environ, **deployment["tmux_env"], "TMUX": "", "TMUX_PANE": ""})
+    proc = run_answer(deployment, "yes", env=shell_env(deployment))
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "existing window reused" in proc.stdout
-    assert tmux_windows(tmux_session).count(TASK) == 1
+    assert tmux_windows(deployment, tmux_session).count(TASK) == 1
+    # The sleeping placeholder must be GONE and the turn running in its place: a respawn
+    # that quietly opened a second pane, or failed and left the sleeper, would otherwise
+    # read as success.
+    assert pane_runs_turn(deployment, tmux_session, "002"), (
+        "the reused window must be running the prepared resume turn, not the placeholder"
+    )
 
 
 # =====================================================================================
@@ -840,6 +1043,11 @@ esac
 
 
 WORKER_FINISH = f'''
+block() {{
+  say "$("$EMIT" --type task.blocked --task {TASK} \\
+    --payload "$(printf '{{"reason": "%s", "needs": "decision"}}' "$1")" 2>&1)"
+}}
+
 say "$("$EMIT" --type task.accepted --task {TASK} 2>&1)"
 
 # 1. local verification + the authored independent review, BEFORE the PR exists.
@@ -858,7 +1066,11 @@ ATTEMPTS=0
 until gh pr checks 1 >/dev/null 2>&1; do
   ATTEMPTS=$((ATTEMPTS + 1))
   say "CI-RED-$ATTEMPTS"
-  [ "$ATTEMPTS" -le 2 ] || {{ say "CI-BUDGET-EXHAUSTED"; exit 1; }}
+  if [ "$ATTEMPTS" -gt 2 ]; then
+    say "CI-BUDGET-EXHAUSTED"
+    block "CI red after the authored repair budget"
+    exit 1
+  fi
   printf 'fix %s\\n' "$ATTEMPTS" >> "$CODE/CHANGE.md"
   git -C "$CODE" -c user.name=w -c user.email=w@x commit --quiet -am "repair $ATTEMPTS"
   "$HIVE" publish code >/dev/null 2>&1
@@ -869,8 +1081,12 @@ say "CI-GREEN"
 git -C "$CODE" fetch --quiet origin main
 if ! git -C "$CODE" merge-base --is-ancestor origin/main HEAD; then
   say "MAIN-MOVED"
-  git -C "$CODE" -c user.name=w -c user.email=w@x rebase origin/main >/dev/null 2>&1 \\
-    || {{ say "MAIN-CONFLICT"; exit 1; }}
+  if ! git -C "$CODE" -c user.name=w -c user.email=w@x rebase origin/main >/dev/null 2>&1; then
+    say "MAIN-CONFLICT"
+    git -C "$CODE" rebase --abort >/dev/null 2>&1 || true
+    block "main moved and the integration conflicts non-trivially"
+    exit 1
+  fi
   "$HIVE" publish code >/dev/null 2>&1
   gh pr checks 1 >/dev/null 2>&1 && say "CI-GREEN-AFTER-INTEGRATION"
 fi
@@ -932,23 +1148,59 @@ def test_a_worker_does_the_whole_finish_sequence_and_exits_posted(deployment):
 
 def test_a_worker_that_exhausts_its_ci_repair_budget_blocks_rather_than_calling_it_green(
         deployment):
+    """The budget is a BLOCK, not a failure to hide and not a licence to keep looping.
+    The fixture worker therefore emits `task.blocked` on the way out — an earlier version
+    of this test appended that emit after a script path that had already exited, so the
+    code it claimed to exercise was unreachable and the assertion quietly checked
+    `failed` instead."""
     seed_board(deployment)
-    worker_script(deployment, WORKER_FINISH + f'''
-say "BLOCKING"
-"$EMIT" --type task.blocked --task {TASK} \\
-  --payload '{{"reason": "CI red after the authored repair budget", "needs": "decision"}}' \\
-  >/dev/null 2>&1
-''')
+    worker_script(deployment, WORKER_FINISH)
     install_fake_tools(deployment, ci_sequence=["red", "red", "red", "red"],
                        review_output="finding: something")
     proc = run_turn(deployment)
     text = out(deployment)
     assert "CI-BUDGET-EXHAUSTED" in text, text
-    assert proc.returncode != 0
+    assert "emitted · task.blocked" in text, text
+    assert proc.returncode != 0, "the worker's own script failed; the process view says so"
     payload = finished(deployment)
-    assert payload["classification"] == "failed", (
-        "the script exited before it could block; the turn says so instead of guessing"
+    assert payload["classification"] == "blocked", (
+        "the spine owns the task disposition, and the worker said blocked"
     )
+    assert payload["outcome"] == "failure", "the process view is separate and unchanged"
+    branch = subprocess.run(
+        ["git", "-C", str(deployment["code_remote"]), "rev-parse", CODE_BRANCH],
+        capture_output=True, text=True)
+    assert branch.returncode == 0, "the work is preserved on the remote, not thrown away"
+
+
+def test_a_non_trivial_main_conflict_blocks_instead_of_guessing_a_resolution(deployment):
+    """The other half of step 5. `main` moved and its change collides with the worker's
+    own; a rebase cannot resolve it, and a worker that forced one would be inventing an
+    integration nobody reviewed."""
+    seed_board(deployment)
+    worker_script(deployment, WORKER_FINISH)
+    install_fake_tools(deployment, ci_sequence=["green", "green", "green"],
+                       review_output="finding: something")
+
+    # A commit on main touching the SAME file the worker's change creates, with different
+    # content — the shape a rebase cannot resolve for you.
+    moved = deployment["tmp"] / "moved"
+    git(deployment["tmp"], "clone", "--quiet", str(deployment["code_remote"]), str(moved))
+    write(moved / "CHANGE.md", "somebody else's incompatible line\n")
+    git(moved, "add", "-A")
+    git(moved, "commit", "--quiet", "-m", "main moved, incompatibly")
+    git(moved, "push", "--quiet", "origin", "main")
+
+    proc = run_turn(deployment)
+    text = out(deployment)
+    assert "MAIN-MOVED" in text, text
+    assert "MAIN-CONFLICT" in text, text
+    assert "emitted · task.blocked" in text, text
+    assert "task.result_posted" not in text, (
+        "an uncertain integration must not be published as a result"
+    )
+    assert proc.returncode != 0
+    assert finished(deployment)["classification"] == "blocked"
 
 
 def test_a_worker_that_cannot_publish_fails_loudly_rather_than_being_bridged(deployment):

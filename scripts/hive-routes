@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # hive-routes [--json]                       — the catalog and command check
-# hive-routes migrate [--default <name>]     — bring a v1 catalog to v2, backing it up first
+# hive-routes migrate [--default <name>]     — bring a catalog to the shape this build
+#                                              reads, backing it up first
 #
 # THE CATALOG CHECK — one command, one answer: what this deployment can run right now,
 # which route is the worker default, whether each named executable is actually installed,
@@ -36,15 +37,19 @@ command -v jq >/dev/null 2>&1 || die "jq is required"
 usage() { sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 # ---------------------------------------------------------------------------------
-# migrate — the production path from a v1 catalog to a v2 one.
+# migrate — the production path onto the shape this build reads. TWO migrations, and
+# both run: v1 -> v2, and the `worker-turns` cutover WITHIN v2 (dropping
+# `runner.worker_io` and the retired hive-worker Codex permission arguments).
 #
-# Backup first, translate, validate, write atomically. Nothing here enables or disables a
-# route, edits an identity, invents a price or drops a note: the operator's catalog comes
-# out saying the same things about the same routes, in the schema this build reads. The
-# one thing it may have to ask for is the worker default, because v1 had no such field.
+# Backup first, translate, validate, write atomically, and skip the write entirely when
+# nothing changed. Nothing here enables or disables a route, edits an identity, invents a
+# price, drops a note, or touches an operator-authored runner argument: the catalog comes
+# out saying the same things about the same routes, in the shape this build reads. The one
+# thing it may have to ask for is the worker default, and only from a v1 catalog, because
+# only v1 lacked the field.
 #
-# Re-running it on a v2 catalog is a no-op, so an operator who is unsure whether they
-# already ran it can simply run it again.
+# Re-running it is safe and prints so, which is the property that lets an operator who is
+# unsure simply run it again.
 # ---------------------------------------------------------------------------------
 migrate() {
   local default_name="" target="$HIVE_ROUTE_CATALOG"
@@ -59,16 +64,23 @@ migrate() {
 
   [ -f "$target" ] || die "no route catalog at $target"
 
-  if [ "$(jq -r '.schema_version // empty' "$target")" = "2" ]; then
-    echo "hive-routes migrate: $target is already schema_version 2 — nothing to do."
-    return 0
-  fi
+  # There is deliberately no "already v2, nothing to do" short-circuit here any more.
+  # It was wrong from the moment the `worker-turns` cutover added a WITHIN-v2 migration:
+  # a v2 catalog still carrying `runner.worker_io` or the retired hive-worker Codex
+  # permission arguments exited zero with "nothing to do" and was then refused by the
+  # loader on the very next launch — so the one command an operator is told to run was
+  # the one command that could not fix it. The translator decides what needs doing; this
+  # script's job is the backup, the validation and the atomic replacement.
+  SRC_VERSION="$(jq -r '.schema_version // empty' "$target")"
 
   # The prompt, and why it is here rather than in the pure translator: v2 requires
   # exactly one `defaults.worker` and v1 recorded no such fact, so with several enabled
   # routes there is a real question only the operator can answer. With exactly one
   # enabled route the translator answers it itself and says so.
-  if [ -z "$default_name" ]; then
+  if [ -z "$default_name" ] && [ "$SRC_VERSION" != "2" ]; then
+    # Only a v1 catalog can be missing a worker default; a v2 one already has the field,
+    # and prompting for it would invite an operator to change a decision they did not come
+    # here to change.
     local enabled n
     enabled=$(jq -r '[.routes[] | select(.enabled != false) | .name] | join(" ")' "$target")
     n=$(printf '%s' "$enabled" | wc -w | tr -d ' ')
@@ -91,7 +103,7 @@ migrate() {
   # rollback is one `cp` and it is named in the output rather than assumed.
   local backup stamp tmp
   stamp=$(date -u +%Y%m%dT%H%M%SZ)
-  backup="$target.v1-$stamp.bak"
+  backup="$target.v${SRC_VERSION:-unknown}-$stamp.bak"
   cp -p "$target" "$backup" || die "could not back up $target to $backup"
 
   tmp="$target.$stamp.tmp"
@@ -104,8 +116,16 @@ migrate() {
     rm -f "$tmp"
     die "the migrated catalog does not look like v2; $target is UNCHANGED (backup at $backup)"
   fi
+  # Unchanged means unchanged: a catalog with nothing left to migrate is not rewritten,
+  # so its mtime, its formatting and its digest all stay put. An operator who runs this
+  # command twice must not see the second run "change" their catalog.
+  if cmp -s "$tmp" "$target"; then
+    rm -f "$tmp" "$backup"
+    echo "hive-routes migrate: $target is already current — nothing to migrate, nothing written."
+    return 0
+  fi
   mv "$tmp" "$target"
-  echo "hive-routes migrate: $target is now schema_version 2."
+  echo "hive-routes migrate: $target migrated (was schema_version ${SRC_VERSION:-unknown})."
   echo "  backup:   $backup"
   echo "  rollback: cp '$backup' '$target'"
   echo "  check it: hive-routes"

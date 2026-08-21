@@ -497,6 +497,12 @@ class ExecutionStarted(BaseModel):
     identity: ExecutionIdentity
     # Which turn of this worker, and whether it started fresh or woke a native session.
     # Absent on every pre-cutover event.
+    #
+    # There is deliberately no `spine_cursor` here. This event's OWN sequence is the
+    # cursor — it lands before the harness can write anything — so carrying the number
+    # would be carrying a fact the row already is, and two copies of one fact eventually
+    # disagree. The runner keeps its own local copy in `started.json` for recovery, where
+    # a killed process's window has to be readable without a spine query.
     turn_id: str | None = None
     turn_kind: Literal["initial", "resume"] | None = None
     resumed_session_id: str | None = None

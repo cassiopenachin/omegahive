@@ -1000,13 +1000,49 @@ next_turn_id() {  # next_turn_id <run-dir>
   printf '%03d' "$((10#$n + 1))"
 }
 
-# Whether a turn is still live. The pid file is written by the runner and removed on the
-# way out; a stale pid whose process is gone is NOT live, which is what lets `hive-answer`
-# recover a worker whose pane was killed without waiting for anything to time out.
+# Claim a turn, atomically, or fail.
+#
+# `set -o noclobber` makes `: > file` fail when the file exists, and the create-or-fail is
+# one syscall — which is what an atomic claim needs and what a `[ -f ]` test followed by a
+# write is not. `flock` would be the other answer and is not available everywhere this
+# shell must run (macOS ships none).
+#
+# The claim carries the claimant's pid so a STALE claim — a runner killed with the host,
+# leaving a file nobody will ever remove — can be told from a live one and taken over.
+# Without that a single kill would strand a turn forever, which is a worse failure than
+# the race it would be protecting against.
+claim_turn() {  # claim_turn <turn-dir>  -> 0 claimed, 1 refused (live claimant)
+  local td="$1" holder
+  if (set -o noclobber; printf '%s' "$$" > "$td/claim") 2>/dev/null; then
+    return 0
+  fi
+  holder=$(cat "$td/claim" 2>/dev/null || true)
+  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null && [ "$holder" != "$$" ]; then
+    return 1
+  fi
+  # Stale: the claimant is gone (or is us, on a re-entry). Take it over in place — the
+  # file already exists, so this is a plain write and cannot race a fresh `noclobber`
+  # create, because any competitor is in exactly this same branch and one of us wins the
+  # write. What must not happen is two processes proceeding, and the pid check above is
+  # what prevents that.
+  printf '%s' "$$" > "$td/claim"
+  return 0
+}
+
+# Whether a turn is still live. The claim file is written before anything else the runner
+# does and removed on the way out; a stale claim whose process is gone is NOT live, which
+# is what lets `hive-answer` recover a worker whose pane was killed without waiting for
+# anything to time out.
 turn_is_live() {  # turn_is_live <turn-dir>
   local pid
-  [ -f "$1/pid" ] || return 1
-  pid=$(cat "$1/pid" 2>/dev/null) || return 1
+  # A turn that recorded its terminal fact is over, whatever a leftover claim says.
+  # Checking this FIRST closes the pid-reuse window: the runner's pid is freed the moment
+  # it exits, the kernel can hand the same number to something unrelated, and a resume
+  # refused because an unrelated process now holds that number would be a refusal an
+  # operator cannot act on.
+  [ ! -f "$1/finished.json" ] || return 1
+  [ -f "$1/claim" ] || return 1
+  pid=$(cat "$1/claim" 2>/dev/null) || return 1
   [ -n "$pid" ] || return 1
   kill -0 "$pid" 2>/dev/null
 }
@@ -1046,12 +1082,28 @@ run_turn() {  # run_turn <turn-dir>
   [ -x "$RUN_DIR/emit-instrument" ] \
     || die "no executable emit-instrument in $RUN_DIR — the turn runner has no write path"
 
+  # --- 0. claim this turn, before reading or writing anything else -------------------
+  # Two runners on one turn would share a stream file, overwrite each other's terminal
+  # payload, and — because they would capture different cursors — emit two DIFFERENT
+  # `execution.finished` payloads for one turn, which content-addressed idempotency cannot
+  # collapse. The claim is the first thing that happens for that reason.
+  if ! claim_turn "$TD"; then
+    die "turn $(basename "$TD") is already being run by pid $(cat "$TD/claim" 2>/dev/null).
+  Two runners on one turn would race for the same native session and write two different
+  terminal facts for it. Watch the live one, or kill it and re-run this command."
+  fi
+  # From here on, every exit path releases the claim. Without the trap a runner killed by
+  # the operator would leave a claim its own pid-liveness check can only clear by luck.
+  # shellcheck disable=SC2064  # $TD is expanded NOW, deliberately: the trap must not
+  # depend on a variable a later line could change.
+  trap "rm -f '$TD/claim'" EXIT
+
   # Already terminal? Replay the recorded fact and stop, so re-running the pane command
   # is safe instead of being a second execution of the same approved turn.
   if [ -f "$TD/finished.json" ]; then
     echo "hive-turn: this turn already recorded a terminal fact; re-emitting it and exiting" >&2
-    emit_turn_finished "$TD" || true
     [ -f "$TD/summary.txt" ] && cat "$TD/summary.txt"
+    emit_turn_finished "$TD" || return 1
     return 0
   fi
 
@@ -1094,6 +1146,12 @@ run_turn() {  # run_turn <turn-dir>
   if ! VERSION_OUT=$("${VERSION_ARGV[@]}" 2>&1); then
     echo "hive-turn: harness version probe failed: ${VERSION_ARGV[*]}" >&2
     printf '%s\n' "$VERSION_OUT" >&2
+    # `unclassified`, not `failed`. The process view is honest — nothing started, exit
+    # 127 — but the TASK view has no evidence at all: there is no structured harness
+    # terminal to read and no cursor was ever taken, so nothing can be placed relative to
+    # this turn. Writing `failed` here would be a classification derived from a preflight
+    # exit code, which is the one thing the two-authority rule forbids. The operator is
+    # notified either way; `unclassified` tells them the truth about why.
     probe_payload=$(jq -c -n --slurpfile t "$TD/turn.json" --arg fin "$(turn_now)" \
       --arg r "harness did not start; version probe failed" \
       '$t[0] as $p |
@@ -1102,7 +1160,8 @@ run_turn() {  # run_turn <turn-dir>
         exit_code: 127, finished_at: $fin, model_evidence: "none",
         usage: {status: "unavailable", reason: $r},
         price_basis: $p.price_basis,
-        classification: "failed", classification_reason: "harness: version_probe_failed",
+        classification: "unclassified",
+        classification_reason: "harness_did_not_start: version_probe_failed",
         harness_terminal_kind: "missing", harness_terminal_reason: "version_probe_failed",
         turn_id: $p.turn_id, turn_kind: $p.turn_kind}')
     emit_turn_finished "$TD" "$probe_payload" || true
@@ -1111,40 +1170,72 @@ run_turn() {  # run_turn <turn-dir>
   HARNESS_VERSION=$(printf '%s\n' "$VERSION_OUT" | harness_version_from)
   [ -n "$HARNESS_VERSION" ] || HARNESS_VERSION="unknown"
 
-  # --- 2. the spine cursor, read BEFORE the harness can write anything ---------------
-  # Everything the classifier will consider must be strictly after this. It is what stops
-  # a PRIOR turn's `task.blocked` from being read as this turn's exit, which is a named
-  # risk of this design and the most likely way to get an exit wrong.
+  # --- 2. recover, or take a fresh cursor -------------------------------------------
+  # RECOVERY FIRST. A turn dir that already holds a stream but no terminal fact is a turn
+  # whose process was killed between running and recording — the pane died, the host
+  # rebooted. Re-running the harness there would spend a second model call, destroy the
+  # only copy of what the first one said, and answer with a cursor taken after events the
+  # first turn itself emitted. So the retained evidence is classified INSTEAD, against the
+  # cursor that turn actually started from, which `started.json` carries for exactly this.
+  local RECOVERING=""
+  if [ -s "$TD/stream.jsonl" ] && [ -f "$TD/started.json" ]; then
+    RECOVERING=1
+    echo "hive-turn: RECOVERING turn $(basename "$TD") — it has a retained stream and no" >&2
+    echo "  terminal fact, so its process died between running and recording. Classifying" >&2
+    echo "  the evidence it left; the harness is NOT run again." >&2
+  fi
+
+  # The cursor is read BEFORE the harness can write anything, and everything the
+  # classifier considers must be strictly after it. That is what stops a PRIOR turn's
+  # `task.blocked` from being read as this turn's exit — the most likely way to get an
+  # exit wrong. On a recovery it is read back from `started.json` rather than re-taken,
+  # because the window that matters is the one the dead process ran in.
   local CURSOR CURSOR_JSON
-  CURSOR=""
-  CURSOR=$(hive head-seq "$RUN" 2>/dev/null) || CURSOR=""
-  case "$CURSOR" in
+  if [ -n "$RECOVERING" ]; then
+    CURSOR_JSON=$(jq -r '.spine_cursor // "null"' "$TD/started.json")
+  else
+    CURSOR=""
+    CURSOR=$(hive head-seq "$RUN" 2>/dev/null) || CURSOR=""
+    case "$CURSOR" in
+      ''|*[!0-9]*) CURSOR_JSON="null" ;;
+      *) CURSOR_JSON="$CURSOR" ;;
+    esac
+  fi
+  case "$CURSOR_JSON" in
     ''|*[!0-9]*) CURSOR_JSON="null" ;;
-    *) CURSOR_JSON="$CURSOR" ;;
   esac
   if [ "$CURSOR_JSON" = "null" ]; then
-    echo "hive-turn: WARNING could not read the spine head for run '$RUN'. This turn's" >&2
-    echo "  classification will consider every event for this worker and task, which is" >&2
-    echo "  wider than one turn. The cursor is recorded as ABSENT, never as zero." >&2
+    echo "hive-turn: WARNING the spine head for run '$RUN' could not be read before this" >&2
+    echo "  turn. Nothing can be placed relative to a cursor that does not exist, so this" >&2
+    echo "  turn will be recorded as unclassified(cursor_unavailable) however it ends." >&2
+    echo "  The evidence is kept; continue the worker with hive-answer --resume-only." >&2
   fi
 
   # --- 3. start the harness, then say so --------------------------------------------
+  # `started.json` is written BEFORE the child exists and carries the cursor, because it
+  # is the only durable record of the window this turn ran in. A recovery reads it back;
+  # without it, a killed turn could only be re-classified against a window that had
+  # already moved. `spine_cursor` is local state and is deliberately not on the emitted
+  # payload — `execution.started`'s own sequence already IS that cursor on the spine.
   local STARTED_PAYLOAD
-  STARTED_PAYLOAD=$(jq -c -n --slurpfile t "$TD/turn.json" \
-    --arg v "$HARNESS_VERSION" --arg st "$(turn_now)" \
-    '$t[0] as $p |
-     {execution_id: $p.execution_id, purpose: $p.purpose, attempt: $p.attempt,
-      identity: $p.identity, harness_version: $v,
-      model_requested: $p.model_requested, started_at: $st,
-      turn_id: $p.turn_id, turn_kind: $p.turn_kind,
-      resumed_session_id:
-        (if ($p.resume_session_id // "") == "" then null else $p.resume_session_id end)}')
-  printf '%s\n' "$STARTED_PAYLOAD" > "$TD/started.json"
-  if ! "$RUN_DIR/emit-instrument" --type execution.started --task "$TASK" \
-        --payload "$STARTED_PAYLOAD" >/dev/null; then
-    # A missing `started` is a gap in the record but not a reason to abandon a turn about
-    # to run. Say so loudly and carry on to the terminal fact, which matters more.
-    echo "hive-turn: WARNING could not emit execution.started (payload kept at $TD/started.json)" >&2
+  if [ -z "$RECOVERING" ]; then
+    STARTED_PAYLOAD=$(jq -c -n --slurpfile t "$TD/turn.json" \
+      --arg v "$HARNESS_VERSION" --arg st "$(turn_now)" \
+      '$t[0] as $p |
+       {execution_id: $p.execution_id, purpose: $p.purpose, attempt: $p.attempt,
+        identity: $p.identity, harness_version: $v,
+        model_requested: $p.model_requested, started_at: $st,
+        turn_id: $p.turn_id, turn_kind: $p.turn_kind,
+        resumed_session_id:
+          (if ($p.resume_session_id // "") == "" then null else $p.resume_session_id end)}')
+    printf '%s\n' "$STARTED_PAYLOAD" \
+      | jq -c --argjson cur "$CURSOR_JSON" '. + {spine_cursor: $cur}' > "$TD/started.json"
+    if ! "$RUN_DIR/emit-instrument" --type execution.started --task "$TASK" \
+          --payload "$STARTED_PAYLOAD" >/dev/null; then
+      # A missing `started` is a gap in the record but not a reason to abandon a turn
+      # about to run. Say so loudly and carry on to the terminal fact, which matters more.
+      echo "hive-turn: WARNING could not emit execution.started (payload kept at $TD/started.json)" >&2
+    fi
   fi
 
   {
@@ -1173,37 +1264,58 @@ run_turn() {  # run_turn <turn-dir>
   # same way when an operator runs it by hand in a recovery terminal — a turn whose cwd
   # depends on the caller is a turn that reads a different CLAUDE.md.
   [ -z "$CWD" ] || cd "$CWD" || die "cannot enter the worker's workspace clone: $CWD"
-  : > "$TD/stream.jsonl"
-  local RC=0
-  # The pid of THIS runner, written before the child starts and removed on the way out.
-  # It is what `hive-answer` reads to refuse a second turn while one is live — and it is
-  # the runner's own pid rather than the harness's because the runner is what owns the
-  # turn: a harness that has exited but whose classification is still being written is
-  # still a turn in progress, and a resume started then would race its terminal fact.
-  printf '%s' "$$" > "$TD/pid"
-  set +e
+  # Compile the renderer's program ONCE, before the harness starts. A jq program that
+  # does not compile exits immediately, `tee` then takes EPIPE, and the harness is killed
+  # mid-turn by its own display code — a pane bug becoming a worker death. So the program
+  # is checked first and a broken one degrades to raw passthrough with a warning, which is
+  # ugly and honest rather than fatal and mysterious.
+  local RENDER_OK=1
   if [ "$STRUCTURED" = "jsonl" ]; then
-    env -i "${ENV_PAIRS[@]}" "${ARGV[@]}" < /dev/null 2>>"$TD/harness.log" \
-      | tee -a "$TD/stream.jsonl" \
-      | jq -R -r --unbuffered "$ACTIVITY_JQ"
-    RC=${PIPESTATUS[0]}
-  else
-    # No structured surface (the `generic` adapter). The output is still retained and
-    # still shown; it simply cannot be scanned, and the classification says so.
-    env -i "${ENV_PAIRS[@]}" "${ARGV[@]}" < /dev/null 2>>"$TD/harness.log" \
-      | tee -a "$TD/stream.jsonl"
-    RC=${PIPESTATUS[0]}
+    if ! printf '' | jq -R -r "$ACTIVITY_JQ" >/dev/null 2>&1; then
+      RENDER_OK=""
+      echo "hive-turn: WARNING this adapter's activity renderer did not compile; the pane" >&2
+      echo "  will show the raw stream. The turn itself is unaffected and the stream is" >&2
+      echo "  retained either way." >&2
+    fi
   fi
-  set -e
+
+  local RC=0
+  # The pid of THIS runner, so the operator can see who holds the turn. The CLAIM file
+  # above is what actually prevents a second runner; this is the readable companion to it.
+  printf '%s' "$$" > "$TD/pid"
+  if [ -n "$RECOVERING" ]; then
+    # The exit code the dead process returned is unknowable — the process that would have
+    # reported it is gone. It is recorded as absent rather than as a zero that would read
+    # as a clean exit.
+    RC=""
+    cat "$TD/summary-recovery.txt" 2>/dev/null || true
+  else
+    : > "$TD/stream.jsonl"
+    set +e
+    if [ "$STRUCTURED" = "jsonl" ] && [ -n "$RENDER_OK" ]; then
+      env -i "${ENV_PAIRS[@]}" "${ARGV[@]}" < /dev/null 2>>"$TD/harness.log" \
+        | tee -a "$TD/stream.jsonl" \
+        | jq -R -r --unbuffered "$ACTIVITY_JQ"
+      RC=${PIPESTATUS[0]}
+    else
+      # No structured surface (the `generic` adapter). The output is still retained and
+      # still shown; it simply cannot be scanned, and the classification says so.
+      env -i "${ENV_PAIRS[@]}" "${ARGV[@]}" < /dev/null 2>>"$TD/harness.log" \
+        | tee -a "$TD/stream.jsonl"
+      RC=${PIPESTATUS[0]}
+    fi
+    set -e
+  fi
 
   # --- 5. scan the stream and classify the exit -------------------------------------
   # One call, and the only place either decision is made: the same code answers a live
   # turn and a later re-classification of the same saved bytes, so the two can never
   # disagree.
-  local TURN_OUT
+  local TURN_OUT RC_JSON
+  RC_JSON="${RC:-null}"
   if ! TURN_OUT=$(jq -n \
         --arg a "$ADAPTER" --rawfile s "$TD/stream.jsonl" \
-        --argjson rc "$RC" --argjson cur "$CURSOR_JSON" \
+        --argjson rc "$RC_JSON" --argjson cur "$CURSOR_JSON" \
         --arg run "$RUN" --arg task "$TASK" --arg worker "$WORKER" \
         --arg tid "$TURN_ID" --arg tk "$TURN_KIND" --arg route "$ROUTE" \
         '{adapter:$a, stream:$s, exit_code:$rc, cursor:$cur, run:$run, task:$task,
@@ -1213,7 +1325,7 @@ run_turn() {  # run_turn <turn-dir>
     # stream is on disk, the cursor is on the started fact, and re-running the turn
     # command replays the classification against the very same bytes.
     echo "hive-turn: the exit classifier could not run; the stream is preserved at $TD/stream.jsonl" >&2
-    TURN_OUT=$(jq -n --argjson rc "$RC" --argjson cur "$CURSOR_JSON" \
+    TURN_OUT=$(jq -n --argjson rc "$RC_JSON" --argjson cur "$CURSOR_JSON" \
       '{ok:true,
         facts:{terminal:{kind:"missing",reason:"unknown",
                          detail:"the classifier did not run"},
@@ -1294,8 +1406,15 @@ run_turn() {  # run_turn <turn-dir>
   # separate answer about the TASK. Keeping both means no pre-cutover reader has to learn
   # that `success` acquired a second sense, and no OS exit code can ever become a
   # `task.failed`.
-  local OUTCOME="success" FINISHED
-  if [ "$RC" -ne 0 ]; then OUTCOME="failure"; fi
+  # `interrupted` is the honest process view for a recovery: the runner did not reap
+  # this process and cannot say how it ended, which is what `outcome_certainty` exists to
+  # record.
+  local OUTCOME="success" CERTAINTY="certain" FINISHED
+  if [ -n "$RECOVERING" ]; then
+    OUTCOME="interrupted"; CERTAINTY="uncertain"
+  elif [ "$RC" -ne 0 ]; then
+    OUTCOME="failure"
+  fi
   # The model check is a stop-line, not a warning: a turn whose harness reports a model
   # other than the one the operator signed for did not execute the approved route,
   # whatever its exit code.
@@ -1306,12 +1425,12 @@ run_turn() {  # run_turn <turn-dir>
 
   FINISHED=$(jq -c -n \
     --slurpfile t "$TD/turn.json" --slurpfile x "$TD/exit.json" --slurpfile f "$TD/facts.json" \
-    --arg outcome "$OUTCOME" --arg fin "$(turn_now)" \
+    --arg outcome "$OUTCOME" --arg certainty "$CERTAINTY" --arg fin "$(turn_now)" \
     --arg resolved "$MODEL_RESOLVED" --arg evidence "$MODEL_EVIDENCE" \
-    --argjson usage "$USAGE_JSON" --argjson code "$RC" \
+    --argjson usage "$USAGE_JSON" --argjson code "$RC_JSON" \
     '$t[0] as $p | $x[0] as $e | $f[0] as $facts |
      {execution_id: $p.execution_id, purpose: $p.purpose, attempt: $p.attempt,
-      identity: $p.identity, outcome: $outcome, outcome_certainty: "certain",
+      identity: $p.identity, outcome: $outcome, outcome_certainty: $certainty,
       exit_code: $code, finished_at: $fin,
       model_resolved: (if $evidence == "harness-reported" then $resolved else null end),
       model_evidence: $evidence, usage: $usage, price_basis: $p.price_basis,
@@ -1336,8 +1455,20 @@ run_turn() {  # run_turn <turn-dir>
   # that vanished.
   printf '%s' "$TURN_OUT" | jq -r '.summary[]' > "$TD/summary.txt"
   cat "$TD/summary.txt"
+  # Kept so a later recovery can re-show what this turn's pane showed, rather than
+  # printing a summary that describes only the recovery.
+  cp "$TD/summary.txt" "$TD/summary-recovery.txt" 2>/dev/null || true
 
-  emit_turn_finished "$TD" "$FINISHED" || true
+  # An unrecorded terminal fact is the ONE outcome this whole path exists to prevent, so
+  # it is never a zero exit. The payload is on disk and re-running the command replays it
+  # byte-for-byte; what must not happen is a pane that closes green over a turn the spine
+  # has no record of.
+  if ! emit_turn_finished "$TD" "$FINISHED"; then
+    rm -f "$TD/pid"
+    return 70
+  fi
   rm -f "$TD/pid"
+  # A recovery has no exit code of its own to return; the terminal fact is the product.
+  [ -n "$RC" ] || return 0
   return "$RC"
 }

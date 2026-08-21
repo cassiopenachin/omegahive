@@ -240,6 +240,32 @@ def classify(
             spine_basis="unavailable",
         )
 
+    if cursor is None:
+        # A READABLE spine and no cursor is the most dangerous combination available here,
+        # and it is refused rather than widened. Without the position the turn started
+        # from there is nothing to scope to: every event this worker ever emitted for this
+        # task looks current, so a turn that said nothing would be confidently classified
+        # from a block an hour old. That is the order's named risk exactly, and "read the
+        # whole history instead" is not a degraded answer to it — it is a wrong one that
+        # looks right.
+        #
+        # This costs an `unclassified` on the rare turn whose pre-start head read failed.
+        # The evidence is intact, the operator is told, and `hive-answer --resume-only`
+        # continues the worker. That is the correct trade: a missing cursor is a knowable
+        # gap, and a confident classification derived from an unknowable window is not.
+        return ExitRecord(
+            classification="unclassified",
+            reason="cursor_unavailable: the spine head could not be read before this turn "
+                   "started, so no event can be placed relative to it",
+            task_disposition=None,
+            terminal_event_seq=None,
+            harness_terminal_kind=facts.terminal.kind,
+            harness_terminal_reason=facts.terminal.reason,
+            exit_code=exit_code,
+            spine_cursor=None,
+            spine_basis="read",
+        )
+
     scoped = [
         ev
         for ev in spine_events
@@ -383,7 +409,10 @@ def _seq_after(ev: Mapping[str, Any], cursor: int | None) -> bool:
     if seq is None:
         return False
     if cursor is None:
-        return True
+        # Unreachable from `classify`, which refuses a cursor-less classification outright.
+        # Kept as a closed door rather than an open one: a future caller that forgets the
+        # guard gets an empty scope, not the entire history.
+        return False
     return seq > cursor
 
 

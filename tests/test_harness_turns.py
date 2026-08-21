@@ -172,13 +172,23 @@ def test_an_event_with_no_sequence_cannot_be_placed_and_is_excluded():
     assert r.classification == "unclassified"
 
 
-def test_an_absent_cursor_widens_the_scope_and_says_so_on_the_record():
-    """When the head could not be read the cursor is ABSENT, never zero. Every event for
-    this worker and task then counts, which is wider than one turn — and the record
-    carries `spine_cursor: null` so a reader can see that is what happened."""
-    r = run([ev(50, "task.result_posted")], "completed", cursor=None)
-    assert r.classification == "posted"
+def test_a_readable_spine_with_no_cursor_refuses_rather_than_reading_all_of_history():
+    """The most dangerous combination available here, and the one an earlier draft of this
+    file got wrong: without the position the turn started from, a turn that said nothing
+    would be confidently classified from a block an hour old. Widening the window is not a
+    degraded answer — it is a wrong one that looks right."""
+    r = run([ev(50, "task.blocked")], "completed", cursor=None)
+    assert r.classification == "unclassified"
+    assert r.reason.startswith("cursor_unavailable")
     assert r.to_json()["spine_cursor"] is None
+    assert r.spine_basis == "read", "the spine WAS readable; it is the cursor that was not"
+
+
+def test_a_cursorless_refusal_still_carries_the_harness_evidence():
+    r = run([], "budget", reason="budget_exhausted", cursor=None)
+    assert r.classification == "unclassified"
+    assert r.harness_terminal_kind == "budget"
+    assert r.harness_terminal_reason == "budget_exhausted"
 
 
 # --- measured vendor fixtures ---------------------------------------------------------

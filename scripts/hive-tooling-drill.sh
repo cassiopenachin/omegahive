@@ -1395,6 +1395,50 @@ check "sha-answer: the resume prompt carries the conditional-unblock rule" \
   "jq -r '.argv[-1]' '$WORK/$SHAWORKER/run/turns/002/turn.json' | grep -qF 'task.unblocked ONLY if'"
 check "sha-answer: reused the existing window rather than opening a second" \
   "[ \"\$(tmux list-windows -t '=$TMUX_SESSION' -F '#{window_name}' | grep -cxF '$SHATASK')\" = 1 ]"
+# A prepared turn is not a run turn. Wait for turn 002 to actually finish in that pane and
+# check what it did — without this the whole resume half of the drill would pass against a
+# window that opened and did nothing.
+wait_until 30 "[ -s '$WORK/$SHAWORKER/run/turns/002/exit.json' ]" || true
+check "sha-answer: turn 002 really ran in the pane" \
+  "[ -s '$WORK/$SHAWORKER/run/turns/002/exit.json' ]"
+check "sha-answer: turn 002 invoked the harness's native resume" \
+  "grep -qF -- '--resume' '$WORK/$SHAWORKER/run/turns/002/turn.json'"
+check "sha-answer: turn 002 retained its own structured stream" \
+  "[ -s '$WORK/$SHAWORKER/run/turns/002/stream.jsonl' ]"
+check "sha-answer: turn 002 woke the SAME native session turn 001 recorded" \
+  "[ \"\$(jq -r '.session_id' '$WORK/$SHAWORKER/run/turns/002/facts.json')\" = \"\$(jq -r '.session_id' '$WORK/$SHAWORKER/run/turns/001/facts.json')\" ]"
+check "sha-answer: turn 002 classified its own exit, scoped to its own cursor" \
+  "jq -e '.spine_cursor != null and .classification != null' '$WORK/$SHAWORKER/run/turns/002/exit.json' >/dev/null"
+check "sha-answer: turn 002's cursor is AFTER turn 001's" \
+  "[ \"\$(jq -r '.spine_cursor' '$WORK/$SHAWORKER/run/turns/002/exit.json')\" -gt \"\$(jq -r '.spine_cursor' '$WORK/$SHAWORKER/run/turns/001/exit.json')\" ]"
+check "sha-answer: the pane released its claim on the way out" \
+  "[ ! -e '$WORK/$SHAWORKER/run/turns/002/claim' ]"
+
+echo
+echo "== hive-routes migrate: the within-v2 cutover, on the shipped command =="
+# The command an operator is TOLD to run must be the command that fixes the catalog. It
+# used to short-circuit on any v2 file and exit zero saying "nothing to do", while the
+# loader refused that same file on the next launch.
+MIGCAT="$SANDBOX/pre-cutover-routes.json"
+jq '.routes[0].runner.worker_io = "supervised"
+    | .routes[0].runner.args = ["exec", "-c", "default_permissions=\"hive-worker\"",
+                                "-c", "permissions.hive-worker.filesystem={\"/\"=\"read\"}",
+                                "-c", "sandbox_mode=\"workspace-write\""]'   "$DRILL_CATALOG" > "$MIGCAT"
+expect_fail_msg "a pre-cutover catalog refuses BY NAME rather than being trimmed" "worker_io"   env HIVE_ROUTE_CATALOG="$MIGCAT" "$SCRIPT_DIR/hive-launch" "$AORDER" --check
+# shellcheck disable=SC2034  # read inside check's eval, which shellcheck cannot see
+MIGOUT="$("$SCRIPT_DIR/hive-routes" migrate --catalog "$MIGCAT" 2>&1)"
+printf '%s
+' "$MIGOUT"
+check "migrate reports what it dropped"        "printf '%s' \"\$MIGOUT\" | grep -qF 'dropped runner.worker_io'"
+check "migrate names the rollback"             "printf '%s' \"\$MIGOUT\" | grep -qF 'rollback: cp'"
+check "migrate removed the retired field"      "! jq -e '.routes[0].runner.worker_io' '$MIGCAT' >/dev/null 2>&1"
+check "migrate removed the retired codex args" "! grep -qF 'hive-worker' '$MIGCAT'"
+check "migrate PRESERVED the operator's own arg" "jq -e '.routes[0].runner.args | index(\"sandbox_mode=\\\"workspace-write\\\"\")' '$MIGCAT' >/dev/null"
+check "the migrated catalog is accepted by the loader" \
+  "env HIVE_ROUTE_CATALOG='$MIGCAT' '$SCRIPT_DIR/hive-launch' '$AORDER' --check >/dev/null 2>&1 || env HIVE_ROUTE_CATALOG='$MIGCAT' '$SCRIPT_DIR/hive-launch' '$AORDER' --check 2>&1 | grep -qv CATALOG_LEGACY_FIELDS"
+# shellcheck disable=SC2034  # read inside check's eval, which shellcheck cannot see
+MIGOUT2="$("$SCRIPT_DIR/hive-routes" migrate --catalog "$MIGCAT" 2>&1)"
+check "re-running migrate writes nothing"      "printf '%s' \"\$MIGOUT2\" | grep -qF 'nothing to migrate, nothing written'"
 check "sha-answer: the content really is on the hub" "log_has '$HUB' 'answer: $SHATASK (via --sha)'"
 check "sha-answer: created no NEW commit (the author's stands alone)" \
   "[ \"\$(git -C '$WS' rev-parse HEAD)\" = '$GOOD_SHA' ]"

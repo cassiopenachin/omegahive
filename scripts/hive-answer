@@ -245,11 +245,24 @@ fi
 # must not hide a resumable session one turn further back.
 RESUME_SESSION=""
 SESSION_TURN=""
+SESSION_ADAPTER=""
+SESSION_HARNESS=""
 for d in $(ls -d "$WORKER_RUN_DIR"/turns/*/ 2>/dev/null | sort -r); do
   d="${d%/}"
   [ -f "$d/facts.json" ] || continue
   s=$(jq -r '.session_id // empty' "$d/facts.json" 2>/dev/null || true)
-  if [ -n "$s" ]; then RESUME_SESSION="$s"; SESSION_TURN="$d"; break; fi
+  if [ -n "$s" ]; then
+    RESUME_SESSION="$s"
+    SESSION_TURN="$d"
+    # WHICH harness minted this id, recorded alongside it. A session id is not a portable
+    # token: a Claude session uuid handed to `codex exec resume` names nothing, and the
+    # reverse is equally meaningless. Since the route is re-resolved from the CURRENT
+    # catalog below, an operator who re-pointed a route at another harness between turns
+    # would otherwise get a confident resume command built from the wrong vendor's id.
+    SESSION_ADAPTER=$(jq -r '.identity.adapter // empty' "$d/turn.json" 2>/dev/null || true)
+    SESSION_HARNESS=$(jq -r '.identity.harness // empty' "$d/turn.json" 2>/dev/null || true)
+    break
+  fi
 done
 if [ -z "$RESUME_SESSION" ]; then
   {
@@ -268,6 +281,38 @@ if [ -z "$RESUME_SESSION" ]; then
     echo "  onto an owned task."
   } >&2
   exit 1
+fi
+
+# --- what the last turn actually did, and what that permits ------------------------------
+# `--resume-only` is recovery from a PROCESS outcome. A turn that ended `posted` or
+# `blocked` had its say — the worker spoke, the board moved, and the operator's next act is
+# a close or an answer, not a wake. Refusing here is what keeps the mode from quietly
+# becoming "start the worker again for any reason".
+LAST_EXIT=""
+LAST_TURN_CLASS=""
+if [ -f "$LAST_TURN/exit.json" ]; then
+  LAST_EXIT="$LAST_TURN/exit.json"
+  LAST_TURN_CLASS=$(jq -r '.classification // empty' "$LAST_EXIT" 2>/dev/null || true)
+fi
+if [ -n "$RESUME_ONLY" ]; then
+  case "$LAST_TURN_CLASS" in
+    budget|failed|unclassified) : ;;
+    posted|blocked)
+      die "worker '$WORKER''s most recent turn ($(basename "$LAST_TURN")) ended '$LAST_TURN_CLASS',
+  not a process outcome. --resume-only recovers a turn that ended budget, harness-failed or
+  unclassified; a worker that posted or blocked said what it meant to say.
+    posted  -> review and close it (hive-close), or relaunch deliberately per RUNBOOK
+    blocked -> answer it:  hive-answer '$TASK' \"<your answer>\"" ;;
+    "")
+      die "worker '$WORKER''s most recent turn ($(basename "$LAST_TURN")) recorded no exit
+  classification, so there is no process outcome to recover from. That turn may still be
+  finishing, or it died before it could classify itself — in which case replaying it is the
+  recovery, and it re-uses the evidence rather than the model:
+    hive-launch --turn '$LAST_TURN'" ;;
+    *)
+      die "worker '$WORKER''s most recent turn ended '$LAST_TURN_CLASS', which this build
+  does not recognize. Refusing to guess whether that is resumable." ;;
+  esac
 fi
 
 # --- the resume prompt ------------------------------------------------------------------
@@ -345,6 +390,18 @@ if ! PLAN_JSON=$(printf '%s' "$REQ" | hive harness-resolve 2>"$resume_err"); the
   die "the resume turn could not be resolved (output above); nothing was started."
 fi
 rm -f "$resume_err"
+
+RESOLVED_ADAPTER=$(printf '%s' "$PLAN_JSON" | jq -r '.identity.adapter')
+RESOLVED_HARNESS=$(printf '%s' "$PLAN_JSON" | jq -r '.identity.harness')
+if [ -n "$SESSION_ADAPTER" ] && [ "$SESSION_ADAPTER" != "$RESOLVED_ADAPTER" ]; then
+  die "route '$ROUTE_NAME' now resolves to adapter '$RESOLVED_ADAPTER' (harness
+  '$RESOLVED_HARNESS'), but the session to be woken was minted by '$SESSION_ADAPTER'
+  (harness '$SESSION_HARNESS') in turn $(basename "$SESSION_TURN").
+  A session id is not portable between harnesses: '$RESUME_SESSION' names nothing to
+  '$RESOLVED_ADAPTER', and resuming on it would start a fresh session wearing an old one's
+  turn number. Point the route back at '$SESSION_HARNESS' to continue this worker, or
+  recover the seat per RUNBOOK 'Dead worker recovery'. The answer is already on the hub."
+fi
 
 EXECUTABLE=$(printf '%s' "$PLAN_JSON" | jq -r '.executable')
 require_executable "$EXECUTABLE" "$ROUTE_NAME"
