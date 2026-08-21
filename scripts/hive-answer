@@ -406,9 +406,19 @@ fi
 EXECUTABLE=$(printf '%s' "$PLAN_JSON" | jq -r '.executable')
 require_executable "$EXECUTABLE" "$ROUTE_NAME"
 
-# The turn directory is written only now, after every refusal above has passed, so a
+# The turn directory is created only now, after every refusal above has passed, so a
 # refused resume leaves no half-turn for the next one to trip over.
-mkdir -p "$TURN_DIR"
+#
+# Plain `mkdir`, not `mkdir -p`: creating a directory is atomic, and failing when it
+# already exists is what closes the last race two concurrent `hive-answer` invocations
+# have. Both could otherwise compute the same next turn number, write the same turn.json,
+# and respawn the pane — the second respawn killing the first turn mid-run. That is
+# recoverable (the runner re-classifies retained evidence rather than re-running the
+# model), but it should not happen, and one syscall prevents it.
+mkdir "$TURN_DIR" 2>/dev/null || die "turn $TURN_ID already exists at $TURN_DIR.
+  Another hive-answer is starting this worker's next turn, or a previous one left it
+  behind. Watch the pane:  tmux attach -t '$HIVE_TMUX_SESSION'   (window '$TASK')
+  Your answer is already committed and pushed; nothing is lost."
 printf '%s\n' "$PLAN_JSON" | jq \
   --arg run "$RUN" --arg worker "$WORKER" \
   --slurpfile prev "$PREV" \
