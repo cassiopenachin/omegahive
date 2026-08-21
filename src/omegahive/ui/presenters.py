@@ -10,6 +10,8 @@ from ..events.envelope import Event
 
 
 def task_lane(task: TaskState) -> str:
+    if task.pruned:
+        return "abandoned"
     if task.status == "done":
         return "completed"
     if task.status in {"blocked", "failed"} or task.escalated:
@@ -21,7 +23,7 @@ def task_lane(task: TaskState) -> str:
 
 def board_lanes(board: Board) -> dict[str, list[TaskState]]:
     lanes: dict[str, list[TaskState]] = {
-        name: [] for name in ("ready", "active", "attention", "completed")
+        name: [] for name in ("ready", "active", "attention", "abandoned", "completed")
     }
     for task in sorted(
         board.tasks.values(), key=lambda item: (item.priority != "high", item.task_id)
@@ -36,6 +38,7 @@ def board_summary(board: Board) -> dict[str, int]:
         "total": len(board.tasks),
         "active": len(lanes["active"]),
         "attention": len(lanes["attention"]),
+        "abandoned": len(lanes["abandoned"]),
         "completed": len(lanes["completed"]),
     }
 

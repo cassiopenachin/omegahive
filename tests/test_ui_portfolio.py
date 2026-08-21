@@ -32,6 +32,10 @@ def _task(task_id: str, status: str, age_days: float = 0.0, **kw) -> TaskState:
 BOARDS = {
     "omegahive": Board(tasks={t.task_id: t for t in (
         _task("portfolio-board", "in_progress", title="Portfolio board", owner="sess-pb"),
+        _task("abandoned-review", "in_review", age_days=1, pruned=True,
+              title="Abandoned review"),
+        _task("old-abandoned", "in_progress", age_days=40, pruned=True,
+              title="Old abandoned work"),
         _task("stalled-thing", "blocked", age_days=20, blocker_reason="waiting on a decision"),
         _task("cli-qol", "done", age_days=1, title="CLI quality of life"),
         _task("ancient-thing", "done", age_days=40, title="Ancient business"),
@@ -118,6 +122,10 @@ def test_portfolio_shows_open_work_and_recent_closes_only():
     response = _client().get("/portfolio")
 
     assert "portfolio-board" in response.text
+    assert "abandoned-review" in response.text
+    assert "Abandoned · in review" in response.text
+    assert "1 abandoned" in response.text
+    assert "old-abandoned" not in response.text
     assert "cli-qol" in response.text
     assert "stalled-thing" in response.text, "blocked 20 days is still open work"
     assert "ancient-thing" not in response.text

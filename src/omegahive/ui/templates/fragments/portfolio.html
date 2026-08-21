@@ -26,10 +26,11 @@
         <p class="run-tally">
           <span>{{ entry.summary.active }} in motion</span>
           <span class="{% if entry.summary.attention %}tally-attention{% endif %}">{{ entry.summary.attention }} need attention</span>
+          <span>{{ entry.summary.abandoned }} abandoned</span>
           <span>{{ entry.summary.completed }} completed</span>
         </p>
       </header>
-      {% set order = [('attention', 'Needs attention', '▲'), ('active', 'In motion', '●'), ('ready', 'Ready', '○'), ('completed', 'Completed', '✓')] %}
+      {% set order = [('attention', 'Needs attention', '▲'), ('active', 'In motion', '●'), ('ready', 'Ready', '○'), ('abandoned', 'Abandoned', '×'), ('completed', 'Completed', '✓')] %}
       <ul class="run-tasks">
         {% for lane, label, glyph in order %}
           {% for task in entry.lanes[lane] %}

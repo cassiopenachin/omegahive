@@ -60,7 +60,7 @@ h1, h2, h3, p { margin-top: 0; }
 .lane > header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
 .lane h2 { margin: 0; font-size: 0.91rem; letter-spacing: 0.01em; }
 .lane > header span { color: var(--muted); font-size: 0.8rem; }
-.lane-ready h2 { color: var(--cyan); }.lane-active h2 { color: var(--violet); }.lane-attention h2 { color: var(--amber); }.lane-completed h2 { color: var(--lime); }
+.lane-ready h2 { color: var(--cyan); }.lane-active h2 { color: var(--violet); }.lane-attention h2 { color: var(--amber); }.lane-abandoned h2 { color: var(--muted); }.lane-completed h2 { color: var(--lime); }
 .task-stack { display: grid; gap: 0.75rem; }
 .task-card { padding: 0.9rem; border: 1px solid #314156; border-radius: 0.65rem; background: #121d29; box-shadow: 0 0.7rem 1.3rem rgb(0 0 0 / 12%); }
 .task-card.priority-high { border-top: 2px solid var(--amber); }.task-card.priority-low { opacity: 0.78; }
@@ -102,6 +102,7 @@ h1, h2, h3, p { margin-top: 0; }
 .run-task-blocker { grid-column: 2 / -1; color: #ffe6b7; font-size: 0.76rem; }
 .run-task.lane-attention { border-left-color: var(--amber); }
 .run-task.lane-attention .lane-glyph { color: var(--amber); }
+.run-task.lane-abandoned { opacity: 0.68; }
 .run-task.lane-active { border-left-color: var(--violet); }
 .run-task.lane-ready { border-left-color: var(--cyan); }
 .run-task.lane-completed { opacity: 0.68; }
