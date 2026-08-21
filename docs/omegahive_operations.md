@@ -133,7 +133,7 @@ instrument role, and holds wherever a wrapper sits. See
 [docs/omegahive_worker_harness.md](omegahive_worker_harness.md) for the turn contract, the
 catalog and the execution facts.
 
-The wrappers read board state through **`board-view <run> --json`** — a JSON array (one object per task: `task`/`status`/`owner`/`depends_on`/`review`), the machine projection of the same folded board the table renders. They parse this, never the rendered table: a task id wider than the table's column folds across lines, which no `awk`/`grep` survives (a wrapped id once failed a close with "not on the board" while the board plainly showed it `in_review`). An empty board prints `[]` and exits 0. This projection is always the run's **full history** — the active-view filter is a display cut and never reaches it, so a task the operator can no longer see on the table is still found by id here.
+The wrappers read board state through **`board-view <run> --json`** — a JSON array (one object per task: `task`/`status`/`pruned`/`owner`/`depends_on`/`review`), the machine projection of the same folded board the table renders. They parse this, never the rendered table: a task id wider than the table's column folds across lines, which no `awk`/`grep` survives (a wrapped id once failed a close with "not on the board" while the board plainly showed it `in_review`). An empty board prints `[]` and exits 0. This projection is always the run's **full history** — the active-view filter is a display cut and never reaches it, so a task the operator can no longer see on the table is still found by id here.
 
 ## 4. `project.conf`: project identity vs. deployment facts
 

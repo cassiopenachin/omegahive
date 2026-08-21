@@ -131,7 +131,7 @@ def test_portfolio_json_is_grouped_by_run_and_carries_the_board_task_shape():
     payload = json.loads(result.stdout)
     assert [entry["run"] for entry in payload] == ["omegahive", "plnbench"]
     assert payload[0]["tasks"][0] == {
-        "task": "cli-qol", "status": "done", "owner": None,
+        "task": "cli-qol", "status": "done", "pruned": False, "owner": None,
         "depends_on": [], "review": None,
     }
     assert "ancient-thing" not in {t["task"] for t in payload[0]["tasks"]}

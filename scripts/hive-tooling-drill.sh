@@ -255,7 +255,7 @@ btitle() {  # btitle <run> <task> -> the title the launcher seeded on task.creat
 }
 bcount_review() {  # bcount_review <run> -> count of in_review tasks on that run
   dcli board-view "$1" --json 2>/dev/null \
-    | jq -r '[.[] | select(.status == "in_review")] | length'
+    | jq -r '[.[] | select(.status == "in_review" and .pruned != true)] | length'
 }
 raw_emit() {  # raw_emit <run> <role> <actor> <type> [extra emit args...] — seed a board directly
   dcli emit --run-id "$1" --role "$2" --actor "$3" --type "$4" "${@:5}" >/dev/null 2>&1
@@ -602,6 +602,16 @@ seed_in_review "$APROJ" "$ARUN" "drill-rev-a" "sess-rev-a-${STAMP}"
 seed_in_review "$BPROJ" "$BRUN" "drill-rev-b" "sess-rev-b-${STAMP}"
 check "one in_review seeded on alpha's run" "[ \"\$(bcount_review '$ARUN')\" = 1 ]"
 check "one in_review seeded on beta's run"  "[ \"\$(bcount_review '$BRUN')\" = 1 ]"
+
+# Pruning preserves the raw in_review status but removes abandoned work from live
+# review debt. Keep a live peer on alpha so this proves exclusion, not an empty queue.
+seed_in_review "$APROJ" "$ARUN" "drill-rev-pruned" "sess-rev-pruned-${STAMP}"
+raw_emit "$ARUN" coordinator operator task.pruned --task drill-rev-pruned \
+  --payload "$(jq -cn '{reason:"abandoned fixture"}')"
+check "pruned review retains raw status and exposes pruned=true" \
+  "[ \"\$(bview '$ARUN' --json | jq -r '.[] | select(.task == \"drill-rev-pruned\") | [.status, .pruned] | @tsv')\" = 'in_review\ttrue' ]"
+check "pruned review contributes zero review WIP beside its live peer" \
+  "[ \"\$(bcount_review '$ARUN')\" = 1 ]"
 
 # A blocked task is answer debt, not review debt — it must NOT count.
 raw_emit "$ARUN" human operator task.created --task drill-rev-blk \

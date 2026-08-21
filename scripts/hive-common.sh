@@ -896,7 +896,8 @@ board_owner() {  # board_owner <task>  -> prints owner (may be empty)
 # signal the launch throttle paces against: `blocked` tasks are answer debt, not
 # review debt, so they are deliberately excluded.
 board_in_review() {  # board_in_review  -> prints in_review task ids on RUN, one per line
-  board_json | jq -r '.[] | select(.status == "in_review") | .task' 2>/dev/null
+  board_json \
+    | jq -r '.[] | select(.status == "in_review" and .pruned != true) | .task' 2>/dev/null
 }
 
 # List in_review tasks across EVERY project that has a committed conf, one
@@ -916,7 +917,8 @@ global_in_review() {  # global_in_review  -> prints "<run>: <task>" lines across
     # a throttle that fails open is worse than no throttle — it reports "0 in review"
     # with the same confidence as a genuinely empty queue.
     board_json_strict "$r" \
-      | jq -r --arg r "$r" '.[] | select(.status == "in_review") | "\($r): \(.task)"'
+      | jq -r --arg r "$r" \
+        '.[] | select(.status == "in_review" and .pruned != true) | "\($r): \(.task)"'
   done
 }
 
