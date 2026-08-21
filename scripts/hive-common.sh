@@ -80,6 +80,37 @@ OPERATOR_ACTOR="operator"
 
 die() { echo "hive: $*" >&2; exit 1; }
 
+# The one failure HIVE_CLI_CMD reliably causes, named rather than left to a traceback.
+#
+# The seam runs the CLI on the HOST instead of in the container. That is what an operator
+# wants in the window between deploying a branch and rebuilding the image — and it is
+# wrong everywhere else, because the stack's `.env` names the database by its COMPOSE
+# SERVICE hostname (`postgres:5432`). Inside the container that resolves; on the host it
+# does not, and the CLI dies with `failed to resolve host 'postgres'` sixty lines into a
+# traceback that never mentions the variable that caused it.
+#
+# It is a hint and not a refusal, because the seam is legitimate wherever the DSN does
+# resolve — a checkout with no `.env`, or a shell that exports a host-reachable
+# OMEGAHIVE_DATABASE_URL (which is how the test suites use it).
+cli_cmd_hint() {  # cli_cmd_hint <combined-output>   -> prints to stderr, or nothing
+  [ -n "${HIVE_CLI_CMD:-}" ] || return 0
+  case "$1" in
+    *"could not translate host name"*|*"failed to resolve host"*|*"Name or service not known"*|*"Connection refused"*) ;;
+    *) return 0 ;;
+  esac
+  {
+    echo
+    echo "hive: FIRST SUSPECT — HIVE_CLI_CMD is set:"
+    echo "        HIVE_CLI_CMD='$HIVE_CLI_CMD'"
+    echo "  That runs the CLI on THIS HOST rather than in the container, and the stack's"
+    echo "  .env names the database by its compose service hostname, which only resolves"
+    echo "  INSIDE the container. The error above is that mismatch, not a broken stack."
+    echo "  The seam exists for one window: after deploying a branch, before rebuilding"
+    echo "  the image. Once the image is rebuilt, UNSET it — do not correct it."
+    echo "        unset HIVE_CLI_CMD      # and remove it from your shell profile"
+  } >&2
+}
+
 # --- portable digest / encoding helpers ----------------------------------------------
 # `sha256sum` is GNU coreutils; macOS and the BSDs ship `shasum -a 256` and nothing
 # else. The repo already carries one drill that aborts before its first check on a BSD
@@ -632,10 +663,9 @@ emit() {  # emit <role> <actor> <type> [--task <t>] [--payload <json>]
     if ! out=$( $HIVE_CLI_CMD emit --run-id "$RUN" --role "$role" --actor "$actor" \
         --type "$type" "$@" 2>&1 ); then
       echo "$out" >&2
+      cli_cmd_hint "$out"
       die "emit failed: $type (role=$role actor=$actor) — the cause is in the output above.
-  A GOVERNANCE refusal prints a line starting 'rejected: <CODE>'.
-  Anything else is this host or its config. HIVE_CLI_CMD is set to '$HIVE_CLI_CMD';
-  unset it to go back to the containerized path."
+  A GOVERNANCE refusal prints a line starting 'rejected: <CODE>'."
     fi
     echo "$out"
     return 0
@@ -988,6 +1018,7 @@ board_json_strict() {  # board_json_strict <run>  -> prints the board array, or 
     || die "cannot create a temporary file for board-read diagnostics"
   if ! out=$( hive board-view "$run" --json 2>"$err" ); then
     cat "$err" >&2
+    cli_cmd_hint "$(cat "$err")"
     rm -f "$err"
     die "cannot read the board for run '$run' — the cause is in the output above.
   Refusing to act on an unknown board state: an unreadable board is NOT an empty one,
