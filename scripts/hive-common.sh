@@ -58,16 +58,14 @@ set -euo pipefail
 # default below satisfies and any override must preserve.
 : "${HIVE_ROUTE_CATALOG:=$HOME/.config/omegahive/routes.json}"
 
-# The supervisor's own state, and the reason it is not under $WORK_ROOT/<worker>: that
-# directory is the worker's TASK ROOT, which the worker may write to in full. Anything a
-# trusted-side decision depends on — the immutable launch plan, the relay wrappers, the
-# terminal fact — lives here instead, one directory per worker, outside every task root.
-: "${HIVE_EXEC_ROOT:=$WORK_ROOT/hive-exec}"
-
-# How long a supervised worker's wrapper waits for a receipt before giving up. It times
-# out LOUDLY rather than deadlocking the session: a wedged supervisor must cost the
-# worker one refused call, not its whole turn.
-: "${HIVE_SPOOL_TIMEOUT:=180}"
+# There is deliberately no HIVE_EXEC_ROOT here any more, and no request-queue timeout.
+# Both belonged to the retired mediator: the first named a trusted state directory OUTSIDE
+# every worker root, the second bounded how long a worker waited for a receipt from a
+# process that no longer exists. A turn's run-local state now lives under the worker's
+# own task root, and it is described honestly for what it is — recovery and provenance
+# evidence, not a claimed hostile-process boundary. What actually stops a worker from
+# authoring its own execution facts is the gateway's role policy, which is enforced on
+# the far side of the CLI and does not care where a wrapper sits.
 
 # RUN / RUN_ID / CODE_REPO / PROJECT / CANON_CODE are resolved per operation by
 # load_project_conf (from the order's project) — never hardcoded here, because a
@@ -181,37 +179,45 @@ require_executable() {  # require_executable <executable> <route-name>
   runner.executable in $HIVE_ROUTE_CATALOG, or install the harness."
 }
 
-# --- issuing the worker's and the supervisor's interfaces ----------------------------
+# --- issuing the worker's run-local interface ----------------------------------------
 #
-# These write the shell that a live worker actually runs, so they live here rather than
-# inline in `hive-launch`: the transport drill issues the very same files, and a second
+# This writes the shell that a live worker actually runs, so it lives here rather than
+# inline in `hive-launch`: the tooling drill issues the very same files, and a second
 # copy in a test fixture would drift from the shipped one the first time either changed.
-# Everything they need is a parameter. Nothing is read back out of the worker's root.
+# Everything it needs is a parameter. Nothing is read back out of the worker's root.
+#
+# Since the `worker-turns` cutover there is ONE transport and it is direct. The worker
+# emits through the governed CLI, syncs with ordinary git, and publishes with the
+# runner's own git and forge commands. A runner that cannot do those is a runner the
+# operator must change: Hive no longer keeps a privileged resident process bridging the
+# gap, because that process ended up owning a request queue, a receipt protocol, a
+# publication path, the process lifecycle and the terminal record all at once, and its
+# absence made a launched pane vanish (2026-08-21, prune-projection-v2).
 
 issue_worker_interface() {
-  # issue_worker_interface <run-dir> <ws-root> <code-root> <code-branch> <worker-io> <run> <worker>
-  local RUN_DIR="$1" WS_ROOT="$2" CODE_ROOT="$3" CODE_BRANCH="$4" WORKER_IO="$5"
-  local RUN="$6" WORKER="$7"
+  # issue_worker_interface <run-dir> <ws-root> <code-root> <code-branch> <run> <worker>
+  local RUN_DIR="$1" WS_ROOT="$2" CODE_ROOT="$3" CODE_BRANCH="$4"
+  local RUN="$5" WORKER="$6"
   local WRAPPER="$RUN_DIR/emit" BRIDGE="$RUN_DIR/hive"
+  local INSTRUMENT="$RUN_DIR/emit-instrument"
   resolve_compose
 
-  # --- the worker's run-local interface ------------------------------------------------
-  # Two commands, both inside the task root so a sandboxed worker can actually execute
-  # them, and both with the SAME worker-facing contract whichever transport they use. A
-  # direct route's wrappers act in the worker's own process; a supervised route's wrappers
-  # write one request and wait for the supervisor's receipt. The worker runs one protocol.
+  # Everything the worker and the turn runner need, inside the ONE writable root, so a
+  # runner that scopes the worker to that root can still execute all of it.
   #
-  # These files are worker-writable, and that is deliberate rather than a compromise:
-  # nothing on the trusted side reads them for a decision. The supervisor stamps the run,
-  # role and actor from its own plan, under $HIVE_EXEC_ROOT, which is outside this root.
-  mkdir -p "$RUN_DIR/spool" "$RUN_DIR/receipts" "$RUN_DIR/sync" "$RUN_DIR/publish"
+  # These files are worker-writable, and that is honestly stated rather than defended:
+  # the run directory is RECOVERY AND PROVENANCE EVIDENCE, not a claimed hostile-process
+  # boundary. What keeps a worker from authoring its own execution facts is the gateway's
+  # role policy — the instrument wrapper carries `--role instrument`, which the policy
+  # authorizes for `execution.*` and for no `task.*` event at all — and that holds
+  # wherever the wrapper sits.
+  mkdir -p "$RUN_DIR/turns"
 
-  if [ "$WORKER_IO" = "direct" ]; then
-    # The historical per-seat wrapper (proto-credential): one file per identity, issued at
-    # launch, revocable by deletion; role and actor baked in, not parameters — swapping
-    # this for a real per-seat key later changes nothing worker-facing (OPERATIONS.md
-    # Phase 2 gate). WORKER/RUN are charset-validated.
-    cat > "$WRAPPER" <<WRAP
+  # The historical per-seat wrapper (proto-credential): one file per identity, issued at
+  # launch, revocable by deletion; role and actor baked in, not parameters — swapping
+  # this for a real per-seat key later changes nothing worker-facing (OPERATIONS.md
+  # Phase 2 gate). WORKER/RUN are charset-validated.
+  cat > "$WRAPPER" <<WRAP
 #!/usr/bin/env bash
 # Emit wrapper for worker $WORKER on run $RUN (proto-credential — issued by
 # hive-launch, revoke by deleting this file). --run-id/--role/--actor are baked
@@ -233,66 +239,33 @@ cd "${OMEGA_DIR}" || { echo "wrapper: cannot enter ${OMEGA_DIR}" >&2; exit 1; }
 exec \$COMPOSE run --rm -T cli \\
   emit --run-id "$RUN" --role worker --actor "$WORKER" "\$@"
 WRAP
-  else
-    # The supervised transport. One request per call into a task-local spool, then a
-    # bounded wait for a receipt — synchronous, so the worker-facing result is unchanged:
-    # `emitted · <type> · seq N`, or `rejected: <CODE> <reason>` on the same call.
-    #
-    # Request ids come from a claim-file counter rather than a timestamp. Zero-padded and
-    # never reused, they give the supervisor a deterministic drain order per worker, which
-    # a second-resolution timestamp does not; `noclobber` makes the claim atomic without
-    # flock, which macOS does not ship.
-    cat > "$WRAPPER" <<WRAP
-#!/usr/bin/env bash
-# Supervised emit wrapper for worker $WORKER on run $RUN. This route's runner cannot
-# reach the spine directly, so the call is spooled and the SUPERVISOR performs it,
-# stamping --run-id/--role/--actor from the immutable launch plan. Pass only
-# --type/--task/--payload; a request that names an identity, a run or a role is refused.
-set -euo pipefail
-SPOOL="$RUN_DIR/spool"; RECEIPTS="$RUN_DIR/receipts"; TIMEOUT="\${HIVE_SPOOL_TIMEOUT:-$HIVE_SPOOL_TIMEOUT}"
-TYPE=""; TASK=""; PAYLOAD=""
-while [ \$# -gt 0 ]; do
-  case "\$1" in
-    --type)    shift; TYPE="\${1:-}" ;;
-    --task)    shift; TASK="\${1:-}" ;;
-    --payload) shift; PAYLOAD="\${1:-}" ;;
-    *) echo "emit: unknown argument '\$1' (pass only --type/--task/--payload)" >&2; exit 2 ;;
-  esac
-  shift
-done
-[ -n "\$TYPE" ] || { echo "emit: --type is required" >&2; exit 2; }
-mkdir -p "\$SPOOL" "\$RECEIPTS"
-n=0
-while :; do
-  n=\$((n + 1))
-  ID=\$(printf '%09d' "\$n")
-  if (set -o noclobber; : > "\$SPOOL/\$ID.claim") 2>/dev/null; then break; fi
-  [ "\$n" -lt 100000 ] || { echo "emit: cannot allocate a request id in \$SPOOL" >&2; exit 2; }
-done
-jq -n --arg t "\$TYPE" --arg task "\$TASK" --arg p "\$PAYLOAD" \\
-  '{kind:"emit", type:\$t, task:(if \$task == "" then null else \$task end),
-    payload:(if \$p == "" then {} else \$p end)}' > "\$SPOOL/\$ID.json.tmp"
-mv "\$SPOOL/\$ID.json.tmp" "\$SPOOL/\$ID.json"
-i=0
-while [ ! -f "\$RECEIPTS/\$ID.json" ]; do
-  i=\$((i + 1))
-  if [ "\$i" -gt \$((TIMEOUT * 10)) ]; then
-    echo "rejected: SUPERVISOR_TIMEOUT no receipt for request \$ID within \${TIMEOUT}s." >&2
-    echo "  The request is still queued at \$SPOOL/\$ID.json and will be delivered if the" >&2
-    echo "  supervisor recovers. This is a transport failure, not a spine refusal." >&2
-    exit 3
-  fi
-  sleep 0.1
-done
-jq -r '.message' "\$RECEIPTS/\$ID.json"
-[ "\$(jq -r '.status' "\$RECEIPTS/\$ID.json")" = "accepted" ] || exit 1
-WRAP
-  fi
   chmod +x "$WRAPPER"
+
+  # The turn runner's own write path. `--role instrument` is the whole separation: the
+  # process that watches a turn is structurally incapable of speaking for it, so the
+  # `classification` it writes can be derived from the worker's own events without the
+  # writer being able to author one of them.
+  cat > "$INSTRUMENT" <<INSTWRAP
+#!/usr/bin/env bash
+# Instrument emit wrapper for the turn runner watching worker $WORKER on run $RUN.
+# --run-id/--role/--actor are baked in; pass only --type/--task/--payload.
+# role=instrument: this identity may emit execution.* and NOTHING task-shaped.
+set -euo pipefail
+COMPOSE="\${OMEGAHIVE_COMPOSE:-$HIVE_COMPOSE}"
+if [ -n "\${HIVE_CLI_CMD:-}" ]; then
+  # shellcheck disable=SC2086  # HIVE_CLI_CMD is legitimately several words
+  exec \$HIVE_CLI_CMD emit --run-id "$RUN" --role instrument --actor "turn-$WORKER" "\$@"
+fi
+cd "${OMEGA_DIR}" || { echo "instrument wrapper: cannot enter ${OMEGA_DIR}" >&2; exit 1; }
+# shellcheck disable=SC2086  # COMPOSE is legitimately two words ("podman compose")
+exec \$COMPOSE run --rm -T cli \\
+  emit --run-id "$RUN" --role instrument --actor "turn-$WORKER" "\$@"
+INSTWRAP
+  chmod +x "$INSTRUMENT"
 
   # The sync/publish command. Three operations and no parameters: the branch, the
   # destination, the refspec, the credential and the workspace path all come from the
-  # launch, so there is nothing here for a request to choose.
+  # launch, so there is nothing here for a caller to choose.
   cat > "$BRIDGE" <<'BRIDGEHEAD'
 #!/usr/bin/env bash
 # Workspace sync and publication for one hive worker.
@@ -302,8 +275,10 @@ WRAP
 #   hive publish code          publish this worker's branch and open or update its PR
 #
 # It takes no paths, branches, destinations or credentials. Those are fixed by the
-# launch. On a supervised route the network half is performed by the supervisor, outside
-# the worker boundary, and this script only prepares and consumes what crosses it.
+# launch. Every operation runs in the worker's own process with the runner's own git and
+# forge commands: if the configured runner cannot reach the hub or the forge, these fail
+# loudly and the worker blocks and says so, which is a deployment fact the operator can
+# act on. Nothing bridges around it.
 set -euo pipefail
 BRIDGEHEAD
   cat >> "$BRIDGE" <<BRIDGEVARS
@@ -311,21 +286,17 @@ WS_ROOT="$WS_ROOT"
 CODE_ROOT="$CODE_ROOT"
 CODE_BRANCH="$CODE_BRANCH"
 RUN_DIR="$RUN_DIR"
-WORKER_IO="$WORKER_IO"
 WORKER="$WORKER"
 BRIDGEVARS
   cat >> "$BRIDGE" <<'BRIDGEBODY'
-SPOOL="$RUN_DIR/spool"; RECEIPTS="$RUN_DIR/receipts"
-TIMEOUT="${HIVE_SPOOL_TIMEOUT:-180}"
 
-# `git rebase` needs a COMMITTER identity, and this rebase is the transport's own
-# plumbing acting on the worker's behalf — not authorship, which the rebase preserves.
-# Depending on ambient git config for it was a real defect: a supervised worker runs
-# under a constructed environment with no operator gitconfig in reach, so on any host
-# without a global identity the rebase died, left the clone DETACHED mid-rebase with the
-# worker's commit no longer on HEAD, and the next publication carried nothing. Naming an
-# identity here makes the sync work the same way everywhere, and makes it honest about
-# who performed it.
+# `git rebase` needs a COMMITTER identity, and this rebase is the tooling's own plumbing
+# acting on the worker's behalf — not authorship, which the rebase preserves. Depending
+# on ambient git config for it was a real defect: a worker runs under a constructed
+# environment with no operator gitconfig in reach, so on any host without a global
+# identity the rebase died, left the clone DETACHED mid-rebase with the worker's commit
+# no longer on HEAD, and the next publication carried nothing. Naming an identity here
+# makes the sync work the same way everywhere, and makes it honest about who performed it.
 git_as_worker() {  # git_as_worker <git args...>
   git -c "user.name=hive worker $WORKER" -c "user.email=$WORKER@workers.invalid" "$@"
 }
@@ -348,96 +319,24 @@ rebase_onto() {  # rebase_onto <repo> <upstream>
 
 usage() { sed -n '3,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
-# Ask the supervisor for one bridge operation and return its receipt on stdout.
-ask() {  # ask <op>
-  mkdir -p "$SPOOL" "$RECEIPTS"
-  local n=0 ID
-  while :; do
-    n=$((n + 1)); ID=$(printf '%09d' "$n")
-    if (set -o noclobber; : > "$SPOOL/$ID.claim") 2>/dev/null; then break; fi
-    [ "$n" -lt 100000 ] || { echo "hive: cannot allocate a request id in $SPOOL" >&2; exit 2; }
-  done
-  jq -n --arg op "$1" '{kind:"bridge", op:$op}' > "$SPOOL/$ID.json.tmp"
-  mv "$SPOOL/$ID.json.tmp" "$SPOOL/$ID.json"
-  local i=0
-  while [ ! -f "$RECEIPTS/$ID.json" ]; do
-    i=$((i + 1))
-    if [ "$i" -gt $((TIMEOUT * 10)) ]; then
-      echo "rejected: SUPERVISOR_TIMEOUT no receipt for '$1' within ${TIMEOUT}s" >&2
-      exit 3
-    fi
-    sleep 0.1
-  done
-  cat "$RECEIPTS/$ID.json"
-}
-
-# Bundle one ref out of a clone, thin against the published main where possible. A
-# bundle is how worker content reaches the trusted side WITHOUT the trusted side running
-# anything of the worker's: it is a file, and the trusted side reads it in a fresh
-# repository with hooks and credential helpers disabled.
-bundle_ref() {  # bundle_ref <repo> <ref> <out>
-  local repo="$1" ref="$2" out="$3"
-  mkdir -p "$(dirname "$out")"
-  rm -f "$out"
-  if git -C "$repo" rev-parse --verify --quiet origin/main >/dev/null; then
-    if git -C "$repo" merge-base --is-ancestor "$ref" origin/main 2>/dev/null; then
-      echo "hive: nothing to publish — $ref is already contained in origin/main" >&2
-      exit 1
-    fi
-    git -C "$repo" bundle create "$out" "$ref" --not origin/main >/dev/null 2>&1 && return 0
-  fi
-  git -C "$repo" bundle create "$out" "$ref" >/dev/null 2>&1 \
-    || { echo "hive: could not bundle $ref from $repo" >&2; exit 1; }
-}
-
 sync_workspace() {
-  if [ "$WORKER_IO" = "direct" ]; then
-    git -C "$WS_ROOT" fetch --quiet origin main \
-      || { echo "hive: git fetch failed" >&2; exit 1; }
-    rebase_onto "$WS_ROOT" FETCH_HEAD || exit 1
-    echo "workspace synced to $(git -C "$WS_ROOT" rev-parse --short HEAD)"
-    return
-  fi
-  local receipt bundle
-  receipt=$(ask sync-workspace)
-  [ "$(printf '%s' "$receipt" | jq -r '.status')" = "accepted" ] || {
-    printf '%s\n' "$(printf '%s' "$receipt" | jq -r '.message')" >&2; exit 1; }
-  bundle=$(printf '%s' "$receipt" | jq -r '.data.bundle')
-  # The fetch and rebase happen HERE, inside the worker boundary, so worker-owned git
-  # config and hooks have no trusted authority. The trusted side only produced a file.
-  git -C "$WS_ROOT" fetch --quiet "$bundle" 'refs/heads/main:refs/remotes/hub/main' \
-    || { echo "hive: could not read the sync bundle at $bundle" >&2; exit 1; }
-  rebase_onto "$WS_ROOT" refs/remotes/hub/main || exit 1
+  git -C "$WS_ROOT" fetch --quiet origin main \
+    || { echo "hive: git fetch failed" >&2; exit 1; }
+  rebase_onto "$WS_ROOT" FETCH_HEAD || exit 1
   echo "workspace synced to $(git -C "$WS_ROOT" rev-parse --short HEAD)"
 }
 
 publish_workspace() {
-  if [ "$WORKER_IO" = "direct" ]; then
-    git -C "$WS_ROOT" push --quiet origin HEAD:main \
-      || { echo "hive: push refused; run 'sync workspace', rebase and retry" >&2; exit 1; }
-    echo "published $(git -C "$WS_ROOT" rev-parse HEAD)"
-    return
-  fi
-  bundle_ref "$WS_ROOT" HEAD "$RUN_DIR/publish/workspace.bundle"
-  local receipt
-  receipt=$(ask publish-workspace)
-  printf '%s\n' "$(printf '%s' "$receipt" | jq -r '.message')"
-  [ "$(printf '%s' "$receipt" | jq -r '.status')" = "accepted" ] || exit 1
+  git -C "$WS_ROOT" push --quiet origin HEAD:main \
+    || { echo "hive: push refused; run 'sync workspace', rebase and retry" >&2; exit 1; }
+  echo "published $(git -C "$WS_ROOT" rev-parse HEAD)"
 }
 
 publish_code() {
-  if [ "$WORKER_IO" = "direct" ]; then
-    git -C "$CODE_ROOT" push --quiet -u origin "$CODE_BRANCH" \
-      || { echo "hive: push of $CODE_BRANCH refused" >&2; exit 1; }
-    ( cd "$CODE_ROOT" && gh pr view "$CODE_BRANCH" --json url -q .url 2>/dev/null ) \
-      || ( cd "$CODE_ROOT" && gh pr create --fill --head "$CODE_BRANCH" --base main )
-    return
-  fi
-  bundle_ref "$CODE_ROOT" "$CODE_BRANCH" "$RUN_DIR/publish/code.bundle"
-  local receipt
-  receipt=$(ask publish-code)
-  printf '%s\n' "$(printf '%s' "$receipt" | jq -r '.message')"
-  [ "$(printf '%s' "$receipt" | jq -r '.status')" = "accepted" ] || exit 1
+  git -C "$CODE_ROOT" push --quiet -u origin "$CODE_BRANCH" \
+    || { echo "hive: push of $CODE_BRANCH refused" >&2; exit 1; }
+  ( cd "$CODE_ROOT" && gh pr view "$CODE_BRANCH" --json url -q .url 2>/dev/null ) \
+    || ( cd "$CODE_ROOT" && gh pr create --fill --head "$CODE_BRANCH" --base main )
 }
 
 case "${1:-}${2:+ $2}" in
@@ -448,58 +347,6 @@ case "${1:-}${2:+ $2}" in
 esac
 BRIDGEBODY
   chmod +x "$BRIDGE"
-}
-
-issue_supervisor_interface() {
-  # issue_supervisor_interface <exec-dir> <run> <worker> <task>
-  local EXEC_DIR="$1" RUN="$2" WORKER="$3" TASK="$4"
-  local SUP_WRAPPER="$EXEC_DIR/emit.sh" RELAY_WRAPPER="$EXEC_DIR/emit-worker.sh"
-  resolve_compose
-
-  # --- the supervisor's own state, outside the task root -------------------------------
-  # Two wrappers and one plan. The instrument wrapper is baked with `--role instrument`, so
-  # the process that watches a session is structurally incapable of speaking for it: the
-  # gateway authorizes `instrument` for `execution.*` and for no `task.*` event at all. The
-  # relay wrapper is the worker's identity and exists only on a supervised route, where the
-  # supervisor performs the worker's emits on its behalf — it carries `--role worker` and
-  # the worker's actor id, and it lives here, where the worker cannot edit it.
-  mkdir -p "$EXEC_DIR"
-  chmod 0700 "$EXEC_DIR"
-  cat > "$SUP_WRAPPER" <<SUPWRAP
-#!/usr/bin/env bash
-# Instrument emit wrapper for the supervisor of worker $WORKER on run $RUN.
-# --run-id/--role/--actor are baked in; pass only --type/--task/--payload.
-# role=instrument: this identity may emit execution.* and NOTHING task-shaped.
-set -euo pipefail
-COMPOSE="\${OMEGAHIVE_COMPOSE:-$HIVE_COMPOSE}"
-if [ -n "\${HIVE_CLI_CMD:-}" ]; then
-  # shellcheck disable=SC2086  # HIVE_CLI_CMD is legitimately several words
-  exec \$HIVE_CLI_CMD emit --run-id "$RUN" --role instrument --actor "supervisor-$WORKER" "\$@"
-fi
-cd "${OMEGA_DIR}" || { echo "supervisor wrapper: cannot enter ${OMEGA_DIR}" >&2; exit 1; }
-# shellcheck disable=SC2086  # COMPOSE is legitimately two words ("podman compose")
-exec \$COMPOSE run --rm -T cli \\
-  emit --run-id "$RUN" --role instrument --actor "supervisor-$WORKER" "\$@"
-SUPWRAP
-  chmod +x "$SUP_WRAPPER"
-
-  cat > "$RELAY_WRAPPER" <<RELAYWRAP
-#!/usr/bin/env bash
-# Relay of worker $WORKER's own emits on run $RUN, used ONLY by the supervisor draining
-# that worker's spool. The run, the role and the actor are baked in here, outside the
-# worker's writable root; the request on stdin says what to emit and may not say who.
-set -euo pipefail
-COMPOSE="\${OMEGAHIVE_COMPOSE:-$HIVE_COMPOSE}"
-if [ -n "\${HIVE_CLI_CMD:-}" ]; then
-  # shellcheck disable=SC2086  # HIVE_CLI_CMD is legitimately several words
-  exec \$HIVE_CLI_CMD emit-relay --run-id "$RUN" --actor "$WORKER" --task "$TASK"
-fi
-cd "${OMEGA_DIR}" || { echo "relay wrapper: cannot enter ${OMEGA_DIR}" >&2; exit 1; }
-# shellcheck disable=SC2086  # COMPOSE is legitimately two words ("podman compose")
-exec \$COMPOSE run --rm -T cli \\
-  emit-relay --run-id "$RUN" --actor "$WORKER" --task "$TASK"
-RELAYWRAP
-  chmod +x "$RELAY_WRAPPER"
 }
 
 # Read a harness version out of a `--version` probe's combined output.
@@ -1071,4 +918,426 @@ global_in_review() {  # global_in_review  -> prints "<run>: <task>" lines across
     board_json_strict "$r" \
       | jq -r --arg r "$r" '.[] | select(.status == "in_review") | "\($r): \(.task)"'
   done
+}
+
+# --- the turn: one harness process, visible, from prompt to classified exit ----------
+#
+# A TURN is the whole worker lifecycle unit. One harness process runs in the task's tmux
+# window, from a kickoff or resume prompt to process exit; the process may disappear
+# between turns, and the durable native session id, the workspace state, the report and
+# the spine are what actually constitute the worker. `hive-launch` starts the first turn
+# and `hive-answer` starts every later one, but BOTH run the same function below, so a
+# resumed worker cannot end up on a second, weaker code path.
+#
+# What it deliberately is NOT: a daemon, a resident process, a watcher, a queue or a
+# separately installed command. It is a preamble and a postlude around one child process,
+# living in the same script that launches. There is nothing here to keep running after
+# the harness exits, which is the whole point — the last thing that went wrong was a
+# resident mediator whose absence made a launched pane vanish.
+#
+# The turn directory, all of it inside the worker's own task root:
+#
+#   turn.json      the resolved plan for THIS turn, plus run/worker/task identity
+#   started.json   the started payload, once emitted
+#   stream.jsonl   the harness's structured output, retained verbatim
+#   harness.log    the harness's own stderr
+#   facts.json     the normalized scan of the stream
+#   exit.json      the classification and the evidence behind it
+#   finished.json  the terminal payload — written before emitting, replayed on retry
+#   summary.txt    the intelligible terminal summary the pane keeps after exit
+#   usage.json     the per-message usage rows behind the totals (no message content)
+
+turn_json() {  # turn_json <turn-dir> <jq-filter>
+  jq -r "$2" "$1/turn.json"
+}
+
+# Read a JSON string array into a bash array, NUL-separated so no element can be split
+# or globbed whatever it contains. `while read -d ''` rather than `mapfile -d ''`: the
+# latter needs bash 4.4, and this file must run on the oldest bash a supported host
+# ships (macOS still ships 3.2).
+read_json_array() {  # read_json_array <target-array-name> <jq-filter> <json-file>
+  local __name="$1" __filter="$2" __file="$3" __item
+  eval "$__name=()"
+  while IFS= read -r -d '' __item; do
+    eval "$__name+=(\"\$__item\")"
+  done < <(jq -j "$__filter"' | . + "\u0000"' "$__file")
+}
+
+turn_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# Keep a worker's window on screen after its turn's process exits.
+#
+# tmux closes a window the moment its command returns, which would take the turn's
+# summary with it and leave an operator looking at an empty session wondering whether a
+# worker ever ran. `remain-on-exit` keeps the pane and its final screen, marked dead, and
+# `respawn-pane -k` (which is how hive-answer starts the next turn) revives that very
+# pane. This is what makes "the window is the task registry" survive a lifecycle where the
+# process is expected to end.
+#
+# Failure is non-fatal and deliberately so: the turn is already running or prepared by the
+# time this is called, and losing a display option is not worth losing a launch.
+tmux_keep_window() {  # tmux_keep_window <session> <window-name>
+  tmux set-option -w -t "=$1:=$2" remain-on-exit on >/dev/null 2>&1 \
+    || echo "hive: WARNING could not set remain-on-exit on window '$2'; its pane will close when the turn ends" >&2
+}
+
+# The highest-numbered turn directory under a worker's run dir, or empty.
+latest_turn() {  # latest_turn <run-dir>
+  local d last=""
+  for d in "$1"/turns/*/; do
+    [ -f "${d}turn.json" ] || continue
+    last="${d%/}"
+  done
+  printf '%s' "$last"
+}
+
+# The next turn number, zero-padded so the glob above keeps sorting correctly past nine.
+next_turn_id() {  # next_turn_id <run-dir>
+  local last n
+  last=$(latest_turn "$1")
+  if [ -z "$last" ]; then printf '001'; return; fi
+  n=$(basename "$last")
+  printf '%03d' "$((10#$n + 1))"
+}
+
+# Whether a turn is still live. The pid file is written by the runner and removed on the
+# way out; a stale pid whose process is gone is NOT live, which is what lets `hive-answer`
+# recover a worker whose pane was killed without waiting for anything to time out.
+turn_is_live() {  # turn_is_live <turn-dir>
+  local pid
+  [ -f "$1/pid" ] || return 1
+  pid=$(cat "$1/pid" 2>/dev/null) || return 1
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+# --- the terminal fact ---------------------------------------------------------------
+# Written once and never rewritten. A second call — a retry after a rejected emit, a
+# re-run of the pane command — re-sends the SAME bytes, which the spine's content-derived
+# idempotency key collapses onto the original event. Rewriting the payload with a fresh
+# timestamp would defeat that and leave two contradictory terminal facts for one turn.
+emit_turn_finished() {  # emit_turn_finished <turn-dir> [payload]
+  local td="$1" payload="${2:-}" task rd
+  rd=$(cd "$td/../.." && pwd)
+  if [ ! -f "$td/finished.json" ]; then
+    [ -n "$payload" ] || die "emit_turn_finished called with no payload and no finished.json"
+    printf '%s\n' "$payload" > "$td/finished.json"
+  fi
+  task=$(turn_json "$td" '.task')
+  if ! "$rd/emit-instrument" --type execution.finished --task "$task" \
+        --payload "$(cat "$td/finished.json")" >/dev/null; then
+    echo "hive-turn: FAILED to emit execution.finished — the payload is preserved at $td/finished.json" >&2
+    echo "  Re-run the turn command to replay it; the bytes are identical and the spine deduplicates." >&2
+    return 1
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------------
+# run_turn — the whole lifecycle. Called by `hive-launch --turn` and nothing else.
+# ---------------------------------------------------------------------------------
+run_turn() {  # run_turn <turn-dir>
+  local TD RUN_DIR
+  TD="${1%/}"
+  [ -d "$TD" ] || die "turn dir does not exist: $TD"
+  [ -f "$TD/turn.json" ] || die "no turn.json in $TD"
+  command -v jq >/dev/null 2>&1 || die "jq is required to run a turn"
+  RUN_DIR=$(cd "$TD/../.." && pwd)
+  [ -x "$RUN_DIR/emit-instrument" ] \
+    || die "no executable emit-instrument in $RUN_DIR — the turn runner has no write path"
+
+  # Already terminal? Replay the recorded fact and stop, so re-running the pane command
+  # is safe instead of being a second execution of the same approved turn.
+  if [ -f "$TD/finished.json" ]; then
+    echo "hive-turn: this turn already recorded a terminal fact; re-emitting it and exiting" >&2
+    emit_turn_finished "$TD" || true
+    [ -f "$TD/summary.txt" ] && cat "$TD/summary.txt"
+    return 0
+  fi
+
+  local EXEC_ID TASK RUN WORKER ADAPTER ROUTE TURN_ID TURN_KIND RESUMED
+  local PINNED_MODEL USAGE_EXTRACTOR ACTIVITY_JQ STRUCTURED CWD
+  EXEC_ID=$(turn_json "$TD" '.execution_id')
+  TASK=$(turn_json "$TD" '.task')
+  RUN=$(turn_json "$TD" '.run_id')
+  WORKER=$(turn_json "$TD" '.worker')
+  CWD=$(turn_json "$TD" '.cwd // empty')
+  ADAPTER=$(turn_json "$TD" '.identity.adapter')
+  ROUTE=$(turn_json "$TD" '.identity.route')
+  TURN_ID=$(turn_json "$TD" '.turn_id')
+  TURN_KIND=$(turn_json "$TD" '.turn_kind')
+  RESUMED=$(turn_json "$TD" '.resume_session_id // ""')
+  PINNED_MODEL=$(turn_json "$TD" '.identity.model')
+  USAGE_EXTRACTOR=$(turn_json "$TD" '.usage_extractor')
+  ACTIVITY_JQ=$(turn_json "$TD" '.activity_jq')
+  STRUCTURED=$(turn_json "$TD" '.structured_format')
+
+  local ARGV VERSION_ARGV ENV_PAIRS
+  read_json_array ARGV '.argv[]' "$TD/turn.json"
+  read_json_array VERSION_ARGV '.version_argv[]' "$TD/turn.json"
+  read_json_array ENV_PAIRS '(.env | to_entries[] | "\(.key)=\(.value)")' "$TD/turn.json"
+  [ "${#ARGV[@]}" -gt 0 ] || die "this turn carries an empty argv"
+  [ "${#VERSION_ARGV[@]}" -gt 0 ] || die "this turn carries an empty version_argv"
+  # `env -i` builds the child's environment from nothing, so PATH must be among the
+  # pairs or `env` cannot resolve the harness at all. The adapter allowlists PATH; this
+  # is the assertion a future allowlist edit cannot quietly break.
+  case " ${ENV_PAIRS[*]} " in
+    *" PATH="*) : ;;
+    *) die "the resolved environment carries no PATH; env -i could not resolve the harness" ;;
+  esac
+
+  # --- 1. probe the harness version — no model call, no tokens -----------------------
+  # Failing here means the turn never happened. That is recorded as a terminal failure
+  # with no `started` fact, which is exactly what the projection should show: approved,
+  # never started, failed.
+  local HARNESS_VERSION VERSION_OUT probe_payload
+  if ! VERSION_OUT=$("${VERSION_ARGV[@]}" 2>&1); then
+    echo "hive-turn: harness version probe failed: ${VERSION_ARGV[*]}" >&2
+    printf '%s\n' "$VERSION_OUT" >&2
+    probe_payload=$(jq -c -n --slurpfile t "$TD/turn.json" --arg fin "$(turn_now)" \
+      --arg r "harness did not start; version probe failed" \
+      '$t[0] as $p |
+       {execution_id: $p.execution_id, purpose: $p.purpose, attempt: $p.attempt,
+        identity: $p.identity, outcome: "failure", outcome_certainty: "certain",
+        exit_code: 127, finished_at: $fin, model_evidence: "none",
+        usage: {status: "unavailable", reason: $r},
+        price_basis: $p.price_basis,
+        classification: "failed", classification_reason: "harness: version_probe_failed",
+        harness_terminal_kind: "missing", harness_terminal_reason: "version_probe_failed",
+        turn_id: $p.turn_id, turn_kind: $p.turn_kind}')
+    emit_turn_finished "$TD" "$probe_payload" || true
+    return 1
+  fi
+  HARNESS_VERSION=$(printf '%s\n' "$VERSION_OUT" | harness_version_from)
+  [ -n "$HARNESS_VERSION" ] || HARNESS_VERSION="unknown"
+
+  # --- 2. the spine cursor, read BEFORE the harness can write anything ---------------
+  # Everything the classifier will consider must be strictly after this. It is what stops
+  # a PRIOR turn's `task.blocked` from being read as this turn's exit, which is a named
+  # risk of this design and the most likely way to get an exit wrong.
+  local CURSOR CURSOR_JSON
+  CURSOR=""
+  CURSOR=$(hive head-seq "$RUN" 2>/dev/null) || CURSOR=""
+  case "$CURSOR" in
+    ''|*[!0-9]*) CURSOR_JSON="null" ;;
+    *) CURSOR_JSON="$CURSOR" ;;
+  esac
+  if [ "$CURSOR_JSON" = "null" ]; then
+    echo "hive-turn: WARNING could not read the spine head for run '$RUN'. This turn's" >&2
+    echo "  classification will consider every event for this worker and task, which is" >&2
+    echo "  wider than one turn. The cursor is recorded as ABSENT, never as zero." >&2
+  fi
+
+  # --- 3. start the harness, then say so --------------------------------------------
+  local STARTED_PAYLOAD
+  STARTED_PAYLOAD=$(jq -c -n --slurpfile t "$TD/turn.json" \
+    --arg v "$HARNESS_VERSION" --arg st "$(turn_now)" \
+    '$t[0] as $p |
+     {execution_id: $p.execution_id, purpose: $p.purpose, attempt: $p.attempt,
+      identity: $p.identity, harness_version: $v,
+      model_requested: $p.model_requested, started_at: $st,
+      turn_id: $p.turn_id, turn_kind: $p.turn_kind,
+      resumed_session_id:
+        (if ($p.resume_session_id // "") == "" then null else $p.resume_session_id end)}')
+  printf '%s\n' "$STARTED_PAYLOAD" > "$TD/started.json"
+  if ! "$RUN_DIR/emit-instrument" --type execution.started --task "$TASK" \
+        --payload "$STARTED_PAYLOAD" >/dev/null; then
+    # A missing `started` is a gap in the record but not a reason to abandon a turn about
+    # to run. Say so loudly and carry on to the terminal fact, which matters more.
+    echo "hive-turn: WARNING could not emit execution.started (payload kept at $TD/started.json)" >&2
+  fi
+
+  {
+    echo
+    echo "  hive turn $TURN_ID ($TURN_KIND) — task $TASK   worker $WORKER"
+    echo "    route $ROUTE   model $PINNED_MODEL   harness $HARNESS_VERSION   adapter $ADAPTER"
+    [ -n "$RESUMED" ] && echo "    resuming native session $RESUMED"
+    echo "    execution $EXEC_ID   cursor ${CURSOR_JSON}   stream $TD/stream.jsonl"
+    echo "  ------------------------------------------------------------------"
+  } >&2
+
+  # --- 4. run it, retaining the stream AND rendering it -----------------------------
+  # Two consumers of one stdout, and both are required: `tee` retains the structured
+  # stream verbatim as evidence, and the renderer turns it into something an operator can
+  # actually watch. A raw JSON stream alone is retained evidence, not an operator
+  # interface.
+  #
+  # The renderer reads with `jq -R` (RAW input) on purpose. A malformed or truncated line
+  # must render as a marker and never kill the renderer — the renderer is the operator's
+  # only view of a live worker, and one bad line must not blind it.
+  #
+  # stdin is /dev/null: both shipped harnesses run non-interactively, and a harness left
+  # attached to a terminal it will never read from is how a pane hangs looking alive.
+  # The harness starts in the worker's workspace clone, not wherever this script was
+  # invoked. tmux already opens the pane there, but `hive-launch --turn` must behave the
+  # same way when an operator runs it by hand in a recovery terminal — a turn whose cwd
+  # depends on the caller is a turn that reads a different CLAUDE.md.
+  [ -z "$CWD" ] || cd "$CWD" || die "cannot enter the worker's workspace clone: $CWD"
+  : > "$TD/stream.jsonl"
+  local RC=0
+  # The pid of THIS runner, written before the child starts and removed on the way out.
+  # It is what `hive-answer` reads to refuse a second turn while one is live — and it is
+  # the runner's own pid rather than the harness's because the runner is what owns the
+  # turn: a harness that has exited but whose classification is still being written is
+  # still a turn in progress, and a resume started then would race its terminal fact.
+  printf '%s' "$$" > "$TD/pid"
+  set +e
+  if [ "$STRUCTURED" = "jsonl" ]; then
+    env -i "${ENV_PAIRS[@]}" "${ARGV[@]}" < /dev/null 2>>"$TD/harness.log" \
+      | tee -a "$TD/stream.jsonl" \
+      | jq -R -r --unbuffered "$ACTIVITY_JQ"
+    RC=${PIPESTATUS[0]}
+  else
+    # No structured surface (the `generic` adapter). The output is still retained and
+    # still shown; it simply cannot be scanned, and the classification says so.
+    env -i "${ENV_PAIRS[@]}" "${ARGV[@]}" < /dev/null 2>>"$TD/harness.log" \
+      | tee -a "$TD/stream.jsonl"
+    RC=${PIPESTATUS[0]}
+  fi
+  set -e
+
+  # --- 5. scan the stream and classify the exit -------------------------------------
+  # One call, and the only place either decision is made: the same code answers a live
+  # turn and a later re-classification of the same saved bytes, so the two can never
+  # disagree.
+  local TURN_OUT
+  if ! TURN_OUT=$(jq -n \
+        --arg a "$ADAPTER" --rawfile s "$TD/stream.jsonl" \
+        --argjson rc "$RC" --argjson cur "$CURSOR_JSON" \
+        --arg run "$RUN" --arg task "$TASK" --arg worker "$WORKER" \
+        --arg tid "$TURN_ID" --arg tk "$TURN_KIND" --arg route "$ROUTE" \
+        '{adapter:$a, stream:$s, exit_code:$rc, cursor:$cur, run:$run, task:$task,
+          worker:$worker, turn_id:$tid, turn_kind:$tk, route:$route}' \
+        | hive harness-turn); then
+    # The classifier itself failed to run. That is not a licence to guess an outcome: the
+    # stream is on disk, the cursor is on the started fact, and re-running the turn
+    # command replays the classification against the very same bytes.
+    echo "hive-turn: the exit classifier could not run; the stream is preserved at $TD/stream.jsonl" >&2
+    TURN_OUT=$(jq -n --argjson rc "$RC" --argjson cur "$CURSOR_JSON" \
+      '{ok:true,
+        facts:{terminal:{kind:"missing",reason:"unknown",
+                         detail:"the classifier did not run"},
+               session_id:null, model_resolved:null, harness_version:null, usage:null,
+               records:0, malformed:0, truncated:false, digest:"",
+               unavailable_reason:"the classifier did not run", notes:[]},
+        exit:{classification:"unclassified",
+              classification_reason:"classifier_unavailable",
+              task_disposition:null, terminal_event_seq:null,
+              harness_terminal_kind:"missing", harness_terminal_reason:"unknown",
+              exit_code:$rc, spine_cursor:$cur, spine_basis:"unavailable",
+              harness_failed_after_disposition:false, considered_events:0},
+        summary:["  [?] the exit classifier could not run; the evidence is retained"]}')
+  fi
+  printf '%s' "$TURN_OUT" | jq '.facts' > "$TD/facts.json"
+  printf '%s' "$TURN_OUT" | jq '.exit'  > "$TD/exit.json"
+
+  # --- 6. read the consumption surface ----------------------------------------------
+  # Never fatal. An unreadable surface is `unavailable` with a named reason, which is a
+  # legitimate record; losing the terminal fact over a parser problem would not be.
+  local USAGE_JSON MODEL_RESOLVED MODEL_EVIDENCE MODEL_MISMATCH SRC REASON UOUT
+  USAGE_JSON='{"status":"unavailable","reason":"usage was never extracted"}'
+  MODEL_RESOLVED=""; MODEL_EVIDENCE="none"; MODEL_MISMATCH="false"
+  SRC=""; REASON=""
+  case "$USAGE_EXTRACTOR" in
+    claude-code-transcript)
+      local sid cfg
+      sid=$(turn_json "$TD" '.usage_hint.session_id // empty')
+      cfg=$(turn_json "$TD" '.usage_hint.config_dir // empty')
+      [ -n "$cfg" ] || cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+      if [ -z "$sid" ]; then
+        REASON="no session id was pinned, so the transcript cannot be located"
+      else
+        # Search rather than recompute the project-slug directory: the slug rule is the
+        # harness's, not ours, and a wrong guess would silently read nothing.
+        SRC=$(find "$cfg/projects" -maxdepth 2 -type f -name "$sid.jsonl" 2>/dev/null | head -1)
+        [ -n "$SRC" ] || REASON="no transcript named $sid.jsonl under $cfg/projects"
+      fi
+      ;;
+    codex-turn-stream)
+      # Codex reports its usage inside the very stream this turn already retained, so the
+      # evidence and the totals come from one file and cannot describe two different runs.
+      SRC="$TD/stream.jsonl"
+      ;;
+    fake-usage-file)
+      SRC=$(turn_json "$TD" '.usage_hint.usage_file // empty')
+      if [ -z "$SRC" ] || [ ! -f "$SRC" ]; then
+        REASON="fake usage file not present"; SRC=""
+      fi
+      ;;
+    none)
+      REASON=$(turn_json "$TD" '.unproven_reason // "harness has no usage surface established on this deployment"')
+      ;;
+    *)
+      REASON="no usage extractor named '$USAGE_EXTRACTOR' on this deployment"
+      ;;
+  esac
+  if [ -z "$SRC" ]; then
+    USAGE_JSON=$(jq -c -n --arg r "$REASON" '{status:"unavailable", reason:$r}')
+  elif UOUT=$( hive harness-usage --extractor "$USAGE_EXTRACTOR" \
+                 --pinned-model "$PINNED_MODEL" < "$SRC" ); then
+    USAGE_JSON=$(printf '%s' "$UOUT" | jq -c '.usage')
+    MODEL_RESOLVED=$(printf '%s' "$UOUT" | jq -r '.model_resolved // empty')
+    MODEL_EVIDENCE=$(printf '%s' "$UOUT" | jq -r '.model_evidence')
+    MODEL_MISMATCH=$(printf '%s' "$UOUT" | jq -r '.model_mismatch')
+    # The audit trail: the per-message rows behind the totals, and nothing else. No
+    # message content ever reaches this file.
+    printf '%s' "$UOUT" | jq '{rows, notes, main_chain_models}' > "$TD/usage.json"
+    USAGE_JSON=$(printf '%s' "$USAGE_JSON" \
+      | jq -c --arg ref "$TD/usage.json" '. + {evidence_ref: $ref}')
+  else
+    USAGE_JSON=$(jq -c -n --arg r "the usage extractor failed to run" \
+      '{status:"unavailable", reason:$r}')
+  fi
+
+  # --- 7. the terminal fact ----------------------------------------------------------
+  # `outcome` stays the PROCESS view it has always been, and `classification` is the new,
+  # separate answer about the TASK. Keeping both means no pre-cutover reader has to learn
+  # that `success` acquired a second sense, and no OS exit code can ever become a
+  # `task.failed`.
+  local OUTCOME="success" FINISHED
+  if [ "$RC" -ne 0 ]; then OUTCOME="failure"; fi
+  # The model check is a stop-line, not a warning: a turn whose harness reports a model
+  # other than the one the operator signed for did not execute the approved route,
+  # whatever its exit code.
+  if [ "$MODEL_MISMATCH" = "true" ]; then
+    echo "hive-turn: MODEL MISMATCH: pinned '$PINNED_MODEL', harness reported '$MODEL_RESOLVED' — recording terminal failure" >&2
+    OUTCOME="failure"
+  fi
+
+  FINISHED=$(jq -c -n \
+    --slurpfile t "$TD/turn.json" --slurpfile x "$TD/exit.json" --slurpfile f "$TD/facts.json" \
+    --arg outcome "$OUTCOME" --arg fin "$(turn_now)" \
+    --arg resolved "$MODEL_RESOLVED" --arg evidence "$MODEL_EVIDENCE" \
+    --argjson usage "$USAGE_JSON" --argjson code "$RC" \
+    '$t[0] as $p | $x[0] as $e | $f[0] as $facts |
+     {execution_id: $p.execution_id, purpose: $p.purpose, attempt: $p.attempt,
+      identity: $p.identity, outcome: $outcome, outcome_certainty: "certain",
+      exit_code: $code, finished_at: $fin,
+      model_resolved: (if $evidence == "harness-reported" then $resolved else null end),
+      model_evidence: $evidence, usage: $usage, price_basis: $p.price_basis,
+      classification: $e.classification,
+      classification_reason: $e.classification_reason,
+      task_disposition: $e.task_disposition,
+      terminal_event_seq: $e.terminal_event_seq,
+      harness_terminal_kind: $e.harness_terminal_kind,
+      harness_terminal_reason: $e.harness_terminal_reason,
+      spine_cursor: $e.spine_cursor, spine_basis: $e.spine_basis,
+      harness_failed_after_disposition: $e.harness_failed_after_disposition,
+      turn_id: $p.turn_id, turn_kind: $p.turn_kind,
+      session_id: $facts.session_id,
+      stream_digest: (if $facts.digest == "" then null else $facts.digest end),
+      stream_records: $facts.records, stream_malformed: $facts.malformed,
+      stream_truncated: $facts.truncated}')
+
+  # --- 8. the summary the pane keeps after the process is gone ------------------------
+  # Written to a file AND printed, because the pane is where an operator looks and the
+  # file is what a later recovery reads. The pane keeps the printed copy after the
+  # process is gone, which is the difference between a window that ended and a window
+  # that vanished.
+  printf '%s' "$TURN_OUT" | jq -r '.summary[]' > "$TD/summary.txt"
+  cat "$TD/summary.txt"
+
+  emit_turn_finished "$TD" "$FINISHED" || true
+  rm -f "$TD/pid"
+  return "$RC"
 }

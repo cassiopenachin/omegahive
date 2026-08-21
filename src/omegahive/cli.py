@@ -640,6 +640,9 @@ def harness_resolve_cmd(
             run_dir=req.get("run_dir", ""),
             session_id=req.get("session_id", ""),
             parent_env=req.get("env") or {},
+            turn_kind=req.get("turn_kind") or "initial",
+            turn_id=str(req.get("turn_id") or "001"),
+            resume_session_id=req.get("resume_session_id") or "",
         )
     except RefusalError as exc:
         refuse(exc.code, exc.message)
@@ -785,7 +788,7 @@ def harness_turn_cmd(
 
     from .harness.adapters import get_adapter
     from .harness.records import RefusalError
-    from .harness.turns import classify, normalize_events, parse_stream
+    from .harness.turns import classify, normalize_events, parse_stream, summary_lines
 
     def refuse(code: str, message: str) -> None:
         print(json.dumps({"ok": False, "code": code, "message": message}, sort_keys=True))
@@ -862,9 +865,27 @@ def harness_turn_cmd(
         worker=worker,
         spine_readable=spine_readable,
     )
+    # The pane's terminal summary is rendered HERE, from the same record the fact carries,
+    # so the window's last screen and the spine's classification cannot describe two
+    # different outcomes.
+    summary = summary_lines(
+        record=record,
+        facts=facts,
+        task=task,
+        worker=worker,
+        route=str(req.get("route", "")),
+        turn_id=str(req.get("turn_id", "")),
+        turn_kind=str(req.get("turn_kind", "")),
+    )
     print(
         json.dumps(
-            {"ok": True, "facts": facts.to_json(), "exit": record.to_json()}, sort_keys=True
+            {
+                "ok": True,
+                "facts": facts.to_json(),
+                "exit": record.to_json(),
+                "summary": summary,
+            },
+            sort_keys=True,
         )
     )
 

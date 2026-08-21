@@ -4,10 +4,10 @@
 # The launch bookend of the Phase 1 loop (OPERATIONS.md): one judgment — the
 # order is ready — collapsed to one command. It resolves a route from the
 # operator-owned deployment catalog, provisions the worker ONE task root, issues the
-# worker its run-local interface (an emit wrapper and, on a supervised route, a
+# worker its run-local interface (an emit wrapper, an instrument wrapper and a
 # workspace-sync/publication wrapper), seeds the board (task.created +
-# worker.registered + task.assigned), and opens a named tmux pane running the
-# supervisor.
+# worker.registered + task.assigned), and opens a named tmux pane running the worker's
+# FIRST TURN.
 #
 # THE CATALOG IS THE AUTHORIZATION (runner-trust doctrine, 2026-08-20). With no
 # `--route`, the catalog's one `defaults.worker` route carries the launch; `--route`
@@ -43,6 +43,7 @@ source "$SCRIPT_DIR/hive-common.sh"
 usage() {
   cat >&2 <<'USAGE'
 usage: hive-launch <order-file> [--route <name>] [--worker <id>] [--check] [--anyway]
+       hive-launch --turn <turn-dir>          (internal: the tmux pane's command)
 
   --route <name>     run this launch on the named catalog route instead of the
                      catalog's defaults.worker. An operator override for ONE launch:
@@ -50,9 +51,25 @@ usage: hive-launch <order-file> [--route <name>] [--worker <id>] [--check] [--an
   --check            no-model preflight: resolve the route, adapter, argv, redacted
                      environment and installed harness version, print them, and STOP.
                      No clone, no spine write, no token spent.
+  --turn <dir>       run ONE prepared harness turn and record how it ended. This is
+                     what the tmux window executes, for the first turn and for every
+                     resume; `hive-answer` prepares later turn directories and opens
+                     the window on this same command. It is a mode of this script
+                     rather than a second installed command on purpose: the retired
+                     mediator it replaces was a separately installed binary, and a
+                     launch whose pane command was missing simply vanished (2026-08-21).
 USAGE
   exit 2
 }
+
+# --- the turn mode ------------------------------------------------------------------
+# Handled here, before anything else parses, because a turn takes a directory and no
+# order: everything it needs was already resolved and written by whoever prepared it.
+if [ "${1:-}" = "--turn" ]; then
+  [ $# -eq 2 ] || usage
+  run_turn "$2"
+  exit $?
+fi
 
 ORDER_ARG=""
 WORKER=""
@@ -118,22 +135,18 @@ require_safe_tmux_session
 # records the resolved configuration and does not claim that a direct same-user route is
 # isolated by it.
 #
-# The supervisor's state deliberately lives ELSEWHERE. A worker may modify anything
-# inside its writable root — including the wrappers below, its own git config and its
-# hooks — so no trusted-side decision may read a file from in here. The immutable launch
-# plan, the relay wrappers that carry the worker's identity, and the terminal fact all
-# live under $HIVE_EXEC_ROOT instead.
+# Everything a worker and its turns need lives inside this ONE root, including the
+# run-local turn state. That state is RECOVERY AND PROVENANCE EVIDENCE — the retained
+# structured stream, the cursor, the classification — and it is described as such rather
+# than as a boundary: the worker can write to it, and what actually stops a worker from
+# authoring its own execution facts is the gateway's role policy, on the far side of the
+# CLI, where a worker-role emit of `execution.*` is refused whatever the wrapper says.
 TASK_ROOT="$WORK_ROOT/$WORKER"
 WS_ROOT="$TASK_ROOT/hive"
 CODE_ROOT="$TASK_ROOT/$PROJECT"           # code clone named after the project (omegahive keeps its historical dir)
-RUN_DIR="$TASK_ROOT/run"                  # run-local interface: wrappers, spool, receipts
-EXEC_DIR="$HIVE_EXEC_ROOT/$WORKER"        # the supervisor's state — OUTSIDE the task root
-# The supervisor's two write paths (`emit.sh`, instrument; `emit-worker.sh`, the relay of
-# a supervised worker's own emits) are named and written by `issue_supervisor_interface`
-# in hive-common.sh, from $EXEC_DIR. They are deliberately not variables here: one
-# spelling, in the function that writes them.
+RUN_DIR="$TASK_ROOT/run"                  # run-local interface: wrappers + one dir per turn
 WRAPPER="$RUN_DIR/emit"                   # the worker's own emit command, inside its root
-BRIDGE="$RUN_DIR/hive"                    # the worker's sync/publish command (supervised routes)
+BRIDGE="$RUN_DIR/hive"                    # the worker's sync/publish command
 CODE_BRANCH="worker/$TASK"                # the publication branch, fixed by the plan
 
 # --- the order pin, the kickoff, and the route ---------------------------------------
@@ -148,12 +161,11 @@ resolve_compose
 # The kickoff is built before the route so the preflight can show the ACTUAL argv the
 # harness would receive, kickoff included (elided in the display, counted in the shape).
 #
-# It names the worker's THREE commands by path and says nothing about which side of the
-# boundary performs the network operation. That is deliberate: a direct route's wrappers
-# run git and the containerized CLI in the worker's own process, a supervised route's
-# wrappers write a request and wait for the supervisor's receipt, and the worker runs the
-# same protocol either way. A kickoff that branched on transport would make every worker
-# learn a deployment fact it cannot act on.
+# It names the worker's THREE commands by path and nothing else about transport, because
+# there is only one: every operation runs in the worker's own process, with the governed
+# CLI and the runner's own git and forge commands. If a configured runner cannot reach
+# one of them, the command fails loudly and the worker blocks and says so — which is a
+# deployment fact the operator can act on, and better than a bridge that hides it.
 read -r -d '' KICKOFF <<KICK || true
 You are hive worker $WORKER on task $TASK (run: $RUN).
 Your task root is $TASK_ROOT — everything you may write is inside it.
@@ -186,9 +198,10 @@ KICK
   schemas/route-catalog.example.json, or point HIVE_ROUTE_CATALOG at this host's copy.
   A v1 catalog is migrated in place by 'hive-routes migrate', which backs it up first."
 
-# A pinned session id, derived from the pinned order and this attempt, so the supervisor
+# A pinned session id, derived from the pinned order and this attempt, so the turn runner
 # knows where the harness will write its own transcript. Derived rather than random:
-# re-checking the same launch must describe the same execution, not a new one.
+# re-checking the same launch must describe the same execution, not a new one. Only the
+# INITIAL turn pins one; every later turn resumes the native session this one creates.
 SESSION_UUID=$(printf '%s' "$REL@$SHA|$TASK|work|1" | sha256_hex \
   | sed -E 's/^(.{8})(.{4})(.{3})(.{3})(.{12}).*/\1-\2-4\3-a\4-\5/')
 
@@ -203,7 +216,8 @@ REQ=$(jq -n \
   '{catalog_b64:$c, route:(if $route == "" then null else $route end),
     task:$task, order_ref:$order, purpose:"work", attempt:1,
     kickoff:$kick, task_root:$troot, cwd:$cwd, code_root:$code, run_dir:$run,
-    session_id:$sid, env:$env}')
+    session_id:$sid, env:$env,
+    turn_kind:"initial", turn_id:"001", resume_session_id:""}')
 
 # Resolved ONCE and reused. `--check` and the real launch call the same resolver with the
 # same request, so a preflight cannot describe a launch that would not happen.
@@ -236,7 +250,6 @@ fi
 rm -f "$resolve_err"
 EXEC_ID=$(printf '%s' "$PLAN_JSON" | jq -r '.execution_id')
 ROUTE_NAME=$(printf '%s' "$PLAN_JSON" | jq -r '.identity.route')
-WORKER_IO=$(printf '%s' "$PLAN_JSON" | jq -r '.worker_io')
 EXECUTABLE=$(printf '%s' "$PLAN_JSON" | jq -r '.executable')
 
 if [ -n "$CHECK_ONLY" ]; then
@@ -367,9 +380,6 @@ command -v tmux >/dev/null 2>&1 \
   || die "tmux not found on PATH — the pane is the task registry, so a launch without tmux cannot complete"
 [ ! -e "$WS_ROOT" ]   || die "$WS_ROOT already exists; pick a fresh --worker id or clear it"
 [ ! -e "$CODE_ROOT" ] || die "$CODE_ROOT already exists; pick a fresh --worker id or clear it"
-# The supervisor's state is keyed by worker id too, and a surviving one would let a new
-# launch inherit a previous execution's terminal fact. Same rule, same remedy.
-[ ! -e "$EXEC_DIR" ]  || die "$EXEC_DIR already exists; pick a fresh --worker id or clear it"
 # The one collision that still means something: a window already NAMED for this
 # task. The pane name is the registry (no registry file), so a second window for
 # one task would corrupt the registry — refuse, and name the recovery path.
@@ -456,19 +466,21 @@ git -C "$CODE_ROOT" remote set-url origin "$CODE_REPO"
 git -C "$CODE_ROOT" checkout --quiet -b "$CODE_BRANCH"
 echo "  clones: $WS_ROOT  +  $CODE_ROOT (origin -> $CODE_REPO, branch $CODE_BRANCH)"
 
-# --- the worker's run-local interface and the supervisor's own state -----------------
-# Both are issued by hive-common.sh so the transport drill exercises the very wrappers a
-# launch writes, rather than a second copy of them that could drift. Everything they need
-# is a parameter; nothing is read back out of the worker's root.
-issue_worker_interface "$RUN_DIR" "$WS_ROOT" "$CODE_ROOT" "$CODE_BRANCH" "$WORKER_IO" "$RUN" "$WORKER"
-issue_supervisor_interface "$EXEC_DIR" "$RUN" "$WORKER" "$TASK"
-echo "  emit:   $WRAPPER  ($WORKER_IO)"
+# --- the worker's run-local interface -------------------------------------------------
+# Issued by hive-common.sh so the tooling drill exercises the very wrappers a launch
+# writes, rather than a second copy of them that could drift. Everything they need is a
+# parameter; nothing is read back out of the worker's root.
+issue_worker_interface "$RUN_DIR" "$WS_ROOT" "$CODE_ROOT" "$CODE_BRANCH" "$RUN" "$WORKER"
+echo "  emit:   $WRAPPER"
 echo "  bridge: $BRIDGE  (sync workspace | publish workspace | publish code)"
 
-# The plan is the supervisor's root of trust: it execs THIS file's argv, stamps THIS
-# file's identity onto every relayed request, and takes every path, branch and
-# destination for a bridge operation from THIS file's `bridge` block. It is written
-# outside the task root and chmod 0600 for exactly that reason.
+# The first turn. Everything the runner needs is written HERE, once, so the pane's
+# command is a directory and nothing else: no kickoff on a command line, no interpolated
+# worker command, no environment carrying a prompt. `hive-answer` writes turn 002 the
+# same way, from the same resolver, which is what makes a resume the same lifecycle
+# rather than a second one.
+TURN_DIR="$RUN_DIR/turns/001"
+mkdir -p "$TURN_DIR"
 printf '%s\n' "$PLAN_JSON" | jq \
   --arg run "$RUN" --arg worker "$WORKER" \
   --arg ws_hub "$WS_HUB" --arg code_repo "$CODE_REPO" --arg branch "$CODE_BRANCH" \
@@ -476,9 +488,8 @@ printf '%s\n' "$PLAN_JSON" | jq \
   '. + {run_id: $run, worker: $worker,
         bridge: {ws_hub: $ws_hub, code_repo: $code_repo, code_branch: $branch,
                  project: $project, order_ref: $order, title: $title}}' \
-  > "$EXEC_DIR/plan.json"
-chmod 0600 "$EXEC_DIR/plan.json"
-echo "  execution: $EXEC_ID  (supervisor state $EXEC_DIR)"
+  > "$TURN_DIR/turn.json"
+echo "  execution: $EXEC_ID  (turn 001, state $TURN_DIR)"
 
 assigned_payload=$(jq -cn --arg w "$WORKER" '{worker:$w}')
 registered_payload=$(jq -cn --arg w "$WORKER" '{worker_id:$w}')
@@ -497,7 +508,7 @@ registered_payload=$(jq -cn --arg w "$WORKER" '{worker_id:$w}')
 # which nothing here can know.
 route_payload=$(printf '%s' "$PLAN_JSON" | jq -c \
   '{execution_id, purpose, attempt, order_ref, catalog_digest, identity,
-    route_source, runner_fingerprint, worker_io,
+    route_source, runner_fingerprint,
     model_identity_evidence, usage_evidence, price_basis}')
 emit human "$OPERATOR_ACTOR" execution.route_approved --task "$TASK" \
   --payload "$route_payload" >/dev/null
@@ -550,12 +561,12 @@ half_launch_recovery() {  # half_launch_recovery <what-failed>
     echo
     echo "  (a) retry just the pane:"
     echo "        tmux new-window -a -t '$SESSION_T:{end}' -n '$TASK' -c '$WS_ROOT' \\"
-    echo "          '$SCRIPT_DIR/hive-supervise \"$EXEC_DIR\"'"
+    echo "          '$SCRIPT_DIR/hive-launch --turn \"$TURN_DIR\"'"
     echo "      If the session itself is gone ('can't find session'), create it instead:"
     echo "        tmux new-session -d -s '$HIVE_TMUX_SESSION' -n '$TASK' -c '$WS_ROOT' \\"
-    echo "          '$SCRIPT_DIR/hive-supervise \"$EXEC_DIR\"'"
-    echo "  (b) fallback if tmux itself is the problem — run the supervisor in any terminal:"
-    echo "        $SCRIPT_DIR/hive-supervise '$EXEC_DIR'"
+    echo "          '$SCRIPT_DIR/hive-launch --turn \"$TURN_DIR\"'"
+    echo "  (b) fallback if tmux itself is the problem — run the turn in any terminal:"
+    echo "        $SCRIPT_DIR/hive-launch --turn '$TURN_DIR'"
     echo "      Prefer (a): the pane name is the task registry, and (b) leaves no pane."
     echo
     echo "  If you would rather abandon this seat, recover per RUNBOOK 'Dead worker recovery'"
@@ -595,18 +606,21 @@ half_launch_recovery() {  # half_launch_recovery <what-failed>
 #     current window) never renumbers an existing window. Verified on tmux 3.5a
 #     under the operator config (base-index 1, renumber-windows on) and under
 #     stock defaults (base-index 0, renumber off) — the result holds either way.
-# The pane runs the SUPERVISOR, not the harness directly — that is what makes the
-# execution facts instrument observations rather than self-report. The supervisor reads
-# the run-dir, execs the adapter's argv VECTOR, and emits started/finished around it.
-# Note what is no longer on this command line in the bound case: no kickoff env var and
-# no interpolated worker command. The kickoff is one argv element inside plan.json, so
-# no prompt, path, or model id is ever quoted onto a line a shell will parse.
+# The pane runs ONE TURN of this script, not the harness directly — that is what makes
+# the execution facts instrument observations rather than self-report, and it is what
+# leaves an intelligible summary on the window after the process is gone. The turn runner
+# reads the turn dir, execs the adapter's argv VECTOR, retains and renders its structured
+# stream, and emits started/finished around it.
 #
-# There is no second, unsupervised branch. Every configured route goes through the
-# adapter and the supervisor, whether its worker I/O is direct or supervised — the
-# legacy `HIVE_WORKER_CMD` path recorded no route, no model identity and no consumption,
-# and an easier way in that records nothing is how a launch stops being a fact.
-launch_cmd="$SCRIPT_DIR/hive-supervise '$EXEC_DIR'"
+# Note what is not on this command line: no kickoff env var and no interpolated worker
+# command. The prompt is one argv element inside turn.json, so no prompt, path or model
+# id is ever quoted onto a line a shell will parse.
+#
+# There is no second, uninstrumented branch. Every configured route goes through the
+# adapter and the turn runner — the legacy `HIVE_WORKER_CMD` path recorded no route, no
+# model identity and no consumption, and an easier way in that records nothing is how a
+# launch stops being a fact.
+launch_cmd="$SCRIPT_DIR/hive-launch --turn '$TURN_DIR'"
 if tmux has-session -t "$SESSION_T" 2>/dev/null; then
   PANE=$(tmux new-window -a -t "$SESSION_T:{end}" -n "$TASK" -c "$WS_ROOT" \
     -P -F '#{session_name}:#{window_index}' "$launch_cmd") \
@@ -616,6 +630,10 @@ else
     -P -F '#{session_name}:#{window_index}' "$launch_cmd") \
     || half_launch_recovery "tmux new-session"
 fi
+# A turn ENDS — that is the whole point of the lifecycle — and a window whose command
+# returns is closed by tmux, taking the turn's summary with it. `remain-on-exit` keeps
+# the pane and its last screen, which is what `hive-answer` then respawns into.
+tmux_keep_window "$HIVE_TMUX_SESSION" "$TASK"
 # Report where it actually landed (-P), not where we assumed: the index is tmux's
 # to choose, so the launcher reads it back rather than predicting it.
 echo "  pane:   $PANE  window '$TASK'  (attach: tmux attach -t $HIVE_TMUX_SESSION)"

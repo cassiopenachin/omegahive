@@ -57,7 +57,7 @@ class ResolvedPlan:
     # session an earlier turn recorded. They are the same plan shape on purpose — one
     # lifecycle, one record, one classifier, whichever one ran.
     turn_kind: str = "initial"
-    turn_id: str = "1"
+    turn_id: str = "001"
     resume_session_id: str = ""
 
 
@@ -97,7 +97,7 @@ def resolve(
     session_id: str,
     parent_env: Mapping[str, str],
     turn_kind: str = "initial",
-    turn_id: str = "1",
+    turn_id: str = "001",
     resume_session_id: str = "",
 ) -> ResolvedPlan:
     """Resolve the catalog and build the plan for ONE turn. Raises `RefusalError`.
@@ -224,6 +224,10 @@ def to_json(plan: ResolvedPlan, *, kickoff: str) -> dict[str, Any]:
         "resume_unsupported_reason": plan.launch.resume_unsupported_reason,
         "turn_kind": plan.turn_kind,
         "turn_id": plan.turn_id,
+        # The native session this turn WAKES (empty on an initial turn) and the session it
+        # will be findable under. Kept as two fields because they answer two questions:
+        # one is provenance for the resume, the other is where the usage surface lives.
+        "resume_session_id": plan.resume_session_id,
         "session_id": plan.resume_session_id or plan.launch.usage_hint.get("session_id", ""),
         "task_root": plan.task_root,
         "run_dir": plan.run_dir,
