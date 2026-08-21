@@ -1,5 +1,27 @@
 # Worker permission boundary — operator guide
 
+> **HISTORICAL EVIDENCE, NOT AN OPERATOR GUIDE. Retired 2026-08-20.**
+>
+> The product this document describes — a permission-boundary descriptor per harness,
+> materialized into the worker root, verified at launch, promoted by probe, and pinned by
+> digest from every route — was retired by the accepted runner-trust doctrine
+> (`2026-08-20-doctrine-runner-trust-v2.md` in the workspace) and removed from the code by
+> the `worker-transport` cutover. **None of the commands, files, schemas or environment
+> variables below exist any more.** `harness-bindings/*.json` moved to
+> `docs/evidence/retired-harness-bindings/`, `scripts/hive-binding-probe` and
+> `schemas/harness-binding.v1.json` are deleted, and no route names a boundary.
+>
+> It is kept because it is the readable statement of what the 2026-08-14 and 2026-08-19
+> probe records in `docs/evidence/` were measuring, and because the reasoning about
+> mechanism-versus-instruction, `deferred` probes and the residuals of a same-user command
+> matcher is the evidence base the doctrine argued from. Read it as a record of what was
+> tried and what it cost.
+>
+> **The live operator guide is `docs/omegahive_worker_harness.md`.** The current risk
+> vocabulary is `permissions.md` in the workspace.
+
+---
+
 What this document covers: how the four approved worker policy classes (`permissions.md`
 P1–P4) become something a launch can actually enforce and refuse on, and how a provider
 credential reaches — or fails to reach — an execution. Its companion is

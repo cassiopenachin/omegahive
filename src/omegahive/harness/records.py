@@ -1,23 +1,30 @@
-"""The two records: a deployment route catalog and a committed launch binding.
+"""The one record: the operator-owned deployment route catalog.
 
-These are deliberately two files with two owners, because they are two different kinds
-of fact and collapsing them is the defect this module exists to prevent:
+There used to be two — a catalog and a committed per-order *launch binding* that named
+a route, pinned an order, and carried a signed token prediction. The binding is gone.
+The accepted runner doctrine (2026-08-20) says configuration is authorization: a route
+present in this deployment's catalog with `enabled: true` is blessed for ordinary work,
+and an operator-entered `--route` override is blessed for one launch. There is no second
+approval file, no digest to paste, no promotion state, and no per-order prerequisite.
 
-  * A **route catalog entry** is a DEPLOYMENT fact — what this host can currently run
-    and what list-price basis applies. It carries no project judgment, it lives outside
-    the workspace, and it is never committed to a project. Its content digest is
-    recorded at launch so a later reader can tell whether the catalog has since moved.
+What a catalog entry is, and what it is deliberately not:
 
-  * A **launch binding** is a signed DECISION — use one named route, for one pinned
-    task and order, with one token prediction. It is committed in the workspace and the
-    launcher merely materializes it. The coordinator may recommend it; invoking the
-    pinned binding is the operator's approval.
+  * It is a DEPLOYMENT fact — what this host can currently run, under which runner
+    invocation, billing against which pool, at what list-price basis. It lives outside
+    every project and is never committed to one. Its content digest is recorded at
+    launch so a later reader can tell whether the catalog has since moved.
 
-The asymmetry that follows, and the reason `extra="forbid"` is on every model here: a
-binding may SELECT a route by name and may not DESCRIBE one. Identity comes from the
-catalog or it does not come at all. A binding carrying `model`, `argv`, or `env` is not
-a binding with a typo — it is an attempt to launch something the operator did not sign,
-and it refuses by name rather than being silently dropped by a lenient parser.
+  * It is NOT a safety certificate. The `runner` block below says which executable this
+    deployment runs and with which static arguments; Hive records that resolved shape
+    and does not claim to know what is behind it. An operator-supplied wrapper is just
+    an executable plus arguments.
+
+Two things the catalog may never carry, and both refuse by name rather than being
+dropped by a lenient parser: a credential VALUE of any kind (the runner block names
+environment *variables*, never their contents), and the name of a Hive authority
+credential — the database, gateway and reserved-role DSNs. Provider credentials are
+deployment posture and an operator may inherit one by name; Hive's own authority is not
+inheritable by a worker under any configuration.
 """
 
 from __future__ import annotations
@@ -33,26 +40,45 @@ from omegahive.events.types import ExecutionIdentity, PriceBasis
 
 # Bumped only on a breaking change. A record whose version this build does not know
 # refuses rather than being read on a guess — a misread route is a misbilled launch.
-CATALOG_SCHEMA_VERSION = 1
-BINDING_SCHEMA_VERSION = 1
+# v1 carried per-route permission-boundary pins (`binding_id`, `binding_digest`) and a
+# `credential_mode` gate; v2 replaces all three with the `runner` block. `hive-routes
+# migrate` is the production path between them.
+CATALOG_SCHEMA_VERSION = 2
+CATALOG_SCHEMA_VERSION_V1 = 1
 
 _NAME_SHAPE = re.compile(r"[A-Za-z0-9._-]{1,64}")
-_REF_SHAPE = re.compile(r".+@[0-9a-f]{7,40}")
-_DIGEST_SHAPE = re.compile(r"sha256:[0-9a-f]{64}")
+_ENV_NAME_SHAPE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 
-# Keys a binding may never carry. Every one of them is an identity or execution field
-# that belongs to the catalog (deployment) or to the adapter (code). `extra="forbid"`
-# already refuses them; this list exists so the refusal can NAME the attempted override
-# instead of reporting a generic unknown-field error, because the two have very
-# different remedies.
-BINDING_FORBIDDEN_KEYS = frozenset(
+# Hive's OWN authority credentials, by exact environment-variable name. These are the
+# database and gateway DSNs from `secrets-manifest.yaml` plus the notifier's bot token —
+# every one of them a capability over Hive's durable record or Hive's outbound identity,
+# not a provider account an operator might legitimately want a worker to use.
+#
+# The old rule banned any name CONTAINING `API_KEY`, `TOKEN`, `SECRET`, `PASSWORD` or
+# `CREDENTIAL`. That is retired: it also banned `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`,
+# which are provider access — deployment posture the operator owns — and the doctrine's
+# whole point is that Hive does not decide those. What Hive still decides is its own.
+HIVE_AUTHORITY_ENV_NAMES = frozenset(
     {
-        "adapter", "argv", "billing_market", "binding_digest", "binding_id", "cmd",
-        "command", "credential_mode", "credential_pool", "entrypoint", "env",
-        "environment", "exec", "executable", "harness", "model", "model_vendor",
-        "permissions", "price_basis", "provider", "sandbox", "shell",
+        "OMEGAHIVE_DATABASE_URL",
+        "OMEGAHIVE_GATEWAY_DATABASE_URL",
+        "OMEGAHIVE_OWNER_DATABASE_URL",
+        "OMEGAHIVE_TEST_DATABASE_URL",
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "POSTGRES_DB",
+        "TELEGRAM_BOT_TOKEN",
     }
 )
+
+# The shape rule behind the list, so a future DSN added to the deployment is refused on
+# the day it is added rather than on the day someone remembers to extend the set above.
+_HIVE_AUTHORITY_SHAPE = re.compile(r"^OMEGAHIVE_[A-Z0-9_]*DATABASE_URL$")
+
+
+def is_hive_authority_env(name: str) -> bool:
+    """True when `name` is a Hive authority credential and never inheritable."""
+    return name in HIVE_AUTHORITY_ENV_NAMES or bool(_HIVE_AUTHORITY_SHAPE.match(name))
 
 
 class RefusalError(Exception):
@@ -68,6 +94,90 @@ class RefusalError(Exception):
         self.message = message
 
 
+class RunnerSpec(BaseModel):
+    """How this deployment actually starts the harness. Argv, never a shell string.
+
+    Four fields and no fifth, because every additional field is a place a shell could
+    re-enter. `executable` plus `args` is the whole command; an operator who wants a
+    container, a VM, a sandbox wrapper or a bare binary writes exactly that here and
+    Hive runs it. The adapter appends the dynamic elements it knows the harness needs —
+    the model, the session id, the task-root paths, and the kickoff.
+
+    `inherit_env` names variables this route needs from the launching environment. Names
+    only: no value ever appears in this file, in a plan, in a log line, in the preflight
+    or on the spine. A provider credential name may be listed deliberately; a Hive
+    authority credential name refuses.
+
+    `worker_io` says whether the worker can perform its own spine writes and git
+    publication (`direct`) or needs the supervisor to bridge them (`supervised`). It is
+    a statement about the runner's reach, not a ranking: a native sandbox that closes
+    the container socket and the hub is `supervised`, and that is a stronger deployment,
+    not a weaker one.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    executable: str
+    args: list[str] = Field(default_factory=list)
+    inherit_env: list[str] = Field(default_factory=list)
+    worker_io: Literal["direct", "supervised"] = "direct"
+
+    @field_validator("executable")
+    @classmethod
+    def _executable_present(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("executable must not be empty")
+        if any(c in v for c in "\n\r\x00"):
+            raise ValueError("executable must not contain a newline or NUL")
+        return v
+
+    @field_validator("args")
+    @classmethod
+    def _args_are_argv(cls, v: list[str]) -> list[str]:
+        for a in v:
+            if "\x00" in a:
+                raise ValueError("an argument must not contain a NUL byte")
+        return v
+
+    @field_validator("inherit_env")
+    @classmethod
+    def _env_names_only(cls, v: list[str]) -> list[str]:
+        for name in v:
+            if not _ENV_NAME_SHAPE.fullmatch(name):
+                raise ValueError(
+                    f"inherit_env carries {name!r}, which is not an environment "
+                    "variable NAME; this field never holds a value"
+                )
+            if is_hive_authority_env(name):
+                raise ValueError(
+                    f"inherit_env names {name!r}, a Hive authority credential. Provider "
+                    "access is deployment posture and may be inherited by name; Hive's "
+                    "own database, gateway and reserved-role credentials may not"
+                )
+        return v
+
+    def fingerprint(self) -> str:
+        """`sha256:<hex>` over the resolved, non-secret runner configuration.
+
+        This is the provenance the doctrine asks for and deliberately not a posture
+        verdict: it answers "was the runner configuration the same as last time", which
+        a reader can check, and says nothing about whether that configuration is safe,
+        which nobody here can check. Environment NAMES are inside the fingerprint;
+        values were never available to it.
+        """
+        canonical = json.dumps(
+            {
+                "executable": self.executable,
+                "args": list(self.args),
+                "inherit_env": sorted(self.inherit_env),
+                "worker_io": self.worker_io,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 class RouteEntry(BaseModel):
     """One thing this deployment can currently run."""
 
@@ -78,24 +188,10 @@ class RouteEntry(BaseModel):
     provider: str
     model: str
     harness: str
-    billing_market: Literal["subscription", "api"]
-    credential_pool: str
     adapter: str
-    # Which permission-boundary descriptor this route runs under, and the exact bytes
-    # of it the operator approved. Both are REQUIRED: a route with no named boundary is
-    # the empty harness-bindings row `permissions.md` says is a launch that does not
-    # happen, and a named boundary with no digest cannot fail closed when the
-    # descriptor moves. The digest is re-pinned deliberately when the boundary changes,
-    # which is what keeps a boundary change from riding in on a code deploy.
-    binding_id: str
-    binding_digest: str
-    # How the provider credential reaches the execution. `harness-native` means the
-    # harness's own already-authenticated account is used and nothing is handed to the
-    # worker; `broker` means an operator-owned broker issues a scoped, expiring
-    # capability. There is deliberately no third value: a raw provider key in a route,
-    # a binding, or a worker environment is not a mode, it is the thing this field
-    # exists to make unrepresentable.
-    credential_mode: Literal["harness-native", "broker"] = "harness-native"
+    billing_market: Literal["subscription", "api"]
+    credential_pool: str      # opaque label — never a key, an account id, or a host path
+    runner: RunnerSpec
     # A route present in the catalog but switched off — kept visible (and therefore
     # auditable) rather than deleted, so "we turned this off" and "this never existed"
     # stay distinguishable.
@@ -105,18 +201,11 @@ class RouteEntry(BaseModel):
     price_basis: PriceBasis | None = None
     note: str | None = None
 
-    @field_validator("name", "binding_id")
+    @field_validator("name")
     @classmethod
     def _name_shape(cls, v: str) -> str:
         if not _NAME_SHAPE.fullmatch(v):
             raise ValueError(f"must match [A-Za-z0-9._-]{{1,64}}, got {v!r}")
-        return v
-
-    @field_validator("binding_digest")
-    @classmethod
-    def _digest_shape(cls, v: str) -> str:
-        if not _DIGEST_SHAPE.fullmatch(v):
-            raise ValueError(f"binding_digest must be 'sha256:<64 hex>', got {v!r}")
         return v
 
     def identity(self) -> ExecutionIdentity:
@@ -133,6 +222,26 @@ class RouteEntry(BaseModel):
         )
 
 
+class CatalogDefaults(BaseModel):
+    """Which route an ordinary launch uses when the operator names none.
+
+    Exactly one, and required. A catalog with several plausible workers and no stated
+    default makes `hive-launch <order>` a coin toss over billing markets — so the
+    absence refuses at preflight rather than resolving to whichever entry came first.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    worker: str
+
+    @field_validator("worker")
+    @classmethod
+    def _name_shape(cls, v: str) -> str:
+        if not _NAME_SHAPE.fullmatch(v):
+            raise ValueError(f"must match [A-Za-z0-9._-]{{1,64}}, got {v!r}")
+        return v
+
+
 class RouteCatalog(BaseModel):
     """The deployment's route list.
 
@@ -146,6 +255,7 @@ class RouteCatalog(BaseModel):
 
     schema_version: int
     captured_at: str
+    defaults: CatalogDefaults
     routes: list[RouteEntry] = Field(default_factory=list)
     note: str | None = None
 
@@ -155,51 +265,9 @@ class RouteCatalog(BaseModel):
         if v != CATALOG_SCHEMA_VERSION:
             raise ValueError(
                 f"catalog schema_version {v} is not supported by this build "
-                f"(expected {CATALOG_SCHEMA_VERSION})"
+                f"(expected {CATALOG_SCHEMA_VERSION}). A v1 catalog is migrated with "
+                "`hive-routes migrate`, which backs up the original first"
             )
-        return v
-
-
-class LaunchBinding(BaseModel):
-    """The signed decision, committed in the workspace.
-
-    Note what is NOT here: any execution detail. The binding selects; the catalog
-    describes; the adapter executes.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    schema_version: int
-    task: str
-    order_ref: str                       # workspace path@<git-sha>, pinned
-    route: str                           # a NAME resolved against the catalog
-    predicted_total_tokens: int = Field(ge=0)
-    purpose: Literal["work", "review"] = "work"
-    attempt: int = Field(default=1, ge=1)
-    note: str | None = None
-
-    @field_validator("schema_version")
-    @classmethod
-    def _known_version(cls, v: int) -> int:
-        if v != BINDING_SCHEMA_VERSION:
-            raise ValueError(
-                f"binding schema_version {v} is not supported by this build "
-                f"(expected {BINDING_SCHEMA_VERSION})"
-            )
-        return v
-
-    @field_validator("task", "route")
-    @classmethod
-    def _name_shape(cls, v: str) -> str:
-        if not _NAME_SHAPE.fullmatch(v):
-            raise ValueError(f"must match [A-Za-z0-9._-]{{1,64}}, got {v!r}")
-        return v
-
-    @field_validator("order_ref")
-    @classmethod
-    def _ref_shape(cls, v: str) -> str:
-        if not _REF_SHAPE.fullmatch(v):
-            raise ValueError(f"order_ref must be 'path@<git-sha>', got {v!r}")
         return v
 
 
@@ -234,34 +302,42 @@ def load_catalog(raw: bytes) -> RouteCatalog:
     data = _parse_json(raw, "route catalog", "CATALOG_MALFORMED")
     if not isinstance(data, dict):
         raise RefusalError("CATALOG_MALFORMED", "route catalog must be a JSON object")
+    # Named before the generic parse so an operator running a v1 catalog is told to
+    # migrate rather than reading a field-level complaint about `defaults`.
+    if data.get("schema_version") == CATALOG_SCHEMA_VERSION_V1:
+        raise RefusalError(
+            "CATALOG_V1",
+            "this is a schema_version 1 route catalog. Migrate it with `hive-routes "
+            "migrate` (it writes a timestamped backup beside the original first); v1 "
+            "pinned a permission-boundary descriptor per route, which this build no "
+            "longer reads",
+        )
     try:
         return RouteCatalog(**data)
     except ValidationError as exc:
         raise RefusalError("CATALOG_MALFORMED", _first_error(exc)) from exc
 
 
-def load_binding(raw: bytes) -> LaunchBinding:
-    data = _parse_json(raw, "launch binding", "BINDING_MALFORMED")
-    if not isinstance(data, dict):
-        raise RefusalError("BINDING_MALFORMED", "launch binding must be a JSON object")
+def resolve_route(catalog: RouteCatalog, name: str | None) -> tuple[RouteEntry, str]:
+    """Resolve a route NAME (or the catalog default) to EXACTLY ONE enabled entry.
 
-    # Named before the generic parse so the operator is told they tried to override
-    # catalog identity, not merely that a field was unrecognized.
-    overrides = sorted(BINDING_FORBIDDEN_KEYS & set(data))
-    if overrides:
-        raise RefusalError(
-            "BINDING_OVERRIDES_IDENTITY",
-            f"a binding selects a route by name and may not describe one; "
-            f"remove {overrides} — execution identity comes from the deployment catalog",
-        )
-    try:
-        return LaunchBinding(**data)
-    except ValidationError as exc:
-        raise RefusalError("BINDING_MALFORMED", _first_error(exc)) from exc
+    Returns the entry and its provenance — `"override"` when the operator named it on
+    the command line, `"default"` when it came from `defaults.worker`. The provenance is
+    recorded on the launch, because "the operator chose this route for this task" and
+    "this is what the catalog does by default" are different facts about the same run.
+    """
+    source = "override"
+    if name is None:
+        source = "default"
+        name = catalog.defaults.worker
+        if not any(r.name == name for r in catalog.routes):
+            known = ", ".join(sorted(r.name for r in catalog.routes)) or "<none>"
+            raise RefusalError(
+                "DEFAULT_ROUTE_UNKNOWN",
+                f"the catalog's defaults.worker names {name!r} and no such route "
+                f"exists; known: {known}",
+            )
 
-
-def resolve_route(catalog: RouteCatalog, name: str) -> RouteEntry:
-    """Resolve a route NAME to EXACTLY ONE catalog entry, or refuse."""
     matches = [r for r in catalog.routes if r.name == name]
     if not matches:
         known = ", ".join(sorted(r.name for r in catalog.routes)) or "<none>"
@@ -277,6 +353,9 @@ def resolve_route(catalog: RouteCatalog, name: str) -> RouteEntry:
     entry = matches[0]
     if not entry.enabled:
         raise RefusalError(
-            "ROUTE_DISABLED", f"route {name!r} is present but disabled in the catalog"
+            "ROUTE_DISABLED",
+            f"route {name!r} is present but disabled in the catalog. Catalog presence "
+            "plus enabled:true is what authorizes a runner; editing that field is the "
+            "authorization act",
         )
-    return entry
+    return entry, source

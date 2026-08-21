@@ -31,34 +31,43 @@ set -euo pipefail
 : "${WS_HUB:=$HOME/repos/hive-workspace.git}"      # local workspace hub (clone source, push target)
 : "${OPS_WS:=$HOME/workspaces/hive}"               # operator's workspace clone: order files, project confs, answers
 : "${WORK_ROOT:=$HOME/work}"                       # per-worker working trees live under here
-: "${WRAPPER_DIR:=$HOME/work/hive-wrappers}"       # per-seat emit wrappers (proto-credentials)
+# A worker's emit wrapper now lives INSIDE its own task root ($WORK_ROOT/<worker>/run),
+# because a runner that scopes the worker to that root cannot execute a file outside it.
+# WRAPPER_DIR is kept only so an old deployment's export does not break a sourced script.
+: "${WRAPPER_DIR:=$HOME/work/hive-wrappers}"       # legacy; no current script writes here
 : "${HIVE_TMUX_SESSION:=hive}"                     # tmux session that holds the worker panes
-# Session launcher, and the pane's autonomy is part of it: a launched pane that
-# waits on interactive permission prompts is not launched — the ceremony ends and
-# the work does not start. `--permission-mode auto` is the mode WORKER.md section
-# Launch specifies (adaptable, stall-free; bypass mode is prohibited, and auto
-# cannot be granted by the repo's own settings, hence the flag here). The hard
-# line stays the workspace's committed deny pins, which are evaluated first in
-# every mode. Override the whole string with HIVE_WORKER_CMD (project.conf / env)
-# if the worker CLI's flag ever drifts; the drill overrides it to a no-op.
-: "${HIVE_WORKER_CMD:=claude --permission-mode auto}"
+# There is deliberately no HIVE_WORKER_CMD here any more. The command a worker runs is
+# a ROUTE fact — the catalog's `runner` block names the executable, its static arguments
+# and the environment variable names it needs — and a deployment string beside the
+# catalog was a second, weaker way to say the same thing that recorded no model, vendor,
+# billing market or credential pool. Every launch goes through the route resolver.
 : "${HIVE_WIP_REVIEW_MAX:=3}"                       # hive-launch refuses at this many in_review tasks (review debt, summed across all projects); --anyway overrides
 
-# --- worker execution routing (HIP-1 M2) --------------------------------------------
+# --- worker execution routing -------------------------------------------------------
 # The route catalog is a DEPLOYMENT fact and lives outside every project: it names what
-# this host can run, which credential pools exist, and what list prices applied when it
-# was captured. It is never committed to a project, and nothing here reads its contents
-# — hive-launch pipes its exact bytes to the CLI, which digests and validates them.
-# `schemas/route-catalog.example.json` is the redacted shape; the live file is the
-# operator's, at this path.
+# this host can run, how it runs it, which credential pools exist, and what list prices
+# applied when it was captured. It is never committed to a project, and nothing here
+# reads its contents — hive-launch pipes its exact bytes to the CLI, which digests and
+# validates them. `schemas/route-catalog.example.json` is the redacted shape; the live
+# file is the operator's, at this path.
+#
+# Its presence IS the authorization (runner-trust doctrine, 2026-08-20). There is no
+# per-order binding file, no descriptor digest to paste and no promotion state; a route
+# with `enabled: true` may carry a worker, and deleting or disabling it is revocation.
+# The catalog must therefore live OUTSIDE every worker-writable task root, which the
+# default below satisfies and any override must preserve.
 : "${HIVE_ROUTE_CATALOG:=$HOME/.config/omegahive/routes.json}"
-# Where a project's committed launch bindings live, relative to the project directory.
-: "${HIVE_BINDINGS_DIR:=bindings}"
-# Enforcement is OFF until the operator finishes migrating the workspace: a launch with
-# no binding still runs, loudly, on the legacy HIVE_WORKER_CMD path. Set to 1 to make a
-# missing binding a refusal. `hive-launch --check-migration` enumerates what would
-# refuse today, which is the input to deciding when to flip this.
-: "${HIVE_ENFORCE_BINDINGS:=0}"
+
+# The supervisor's own state, and the reason it is not under $WORK_ROOT/<worker>: that
+# directory is the worker's TASK ROOT, which the worker may write to in full. Anything a
+# trusted-side decision depends on — the immutable launch plan, the relay wrappers, the
+# terminal fact — lives here instead, one directory per worker, outside every task root.
+: "${HIVE_EXEC_ROOT:=$WORK_ROOT/hive-exec}"
+
+# How long a supervised worker's wrapper waits for a receipt before giving up. It times
+# out LOUDLY rather than deadlocking the session: a wedged supervisor must cost the
+# worker one refused call, not its whole turn.
+: "${HIVE_SPOOL_TIMEOUT:=180}"
 
 # RUN / RUN_ID / CODE_REPO / PROJECT / CANON_CODE are resolved per operation by
 # load_project_conf (from the order's project) — never hardcoded here, because a
@@ -108,93 +117,358 @@ unb64() {  # unb64  (reads base64 on stdin, writes bytes on stdout)
   if printf 'aGk=' | base64 -d >/dev/null 2>&1; then base64 -d; else base64 -D; fi
 }
 
-# --- harness permission-boundary descriptors ------------------------------------------
+# --- host answers a pure resolver cannot give ----------------------------------------
 #
-# The descriptors are CODE, not deployment state: they ship in this repository beside the
-# launcher, so `permissions.md`'s "who enforces the boundary" question is answered by a
-# file an operator can read and git can blame. They are collected on the HOST and passed
-# to the resolver by exact bytes, because the catalog pins each one by digest and any
-# re-encode on the way in would break the very pin fail-closed depends on.
-: "${HIVE_BINDINGS_REPO_DIR:=}"   # override for tests; default is this repo's dir
+# The resolver is a pure function of bytes: it cannot stat a path or look on PATH, which
+# is what makes `--check` genuinely free of side effects. The one thing only the host can
+# answer is whether the executable a route names is actually installed, so it is answered
+# here and passed in. Both the preflight and the real launch call the SAME helper, because
+# a gate that can disagree with what it gates is a defect this tooling has already paid
+# for once (retro 2026-07-29 D1).
 
-harness_bindings_dir() {  # harness_bindings_dir -> the directory holding the descriptors
-  if [ -n "$HIVE_BINDINGS_REPO_DIR" ]; then printf '%s' "$HIVE_BINDINGS_REPO_DIR"; return; fi
-  printf '%s' "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/harness-bindings"
-}
-
-# {"<binding_id>": "<base64 of the file's exact bytes>"} for every descriptor present.
-# The key is the FILE STEM; the resolver looks up by the route's `binding_id` and then
-# checks the descriptor's own `harness` against the route's, so a renamed file cannot
-# answer for a boundary it does not describe.
-harness_descriptors_json() {  # harness_descriptors_json
-  local dir f id out enc
-  dir=$(harness_bindings_dir)
-  [ -d "$dir" ] || die "harness binding descriptors not found: $dir
-  These ship with the launcher. Without them no route has a permission boundary, and a
-  launch without a boundary is exactly what permissions.md says must not happen."
+# {"<executable>": true|false} for every executable named by any route in the catalog.
+present_executables_json() {  # present_executables_json <catalog-path>
+  local out exe
   out='{}'
-  for f in "$dir"/*.json; do
-    [ -f "$f" ] || continue
-    id=$(basename "$f" .json)
-    enc=$(b64 "$f") || die "could not encode harness binding descriptor: $f"
-    out=$(printf '%s' "$out" | jq --arg k "$id" --arg v "$enc" '. + {($k): $v}') \
-      || die "could not assemble the harness binding descriptor set"
-  done
-  [ "$out" != '{}' ] || die "no harness binding descriptors in $dir"
+  while IFS= read -r exe; do
+    [ -n "$exe" ] || continue
+    if command -v "$exe" >/dev/null 2>&1; then
+      out=$(printf '%s' "$out" | jq --arg k "$exe" '. + {($k): true}')
+    else
+      out=$(printf '%s' "$out" | jq --arg k "$exe" '. + {($k): false}')
+    fi
+  done < <(jq -r '.routes[]?.runner.executable // empty' "$1" 2>/dev/null | sort -u)
   printf '%s' "$out"
 }
 
-# The one question a pure resolver cannot answer: which of the descriptors' declared
-# `config-absent` paths actually exist on THIS host. Passed in rather than assumed, so a
-# managed/admin policy file that outranks the materialized boundary refuses the launch
-# instead of silently replacing it.
-harness_present_paths_json() {  # harness_present_paths_json <descriptors-json>
-  local paths p out
-  paths=$(printf '%s' "$1" \
-    | jq -r '.[]' \
-    | while IFS= read -r enc; do
-        printf '%s' "$enc" | unb64 \
-          | jq -r '.classes[].probes[] | select(.kind == "config-absent") | .path'
-      done \
-    | sort -u) || die "could not read config-absent probe paths from the descriptors"
-  out='[]'
-  while IFS= read -r p; do
-    [ -n "$p" ] || continue
-    [ -e "$p" ] || continue
-    out=$(printf '%s' "$out" | jq --arg p "$p" '. + [$p]')
-  done <<< "$paths"
-  printf '%s' "$out"
+# Refuse a launch whose named executable is not installed. A missing command is a cheap
+# deterministic failure, which is exactly the class the doctrine says launch still
+# refuses — and finding out from a preflight beats finding out from a dead pane.
+require_executable() {  # require_executable <executable> <route-name>
+  command -v "$1" >/dev/null 2>&1 || die "route '$2' names the executable '$1', which is not on PATH.
+  Catalog presence authorizes a runner; it cannot install one. Fix the route's
+  runner.executable in $HIVE_ROUTE_CATALOG, or install the harness."
 }
 
-# Write the materialized harness-native configuration into the isolated worker root.
-# Two properties matter more than the file's contents. It is written INTO THE WORKER'S
-# OWN ROOT and nowhere else — the operator's global harness configuration is never
-# rewritten, which is the failure permissions.md exists to end, one level down. And it
-# is written before the pane opens and re-verified by the supervisor before the child
-# exists, so "we generated a config" and "the child honors it" stay two facts.
-materialize_binding() {  # materialize_binding <plan-json> <worker-root>
-  local plan="$1" root="$2" rel want got dir
-  rel=$(printf '%s' "$plan" | jq -r '.binding.config_path // empty')
-  [ -n "$rel" ] || return 0          # argv-only boundary: nothing to write
-  case "$rel" in
-    /*|*..*) die "refusing to materialize a boundary outside the worker root: $rel" ;;
+# --- issuing the worker's and the supervisor's interfaces ----------------------------
+#
+# These write the shell that a live worker actually runs, so they live here rather than
+# inline in `hive-launch`: the transport drill issues the very same files, and a second
+# copy in a test fixture would drift from the shipped one the first time either changed.
+# Everything they need is a parameter. Nothing is read back out of the worker's root.
+
+issue_worker_interface() {
+  # issue_worker_interface <run-dir> <ws-root> <code-root> <code-branch> <worker-io> <run> <worker>
+  local RUN_DIR="$1" WS_ROOT="$2" CODE_ROOT="$3" CODE_BRANCH="$4" WORKER_IO="$5"
+  local RUN="$6" WORKER="$7"
+  local WRAPPER="$RUN_DIR/emit" BRIDGE="$RUN_DIR/hive"
+  resolve_compose
+
+  # --- the worker's run-local interface ------------------------------------------------
+  # Two commands, both inside the task root so a sandboxed worker can actually execute
+  # them, and both with the SAME worker-facing contract whichever transport they use. A
+  # direct route's wrappers act in the worker's own process; a supervised route's wrappers
+  # write one request and wait for the supervisor's receipt. The worker runs one protocol.
+  #
+  # These files are worker-writable, and that is deliberate rather than a compromise:
+  # nothing on the trusted side reads them for a decision. The supervisor stamps the run,
+  # role and actor from its own plan, under $HIVE_EXEC_ROOT, which is outside this root.
+  mkdir -p "$RUN_DIR/spool" "$RUN_DIR/receipts" "$RUN_DIR/sync" "$RUN_DIR/publish"
+
+  if [ "$WORKER_IO" = "direct" ]; then
+    # The historical per-seat wrapper (proto-credential): one file per identity, issued at
+    # launch, revocable by deletion; role and actor baked in, not parameters — swapping
+    # this for a real per-seat key later changes nothing worker-facing (OPERATIONS.md
+    # Phase 2 gate). WORKER/RUN are charset-validated.
+    cat > "$WRAPPER" <<WRAP
+#!/usr/bin/env bash
+# Emit wrapper for worker $WORKER on run $RUN (proto-credential — issued by
+# hive-launch, revoke by deleting this file). --run-id/--role/--actor are baked
+# in; pass only --type/--task/--payload. Never emit as another actor.
+set -euo pipefail
+COMPOSE="\${OMEGAHIVE_COMPOSE:-$HIVE_COMPOSE}"
+# \`cd\` rather than \`env -C\`: -C is GNU coreutils >= 8.28 and does not exist on
+# macOS or the BSDs, so every wrapper issued to a non-GNU host failed at first use.
+# A subshell-free cd is exactly equivalent and portable everywhere.
+# The same seam every operator tool has: HIVE_CLI_CMD runs the CLI directly instead of
+# in the container. It is what works between deploying a branch and rebuilding the image,
+# and what lets the drills exercise this exact file with no container.
+if [ -n "\${HIVE_CLI_CMD:-}" ]; then
+  # shellcheck disable=SC2086  # HIVE_CLI_CMD is legitimately several words
+  exec \$HIVE_CLI_CMD emit --run-id "$RUN" --role worker --actor "$WORKER" "\$@"
+fi
+cd "${OMEGA_DIR}" || { echo "wrapper: cannot enter ${OMEGA_DIR}" >&2; exit 1; }
+# shellcheck disable=SC2086  # COMPOSE is legitimately two words ("podman compose")
+exec \$COMPOSE run --rm -T cli \\
+  emit --run-id "$RUN" --role worker --actor "$WORKER" "\$@"
+WRAP
+  else
+    # The supervised transport. One request per call into a task-local spool, then a
+    # bounded wait for a receipt — synchronous, so the worker-facing result is unchanged:
+    # `emitted · <type> · seq N`, or `rejected: <CODE> <reason>` on the same call.
+    #
+    # Request ids come from a claim-file counter rather than a timestamp. Zero-padded and
+    # never reused, they give the supervisor a deterministic drain order per worker, which
+    # a second-resolution timestamp does not; `noclobber` makes the claim atomic without
+    # flock, which macOS does not ship.
+    cat > "$WRAPPER" <<WRAP
+#!/usr/bin/env bash
+# Supervised emit wrapper for worker $WORKER on run $RUN. This route's runner cannot
+# reach the spine directly, so the call is spooled and the SUPERVISOR performs it,
+# stamping --run-id/--role/--actor from the immutable launch plan. Pass only
+# --type/--task/--payload; a request that names an identity, a run or a role is refused.
+set -euo pipefail
+SPOOL="$RUN_DIR/spool"; RECEIPTS="$RUN_DIR/receipts"; TIMEOUT="\${HIVE_SPOOL_TIMEOUT:-$HIVE_SPOOL_TIMEOUT}"
+TYPE=""; TASK=""; PAYLOAD=""
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    --type)    shift; TYPE="\${1:-}" ;;
+    --task)    shift; TASK="\${1:-}" ;;
+    --payload) shift; PAYLOAD="\${1:-}" ;;
+    *) echo "emit: unknown argument '\$1' (pass only --type/--task/--payload)" >&2; exit 2 ;;
   esac
-  want=$(printf '%s' "$plan" | jq -r '.binding.config_digest')
-  dir=$(dirname "$root/$rel")
-  mkdir -p "$dir" || die "cannot create $dir for the materialized boundary"
-  # `jq -j`, and never `$(jq -r ...)`: the config ends in a newline, command
-  # substitution strips trailing newlines, and `jq -r` adds one back. Either mistake
-  # changes the file's bytes and therefore its digest — which the read-back below
-  # catches, loudly, but only because the digest is taken over EXACT bytes. Writing
-  # straight through is the fix; the read-back is the proof.
-  printf '%s' "$plan" | jq -j '.binding.config_content' > "$root/$rel" \
-    || die "cannot write $root/$rel"
-  chmod 0600 "$root/$rel"
-  # Read back what actually landed. A write that succeeded and a file that says what we
-  # meant are different claims, and only the second one is a boundary.
-  got="sha256:$(sha256_hex < "$root/$rel")"
-  [ "$got" = "$want" ] || die "materialized boundary at $root/$rel hashes to $got, expected $want — the file on disk is not the one that was approved"
-  printf '%s\n' "  boundary: $rel  $want"
+  shift
+done
+[ -n "\$TYPE" ] || { echo "emit: --type is required" >&2; exit 2; }
+mkdir -p "\$SPOOL" "\$RECEIPTS"
+n=0
+while :; do
+  n=\$((n + 1))
+  ID=\$(printf '%09d' "\$n")
+  if (set -o noclobber; : > "\$SPOOL/\$ID.claim") 2>/dev/null; then break; fi
+  [ "\$n" -lt 100000 ] || { echo "emit: cannot allocate a request id in \$SPOOL" >&2; exit 2; }
+done
+jq -n --arg t "\$TYPE" --arg task "\$TASK" --arg p "\$PAYLOAD" \\
+  '{kind:"emit", type:\$t, task:(if \$task == "" then null else \$task end),
+    payload:(if \$p == "" then {} else \$p end)}' > "\$SPOOL/\$ID.json.tmp"
+mv "\$SPOOL/\$ID.json.tmp" "\$SPOOL/\$ID.json"
+i=0
+while [ ! -f "\$RECEIPTS/\$ID.json" ]; do
+  i=\$((i + 1))
+  if [ "\$i" -gt \$((TIMEOUT * 10)) ]; then
+    echo "rejected: SUPERVISOR_TIMEOUT no receipt for request \$ID within \${TIMEOUT}s." >&2
+    echo "  The request is still queued at \$SPOOL/\$ID.json and will be delivered if the" >&2
+    echo "  supervisor recovers. This is a transport failure, not a spine refusal." >&2
+    exit 3
+  fi
+  sleep 0.1
+done
+jq -r '.message' "\$RECEIPTS/\$ID.json"
+[ "\$(jq -r '.status' "\$RECEIPTS/\$ID.json")" = "accepted" ] || exit 1
+WRAP
+  fi
+  chmod +x "$WRAPPER"
+
+  # The sync/publish command. Three operations and no parameters: the branch, the
+  # destination, the refspec, the credential and the workspace path all come from the
+  # launch, so there is nothing here for a request to choose.
+  cat > "$BRIDGE" <<'BRIDGEHEAD'
+#!/usr/bin/env bash
+# Workspace sync and publication for one hive worker.
+#
+#   hive sync workspace        bring the workspace clone up to the hub's main
+#   hive publish workspace     publish this worker's report/question commits to the hub
+#   hive publish code          publish this worker's branch and open or update its PR
+#
+# It takes no paths, branches, destinations or credentials. Those are fixed by the
+# launch. On a supervised route the network half is performed by the supervisor, outside
+# the worker boundary, and this script only prepares and consumes what crosses it.
+set -euo pipefail
+BRIDGEHEAD
+  cat >> "$BRIDGE" <<BRIDGEVARS
+WS_ROOT="$WS_ROOT"
+CODE_ROOT="$CODE_ROOT"
+CODE_BRANCH="$CODE_BRANCH"
+RUN_DIR="$RUN_DIR"
+WORKER_IO="$WORKER_IO"
+WORKER="$WORKER"
+BRIDGEVARS
+  cat >> "$BRIDGE" <<'BRIDGEBODY'
+SPOOL="$RUN_DIR/spool"; RECEIPTS="$RUN_DIR/receipts"
+TIMEOUT="${HIVE_SPOOL_TIMEOUT:-180}"
+
+# `git rebase` needs a COMMITTER identity, and this rebase is the transport's own
+# plumbing acting on the worker's behalf — not authorship, which the rebase preserves.
+# Depending on ambient git config for it was a real defect: a supervised worker runs
+# under a constructed environment with no operator gitconfig in reach, so on any host
+# without a global identity the rebase died, left the clone DETACHED mid-rebase with the
+# worker's commit no longer on HEAD, and the next publication carried nothing. Naming an
+# identity here makes the sync work the same way everywhere, and makes it honest about
+# who performed it.
+git_as_worker() {  # git_as_worker <git args...>
+  git -c "user.name=hive worker $WORKER" -c "user.email=$WORKER@workers.invalid" "$@"
+}
+
+# A rebase that fails must leave the clone where it found it. Without the abort, git
+# stops with a detached HEAD at the upstream and a rebase in progress — so the worker's
+# own commits are not on HEAD, `git status` is confusing, and anything that reads HEAD
+# next (a publication, above all) silently operates on the wrong thing.
+rebase_onto() {  # rebase_onto <repo> <upstream>
+  local out
+  if out=$(git_as_worker -C "$1" rebase "$2" 2>&1); then
+    return 0
+  fi
+  printf '%s\n' "$out" >&2
+  git -C "$1" rebase --abort >/dev/null 2>&1 || true
+  echo "hive: rebase onto $2 failed; your clone was restored to where it was." >&2
+  echo "  Resolve whatever the error above names, then run 'sync workspace' again." >&2
+  return 1
+}
+
+usage() { sed -n '3,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+
+# Ask the supervisor for one bridge operation and return its receipt on stdout.
+ask() {  # ask <op>
+  mkdir -p "$SPOOL" "$RECEIPTS"
+  local n=0 ID
+  while :; do
+    n=$((n + 1)); ID=$(printf '%09d' "$n")
+    if (set -o noclobber; : > "$SPOOL/$ID.claim") 2>/dev/null; then break; fi
+    [ "$n" -lt 100000 ] || { echo "hive: cannot allocate a request id in $SPOOL" >&2; exit 2; }
+  done
+  jq -n --arg op "$1" '{kind:"bridge", op:$op}' > "$SPOOL/$ID.json.tmp"
+  mv "$SPOOL/$ID.json.tmp" "$SPOOL/$ID.json"
+  local i=0
+  while [ ! -f "$RECEIPTS/$ID.json" ]; do
+    i=$((i + 1))
+    if [ "$i" -gt $((TIMEOUT * 10)) ]; then
+      echo "rejected: SUPERVISOR_TIMEOUT no receipt for '$1' within ${TIMEOUT}s" >&2
+      exit 3
+    fi
+    sleep 0.1
+  done
+  cat "$RECEIPTS/$ID.json"
+}
+
+# Bundle one ref out of a clone, thin against the published main where possible. A
+# bundle is how worker content reaches the trusted side WITHOUT the trusted side running
+# anything of the worker's: it is a file, and the trusted side reads it in a fresh
+# repository with hooks and credential helpers disabled.
+bundle_ref() {  # bundle_ref <repo> <ref> <out>
+  local repo="$1" ref="$2" out="$3"
+  mkdir -p "$(dirname "$out")"
+  rm -f "$out"
+  if git -C "$repo" rev-parse --verify --quiet origin/main >/dev/null; then
+    if git -C "$repo" merge-base --is-ancestor "$ref" origin/main 2>/dev/null; then
+      echo "hive: nothing to publish — $ref is already contained in origin/main" >&2
+      exit 1
+    fi
+    git -C "$repo" bundle create "$out" "$ref" --not origin/main >/dev/null 2>&1 && return 0
+  fi
+  git -C "$repo" bundle create "$out" "$ref" >/dev/null 2>&1 \
+    || { echo "hive: could not bundle $ref from $repo" >&2; exit 1; }
+}
+
+sync_workspace() {
+  if [ "$WORKER_IO" = "direct" ]; then
+    git -C "$WS_ROOT" fetch --quiet origin main \
+      || { echo "hive: git fetch failed" >&2; exit 1; }
+    rebase_onto "$WS_ROOT" FETCH_HEAD || exit 1
+    echo "workspace synced to $(git -C "$WS_ROOT" rev-parse --short HEAD)"
+    return
+  fi
+  local receipt bundle
+  receipt=$(ask sync-workspace)
+  [ "$(printf '%s' "$receipt" | jq -r '.status')" = "accepted" ] || {
+    printf '%s\n' "$(printf '%s' "$receipt" | jq -r '.message')" >&2; exit 1; }
+  bundle=$(printf '%s' "$receipt" | jq -r '.data.bundle')
+  # The fetch and rebase happen HERE, inside the worker boundary, so worker-owned git
+  # config and hooks have no trusted authority. The trusted side only produced a file.
+  git -C "$WS_ROOT" fetch --quiet "$bundle" 'refs/heads/main:refs/remotes/hub/main' \
+    || { echo "hive: could not read the sync bundle at $bundle" >&2; exit 1; }
+  rebase_onto "$WS_ROOT" refs/remotes/hub/main || exit 1
+  echo "workspace synced to $(git -C "$WS_ROOT" rev-parse --short HEAD)"
+}
+
+publish_workspace() {
+  if [ "$WORKER_IO" = "direct" ]; then
+    git -C "$WS_ROOT" push --quiet origin HEAD:main \
+      || { echo "hive: push refused; run 'sync workspace', rebase and retry" >&2; exit 1; }
+    echo "published $(git -C "$WS_ROOT" rev-parse HEAD)"
+    return
+  fi
+  bundle_ref "$WS_ROOT" HEAD "$RUN_DIR/publish/workspace.bundle"
+  local receipt
+  receipt=$(ask publish-workspace)
+  printf '%s\n' "$(printf '%s' "$receipt" | jq -r '.message')"
+  [ "$(printf '%s' "$receipt" | jq -r '.status')" = "accepted" ] || exit 1
+}
+
+publish_code() {
+  if [ "$WORKER_IO" = "direct" ]; then
+    git -C "$CODE_ROOT" push --quiet -u origin "$CODE_BRANCH" \
+      || { echo "hive: push of $CODE_BRANCH refused" >&2; exit 1; }
+    ( cd "$CODE_ROOT" && gh pr view "$CODE_BRANCH" --json url -q .url 2>/dev/null ) \
+      || ( cd "$CODE_ROOT" && gh pr create --fill --head "$CODE_BRANCH" --base main )
+    return
+  fi
+  bundle_ref "$CODE_ROOT" "$CODE_BRANCH" "$RUN_DIR/publish/code.bundle"
+  local receipt
+  receipt=$(ask publish-code)
+  printf '%s\n' "$(printf '%s' "$receipt" | jq -r '.message')"
+  [ "$(printf '%s' "$receipt" | jq -r '.status')" = "accepted" ] || exit 1
+}
+
+case "${1:-}${2:+ $2}" in
+  "sync workspace")    sync_workspace ;;
+  "publish workspace") publish_workspace ;;
+  "publish code")      publish_code ;;
+  *) usage ;;
+esac
+BRIDGEBODY
+  chmod +x "$BRIDGE"
+}
+
+issue_supervisor_interface() {
+  # issue_supervisor_interface <exec-dir> <run> <worker> <task>
+  local EXEC_DIR="$1" RUN="$2" WORKER="$3" TASK="$4"
+  local SUP_WRAPPER="$EXEC_DIR/emit.sh" RELAY_WRAPPER="$EXEC_DIR/emit-worker.sh"
+  resolve_compose
+
+  # --- the supervisor's own state, outside the task root -------------------------------
+  # Two wrappers and one plan. The instrument wrapper is baked with `--role instrument`, so
+  # the process that watches a session is structurally incapable of speaking for it: the
+  # gateway authorizes `instrument` for `execution.*` and for no `task.*` event at all. The
+  # relay wrapper is the worker's identity and exists only on a supervised route, where the
+  # supervisor performs the worker's emits on its behalf — it carries `--role worker` and
+  # the worker's actor id, and it lives here, where the worker cannot edit it.
+  mkdir -p "$EXEC_DIR"
+  chmod 0700 "$EXEC_DIR"
+  cat > "$SUP_WRAPPER" <<SUPWRAP
+#!/usr/bin/env bash
+# Instrument emit wrapper for the supervisor of worker $WORKER on run $RUN.
+# --run-id/--role/--actor are baked in; pass only --type/--task/--payload.
+# role=instrument: this identity may emit execution.* and NOTHING task-shaped.
+set -euo pipefail
+COMPOSE="\${OMEGAHIVE_COMPOSE:-$HIVE_COMPOSE}"
+if [ -n "\${HIVE_CLI_CMD:-}" ]; then
+  # shellcheck disable=SC2086  # HIVE_CLI_CMD is legitimately several words
+  exec \$HIVE_CLI_CMD emit --run-id "$RUN" --role instrument --actor "supervisor-$WORKER" "\$@"
+fi
+cd "${OMEGA_DIR}" || { echo "supervisor wrapper: cannot enter ${OMEGA_DIR}" >&2; exit 1; }
+# shellcheck disable=SC2086  # COMPOSE is legitimately two words ("podman compose")
+exec \$COMPOSE run --rm -T cli \\
+  emit --run-id "$RUN" --role instrument --actor "supervisor-$WORKER" "\$@"
+SUPWRAP
+  chmod +x "$SUP_WRAPPER"
+
+  cat > "$RELAY_WRAPPER" <<RELAYWRAP
+#!/usr/bin/env bash
+# Relay of worker $WORKER's own emits on run $RUN, used ONLY by the supervisor draining
+# that worker's spool. The run, the role and the actor are baked in here, outside the
+# worker's writable root; the request on stdin says what to emit and may not say who.
+set -euo pipefail
+COMPOSE="\${OMEGAHIVE_COMPOSE:-$HIVE_COMPOSE}"
+if [ -n "\${HIVE_CLI_CMD:-}" ]; then
+  # shellcheck disable=SC2086  # HIVE_CLI_CMD is legitimately several words
+  exec \$HIVE_CLI_CMD emit-relay --run-id "$RUN" --actor "$WORKER" --task "$TASK"
+fi
+cd "${OMEGA_DIR}" || { echo "relay wrapper: cannot enter ${OMEGA_DIR}" >&2; exit 1; }
+# shellcheck disable=SC2086  # COMPOSE is legitimately two words ("podman compose")
+exec \$COMPOSE run --rm -T cli \\
+  emit-relay --run-id "$RUN" --actor "$WORKER" --task "$TASK"
+RELAYWRAP
+  chmod +x "$RELAY_WRAPPER"
 }
 
 # Read a harness version out of a `--version` probe's combined output.
@@ -206,15 +480,23 @@ materialize_binding() {  # materialize_binding <plan-json> <worker-root>
 # warning's first word as the harness version. Observed 2026-08-14: a preflight reported
 # `harness: sh:`. On the spine that would be a `harness_version` fact naming a shell.
 #
-# So: prefer the first line whose first token STARTS WITH A DIGIT, which is what every
-# version string this stack has seen looks like (`2.1.232 (Claude Code)`,
-# `fake-harness 9.9.9` is caught by the fallback). Fall back to the old rule when no line
-# qualifies, because a harness with an unusual banner should still record something
-# rather than nothing — and `unknown` remains the caller's floor.
+# And the version is not always the first token: `claude --version` prints
+# `2.1.231 (Claude Code)` while `codex --version` prints `codex-cli 0.147.0`. A rule that
+# takes the first token records the product name for the second, and a harness_version
+# fact naming a product is a false fact on a durable log.
+#
+# So: scan every token and take the first that PARSES as a version (a leading digit,
+# optionally after a `v`, then at least one dotted component). Fall back to the first
+# token of the first non-empty line when nothing qualifies, because a harness with an
+# unusual banner should still record something rather than nothing — and `unknown`
+# remains the caller's floor. The Python twin is `Adapter.parse_version`.
 harness_version_from() {  # harness_version_from  (reads probe output on stdin)
   awk '
-    NF && $1 ~ /^[0-9]/ { print $1; found = 1; exit }
-    NF && !first        { first = $1 }
+    NF {
+      for (i = 1; i <= NF; i++)
+        if ($i ~ /^v?[0-9]+(\.[0-9]+)+/) { print $i; found = 1; exit }
+      if (!first) first = $1
+    }
     END { if (!found && first) print first }
   '
 }
@@ -339,6 +621,25 @@ hive() {
 emit() {  # emit <role> <actor> <type> [--task <t>] [--payload <json>]
   local role="$1" actor="$2" type="$3"; shift 3
   local out
+  # HIVE_CLI_CMD is the same seam `hive()` honours: run the CLI directly rather than in
+  # the container. It used to be missing HERE, which made the operator's documented
+  # pre-rebuild path ("export HIVE_CLI_CMD=... until you rebuild the image") silently
+  # false for `hive-launch`: its board reads went to the checkout and its board WRITES
+  # went to the stale image, so a launch half-worked and refused on a payload field the
+  # image had not learned yet. One seam, honoured everywhere it can be.
+  if [ -n "${HIVE_CLI_CMD:-}" ]; then
+    # shellcheck disable=SC2086  # HIVE_CLI_CMD is legitimately several words
+    if ! out=$( $HIVE_CLI_CMD emit --run-id "$RUN" --role "$role" --actor "$actor" \
+        --type "$type" "$@" 2>&1 ); then
+      echo "$out" >&2
+      die "emit failed: $type (role=$role actor=$actor) — the cause is in the output above.
+  A GOVERNANCE refusal prints a line starting 'rejected: <CODE>'.
+  Anything else is this host or its config. HIVE_CLI_CMD is set to '$HIVE_CLI_CMD';
+  unset it to go back to the containerized path."
+    fi
+    echo "$out"
+    return 0
+  fi
   require_omega_dir
   resolve_compose
   # Capture stderr too: a stack/DB outage is a runtime failure whose error only

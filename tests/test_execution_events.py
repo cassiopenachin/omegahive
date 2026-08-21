@@ -10,10 +10,17 @@ this file pins each of those separations where it is enforceable:
   the terminal record the stop-line asks for. An unattributed `model_resolved` is refused
   too — a model id with no evidence is a guess.
 
-* SHAPES. execution_id, binding_ref, catalog_digest and the UTC timestamps are pinned as
-  shapes at the payload model, because the payload is stored as JSON and compared
+* SHAPES. execution_id, the two refs, catalog_digest and the UTC timestamps are pinned
+  as shapes at the payload model, because the payload is stored as JSON and compared
   byte-wise by the replay digest; a reformatted timestamp would surface as a spine
   difference nobody caused.
+
+* TWO ERAS, ONE LOG. Before the 2026-08-20 runner-trust cutover a launch carried a
+  committed per-order binding and a permission-boundary block; after it, a route, its
+  provenance and a runner fingerprint. `binding_ref`, `binding` and
+  `predicted_total_tokens` are optional so pre-cutover events replay unchanged, and both
+  shapes are exercised here — a migration that could not read its own history would be a
+  rewrite, which is the one thing the spine does not do.
 
 * AUTHORITY, through the real gateway rather than by reading the policy table. Signing for
   spend is the human's act alone; observing a process is the instrument's. A worker
@@ -55,6 +62,7 @@ LIFECYCLE = ("execution.route_approved", "execution.started", "execution.finishe
 EXECUTION_ID = "example-task-a1-0123456789"
 BINDING_REF = "projects/omegahive/bindings/example-task.json@" + "abcdef01" * 5
 CATALOG_DIGEST = "sha256:" + "ab" * 32
+ORDER_REF = "projects/omegahive/orders/2026-08-20-example-task.md@" + "abcdef01" * 5
 
 IDENTITY = {
     "route": "r-sub",
@@ -260,18 +268,51 @@ def test_execution_id_accepts_the_launcher_derived_shape():
     assert ExecutionStarted(**started(execution_id="a.b_c-D9")).execution_id == "a.b_c-D9"
 
 
+@pytest.mark.parametrize("field", ["binding_ref", "order_ref"])
 @pytest.mark.parametrize(
     "ref",
     [
-        pytest.param("bindings/x.json", id="no-at"),
-        pytest.param("bindings/x.json@ABCDEF1", id="uppercase-sha"),
-        pytest.param("bindings/x.json@abc12", id="sha-too-short"),
+        pytest.param("orders/x.md", id="no-at"),
+        pytest.param("orders/x.md@ABCDEF1", id="uppercase-sha"),
+        pytest.param("orders/x.md@abc12", id="sha-too-short"),
         pytest.param("@abcdef1", id="no-path"),
     ],
 )
-def test_binding_ref_must_be_path_at_sha(ref: str):
-    with pytest.raises(ValidationError, match="binding_ref must match"):
-        ExecutionRouteApproved(**approved(binding_ref=ref))
+def test_a_ref_must_be_path_at_sha(field: str, ref: str):
+    with pytest.raises(ValidationError, match="must match 'path@<git-sha>'"):
+        ExecutionRouteApproved(**approved(**{field: ref}))
+
+
+def test_a_post_cutover_launch_carries_a_route_instead_of_a_binding():
+    """The shape every launch has emitted since 2026-08-20: no binding file, no boundary
+    block, no token prediction — a pinned order, the route's provenance, and a
+    fingerprint of the resolved non-secret runner configuration."""
+    ev = ExecutionRouteApproved(**approved(
+        binding=None, binding_ref=None, predicted_total_tokens=None,
+        order_ref=ORDER_REF, route_source="override",
+        runner_fingerprint="sha256:" + "cd" * 32, worker_io="supervised",
+        model_identity_evidence="declared", usage_evidence="unavailable",
+    ))
+    assert ev.binding is None and ev.binding_ref is None
+    assert ev.route_source == "override"
+    assert ev.worker_io == "supervised"
+
+
+def test_a_pre_cutover_launch_still_validates_so_the_log_replays():
+    """No event is rewritten or backfilled. A reader distinguishes the two eras by the
+    presence of the binding block, which is more honest than a manufactured value."""
+    ev = ExecutionRouteApproved(**approved())
+    assert ev.binding is not None and ev.binding_ref == BINDING_REF
+    assert ExecutionStarted(**started()).binding is not None
+
+
+def test_the_evidence_vocabulary_is_closed():
+    """`observed` / `declared` / `unavailable` are the doctrine's words. A launch may not
+    invent a fifth grade of confidence on the spine."""
+    with pytest.raises(ValidationError):
+        ExecutionRouteApproved(**approved(model_identity_evidence="probably"))
+    with pytest.raises(ValidationError):
+        ExecutionRouteApproved(**approved(usage_evidence="estimated-ish"))
 
 
 @pytest.mark.parametrize(

@@ -1,21 +1,29 @@
 #!/usr/bin/env bash
-# hive-routes [--json]
+# hive-routes [--json]                       — the catalog and command check
+# hive-routes migrate [--default <name>]     — bring a v1 catalog to v2, backing it up first
 #
-# THE REFUSAL REPORT — one command, one answer: which catalog routes can carry a worker
-# right now, under which permission boundary, and for the ones that cannot, exactly why.
+# THE CATALOG CHECK — one command, one answer: what this deployment can run right now,
+# which route is the worker default, whether each named executable is actually installed,
+# and for the ones that cannot resolve, exactly why.
 #
 # It is the operator's counterpart to `hive-launch --check`. `--check` answers "would
-# THIS launch work"; this answers "what is launchable at all", without a binding, an
-# order, or a task. Three things it deliberately does not do:
+# THIS launch work"; this answers "what is runnable at all", without an order or a task.
+# Three things it deliberately does not do:
 #
 #   * no network call and no model call — safe on a laptop, in a cron, or into a paste;
-#   * no change of any kind, and in particular it never upgrades a route's state — a
-#     report that could fix what it reports would eventually be run for the fixing;
+#   * no change of any kind, and in particular it never enables a route — a report that
+#     could fix what it reports would eventually be run for the fixing. `migrate` is the
+#     one writing subcommand, it is named, and it backs up before it writes;
 #   * no environment value, settings value, or credential is printed. It never receives
-#     them, so this is a property of the data path rather than of a redaction pass.
+#     them, so this is a property of the data path rather than of a redaction pass. The
+#     runner's `inherit_env` is printed as NAMES, which is all it ever holds.
+#
+# What it no longer is: a qualification report. There is no boundary status to show, no
+# policy class to tally and no probe verdict to print, because catalog presence plus
+# `enabled: true` is the authorization (runner-trust doctrine, 2026-08-20).
 #
 # Exit 0 whether or not routes are refused: a refused route is the correct answer to a
-# question, not an error. Exit 2 only when the catalog or the descriptors cannot be read.
+# question, not an error. Exit 2 only when the catalog cannot be read.
 
 set -euo pipefail
 
@@ -23,17 +31,99 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/hive-common.sh
 source "$SCRIPT_DIR/hive-common.sh"
 
+command -v jq >/dev/null 2>&1 || die "jq is required"
+
+usage() { sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+
+# ---------------------------------------------------------------------------------
+# migrate — the production path from a v1 catalog to a v2 one.
+#
+# Backup first, translate, validate, write atomically. Nothing here enables or disables a
+# route, edits an identity, invents a price or drops a note: the operator's catalog comes
+# out saying the same things about the same routes, in the schema this build reads. The
+# one thing it may have to ask for is the worker default, because v1 had no such field.
+#
+# Re-running it on a v2 catalog is a no-op, so an operator who is unsure whether they
+# already ran it can simply run it again.
+# ---------------------------------------------------------------------------------
+migrate() {
+  local default_name="" target="$HIVE_ROUTE_CATALOG"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --default) shift; [ $# -gt 0 ] || usage; default_name="$1" ;;
+      --catalog) shift; [ $# -gt 0 ] || usage; target="$1" ;;
+      *) echo "hive-routes migrate: unknown argument '$1'" >&2; exit 2 ;;
+    esac
+    shift
+  done
+
+  [ -f "$target" ] || die "no route catalog at $target"
+
+  if [ "$(jq -r '.schema_version // empty' "$target")" = "2" ]; then
+    echo "hive-routes migrate: $target is already schema_version 2 — nothing to do."
+    return 0
+  fi
+
+  # The prompt, and why it is here rather than in the pure translator: v2 requires
+  # exactly one `defaults.worker` and v1 recorded no such fact, so with several enabled
+  # routes there is a real question only the operator can answer. With exactly one
+  # enabled route the translator answers it itself and says so.
+  if [ -z "$default_name" ]; then
+    local enabled n
+    enabled=$(jq -r '[.routes[] | select(.enabled != false) | .name] | join(" ")' "$target")
+    n=$(printf '%s' "$enabled" | wc -w | tr -d ' ')
+    if [ "$n" -gt 1 ]; then
+      if [ ! -t 0 ]; then
+        die "this catalog has $n enabled routes and v2 needs exactly one worker default.
+  Re-run with:  hive-routes migrate --default <name>
+  Enabled routes: $enabled"
+      fi
+      echo "hive-routes migrate: $n enabled routes — which one carries an ordinary worker launch?"
+      # shellcheck disable=SC2086  # deliberate word splitting: one route name per line
+      printf '  %s\n' $enabled
+      printf 'default worker route: '
+      read -r default_name
+      [ -n "$default_name" ] || die "no default chosen; nothing was written"
+    fi
+  fi
+
+  # Backup BEFORE anything is written, beside the source, timestamped. The operator's
+  # rollback is one `cp` and it is named in the output rather than assumed.
+  local backup stamp tmp
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  backup="$target.v1-$stamp.bak"
+  cp -p "$target" "$backup" || die "could not back up $target to $backup"
+
+  tmp="$target.$stamp.tmp"
+  if ! hive harness-migrate ${default_name:+--default "$default_name"} < "$target" > "$tmp"; then
+    rm -f "$tmp"
+    die "migration refused; $target is UNCHANGED (backup at $backup)"
+  fi
+  # A last read-back, so a file the launcher would refuse never replaces one it accepts.
+  if ! jq -e '.schema_version == 2 and (.defaults.worker | type == "string")' "$tmp" >/dev/null; then
+    rm -f "$tmp"
+    die "the migrated catalog does not look like v2; $target is UNCHANGED (backup at $backup)"
+  fi
+  mv "$tmp" "$target"
+  echo "hive-routes migrate: $target is now schema_version 2."
+  echo "  backup:   $backup"
+  echo "  rollback: cp '$backup' '$target'"
+  echo "  check it: hive-routes"
+}
+
+case "${1:-}" in
+  migrate) shift; migrate "$@"; exit 0 ;;
+  -h|--help) usage ;;
+esac
+
 AS_JSON=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --json) AS_JSON="--json" ;;
-    -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
     *) echo "hive-routes: unknown argument '$1'" >&2; exit 2 ;;
   esac
   shift
 done
-
-command -v jq >/dev/null 2>&1 || die "jq is required"
 
 if [ ! -f "$HIVE_ROUTE_CATALOG" ]; then
   # An absent catalog is a real deployment state and gets a real answer, not a stack
@@ -44,23 +134,24 @@ if [ ! -f "$HIVE_ROUTE_CATALOG" ]; then
   exit 2
 fi
 
-DESCRIPTORS=$(harness_descriptors_json)
-PRESENT=$(harness_present_paths_json "$DESCRIPTORS")
+if [ "$(jq -r '.schema_version // empty' "$HIVE_ROUTE_CATALOG")" = "1" ]; then
+  echo "hive-routes: $HIVE_ROUTE_CATALOG is a schema_version 1 catalog." >&2
+  echo "  This build reads v2. Migrate it — the original is backed up first:" >&2
+  echo "    hive-routes migrate" >&2
+  exit 2
+fi
+
+# The one question a pure resolver cannot answer: which of the executables the routes
+# name are actually installed on THIS host. Answered here and passed in.
+PRESENT=$(present_executables_json "$HIVE_ROUTE_CATALOG")
 
 REQ=$(jq -n \
   --arg c "$(b64 "$HIVE_ROUTE_CATALOG")" \
-  --argjson desc "$DESCRIPTORS" \
   --argjson present "$PRESENT" \
-  '{catalog_b64:$c, descriptors_b64:$desc, present_paths:$present, env:{}}')
+  '{catalog_b64:$c, present_executables:$present}')
 
 if [ -z "$AS_JSON" ]; then
   echo "hive-routes: catalog $HIVE_ROUTE_CATALOG"
-  echo "  descriptors: $(harness_bindings_dir)"
-  echo "  digests (paste these into the catalog's binding_digest fields):"
-  for f in "$(harness_bindings_dir)"/*.json; do
-    [ -f "$f" ] || continue
-    printf '    %-24s sha256:%s\n' "$(basename "$f" .json)" "$(sha256_hex < "$f")"
-  done
   echo
 fi
 

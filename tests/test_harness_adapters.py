@@ -1,318 +1,190 @@
-"""Adapters — the argv vector, and the environment ALLOWLIST that is the security property.
+"""Adapters: a route becomes an argv vector, and an unknown harness still launches.
 
-The allowlist is the reason this file exists. `hive-launch` used to interpolate one
-deployment string into a tmux command line; the replacement is a vector plus a
-DELIBERATELY CONSTRUCTED environment. So the tests here are asymmetric on purpose:
-
-* the argv assertions check that the pinned model and the pinned session id reach the
-  command line verbatim, and that the kickoff is the last, single, opaque element;
-
-* the environment assertions check the NEGATIVE — that a parent environment loaded with
-  API keys, tokens, secrets and unlisted variables yields a child environment containing
-  none of them. A missing variable makes a harness complain loudly; an unexpected one
-  changes who gets billed and what model answers, silently. Only the second is tested
-  exhaustively, and the credential names are parametrized so each one fails on its own
-  line rather than hiding behind an earlier assertion.
-
-`get_adapter` failing closed is the containment: an unknown harness name stops at a typed
-boundary and never re-enters as a shell command string.
+The order's named risk for this file is "specialized adapters becoming a de facto harness
+allowlist". The answer is the `generic` adapter, and the test that matters most here is
+the one proving a harness this build has never heard of resolves from catalog
+configuration alone — with its identity recorded as `declared` and its usage as
+`unavailable`, which is the honest cost of not knowing the tool.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
-
 import pytest
 
-from harness_fixtures import descriptor, pins
+from harness_fixtures import route, runner
 from omegahive.harness.adapters import (
     BASE_ENV_ALLOWLIST,
-    Adapter,
-    ClaudeCodeAdapter,
-    CodexAdapter,
-    FakeAdapter,
     LaunchContext,
-    _clean_env,
+    _merge_codex_writable_roots,
     get_adapter,
 )
-from omegahive.harness.bindings import HarnessBinding
 from omegahive.harness.records import RefusalError, RouteEntry
 
-SESSION_ID = "0f9c9a6e-0000-4000-8000-000000000001"
-
-# The descriptor every adapter builds against here. Its required flags are what the
-# adapters must place in argv, so a build that forgets them shows up as a diff in the
-# vector rather than as a comment nobody reads.
-BINDING = HarnessBinding(**descriptor())
-
-KICKOFF = "you are worker w1;\nread WORKER.md; $(whoami) `id`"
-
-# A parent environment shaped like a real operator shell: three benign allowlisted
-# variables and a pile of things that must never reach a worker process.
-CREDENTIALS = {
-    "ANTHROPIC_API_KEY": "sk-ant-should-never-appear",
-    "OPENAI_API_KEY": "sk-oai-should-never-appear",
-    "GITHUB_TOKEN": "ghp-should-never-appear",
-    "AWS_SECRET_ACCESS_KEY": "aws-should-never-appear",
-    "SOME_PASSWORD": "hunter2-should-never-appear",
-    "RANDOM_UNLISTED_VAR": "unlisted-should-never-appear",
-}
-BENIGN = {"HOME": "/home/op", "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"}
-DIRTY_ENV = {**BENIGN, **CREDENTIALS}
-
-
-def route(**over: Any) -> RouteEntry:
-    fields: dict[str, Any] = {
-        "name": "r-sub",
-        "model_vendor": "anthropic",
-        "provider": "anthropic",
-        "model": "claude-opus-5",
-        "harness": "claude-code",
-        "billing_market": "subscription",
-        "credential_pool": "pool-a",
-        "adapter": "claude-code",
-        **pins(),
-    }
-    fields.update(over)
-    return RouteEntry(**fields)
-
-
-def ctx(**over: Any) -> LaunchContext:
-    fields: dict[str, Any] = {
-        "kickoff": KICKOFF,
-        "cwd": "/srv/work/w1",
-        "execution_id": "example-task-a1-0123456789",
-        "session_id": SESSION_ID,
-        "parent_env": dict(BENIGN),
-    }
-    fields.update(over)
-    return LaunchContext(**fields)
-
-
-# --- get_adapter ------------------------------------------------------------
-
-@pytest.mark.parametrize(
-    ("name", "cls"),
-    [("claude-code", ClaudeCodeAdapter), ("codex", CodexAdapter), ("fake", FakeAdapter)],
+TASK_ROOT = "/work/sess-x"
+CTX = LaunchContext(
+    kickoff="do the thing",
+    cwd=f"{TASK_ROOT}/hive",
+    task_root=TASK_ROOT,
+    execution_id="t-a1-abc",
+    session_id="11111111-2222-4333-a444-555555555555",
+    parent_env={"PATH": "/usr/bin", "HOME": "/home/u"},
+    code_root=f"{TASK_ROOT}/omegahive",
+    run_dir=f"{TASK_ROOT}/run",
 )
-def test_get_adapter_returns_the_right_class(name: str, cls: type[Adapter]):
-    adapter = get_adapter(name)
-    assert isinstance(adapter, cls)
-    assert adapter.name == name
 
 
-@pytest.mark.parametrize(
-    "name",
-    [
-        pytest.param("", id="empty"),
-        pytest.param("Claude-Code", id="wrong-case"),
-        pytest.param("claude_code", id="underscore"),
-        pytest.param("bash -c 'echo pwned'", id="a-shell-string"),
-    ],
-)
-def test_unknown_adapter_fails_closed(name: str):
+def entry(**over) -> RouteEntry:
+    return RouteEntry(**route(**over))
+
+
+# --- the executable and the argv come from the CATALOG -------------------------------
+
+def test_the_executable_is_the_routes_not_the_adapters():
+    """An adapter that hardcoded a binary would silently outrank the operator."""
+    r = entry(adapter="claude-code", harness="claude-code",
+              runner=runner(executable="/opt/wrappers/claude-in-a-box"))
+    plan = get_adapter("claude-code").build(r, CTX)
+    assert plan.argv[0] == "/opt/wrappers/claude-in-a-box"
+    assert plan.version_argv == ["/opt/wrappers/claude-in-a-box", "--version"]
+
+
+def test_the_static_args_are_placed_before_the_adapters_own():
+    r = entry(adapter="claude-code", harness="claude-code",
+              runner=runner(executable="claude", args=["--permission-mode", "auto"]))
+    plan = get_adapter("claude-code").build(r, CTX)
+    assert plan.argv[:3] == ["claude", "--permission-mode", "auto"]
+    assert "--model" in plan.argv and plan.argv[-1] == CTX.kickoff
+
+
+def test_the_kickoff_is_an_argv_element_never_a_shell_string():
+    r = entry(adapter="claude-code", harness="claude-code", runner=runner(executable="claude"))
+    plan = get_adapter("claude-code").build(r, CTX)
+    assert CTX.kickoff in plan.argv
+    assert not any(" && " in a or "$(" in a for a in plan.argv)
+
+
+# --- generic: the whole point ---------------------------------------------------------
+
+def test_an_unknown_harness_launches_on_generic_from_configuration_alone():
+    r = entry(harness="some-new-cli", adapter="generic",
+              runner=runner(executable="some-new-cli", args=["--headless"]))
+    plan = get_adapter("generic").build(r, CTX)
+    assert plan.argv == ["some-new-cli", "--headless", CTX.kickoff]
+
+
+def test_generic_records_identity_as_declared_and_usage_as_unavailable():
+    r = entry(harness="some-new-cli", adapter="generic", runner=runner(executable="x"))
+    plan = get_adapter("generic").build(r, CTX)
+    assert plan.model_identity_evidence == "declared"
+    assert plan.usage_evidence == "unavailable"
+    assert plan.unproven_reason and "declared" in plan.unproven_reason
+
+
+def test_claude_code_observes_both_because_it_writes_a_readable_transcript():
+    r = entry(adapter="claude-code", harness="claude-code", runner=runner(executable="claude"))
+    plan = get_adapter("claude-code").build(r, CTX)
+    assert plan.model_identity_evidence == "observed"
+    assert plan.usage_evidence == "observed"
+
+
+def test_an_unknown_adapter_name_is_a_typo_and_fails_closed():
     with pytest.raises(RefusalError) as exc:
-        get_adapter(name)
+        get_adapter("clauude-code")
     assert exc.value.code == "ADAPTER_UNKNOWN"
-    for known in ("claude-code", "codex", "fake"):
-        assert known in exc.value.message, "the refusal must name the known adapters"
-    assert "shell" in exc.value.message
+    assert "generic" in exc.value.message
 
 
-# --- ClaudeCodeAdapter argv -------------------------------------------------
+# --- the environment ------------------------------------------------------------------
 
-def test_claude_code_argv_carries_the_pinned_model_and_session():
-    plan = ClaudeCodeAdapter().build(route(model="claude-haiku-4-5-20251001"), ctx(), BINDING)
-    argv = plan.argv
-    assert argv[0] == "claude"
-    assert argv[argv.index("--model") + 1] == "claude-haiku-4-5-20251001"
-    assert argv[argv.index("--session-id") + 1] == SESSION_ID
-    assert argv[-1] == KICKOFF, "the kickoff is the last element, opaque and unsplit"
-    assert argv.count(KICKOFF) == 1
-    assert plan.model_requested == "claude-haiku-4-5-20251001"
+def test_the_parent_environment_is_never_inherited_wholesale():
+    r = entry(adapter="generic", runner=runner(executable="x", inherit_env=[]))
+    ctx = LaunchContext(**{**CTX.__dict__,
+                           "parent_env": {"PATH": "/usr/bin", "SOME_RANDOM_THING": "v"}})
+    plan = get_adapter("generic").build(r, ctx)
+    assert "PATH" in plan.env
+    assert "SOME_RANDOM_THING" not in plan.env
 
 
-def test_claude_code_declares_its_evidence_surfaces():
-    plan = ClaudeCodeAdapter().build(route(), ctx(), BINDING)
-    assert plan.version_argv == ["claude", "--version"]
-    assert plan.proves_model is True
-    assert plan.proves_usage is True
-    assert plan.usage_extractor == "claude-code-transcript"
-    assert plan.unproven_reason is None
-    assert plan.usage_hint["session_id"] == SESSION_ID
-    assert plan.usage_hint["cwd"] == "/srv/work/w1"
+def test_a_route_may_name_extra_variables_and_they_come_through():
+    r = entry(adapter="generic", runner=runner(executable="x", inherit_env=["MY_HARNESS_HOME"]))
+    ctx = LaunchContext(**{**CTX.__dict__,
+                           "parent_env": {"PATH": "/usr/bin", "MY_HARNESS_HOME": "/h"}})
+    plan = get_adapter("generic").build(r, ctx)
+    assert plan.env["MY_HARNESS_HOME"] == "/h"
 
 
-# --- the environment allowlist ----------------------------------------------
-
-@pytest.mark.parametrize("name", sorted(CREDENTIALS))
-def test_claude_code_env_drops_every_credential_and_unlisted_var(name: str):
-    plan = ClaudeCodeAdapter().build(route(), ctx(parent_env=dict(DIRTY_ENV)), BINDING)
-    assert name not in plan.env, f"{name} reached the worker environment"
-    assert CREDENTIALS[name] not in plan.env.values(), f"{name}'s VALUE reached the worker"
-
-
-def test_claude_code_env_keeps_the_benign_allowlisted_vars():
-    plan = ClaudeCodeAdapter().build(route(), ctx(parent_env=dict(DIRTY_ENV)), BINDING)
-    assert plan.env == BENIGN, f"unexpected environment: {sorted(plan.env)}"
+def test_a_hive_authority_credential_in_the_parent_is_dropped_even_if_named():
+    """Belt and braces over the catalog validator: the catalog refuses the NAME, and if
+    a future edit ever let one through, the environment builder still drops the VALUE."""
+    r = entry(adapter="generic", runner=runner(executable="x"))
+    r.runner.inherit_env.append("OMEGAHIVE_GATEWAY_DATABASE_URL")
+    ctx = LaunchContext(**{**CTX.__dict__,
+                           "parent_env": {"PATH": "/usr/bin",
+                                          "OMEGAHIVE_GATEWAY_DATABASE_URL": "postgres://x"}})
+    plan = get_adapter("generic").build(r, ctx)
+    assert "OMEGAHIVE_GATEWAY_DATABASE_URL" not in plan.env
 
 
-@pytest.mark.parametrize("adapter", [ClaudeCodeAdapter(), CodexAdapter()])
-def test_every_adapter_builds_from_the_allowlist_not_the_parent(adapter: Adapter):
-    plan = adapter.build(route(), ctx(parent_env=dict(DIRTY_ENV)), BINDING)
-    assert set(plan.env) <= BASE_ENV_ALLOWLIST | {"CLAUDE_CONFIG_DIR", "CODEX_HOME"}
-    assert not set(plan.env) & set(CREDENTIALS)
+def test_path_is_always_allowlisted_because_env_dash_i_needs_it():
+    assert "PATH" in BASE_ENV_ALLOWLIST
 
 
-def test_allowlist_admits_the_locale_and_path_family_only():
-    """A sanity pin on the list itself: it holds no vendor or credential-shaped name."""
-    assert {"HOME", "PATH", "LANG"} <= BASE_ENV_ALLOWLIST
-    for name in BASE_ENV_ALLOWLIST:
-        upper = name.upper()
-        assert not any(m in upper for m in ("API_KEY", "SECRET", "TOKEN", "PASSWORD"))
+# --- codex: the task-root write grants ------------------------------------------------
+
+FS = (
+    'permissions.hive-worker.filesystem={"/"="read","~/.ssh"="deny"}'
+)
 
 
-def test_clean_env_refuses_an_adapter_that_adds_a_credential():
-    """Belt and braces over the allowlist: an adapter author must not be able to
-    reintroduce a credential by naming it in `additions`."""
+def test_codex_merges_the_task_root_into_the_routes_own_filesystem_table():
+    """Measured on codex-cli 0.147.0: a SECOND `-c` on the same table key replaces the
+    first rather than merging, so appending our roots that way would silently drop the
+    operator's deny entries. The adapter opens the table instead."""
+    out = _merge_codex_writable_roots(["exec", "-c", FS], ["/work/x", "/work/x/hive/.git"])
+    assert out[:2] == ["exec", "-c"]
+    merged = out[2]
+    assert '"~/.ssh"="deny"' in merged, "the operator's denies must survive the merge"
+    assert '"/"="read"' in merged
+    assert '"/work/x"="write"' in merged
+    assert '"/work/x/hive/.git"="write"' in merged
+    assert "--add-dir" not in out
+
+
+def test_codex_falls_back_to_add_dir_when_the_route_declares_no_profile():
+    out = _merge_codex_writable_roots(["exec", "--sandbox", "workspace-write"], ["/work/x"])
+    assert out == ["exec", "--sandbox", "workspace-write", "--add-dir", "/work/x"]
+
+
+def test_codex_grants_the_task_root_and_both_dot_git_directories():
+    """Codex marks `.git` READ-ONLY inside a workspace-write root by default, so a worker
+    could edit files and then die at `git commit` (boundary report, 2026-08-20 gate 4)."""
+    r = entry(adapter="codex", harness="codex",
+              runner=runner(executable="codex", args=["exec", "-c", FS]))
+    plan = get_adapter("codex").build(r, CTX)
+    merged = next(a for a in plan.argv if a.startswith("permissions."))
+    assert f'"{TASK_ROOT}"="write"' in merged
+    assert f'"{TASK_ROOT}/hive/.git"="write"' in merged
+    assert f'"{TASK_ROOT}/omegahive/.git"="write"' in merged
+
+
+def test_a_malformed_codex_filesystem_table_refuses_rather_than_being_ignored():
+    r = entry(adapter="codex", harness="codex",
+              runner=runner(executable="codex",
+                            args=["exec", "-c", "permissions.p.filesystem=not-a-table"]))
     with pytest.raises(RefusalError) as exc:
-        _clean_env(dict(BENIGN), frozenset(), {"MY_API_KEY": "x"})
-    assert exc.value.code == "ADAPTER_REFUSED_CREDENTIAL"
+        get_adapter("codex").build(r, CTX)
+    assert exc.value.code == "RUNNER_ARGS_MALFORMED"
 
 
-def test_clean_env_drops_a_credential_shaped_name_even_if_allowlisted():
-    """The marker scan runs over the parent copy too, so an allowlist entry that later
-    acquired a credential-shaped name still cannot carry a secret through."""
-    env = _clean_env({"WEIRD_TOKEN": "x", "HOME": "/home/op"}, frozenset({"WEIRD_TOKEN"}), {})
-    assert env == {"HOME": "/home/op"}
-
-
-# --- CLAUDE_CONFIG_DIR ------------------------------------------------------
-
-def test_claude_config_dir_passes_through_and_becomes_a_usage_hint():
-    parent = {**BENIGN, "CLAUDE_CONFIG_DIR": "/srv/state/claude"}
-    plan = ClaudeCodeAdapter().build(route(), ctx(parent_env=parent), BINDING)
-    assert plan.env["CLAUDE_CONFIG_DIR"] == "/srv/state/claude"
-    assert plan.usage_hint["config_dir"] == "/srv/state/claude"
-
-
-def test_no_config_dir_hint_when_the_var_is_absent():
-    plan = ClaudeCodeAdapter().build(route(), ctx(parent_env=dict(BENIGN)), BINDING)
-    assert "CLAUDE_CONFIG_DIR" not in plan.env
-    assert "config_dir" not in plan.usage_hint
-
-
-# --- CodexAdapter: honest about what it cannot prove ------------------------
-
-def test_codex_proves_nothing_and_says_why():
-    plan = CodexAdapter().build(route(adapter="codex", harness="codex"), ctx(), BINDING)
-    assert plan.proves_model is False
-    assert plan.proves_usage is False
+def test_codex_usage_is_unavailable_with_a_named_reason_not_a_zero():
+    r = entry(adapter="codex", harness="codex", runner=runner(executable="codex", args=["exec"]))
+    plan = get_adapter("codex").build(r, CTX)
+    assert plan.usage_evidence == "unavailable"
     assert plan.usage_extractor == "none"
-    assert isinstance(plan.unproven_reason, str) and plan.unproven_reason.strip(), \
-        "an unproven surface must carry a named reason an operator can read"
-    assert plan.usage_hint == {}
-    assert plan.argv[0] == "codex"
-    assert plan.argv[-1] == KICKOFF
+    assert plan.unproven_reason
 
 
-def test_codex_env_admits_codex_home_only():
-    parent = {**BENIGN, "CODEX_HOME": "/srv/state/codex", "CLAUDE_CONFIG_DIR": "/srv/claude"}
-    plan = CodexAdapter().build(route(), ctx(parent_env=parent), BINDING)
-    assert plan.env["CODEX_HOME"] == "/srv/state/codex"
-    assert "CLAUDE_CONFIG_DIR" not in plan.env
-
-
-# --- FakeAdapter: no default, never resolves from PATH ----------------------
-
-def test_fake_adapter_refuses_without_its_fixture_variable():
-    with pytest.raises(RefusalError) as exc:
-        FakeAdapter().build(route(adapter="fake"), ctx(parent_env=dict(BENIGN)), BINDING)
-    assert exc.value.code == "ADAPTER_UNCONFIGURED"
-    assert "HIVE_FAKE_HARNESS" in exc.value.message
-
-
-def test_fake_adapter_builds_when_configured():
-    parent = {
-        **BENIGN,
-        "HIVE_FAKE_HARNESS": "/srv/fixtures/fake_harness.sh",
-        "HIVE_FAKE_BEHAVIOUR": "success",
-        "HIVE_FAKE_USAGE_FILE": "/tmp/usage.jsonl",
-    }
-    plan = FakeAdapter().build(route(adapter="fake"), ctx(parent_env=parent), BINDING)
-    assert plan.argv[0] == "/srv/fixtures/fake_harness.sh"
-    assert plan.argv[plan.argv.index("--session-id") + 1] == SESSION_ID
-    assert plan.argv[-1] == KICKOFF
-    assert plan.version_argv == ["/srv/fixtures/fake_harness.sh", "--version"]
-    assert plan.usage_extractor == "fake-usage-file"
-    assert plan.usage_hint["usage_file"] == "/tmp/usage.jsonl"
-    assert plan.env["HIVE_FAKE_BEHAVIOUR"] == "success"
-    assert set(plan.env) & set(CREDENTIALS) == set()
-
-
-# --- version parsing --------------------------------------------------------
-
-@pytest.mark.parametrize(
-    ("output", "expected"),
-    [
-        pytest.param("2.1.231 (Claude Code)\n", "2.1.231", id="product-banner"),
-        pytest.param("", "", id="empty"),
-        pytest.param("\n", "", id="newline-only"),
-        pytest.param("   \n\n2.1.231 (Claude Code)\n", "2.1.231", id="leading-blank-lines"),
-        pytest.param("fake-harness 9.9.9\n", "fake-harness", id="first-token-wins"),
-        pytest.param("  9.9.9  \n", "9.9.9", id="surrounding-whitespace"),
-    ],
-)
-def test_parse_version_takes_the_first_token_of_the_first_non_empty_line(
-    output: str, expected: str
-):
-    assert ClaudeCodeAdapter().parse_version(output) == expected
-
-
-@pytest.mark.parametrize(
-    ("output", "expected"),
-    [
-        ("2.1.232 (Claude Code)\n", "2.1.232"),
-        # The case this rule exists for: the probe merges stderr so a harness that
-        # cannot start can say why, and an unrelated warning then lands first.
-        # Observed 2026-08-14 — a real preflight reported `harness: sh:`.
-        ("/bin/sh: warning: setlocale: LC_ALL: cannot change locale\n2.1.232 (Claude Code)\n",
-         "2.1.232"),
-        ("\n\nbash: warning: something\n  3.0.1-beta\n", "3.0.1-beta"),
-        # No line starts with a digit: fall back rather than record nothing.
-        ("fake-harness 9.9.9\n", "fake-harness"),
-        ("", ""),
-    ],
-)
-def test_parse_version_prefers_a_version_shaped_token_over_a_stderr_warning(output, expected):
-    assert ClaudeCodeAdapter().parse_version(output) == expected
-
-
-def test_the_shell_version_parser_agrees_with_the_python_one():
-    """Two implementations of one rule, held together by a test rather than a comment.
-
-    The shell twin is what actually runs (hive-supervise reads the probe), so a drift
-    between them would put a wrong `harness_version` on the spine while the Python tests
-    stayed green.
-    """
-    import shutil
-    import subprocess
-
-    if shutil.which("bash") is None:  # pragma: no cover - bash is present everywhere here
-        pytest.skip("bash not available")
-    repo = Path(__file__).resolve().parents[1]
-    cases = [
-        "2.1.232 (Claude Code)\n",
-        "/bin/sh: warning: setlocale: LC_ALL: cannot change locale\n2.1.232 (Claude Code)\n",
-        "\n\nbash: warning: something\n  3.0.1-beta\n",
-        "fake-harness 9.9.9\n",
-    ]
-    for output in cases:
-        proc = subprocess.run(
-            ["bash", "-c",
-             f'set -euo pipefail; source "{repo}/scripts/hive-common.sh"; harness_version_from'],
-            input=output, capture_output=True, text=True, cwd=str(repo), timeout=60,
-        )
-        assert proc.returncode == 0, proc.stderr
-        assert proc.stdout.strip() == ClaudeCodeAdapter().parse_version(output), output
+# --- version parsing ------------------------------------------------------------------
+# The rule itself, and its agreement with the shell twin, live in
+# `tests/test_hive_common.py`: the shell function is what a preflight and the supervisor
+# actually run, so the pair is asserted where both can be executed.

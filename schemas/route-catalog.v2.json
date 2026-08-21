@@ -1,0 +1,259 @@
+{
+  "$defs": {
+    "CatalogDefaults": {
+      "additionalProperties": false,
+      "description": "Which route an ordinary launch uses when the operator names none.\n\nExactly one, and required. A catalog with several plausible workers and no stated\ndefault makes `hive-launch <order>` a coin toss over billing markets \u2014 so the\nabsence refuses at preflight rather than resolving to whichever entry came first.",
+      "properties": {
+        "worker": {
+          "title": "Worker",
+          "type": "string"
+        }
+      },
+      "required": [
+        "worker"
+      ],
+      "title": "CatalogDefaults",
+      "type": "object"
+    },
+    "PriceBasis": {
+      "additionalProperties": false,
+      "description": "The route's list-price basis, copied from the catalog AT APPROVAL TIME.\n\nCarried on the facts, not looked up later, because the catalog is a mutable\ndeployment file: a reader deriving the cost of a 2026-08 execution from the 2027-02\ncatalog would silently compute a number that was never true. Cost is derived from\nthese numbers, never authored \u2014 no payload here holds a currency amount.\n\nAll four rates are optional: a subscription route has no per-token list price, and\nan absent rate must stay absent rather than become a zero that reads as free.",
+      "properties": {
+        "captured_at": {
+          "title": "Captured At",
+          "type": "string"
+        },
+        "currency": {
+          "default": "USD",
+          "title": "Currency",
+          "type": "string"
+        },
+        "per_mtok_cache_read": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Per Mtok Cache Read"
+        },
+        "per_mtok_cache_write": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Per Mtok Cache Write"
+        },
+        "per_mtok_input": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Per Mtok Input"
+        },
+        "per_mtok_output": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Per Mtok Output"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "captured_at"
+      ],
+      "title": "PriceBasis",
+      "type": "object"
+    },
+    "RouteEntry": {
+      "additionalProperties": false,
+      "description": "One thing this deployment can currently run.",
+      "properties": {
+        "adapter": {
+          "title": "Adapter",
+          "type": "string"
+        },
+        "billing_market": {
+          "enum": [
+            "subscription",
+            "api"
+          ],
+          "title": "Billing Market",
+          "type": "string"
+        },
+        "credential_pool": {
+          "title": "Credential Pool",
+          "type": "string"
+        },
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "harness": {
+          "title": "Harness",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "model_vendor": {
+          "title": "Model Vendor",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "price_basis": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PriceBasis"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "runner": {
+          "$ref": "#/$defs/RunnerSpec"
+        }
+      },
+      "required": [
+        "name",
+        "model_vendor",
+        "provider",
+        "model",
+        "harness",
+        "adapter",
+        "billing_market",
+        "credential_pool",
+        "runner"
+      ],
+      "title": "RouteEntry",
+      "type": "object"
+    },
+    "RunnerSpec": {
+      "additionalProperties": false,
+      "description": "How this deployment actually starts the harness. Argv, never a shell string.\n\nFour fields and no fifth, because every additional field is a place a shell could\nre-enter. `executable` plus `args` is the whole command; an operator who wants a\ncontainer, a VM, a sandbox wrapper or a bare binary writes exactly that here and\nHive runs it. The adapter appends the dynamic elements it knows the harness needs \u2014\nthe model, the session id, the task-root paths, and the kickoff.\n\n`inherit_env` names variables this route needs from the launching environment. Names\nonly: no value ever appears in this file, in a plan, in a log line, in the preflight\nor on the spine. A provider credential name may be listed deliberately; a Hive\nauthority credential name refuses.\n\n`worker_io` says whether the worker can perform its own spine writes and git\npublication (`direct`) or needs the supervisor to bridge them (`supervised`). It is\na statement about the runner's reach, not a ranking: a native sandbox that closes\nthe container socket and the hub is `supervised`, and that is a stronger deployment,\nnot a weaker one.",
+      "properties": {
+        "args": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Args",
+          "type": "array"
+        },
+        "executable": {
+          "title": "Executable",
+          "type": "string"
+        },
+        "inherit_env": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Inherit Env",
+          "type": "array"
+        },
+        "worker_io": {
+          "default": "direct",
+          "enum": [
+            "direct",
+            "supervised"
+          ],
+          "title": "Worker Io",
+          "type": "string"
+        }
+      },
+      "required": [
+        "executable"
+      ],
+      "title": "RunnerSpec",
+      "type": "object"
+    }
+  },
+  "$id": "https://omegahive.invalid/schemas/route-catalog.v2.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The deployment's route list.\n\n`routes` is a LIST, not a name-keyed object, on purpose: a JSON object with a\nrepeated key is collapsed silently by every parser we use, so a hand-edited catalog\nholding the same route name twice would resolve to whichever copy happened to win.\nA list makes the duplicate visible, and `resolve_route` refuses it as ambiguous.",
+  "properties": {
+    "captured_at": {
+      "title": "Captured At",
+      "type": "string"
+    },
+    "defaults": {
+      "$ref": "#/$defs/CatalogDefaults"
+    },
+    "note": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Note"
+    },
+    "routes": {
+      "items": {
+        "$ref": "#/$defs/RouteEntry"
+      },
+      "title": "Routes",
+      "type": "array"
+    },
+    "schema_version": {
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "captured_at",
+    "defaults"
+  ],
+  "title": "RouteCatalog",
+  "type": "object"
+}

@@ -581,20 +581,20 @@ def harness_resolve_cmd(
         False, "--check", help="print the redacted preflight instead of the machine JSON"
     ),
 ) -> None:
-    """Resolve a launch binding against the route catalog. NO side effects, ever.
+    """Resolve a route against the deployment catalog. NO side effects, ever.
 
-    Reads one JSON request object on stdin with keys `binding_b64`, `catalog_b64`,
-    `binding_ref`, `expected_task`, `expected_order_ref`, `kickoff`, `cwd`,
-    `session_id`, `env`.
+    Reads one JSON request object on stdin with keys `catalog_b64`, `route` (null for
+    the catalog default), `task`, `order_ref`, `purpose`, `attempt`, `kickoff`,
+    `task_root`, `cwd`, `code_root`, `run_dir`, `session_id`, `env`.
 
-    The two records travel base64-encoded so their exact bytes survive the trip — the
-    catalog digest is taken over those bytes, and a JSON-string round trip that
-    normalized a line ending would silently change it.
+    The catalog travels base64-encoded so its exact bytes survive the trip — the catalog
+    digest is taken over those bytes, and a JSON-string round trip that normalized a
+    line ending would silently change it.
 
     On refusal this prints `{"ok": false, "code": ..., "message": ...}` and exits 1. The
-    codes are a stable contract (`BINDING_MALFORMED`, `BINDING_TASK_MISMATCH`,
-    `ROUTE_UNKNOWN`, `ROUTE_AMBIGUOUS`, `ADAPTER_UNKNOWN`, ...) because the launcher and
-    the drills both branch on them.
+    codes are a stable contract (`CATALOG_MALFORMED`, `CATALOG_V1`, `ROUTE_UNKNOWN`,
+    `ROUTE_AMBIGUOUS`, `ROUTE_DISABLED`, `DEFAULT_ROUTE_UNKNOWN`, `ADAPTER_UNKNOWN`, ...)
+    because the launcher and the drills both branch on them.
     """
     import base64
     import sys
@@ -618,35 +618,27 @@ def harness_resolve_cmd(
         return
 
     try:
-        binding_raw = base64.b64decode(req.get("binding_b64", ""), validate=True)
         catalog_raw = base64.b64decode(req.get("catalog_b64", ""), validate=True)
-        # The permission-boundary descriptors ship with the launcher, so unlike the
-        # catalog they are not a host deployment fact — but they travel the same way,
-        # base64 by exact bytes, because the digest the operator pinned in the catalog
-        # is taken over exactly these bytes and a re-encode would break the pin.
-        descriptors_raw = {
-            k: base64.b64decode(v, validate=True)
-            for k, v in (req.get("descriptors_b64") or {}).items()
-        }
     except (ValueError, TypeError) as exc:
-        refuse("REQUEST_MALFORMED", f"a base64 field in the request is malformed: {exc}")
+        refuse("REQUEST_MALFORMED", f"catalog_b64 is malformed: {exc}")
         return
 
     kickoff = req.get("kickoff", "")
     try:
         plan = resolve(
-            binding_raw=binding_raw,
             catalog_raw=catalog_raw,
-            descriptors_raw=descriptors_raw,
-            binding_ref=req.get("binding_ref", ""),
-            expected_task=req.get("expected_task"),
-            expected_order_ref=req.get("expected_order_ref"),
+            route_name=req.get("route") or None,
+            task=req.get("task", ""),
+            order_ref=req.get("order_ref", ""),
+            purpose=req.get("purpose", "work"),
+            attempt=int(req.get("attempt", 1)),
             kickoff=kickoff,
+            task_root=req.get("task_root", ""),
             cwd=req.get("cwd", ""),
             code_root=req.get("code_root", ""),
+            run_dir=req.get("run_dir", ""),
             session_id=req.get("session_id", ""),
             parent_env=req.get("env") or {},
-            present_paths=frozenset(req.get("present_paths") or []),
         )
     except RefusalError as exc:
         refuse(exc.code, exc.message)
@@ -659,73 +651,55 @@ def harness_resolve_cmd(
         print(json.dumps(doc, sort_keys=True))
 
 
-@app.command("harness-materialize")
-def harness_materialize_cmd() -> None:
-    """Render one binding descriptor into the harness-native configuration it declares.
+@app.command("harness-migrate")
+def harness_migrate_cmd(
+    default_worker: str | None = typer.Option(
+        None, "--default", help="route name to record as defaults.worker (non-interactive)"
+    ),
+) -> None:
+    """Translate a v1 route catalog on stdin into a v2 one on stdout.
 
-    Reads `{descriptor_b64, extra_dirs}` on stdin; prints the config path, its exact
-    content and digest, the required flags, and every declared probe. This exists so the
-    probe runner and the launcher share ONE renderer: a probe runner that rendered the
-    boundary its own way would test a file no launch ever writes, which is the failure
-    mode the whole descriptor idea is meant to remove.
+    Pure: it reads bytes and writes bytes. The backup, the prompt and the atomic
+    replacement are `hive-routes migrate`'s job, on the host, where the file is.
+
+    Running it on a catalog that is already v2 prints it back unchanged, so the
+    migration is safe to re-run.
     """
-    import base64
     import sys
 
-    from .harness.bindings import (
-        check_coverage,
-        load_binding_descriptor,
-        materialize,
-    )
+    from .harness.migrate import migrate_catalog
     from .harness.records import RefusalError
 
+    raw = sys.stdin.read()
     try:
-        req = json.loads(sys.stdin.read())
-        raw = base64.b64decode(req["descriptor_b64"], validate=True)
-    except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
-        print(json.dumps({"ok": False, "code": "REQUEST_MALFORMED", "message": str(exc)}))
-        raise typer.Exit(code=2) from exc
-
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(json.dumps({"ok": False, "code": "CATALOG_MALFORMED",
+                          "message": f"not valid JSON: {exc}"}), file=sys.stderr)
+        raise typer.Exit(code=1) from exc
     try:
-        binding = load_binding_descriptor(raw)
-        check_coverage(binding)
-        mat = materialize(binding, extra_dirs=list(req.get("extra_dirs") or []))
-    except RefusalError as exc:
-        print(json.dumps({"ok": False, "code": exc.code, "message": exc.message}))
+        out, notes = migrate_catalog(data, default_worker=default_worker)
+    except (RefusalError, ValueError) as exc:
+        code = getattr(exc, "code", "CATALOG_MALFORMED")
+        message = getattr(exc, "message", str(exc))
+        print(json.dumps({"ok": False, "code": code, "message": message}), file=sys.stderr)
         raise typer.Exit(code=1) from exc
 
-    print(
-        json.dumps(
-            {
-                "ok": True,
-                "binding_id": binding.binding_id,
-                "harness": binding.harness,
-                "status": binding.status,
-                "config_path": mat.path,
-                "config_content": mat.content,
-                "config_digest": mat.digest,
-                "required_flags": binding.required_flags,
-                "probes": [
-                    {"policy_class": c.policy_class, **p.model_dump(mode="json")}
-                    for c in binding.classes
-                    for p in c.probes
-                ],
-            },
-            sort_keys=True,
-        )
-    )
+    for note in notes:
+        print(f"hive-routes migrate: {note}", file=sys.stderr)
+    print(json.dumps(out, indent=2))
 
 
 @app.command("harness-routes")
 def harness_routes_cmd(
     as_json: bool = typer.Option(False, "--json", help="machine form instead of the report"),
 ) -> None:
-    """The refusal report: every catalog route as launchable or refused, and why.
+    """The catalog check: every route as resolvable or refused, and why.
 
-    Reads one JSON request on stdin with keys `catalog_b64`, `descriptors_b64`,
-    `present_paths`, and optionally `env`. Makes NO network call, NO model call, and no
-    change of any kind — in particular it never upgrades a route's state, because a
-    report that could would eventually be run for that.
+    Reads one JSON request on stdin with keys `catalog_b64` and, optionally,
+    `present_executables` (a name -> bool map the HOST filled in). Makes NO network
+    call, NO model call, and no change of any kind — in particular it never enables a
+    route, because a report that could would eventually be run for that.
 
     Exit code is 0 whether or not routes are refused: a refused route is the correct
     answer to a question, not an error. It exits 2 only when the request itself or the
@@ -743,10 +717,6 @@ def harness_routes_cmd(
         if not isinstance(req, dict):
             raise ValueError("stdin must be a JSON object")
         catalog_raw = base64.b64decode(req.get("catalog_b64", ""), validate=True)
-        descriptors_raw = {
-            k: base64.b64decode(v, validate=True)
-            for k, v in (req.get("descriptors_b64") or {}).items()
-        }
     except (ValueError, TypeError, json.JSONDecodeError) as exc:
         print(f"harness-routes: request is unreadable: {exc}", file=sys.stderr)
         raise typer.Exit(code=2) from exc
@@ -754,9 +724,7 @@ def harness_routes_cmd(
     try:
         rows = evaluate_routes(
             catalog_raw=catalog_raw,
-            descriptors_raw=descriptors_raw,
-            parent_env=req.get("env") or {},
-            present_paths=frozenset(req.get("present_paths") or []),
+            present_executables=req.get("present_executables") or {},
         )
     except RefusalError as exc:
         print(f"harness-routes: {exc.code}: {exc.message}", file=sys.stderr)
@@ -766,6 +734,59 @@ def harness_routes_cmd(
         print(routes_to_json(rows))
     else:
         print(routes_to_text(rows), end="")
+
+
+@app.command("emit-relay")
+def emit_relay_cmd(
+    run_id: str = typer.Option(..., "--run-id", help="run to emit into, from the launch plan"),
+    actor_id: str = typer.Option(..., "--actor", help="worker actor id, from the launch plan"),
+    task_id: str = typer.Option(..., "--task", help="the task the plan fixes for this worker"),
+) -> None:
+    """Emit ONE spooled worker request, read from stdin, under a stamped identity.
+
+    This is the supervisor's half of the supervised-worker transport. The request says
+    what to emit; the run, the role (`worker`) and the actor come from the immutable
+    launch plan via the flags above, never from the request — and a request that tries to
+    carry any of them is refused by name.
+
+    The result the worker sees is deliberately identical to the direct wrapper's:
+    `emitted · <type> · seq N` on success, `rejected: <CODE> <reason>` otherwise. A
+    worker on a supervised route runs exactly the protocol a worker on a direct route
+    runs, and does not need to know which one it is.
+    """
+    import sys
+
+    from .harness.spool import SpoolRefusal, parse_request, validate_emit_request
+
+    try:
+        doc = parse_request(sys.stdin.read())
+        event_type, task, payload = validate_emit_request(doc, expected_task=task_id)
+    except SpoolRefusal as exc:
+        console.print(f"rejected: {exc.code} {exc.reason}")
+        raise typer.Exit(code=1) from exc
+
+    actor = Actor(role="worker", id=actor_id)
+    with connect_gateway() as conn:
+        with conn.transaction():
+            head_before = EventLog(conn, LogicalClock(0), run_id, server_time=True).head_seq()
+        port = HiveCoordinatorPort(actor, run_id, conn)
+        try:
+            result = port.emit(RawOp(event_type, payload, task))
+        except ValidationError as e:
+            console.print(f"rejected: INVALID_PAYLOAD · {_payload_error(e)}")
+            raise typer.Exit(code=1) from e
+        except UnknownEventType as e:
+            console.print(f"rejected: UNKNOWN_EVENT_TYPE · {e}")
+            raise typer.Exit(code=1) from e
+        conn.commit()
+
+    if isinstance(result, Rejected):
+        console.print(f"rejected: {result.code} · {result.reason}")
+        raise typer.Exit(code=1)
+    deduped = (head_before is not None and result.event.seq is not None
+               and result.event.seq <= head_before)
+    verb = "already recorded (idempotent)" if deduped else "emitted"
+    console.print(f"{verb} · {event_type} · seq {result.event.seq}")
 
 
 @app.command("harness-usage")

@@ -1,16 +1,26 @@
 #!/usr/bin/env bash
 # hive-supervise <run-dir>            — run one approved execution and record what it did
 # hive-supervise --reconcile <root>   — emit terminal facts for executions that died unrecorded
+# hive-supervise --drain <run-dir>    — drain one worker's request spool once, then stop
 #
 # The launcher-owned supervisor. It is the pane's command: `hive-launch` writes an
-# execution run-dir and opens a tmux window running THIS script, which probes the
-# harness, starts it, and emits the two instrument facts around it.
+# execution run-dir OUTSIDE the worker's task root and opens a tmux window running THIS
+# script, which probes the harness, starts it, drains its request spool while it runs,
+# and emits the two instrument facts around it.
 #
 # Why a supervisor at all, rather than asking the session to report on itself: a worker
 # reporting its own model and token spend is a self-measurement, and the corpus already
 # says self-assessment is unreliable (retro 2026-07-29 D3 — workers reported effort two
 # to six times their measured span). The supervisor never impersonates the worker: it
 # emits `execution.*` as `instrument` and has no authority to emit any `task.*` event.
+# On a supervised route it also RELAYS the worker's own emits — through a separate
+# wrapper carrying the worker's identity, stamped from this run-dir's plan and never
+# from the request — which is a different thing from speaking for it.
+#
+# THE RUN-DIR IS THE ROOT OF TRUST, and it is deliberately not inside the worker's task
+# root. A worker may rewrite anything it can write, including the wrappers that produce
+# the requests below; so every identity, path, branch and destination this script acts on
+# comes from `plan.json` here, and a request that tries to carry one is refused by name.
 #
 # THE TERMINAL FACT IS THE POINT. `execution.finished` is written to disk BEFORE it is
 # emitted and re-emitted verbatim on any later attempt, so a spine outage, a killed
@@ -31,29 +41,27 @@ log() { echo "hive-supervise: $*" >&2; }
 # there collapses a board read to the empty string and re-creates a live task.
 command -v jq >/dev/null 2>&1 || die "jq is required by hive-supervise"
 
-# The stack CLI. `hive()` (hive-common.sh) is the containerized path every operator tool
-# uses; HIVE_CLI_CMD overrides it with a direct invocation, which is what lets the
-# fixture-driven end-to-end test drive this exact script with no container and no
-# network. The override is a test seam, not a second code path — both land on the same
-# `omegahive` command.
-hive_cli() {
-  if [ -n "${HIVE_CLI_CMD:-}" ]; then
-    # shellcheck disable=SC2086  # HIVE_CLI_CMD is legitimately several words
-    $HIVE_CLI_CMD "$@"
-  else
-    hive "$@"
-  fi
+# The stack CLI is `hive()` from hive-common.sh: the containerized path every operator
+# tool uses, with HIVE_CLI_CMD overriding it to a direct invocation. That override is what
+# lets the fixture-driven end-to-end tests drive this exact script with no container and
+# no network, and it is what an operator uses between deploying a branch and rebuilding
+# the image. It is one seam on one code path, not a second implementation.
+
+# --- run-dir layout (OUTSIDE the worker's task root) --------------------------------
+#   plan.json        the resolved plan plus the launch-fixed bridge block
+#   emit.sh          the supervisor's instrument emit wrapper, issued by hive-launch
+#   emit-worker.sh   the relay of the worker's OWN emits (supervised routes only)
+#   started.json     the started payload, once emitted
+#   finished.json    the terminal payload — written before emitting, replayed on retry
+#   usage.json       the raw usage evidence rows (audit trail; no message content)
+#   harness.log      the harness's own stderr
+#   spool.log        one line per drained request: id, kind, verdict
+#   publish/         trusted-side bare repositories for publication (never checked out)
+
+usage() {
+  echo "usage: hive-supervise <run-dir> | --reconcile <root> | --drain <run-dir>" >&2
+  exit 2
 }
-
-# --- run-dir layout -----------------------------------------------------------------
-#   plan.json      the resolved plan (from `omegahive harness-resolve`)
-#   emit.sh        the supervisor's instrument emit wrapper, issued by hive-launch
-#   started.json   the started payload, once emitted
-#   finished.json  the terminal payload — written before emitting, replayed on retry
-#   usage.json     the raw usage evidence rows (audit trail; no message content)
-#   harness.log    the harness's own stderr
-
-usage() { echo "usage: hive-supervise <run-dir> | hive-supervise --reconcile <root>" >&2; exit 2; }
 
 # `now` is ISO-8601 UTC to the second. `date -u +%FT%TZ` is POSIX and portable to BSD;
 # `date -d`/`date -v` are the non-portable forms and appear nowhere here.
@@ -134,30 +142,363 @@ reconcile() {  # reconcile <root>
   return $rc
 }
 
+# ---------------------------------------------------------------------------------
+# The supervised-worker transport.
+#
+# One request per call, drained here. Two rules carry the whole design:
+#
+#   1. The request says WHAT, never WHO or WHERE. Run, role and actor are stamped from
+#      plan.json by the relay wrapper; every path, branch, destination and credential
+#      for a bridge operation is read from plan.json's `bridge` block. A request that
+#      names any of them is refused by name (`REQUEST_FIELD_FORBIDDEN`), because "your
+#      field was ignored" and "your field was rejected" have very different remedies.
+#
+#   2. The trusted side never executes worker content. Worker commits reach it as a
+#      BUNDLE — a file — read into a fresh bare repository with hooks and credential
+#      helpers disabled, validated, and pushed. Nothing is ever checked out, and no
+#      worker-owned git config is on the path of a trusted command. A worker-owned
+#      `.git` is worker-CONTROLLED INPUT (Codex boundary report, 2026-08-20), and this
+#      is the one place that fact could have bitten.
+#
+# Receipts are written into the worker's own receipts dir. That directory is
+# worker-writable, which is fine: the worker is the only consumer of its own receipts,
+# and nothing here reads one back.
+# ---------------------------------------------------------------------------------
+
+# The three operations a supervised worker may ask for. The canonical list lives in
+# `omegahive.harness.spool.BRIDGE_OPS`; tests assert the two agree.
+BRIDGE_OPS="sync-workspace publish-code publish-workspace"
+
+# Every trusted-side git invocation goes through this. The flags are the containment:
+# a worker-owned repository can carry hooks, a `core.hooksPath`, a credential helper, a
+# pack-objects hook and an alias, and `-c` overrides win over the repository's own config
+# in the process and in every git it spawns. GIT_CONFIG_GLOBAL/SYSTEM close the two
+# files `-c` does not cover.
+tgit() {  # tgit <git args...>
+  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0 \
+  git -c core.hooksPath=/dev/null \
+      -c credential.helper= \
+      -c protocol.ext.allow=never \
+      -c uploadpack.packObjectsHook= \
+      -c transfer.fsckObjects=true \
+      "$@"
+}
+
+receipts_dir() { jq -r '.run_dir' "$1/plan.json"; }
+
+receipt() {  # receipt <run-dir> <request-id> <status> <message> [data-json]
+  local rd="$1" id="$2" status="$3" message="$4" data="${5:-null}"
+  local rdir; rdir="$(receipts_dir "$rd")/receipts"
+  # Written to a temp name and moved, so a worker polling for its receipt never reads a
+  # half-written one. Every step here can fail — the receipts directory is inside the
+  # WORKER's writable root, and a worker that removes or chmods it must not be able to
+  # kill the process that records its execution. So the failure is logged, not fatal.
+  if ! { mkdir -p "$rdir" \
+         && jq -n --arg s "$status" --arg m "$message" --argjson d "$data" \
+              '{status:$s, message:$m, data:$d}' > "$rdir/$id.json.tmp" \
+         && mv "$rdir/$id.json.tmp" "$rdir/$id.json"; }; then
+    log "WARNING could not write a receipt for request $id into $rdir ($status: $message)"
+  fi
+  printf '%s\t%s\t%s\n' "$id" "$status" "$message" >> "$rd/spool.log" || true
+}
+
+# --- bridge: sync workspace ----------------------------------------------------------
+# Read the fixed hub, write ONE bundle under the fixed task root. The trusted side does
+# not touch the worker's clone: the fetch and the rebase happen inside the worker
+# boundary, where worker-owned git config and hooks have no trusted authority. This is
+# the sandboxed equivalent of WORKER.md's required `git pull`, including the round trip
+# that delivers an answer commit to a blocked worker's order.
+bridge_sync_workspace() {  # bridge_sync_workspace <run-dir> <request-id>
+  local rd="$1" id="$2" hub run_dir out
+  hub=$(jq -r '.bridge.ws_hub' "$rd/plan.json")
+  run_dir=$(jq -r '.run_dir' "$rd/plan.json")
+  out="$run_dir/sync/workspace.bundle"
+  mkdir -p "$run_dir/sync"
+  rm -f "$out"
+  if ! tgit -C "$hub" bundle create "$out" main >/dev/null 2>&1; then
+    receipt "$rd" "$id" rejected "rejected: SYNC_FAILED could not bundle main from the workspace hub"
+    return
+  fi
+  receipt "$rd" "$id" accepted "workspace bundle ready" \
+    "$(jq -n --arg b "$out" '{bundle:$b}')"
+}
+
+# A fresh trusted repository for one destination, holding the published history only.
+# Persistent across publications so a thin bundle's prerequisites resolve; never checked
+# out, so nothing in it is ever executed.
+trusted_repo() {  # trusted_repo <run-dir> <name> <remote> -> prints the path
+  local rd="$1" name="$2" remote="$3"
+  local repo="$rd/publish/$name"
+  if [ ! -d "$repo" ]; then
+    mkdir -p "$rd/publish"
+    tgit init --quiet --bare "$repo" >/dev/null
+    tgit -C "$repo" remote add origin "$remote"
+  fi
+  tgit -C "$repo" fetch --quiet origin '+refs/heads/main:refs/heads/main' >/dev/null 2>&1 || true
+  printf '%s' "$repo"
+}
+
+# Import a worker bundle into a trusted repository under a name of OUR choosing.
+import_bundle() {  # import_bundle <repo> <bundle> <ref> -> 0 on success
+  [ -f "$2" ] || return 1
+  tgit -C "$1" fetch --quiet "$2" "+$3:refs/heads/incoming" >/dev/null 2>&1
+}
+
+# --- bridge: publish workspace -------------------------------------------------------
+# The worker's report and question commits, and nothing else. Three checks, in order,
+# because each one's failure means something different to the worker: the commit must
+# fast-forward the hub's main (else: sync, rebase, retry), it must touch only this
+# task's allowed paths, and only then is it pushed — preserving the worker's own commit
+# sha, so a `path@sha` pin taken before publication resolves on the hub afterwards.
+bridge_publish_workspace() {  # bridge_publish_workspace <run-dir> <request-id>
+  local rd="$1" id="$2" hub run_dir project task repo tip bad
+  hub=$(jq -r '.bridge.ws_hub' "$rd/plan.json")
+  run_dir=$(jq -r '.run_dir' "$rd/plan.json")
+  project=$(jq -r '.bridge.project' "$rd/plan.json")
+  task=$(jq -r '.task' "$rd/plan.json")
+  repo=$(trusted_repo "$rd" workspace "$hub")
+
+  if ! import_bundle "$repo" "$run_dir/publish/workspace.bundle" "HEAD"; then
+    receipt "$rd" "$id" rejected "rejected: PUBLISH_NO_BUNDLE no readable workspace bundle at $run_dir/publish/workspace.bundle"
+    return
+  fi
+  tip=$(tgit -C "$repo" rev-parse refs/heads/incoming)
+
+  if ! tgit -C "$repo" merge-base --is-ancestor refs/heads/main refs/heads/incoming; then
+    receipt "$rd" "$id" rejected "rejected: NON_FAST_FORWARD the hub's main is not an ancestor of your commit. Run 'sync workspace', rebase, and retry."
+    return
+  fi
+
+  # The allowed path diff, taken against the hub's main, by STATUS as well as by path.
+  #
+  # `reports/` is narrowed to THIS task's result files, so one worker cannot publish over
+  # another's report, and added-or-modified is right there: a revision rewrites the file
+  # in place. `questions/` cannot be narrowed the same way — a question is named by date
+  # and topic, not by task — so it is narrowed by status instead: a worker may ADD a
+  # question and may not modify or delete one. Without that, this project's whole
+  # questions directory would be writable by every worker in it, and a pending question
+  # someone is waiting on could be deleted by an unrelated task.
+  #
+  # A deletion is refused everywhere, including under `reports/`. Rename detection is off
+  # in this fresh trusted repository (git's default), so a file renamed OUT of the allowed
+  # set appears as a deletion of its source path and is caught here rather than slipping
+  # through as an addition somewhere legal.
+  bad=""
+  while IFS=$'\t' read -r st f; do
+    [ -n "$f" ] || continue
+    case "$st$f" in
+      D*)                                            bad="$bad deleted:$f" ;;
+      [AM]"projects/$project/reports/"*"-$task-result"*.md) ;;
+      A"projects/$project/questions/"*.md) ;;
+      *"projects/$project/questions/"*.md)           bad="$bad changed-not-added:$f" ;;
+      *)                                             bad="$bad $f" ;;
+    esac
+  done < <(tgit -C "$repo" diff --name-status --no-renames refs/heads/main refs/heads/incoming)
+  # A publication that carries nothing of the worker's is not a publication, and calling
+  # it one is worse than refusing: the worker is told its report is on the hub when the
+  # hub never received it. That is exactly what happened when a failed rebase left a
+  # clone detached at the hub's own main — the bundle was valid, the ancestry check
+  # passed, the push was a clean no-op, and the receipt said "published". A green that
+  # survives the mechanism being disabled is the one kind of green worth hunting.
+  if [ -z "$(tgit -C "$repo" diff --name-only refs/heads/main refs/heads/incoming)" ]; then
+    receipt "$rd" "$id" rejected "rejected: NOTHING_TO_PUBLISH your commit changes no file the hub does not already have, so this publication would carry nothing of yours. Check that your work is on HEAD (a failed rebase can leave it behind), then retry."
+    return
+  fi
+
+  if [ -n "$bad" ]; then
+    receipt "$rd" "$id" rejected "rejected: PATH_NOT_ALLOWED workspace publication may add or modify projects/$project/reports/*-$task-result*.md and may only ADD projects/$project/questions/*.md; it may delete nothing. Refused:$bad"
+    return
+  fi
+
+  if ! tgit -C "$repo" push --quiet origin "refs/heads/incoming:refs/heads/main" >/dev/null 2>&1; then
+    receipt "$rd" "$id" rejected "rejected: PUBLISH_REFUSED the hub refused the push; run 'sync workspace', rebase, and retry"
+    return
+  fi
+  receipt "$rd" "$id" accepted "published $tip" "$(jq -n --arg s "$tip" '{sha:$s}')"
+}
+
+# --- bridge: publish code ------------------------------------------------------------
+# The launch-recorded branch to the launch-recorded repository, then its PR. The worker
+# chooses none of the four: not the branch, not the destination, not the refspec, not
+# the credential. The PR's title and body come from the plan too, because a request that
+# could set them could set anything a reader will believe.
+bridge_publish_code() {  # bridge_publish_code <run-dir> <request-id>
+  local rd="$1" id="$2" remote run_dir branch task order title repo tip url
+  remote=$(jq -r '.bridge.code_repo' "$rd/plan.json")
+  run_dir=$(jq -r '.run_dir' "$rd/plan.json")
+  branch=$(jq -r '.bridge.code_branch' "$rd/plan.json")
+  task=$(jq -r '.task' "$rd/plan.json")
+  order=$(jq -r '.bridge.order_ref' "$rd/plan.json")
+  title=$(jq -r '.bridge.title' "$rd/plan.json")
+  repo=$(trusted_repo "$rd" code "$remote")
+
+  if ! import_bundle "$repo" "$run_dir/publish/code.bundle" "refs/heads/$branch"; then
+    receipt "$rd" "$id" rejected "rejected: PUBLISH_NO_BUNDLE no readable code bundle at $run_dir/publish/code.bundle"
+    return
+  fi
+  tip=$(tgit -C "$repo" rev-parse refs/heads/incoming)
+
+  # The branch must be RELATED to the published history. Not "must contain main" — a pull
+  # request perfectly well sits behind main — but it must share a merge base with it. A
+  # worker owns its own `.git` and can build an orphan commit with no ancestor in the
+  # repository at all; bundling that and asking for a publication would push an unrelated
+  # history onto the launch-recorded branch, and the push itself would not object because
+  # the branch is new. `git push` already refuses a non-fast-forward over an EXISTING
+  # branch; this is the case it cannot see.
+  if ! tgit -C "$repo" rev-parse --verify --quiet refs/heads/main >/dev/null; then
+    receipt "$rd" "$id" rejected "rejected: PUBLISH_NO_BASE the trusted side could not read main from $remote, so it cannot tell whether your branch belongs to this repository"
+    return
+  fi
+  if ! tgit -C "$repo" merge-base refs/heads/main refs/heads/incoming >/dev/null 2>&1; then
+    receipt "$rd" "$id" rejected "rejected: UNRELATED_HISTORY your branch shares no ancestor with $remote main, so it is not a change to this repository. Rebase onto origin/main and retry."
+    return
+  fi
+  # The same rule as workspace publication, in the form a branch takes: a pull request
+  # with no commit of its own is nothing to review, and reporting it as published would
+  # tell a worker its branch is up when nothing of its work is on it.
+  if [ "$(tgit -C "$repo" rev-list --count refs/heads/main..refs/heads/incoming)" = "0" ]; then
+    receipt "$rd" "$id" rejected "rejected: NOTHING_TO_PUBLISH your branch carries no commit that $remote main does not already have. Check that your work is on $branch (a failed rebase can leave it behind), then retry."
+    return
+  fi
+
+  if ! tgit -C "$repo" push --quiet origin "refs/heads/incoming:refs/heads/$branch" >/dev/null 2>&1; then
+    receipt "$rd" "$id" rejected "rejected: PUBLISH_REFUSED the remote refused $branch (not a fast-forward?); rebase on origin/main and retry"
+    return
+  fi
+
+  # A destination that is not a forge gets the push and an honest note instead of a PR.
+  # The drill runs against a local bare repository, and a `gh pr create --repo /path/to.git`
+  # is not a degraded PR -- it is a category error, and reporting it as a failure would
+  # make the drill's green depend on a network the drill does not have.
+  if ! printf '%s' "$remote" | grep -q 'github\.com'; then
+    receipt "$rd" "$id" accepted "published $branch at $tip -- no forge configured for $remote, so no pull request was opened" \
+      "$(jq -n --arg s "$tip" '{sha:$s, pr:null}')"
+    return
+  fi
+  if ! command -v gh >/dev/null 2>&1; then
+    receipt "$rd" "$id" accepted "published $branch at $tip -- gh is not installed, so no pull request was opened" \
+      "$(jq -n --arg s "$tip" '{sha:$s, pr:null}')"
+    return
+  fi
+  url=$(GIT_TERMINAL_PROMPT=0 gh pr view "$branch" --repo "$remote" --json url -q .url 2>/dev/null || true)
+  if [ -z "$url" ]; then
+    url=$(GIT_TERMINAL_PROMPT=0 gh pr create --repo "$remote" --head "$branch" --base main \
+            --title "$title" \
+            --body "Task \`$task\`, per \`$order\`.
+
+Opened by the hive supervisor on the worker's behalf. The worker's result report in the
+workspace is the authoritative description of this branch." 2>&1) || {
+      receipt "$rd" "$id" rejected "rejected: PR_FAILED branch $branch is pushed at $tip but the PR could not be opened: $url"
+      return
+    }
+  fi
+  receipt "$rd" "$id" accepted "published $branch at $tip -- $url" \
+    "$(jq -n --arg s "$tip" --arg u "$url" '{sha:$s, pr:$u}')"
+}
+
+# --- the drain -----------------------------------------------------------------------
+# Lexicographic order over a zero-padded, never-reused id: deterministic per worker.
+# A processed request file is REMOVED after its receipt lands, so a restart replays only
+# what genuinely has no receipt — and because the request file is removed last, a
+# supervisor killed between the emit and the removal re-sends identical bytes, which the
+# spine's content-derived idempotency key collapses onto the original event.
+# One request, dispatched. Called ONLY from the `if !` below, which suspends errexit for
+# everything it reaches: a bridge operation is a dozen git commands against repositories a
+# worker partly controls, and any one of them failing must produce a refused receipt
+# rather than killing the supervisor before it can record the execution's terminal fact.
+handle_request() {  # handle_request <run-dir> <request-id> <request-file>
+  local rd="$1" id="$2" f="$3" kind op out
+  if ! kind=$(jq -r '.kind // empty' "$f" 2>/dev/null); then
+    receipt "$rd" "$id" rejected "rejected: REQUEST_MALFORMED not valid JSON"
+    return 0
+  fi
+  case "$kind" in
+    emit)
+      # Validation and the emit are ONE call, in the CLI, so there is exactly one
+      # spelling of "what a request may say" and it is the one under test.
+      if out=$("$rd/emit-worker.sh" < "$f" 2>&1); then
+        receipt "$rd" "$id" accepted "$out"
+      else
+        receipt "$rd" "$id" rejected "$out"
+      fi
+      ;;
+    bridge)
+      op=$(jq -r '.op // empty' "$f")
+      # Guard the shape here too: a bridge request has exactly `kind` and `op`, and
+      # anything else is an attempt to choose a path, a branch or a destination.
+      if [ "$(jq -r '[keys[]] | map(select(. != "kind" and . != "op")) | length' "$f")" != "0" ]; then
+        receipt "$rd" "$id" rejected "rejected: REQUEST_FIELD_FORBIDDEN a bridge request carries only kind and op; the source, branch, destination and credential come from the launch plan"
+      else
+        case " $BRIDGE_OPS " in
+          *" $op "*)
+            case "$op" in
+              sync-workspace)    bridge_sync_workspace "$rd" "$id" ;;
+              publish-workspace) bridge_publish_workspace "$rd" "$id" ;;
+              publish-code)      bridge_publish_code "$rd" "$id" ;;
+            esac ;;
+          *)
+            receipt "$rd" "$id" rejected "rejected: BRIDGE_OP_UNKNOWN no bridge operation named '$op'; this worker may ask for: $BRIDGE_OPS" ;;
+        esac
+      fi
+      ;;
+    *)
+      receipt "$rd" "$id" rejected "rejected: REQUEST_KIND_UNKNOWN no request kind '$kind'"
+      ;;
+  esac
+}
+
+drain_spool() {  # drain_spool <run-dir>
+  local rd="$1" run_dir spool f id rdir
+  run_dir=$(jq -r '.run_dir // empty' "$rd/plan.json")
+  [ -n "$run_dir" ] || return 0
+  spool="$run_dir/spool"
+  [ -d "$spool" ] || return 0
+  rdir="$run_dir/receipts"
+  for f in "$spool"/*.json; do
+    [ -f "$f" ] || continue
+    id=$(basename "$f" .json)
+    if ! handle_request "$rd" "$id" "$f"; then
+      # The handler is meant to answer every request itself. Reaching here means it died
+      # on something unforeseen, and an unanswered request would leave the worker
+      # blocked until its wrapper times out — so it gets an answer anyway.
+      [ -f "$rdir/$id.json" ] || receipt "$rd" "$id" rejected \
+        "rejected: SUPERVISOR_ERROR the supervisor failed while handling this request; see the pane"
+    fi
+    # Removed LAST, so a supervisor killed between the emit and this line re-sends
+    # identical bytes on restart, which the spine's content-derived idempotency key
+    # collapses onto the original event.
+    rm -f "$f"
+  done
+}
+
 case "${1:-}" in
   -h|--help) usage ;;
   --reconcile) [ $# -eq 2 ] || usage; reconcile "$2"; exit $? ;;
+  --drain) [ $# -eq 2 ] || usage
+    RD="${2%/}"; [ -f "$RD/plan.json" ] || die "no plan.json in $RD"
+    drain_spool "$RD"; exit 0 ;;
   "") usage ;;
   -*) usage ;;
 esac
 
-RUN_DIR="${1%/}"
-[ -d "$RUN_DIR" ] || die "run dir does not exist: $RUN_DIR"
-PLAN="$RUN_DIR/plan.json"
-[ -f "$PLAN" ] || die "no plan.json in $RUN_DIR"
-[ -x "$RUN_DIR/emit.sh" ] || die "no executable emit.sh in $RUN_DIR — the supervisor has no write path"
+RUN_DIR_ARG="${1%/}"
+[ -d "$RUN_DIR_ARG" ] || die "run dir does not exist: $RUN_DIR_ARG"
+PLAN="$RUN_DIR_ARG/plan.json"
+[ -f "$PLAN" ] || die "no plan.json in $RUN_DIR_ARG"
+[ -x "$RUN_DIR_ARG/emit.sh" ] || die "no executable emit.sh in $RUN_DIR_ARG — the supervisor has no write path"
 
 # Already terminal? Replay the recorded fact and stop. This makes a re-run of the pane
 # command safe instead of a second execution of the same approved launch.
-if [ -f "$RUN_DIR/finished.json" ]; then
+if [ -f "$RUN_DIR_ARG/finished.json" ]; then
   log "this execution already recorded a terminal fact; re-emitting it and exiting"
-  emit_finished "$RUN_DIR"
+  emit_finished "$RUN_DIR_ARG"
   exit 0
 fi
 
 EXEC_ID=$(jq -r '.execution_id' "$PLAN")
 TASK=$(jq -r '.task' "$PLAN")
 CWD=$(jq -r '.cwd // empty' "$PLAN")
+WORKER_IO=$(jq -r '.worker_io' "$PLAN")
 PINNED_MODEL=$(jq -r '.identity.model' "$PLAN")
 USAGE_EXTRACTOR=$(jq -r '.usage_extractor' "$PLAN")
 PROVES_USAGE=$(jq -r '.proves_usage' "$PLAN")
@@ -176,6 +517,11 @@ case " ${ENV_PAIRS[*]} " in
   *" PATH="*) : ;;
   *) die "the resolved environment carries no PATH; env -i could not resolve the harness" ;;
 esac
+
+if [ "$WORKER_IO" = "supervised" ]; then
+  [ -x "$RUN_DIR_ARG/emit-worker.sh" ] \
+    || die "this route's worker I/O is supervised and there is no executable emit-worker.sh in $RUN_DIR_ARG — the worker would have no write path at all"
+fi
 
 # ---------------------------------------------------------------------------------
 # Terminal-fact assembly. Kept in one place so every exit path — probe failure, clean
@@ -202,94 +548,18 @@ finish() {  # finish <outcome> <certainty> <exit-code-or-empty>
       exit_code: $code, finished_at: $fin,
       model_resolved: (if $evidence == "harness-reported" then $resolved else null end),
       model_evidence: $evidence, usage: $usage, price_basis: $p.price_basis}')
-  emit_finished "$RUN_DIR" "$payload"
+  emit_finished "$RUN_DIR_ARG" "$payload"
 }
-
-# --- 0. verify the permission boundary the child will actually honor ----------------
-# The launcher materialized this file minutes ago into the worker root. Between then and
-# now a clone step, a git operation, a hook, or a hand edit could have changed it — and
-# an execution that starts under a different boundary than the one approved is precisely
-# the "configuration presence is not enforcement" failure this milestone exists to close.
-# So the digest is recomputed HERE, against the bytes on disk, immediately before the
-# child exists. A mismatch is a terminal failure with NO `started` fact, the same shape
-# the version probe uses: approved, never started, failed.
-#
-# The argv is re-checked too, and against the plan rather than against a second copy of
-# the rules: the plan's argv is what this script is about to exec, so comparing it to
-# itself would prove nothing. What is checked is that the flags the descriptor requires
-# survived into the vector — the resolver already refused if they had not, and this
-# catches a plan.json edited after resolution.
-verify_binding() {  # verify_binding -> prints a reason on failure, empty on success
-  local rel want got flag value arity i n
-  # An ABSENT binding block is the failure this whole function exists to prevent, and it
-  # is checked first. Without it the digest branch is skipped, the flag loop reads an
-  # empty list, and the function returns "verified" — a fail-closed path failing open on
-  # the one input that means "there is no boundary here at all".
-  if [ "$(jq -r 'has("binding")' "$PLAN")" != "true" ]; then
-    printf '%s' "the plan carries no binding block, so there is no boundary to verify"
-    return
-  fi
-  # An EMPTY block is the same absence wearing a key. `"binding": {}` used to pass:
-  # `config_path // empty` is empty so the digest branch is skipped, `required_flags[]?`
-  # yields nothing so the argv loop never runs, and the function returns "verified". A
-  # present block must carry both fields, or there is nothing here that could fail.
-  if [ "$(jq -r '.binding | has("config_path") and has("required_flags")' "$PLAN")" != "true" ]; then
-    printf '%s' "the plan's binding block declares no config_path and required_flags, so nothing in it can be verified"
-    return
-  fi
-  rel=$(jq -r '.binding.config_path // empty' "$PLAN")
-  if [ -n "$rel" ]; then
-    if [ ! -f "${CWD:-$PWD}/$rel" ]; then
-      printf '%s' "the materialized boundary is missing at ${CWD:-$PWD}/$rel"
-      return
-    fi
-    want=$(jq -r '.binding.config_digest' "$PLAN")
-    got="sha256:$(sha256_hex < "${CWD:-$PWD}/$rel")"
-    if [ "$got" != "$want" ]; then
-      printf '%s' "the materialized boundary at ${CWD:-$PWD}/$rel hashes to $got, but the approved plan pins $want"
-      return
-    fi
-  fi
-  n=${#ARGV[@]}
-  # A required flag is either a pair (`--permission-mode auto`) or a lone switch
-  # (`--ignore-user-config`). The arity travels as a THIRD field rather than being
-  # inferred from an empty value: a lone switch read as a pair looks for a following
-  # empty argv element, which never exists, so every launch under such a descriptor
-  # would fail verification and record a terminal failure. Codex's descriptor already
-  # carries one, and the Claude Code descriptor is one edit away from carrying one.
-  while IFS= read -r arity && IFS= read -r flag && IFS= read -r value; do
-    [ -n "$flag" ] || continue
-    if [ "$arity" = "1" ]; then
-      for ((i = 0; i < n; i++)); do
-        [ "${ARGV[i]}" = "$flag" ] && continue 2
-      done
-      printf '%s' "the argv about to be exec'd does not carry the required boundary flag '$flag'"
-      return
-    fi
-    for ((i = 0; i < n - 1; i++)); do
-      if [ "${ARGV[i]}" = "$flag" ] && [ "${ARGV[i + 1]}" = "$value" ]; then
-        continue 2
-      fi
-    done
-    printf '%s' "the argv about to be exec'd does not carry the required boundary flag '$flag $value'"
-    return
-  done < <(jq -r '.binding.required_flags[]? | (length | tostring), .[0], (.[1] // "")' "$PLAN")
-  printf ''
-}
-
-BINDING_FAILURE=$(verify_binding)
-if [ -n "$BINDING_FAILURE" ]; then
-  log "BOUNDARY VERIFICATION FAILED: $BINDING_FAILURE"
-  USAGE_JSON=$(jq -c -n --arg r "harness did not start; permission boundary verification failed" \
-    '{status:"unavailable", reason:$r}')
-  finish failure certain 126
-  exit 1
-fi
 
 # --- 1. probe the harness version -- no model call, no tokens -----------------------
 # Failing here means the execution never happened. That is recorded as a terminal
 # failure with no `started` fact, which is exactly what the projection should show:
 # approved, never started, failed.
+#
+# What is NO LONGER checked here, and deliberately: whether the installed harness is the
+# build some descriptor was proven against. There is no descriptor and no proof; an
+# automatic harness update is provenance, recorded on the started fact, not a refusal
+# (runner-trust doctrine, kind 3).
 HARNESS_VERSION=""
 if ! VERSION_OUT=$("${VERSION_ARGV[@]}" 2>&1); then
   log "harness version probe failed: ${VERSION_ARGV[*]}"
@@ -304,32 +574,14 @@ fi
 HARNESS_VERSION=$(printf '%s\n' "$VERSION_OUT" | harness_version_from)
 [ -n "$HARNESS_VERSION" ] || HARNESS_VERSION="unknown"
 
-# --- 1b. the evidence must be about the binary that is about to run ------------------
-# `status: proven` rests on a probe run against ONE harness build. Nothing in the pure
-# resolver can check that, because it cannot ask the host what is installed — so the
-# comparison happens here, beside the version probe and before the child exists. The rule
-# is major.minor: refusing on a patch bump would brick every launch the moment the harness
-# auto-updates, which is a worse failure than the one it prevents; ignoring a series
-# change would leave a proven record standing over a binary whose matcher semantics may
-# have moved.
-PROVEN_VERSION=$(jq -r '.binding.proven_harness_version // empty' "$PLAN")
-if [ -n "$PROVEN_VERSION" ] && [ "$HARNESS_VERSION" != "unknown" ]; then
-  proven_series=$(printf '%s' "$PROVEN_VERSION" | cut -d. -f1,2)
-  probed_series=$(printf '%s' "$HARNESS_VERSION" | cut -d. -f1,2)
-  if [ "$proven_series" != "$probed_series" ]; then
-    log "BOUNDARY EVIDENCE IS STALE: proven against harness $PROVEN_VERSION, this host runs $HARNESS_VERSION"
-    log "  re-run scripts/hive-binding-probe and update the descriptor's verification block"
-    USAGE_JSON=$(jq -c -n --arg r "harness did not start; the boundary was proven against a different harness series" \
-      '{status:"unavailable", reason:$r}')
-    finish failure certain 126
-    exit 1
-  fi
-  if [ "$PROVEN_VERSION" != "$HARNESS_VERSION" ]; then
-    log "NOTE boundary proven against harness $PROVEN_VERSION, running $HARNESS_VERSION (same series)"
-  fi
-fi
+# --- 2. reconcile anything the previous supervisor left unanswered ------------------
+# Before the child exists, so a worker resumed after a supervisor restart finds its
+# outstanding requests already answered rather than waiting out a timeout on a receipt
+# that was never going to come. Replaying an emit is safe: the request bytes are
+# identical, and the spine's content-derived idempotency key collapses the repeat.
+drain_spool "$RUN_DIR_ARG" || log "WARNING the pre-start spool drain failed"
 
-# --- 2. start the child, then say so ------------------------------------------------
+# --- 3. start the child, then say so ------------------------------------------------
 # The child is backgrounded so the supervisor keeps a pid to observe — but a plain `&`
 # in a non-interactive shell redirects the child's stdin from /dev/null (POSIX async
 # behaviour), which would leave an interactive harness with no terminal to read. Two
@@ -341,9 +593,9 @@ fi
 # so the plain form is used — a fixture needs no terminal.
 cd "${CWD:-$PWD}" || die "cannot enter the worker's cwd: $CWD"
 if [ -t 0 ] && [ -e /dev/tty ]; then
-  env -i "${ENV_PAIRS[@]}" "${ARGV[@]}" < /dev/tty 2>>"$RUN_DIR/harness.log" &
+  env -i "${ENV_PAIRS[@]}" "${ARGV[@]}" < /dev/tty 2>>"$RUN_DIR_ARG/harness.log" &
 else
-  env -i "${ENV_PAIRS[@]}" "${ARGV[@]}" 2>>"$RUN_DIR/harness.log" &
+  env -i "${ENV_PAIRS[@]}" "${ARGV[@]}" 2>>"$RUN_DIR_ARG/harness.log" &
 fi
 CHILD=$!
 
@@ -359,26 +611,32 @@ STARTED_PAYLOAD=$(jq -c -n --slurpfile plan "$PLAN" \
   '$plan[0] as $p |
    {execution_id: $p.execution_id, purpose: $p.purpose, attempt: $p.attempt,
     identity: $p.identity,
-    binding: ($p.binding | {binding_id, binding_digest, config_digest, command_mode,
-                            mechanisms,
-                            probes: ([.probes[] | {(.probe_id): .state}] | add // {})}),
     harness_version: $v,
     model_requested: $p.model_requested, started_at: $st}')
-printf '%s\n' "$STARTED_PAYLOAD" > "$RUN_DIR/started.json"
-if ! "$RUN_DIR/emit.sh" --type execution.started --task "$TASK" \
+printf '%s\n' "$STARTED_PAYLOAD" > "$RUN_DIR_ARG/started.json"
+if ! "$RUN_DIR_ARG/emit.sh" --type execution.started --task "$TASK" \
       --payload "$STARTED_PAYLOAD" >/dev/null; then
   # A missing `started` is a gap in the record but not a reason to abandon a running
   # worker. Say so loudly and carry on to the terminal fact, which matters more.
-  log "WARNING could not emit execution.started (payload kept at $RUN_DIR/started.json)"
+  log "WARNING could not emit execution.started (payload kept at $RUN_DIR_ARG/started.json)"
 fi
-log "execution $EXEC_ID started: pid $CHILD, harness $HARNESS_VERSION, model $PINNED_MODEL"
+log "execution $EXEC_ID started: pid $CHILD, harness $HARNESS_VERSION, model $PINNED_MODEL, worker I/O $WORKER_IO"
 
-# --- 3. supervise ------------------------------------------------------------------
+# --- 4. supervise, and drain the spool while the child runs -------------------------
+# The drain is what makes the worker's emit SYNCHRONOUS from inside the boundary: the
+# wrapper writes a request and blocks, and this loop answers it within a tick. The loop
+# runs on every route, not only supervised ones — a direct worker writes no requests, so
+# the drain is a cheap no-op, and having one code path means a route that changes its
+# worker I/O needs no change here.
 INTERRUPTED=""
 on_signal() { INTERRUPTED=1; log "signal received — forwarding to child $CHILD"; kill -TERM "$CHILD" 2>/dev/null || true; }
 trap on_signal INT TERM HUP
 
 CHILD_RC=0
+while kill -0 "$CHILD" 2>/dev/null; do
+  drain_spool "$RUN_DIR_ARG" || log "WARNING a spool drain failed; the worker's next call will retry"
+  sleep 0.2
+done
 # `wait` returns >128 when interrupted by a trapped signal; the second wait reaps the
 # child's real status after the forwarded TERM.
 wait "$CHILD" || CHILD_RC=$?
@@ -386,8 +644,11 @@ if [ -n "$INTERRUPTED" ]; then
   wait "$CHILD" 2>/dev/null || true
 fi
 trap - INT TERM HUP
+# One last pass: a request written in the child's final moments still gets its receipt,
+# even though nobody is waiting for it any more. It is the record that matters.
+drain_spool "$RUN_DIR_ARG" || log "WARNING the final spool drain failed"
 
-# --- 4. read the consumption surface ------------------------------------------------
+# --- 5. read the consumption surface ------------------------------------------------
 # Never fatal. An unreadable surface is `unavailable` with a named reason, which is a
 # legitimate record; losing the terminal fact over a parser problem would not be.
 extract_usage() {
@@ -425,7 +686,7 @@ extract_usage() {
   fi
 
   local out
-  if ! out=$( hive_cli harness-usage --extractor "$USAGE_EXTRACTOR" \
+  if ! out=$( hive harness-usage --extractor "$USAGE_EXTRACTOR" \
                 --pinned-model "$PINNED_MODEL" < "$src" ); then
     USAGE_JSON=$(jq -c -n --arg r "the usage extractor failed to run" \
       '{status:"unavailable", reason:$r}')
@@ -437,8 +698,8 @@ extract_usage() {
   MODEL_MISMATCH=$(printf '%s' "$out" | jq -r '.model_mismatch')
   # The audit trail: the per-message rows behind the totals, and nothing else. No
   # message content ever reaches this file.
-  printf '%s' "$out" | jq '{rows, notes, main_chain_models}' > "$RUN_DIR/usage.json"
-  USAGE_JSON=$(printf '%s' "$USAGE_JSON" | jq -c --arg ref "$RUN_DIR/usage.json" '. + {evidence_ref: $ref}')
+  printf '%s' "$out" | jq '{rows, notes, main_chain_models}' > "$RUN_DIR_ARG/usage.json"
+  USAGE_JSON=$(printf '%s' "$USAGE_JSON" | jq -c --arg ref "$RUN_DIR_ARG/usage.json" '. + {evidence_ref: $ref}')
 }
 
 if [ "$PROVES_USAGE" = "true" ] || [ "$USAGE_EXTRACTOR" != "none" ]; then
@@ -448,7 +709,7 @@ else
     '{status:"unavailable", reason:$r}')
 fi
 
-# --- 5. the terminal fact -----------------------------------------------------------
+# --- 6. the terminal fact -----------------------------------------------------------
 # The model check is a stop-line, not a warning: "a mismatch refuses or records terminal
 # failure; it never falls back". A run whose harness reports a model other than the one
 # the operator signed for did not execute the approved route, whatever its exit code.

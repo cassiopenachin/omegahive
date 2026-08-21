@@ -1,15 +1,17 @@
 """End-to-end: the REAL supervisor runs the fake adapter and records what happened.
 
-This is the proof the order asks for — route -> start -> finish ordering, task
-attribution, and honest usage — obtained with no paid model call, no network, and no
-vendor CLI installed. It drives `scripts/hive-supervise` as a subprocess, exactly as a
-tmux pane would, against this run's scratch database.
+The lifecycle proof — route -> start -> finish ordering, task attribution, and honest
+usage — obtained with no paid model call, no network, and no vendor CLI installed. It
+drives `scripts/hive-supervise` as a subprocess, exactly as a tmux pane would, against
+this run's scratch database.
 
 What makes it an end-to-end test rather than a mock: the plan comes from the real
-`harness-resolve`, the argv is executed by the real supervisor, the events go through
-the real gateway and legality layer, and the usage is read by the real extractor. The
-only fixture is the harness itself, which is the one thing that would otherwise cost
-money.
+`harness-resolve`, the argv is executed by the real supervisor, the events go through the
+real gateway and legality layer, and the usage is read by the real extractor. The only
+fixture is the harness itself, which is the one thing that would otherwise cost money.
+
+The supervised-worker transport — spooled emits, workspace sync, publication — has its
+own end-to-end file, `test_harness_transport_e2e.py`.
 """
 
 from __future__ import annotations
@@ -25,46 +27,22 @@ import psycopg
 import pytest
 
 import scratch_db
-from harness_fixtures import descriptors_map, pins
-from omegahive.harness.plan import binding_metadata
+from harness_fixtures import catalog, route, runner
 
 REPO = Path(__file__).resolve().parent.parent
 SUPERVISE = REPO / "scripts" / "hive-supervise"
-FAKE_HARNESS = REPO / "tests" / "fixtures" / "fake_harness.sh"
 
-CATALOG = {
-    "schema_version": 1,
+ORDER_REF = "projects/omegahive/orders/2026-08-13-e2e-task.md@" + "a" * 40
+KICKOFF = "You are hive worker e2e.\nSecond line; with $shell `metacharacters`."
+
+PRICE = {
+    "currency": "USD",
+    "per_mtok_input": 1.0,
+    "per_mtok_cache_read": 0.1,
+    "per_mtok_cache_write": 1.25,
+    "per_mtok_output": 5.0,
+    "source": "fixture prices",
     "captured_at": "2026-08-13",
-    "routes": [
-        {
-            "name": "fake-subscription",
-            "model_vendor": "fixture-vendor",
-            "provider": "fixture-provider",
-            "model": "fixture-model-1",
-            "harness": "fake",
-            "billing_market": "subscription",
-            "credential_pool": "fixture-pool",
-            "adapter": "fake",
-            **pins(harness="fake"),
-            "price_basis": {
-                "currency": "USD",
-                "per_mtok_input": 1.0,
-                "per_mtok_cache_read": 0.1,
-                "per_mtok_cache_write": 1.25,
-                "per_mtok_output": 5.0,
-                "source": "fixture prices",
-                "captured_at": "2026-08-13",
-            },
-        }
-    ],
-}
-
-BINDING = {
-    "schema_version": 1,
-    "task": "e2e-task",
-    "order_ref": "projects/omegahive/orders/2026-08-13-e2e-task.md@" + "a" * 40,
-    "route": "fake-subscription",
-    "predicted_total_tokens": 12345,
 }
 
 
@@ -85,75 +63,60 @@ def _omegahive_cmd() -> list[str]:
     return ["uv", "run", "--project", str(REPO), "omegahive"]
 
 
-@pytest.fixture
-def rig(tmp_path):
-    """A run-dir with a real plan.json and a working instrument emit wrapper."""
-    db = _db_url()
-    run_id = "e2e-" + uuid.uuid4().hex[:8]
-
-    # The permission boundary travels the same way a real launch sends it, and the
-    # fixture materializes it into the worker root exactly as `materialize_binding`
-    # does — so this test exercises the launcher-to-supervisor handshake rather than
-    # asserting that two pieces of code agree in a comment.
-    descriptors = descriptors_map(harness="fake")
-
-    catalog_file = tmp_path / "routes.json"
-    catalog_file.write_bytes(json.dumps(CATALOG).encode())
-    binding_file = tmp_path / "binding.json"
-    binding_file.write_bytes(json.dumps(BINDING).encode())
-
+def resolve_plan(tmp_path, *, task="e2e-task", route_name=None, extra_env=None,
+                 routes=None, task_root=None, run_dir=None):
+    """Run the REAL resolver on a v2 catalog, exactly as `hive-launch` does."""
+    task_root = task_root or tmp_path
     usage_file = tmp_path / "fake-usage.jsonl"
     env = {
         "PATH": os.environ["PATH"],
         "HOME": os.environ.get("HOME", str(tmp_path)),
-        "HIVE_FAKE_HARNESS": str(FAKE_HARNESS),
         "HIVE_FAKE_USAGE_FILE": str(usage_file),
         # A credential that must NOT survive into the child's environment.
         "ANTHROPIC_API_KEY": "sk-must-not-propagate",
     }
+    env.update(extra_env or {})
 
-    import base64
-
+    entries = routes or [route(price_basis=PRICE)]
+    catalog_bytes = json.dumps(catalog(*entries)).encode()
     request = {
-        "binding_b64": base64.b64encode(binding_file.read_bytes()).decode(),
-        "catalog_b64": base64.b64encode(catalog_file.read_bytes()).decode(),
-        "binding_ref": "projects/omegahive/bindings/e2e-task.json@" + "b" * 40,
-        "expected_task": "e2e-task",
-        "expected_order_ref": BINDING["order_ref"],
-        "kickoff": "You are hive worker e2e.\nSecond line; with $shell `metacharacters`.",
-        "cwd": str(tmp_path),
+        "catalog_b64": base64.b64encode(catalog_bytes).decode(),
+        "route": route_name,
+        "task": task,
+        "order_ref": ORDER_REF,
+        "purpose": "work",
+        "attempt": 1,
+        "kickoff": KICKOFF,
+        "task_root": str(task_root),
+        "cwd": str(task_root),
+        "code_root": str(task_root / "code") if hasattr(task_root, "__truediv__") else "",
+        "run_dir": str(run_dir) if run_dir else "",
         "session_id": str(uuid.uuid4()),
         "env": env,
-        "descriptors_b64": {
-            k: base64.b64encode(v).decode() for k, v in descriptors.items()
-        },
     }
-
-    resolved = subprocess.run(
+    proc = subprocess.run(
         [*_omegahive_cmd(), "harness-resolve"],
-        input=json.dumps(request),
-        capture_output=True,
-        text=True,
-        cwd=REPO,
+        input=json.dumps(request), capture_output=True, text=True, cwd=REPO,
     )
-    assert resolved.returncode == 0, resolved.stdout + resolved.stderr
-    plan = json.loads(resolved.stdout)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    return json.loads(proc.stdout), usage_file
 
-    # Materialize the boundary into the worker root. The supervisor recomputes this
-    # file's digest before the child exists and refuses to start on a mismatch, so a
-    # fixture that skipped this step would be testing a launch that cannot happen.
-    config_rel = plan["binding"]["config_path"]
-    config_file = tmp_path / config_rel
-    config_file.parent.mkdir(parents=True, exist_ok=True)
-    config_file.write_text(plan["binding"]["config_content"])
 
-    run_dir = tmp_path / "execution"
+@pytest.fixture
+def rig(tmp_path):
+    """A supervisor run-dir with a real plan.json and a working instrument wrapper."""
+    db = _db_url()
+    run_id = "e2e-" + uuid.uuid4().hex[:8]
+    plan, usage_file = resolve_plan(tmp_path)
+
+    # The supervisor's state lives OUTSIDE the worker's task root, which here is
+    # tmp_path. The launcher puts it under $HIVE_EXEC_ROOT for the same reason.
+    run_dir = tmp_path.parent / (tmp_path.name + "-exec")
     run_dir.mkdir()
-    plan["cwd"] = str(tmp_path)
+    plan["run_id"] = run_id
+    plan["worker"] = "e2e"
     (run_dir / "plan.json").write_text(json.dumps(plan))
 
-    # The supervisor's instrument write path, the same shape hive-launch issues but
-    # aimed at this checkout instead of the container.
     wrapper = run_dir / "emit.sh"
     wrapper.write_text(
         "#!/usr/bin/env bash\nset -euo pipefail\n"
@@ -164,11 +127,9 @@ def rig(tmp_path):
     wrapper.chmod(0o755)
 
     return {
-        "config_file": config_file,
         "run_id": run_id,
         "run_dir": run_dir,
         "plan": plan,
-        "env": env,
         "db": db,
         "usage_file": usage_file,
         "tmp": tmp_path,
@@ -195,11 +156,7 @@ def _run_supervisor(rig, behaviour: str) -> subprocess.CompletedProcess:
     )
     return subprocess.run(
         [str(SUPERVISE), str(rig["run_dir"])],
-        capture_output=True,
-        text=True,
-        env=env,
-        cwd=str(REPO),
-        timeout=300,
+        capture_output=True, text=True, env=env, cwd=str(REPO), timeout=300,
     )
 
 
@@ -225,11 +182,11 @@ def _approve_route(rig) -> None:
     payload = {
         k: plan[k]
         for k in (
-            "execution_id", "purpose", "attempt", "binding_ref", "catalog_digest",
-            "identity", "predicted_total_tokens", "price_basis",
+            "execution_id", "purpose", "attempt", "order_ref", "catalog_digest",
+            "identity", "route_source", "runner_fingerprint", "worker_io",
+            "model_identity_evidence", "usage_evidence", "price_basis",
         )
     }
-    payload["binding"] = binding_metadata(plan)
     env = dict(os.environ)
     env.update({"OMEGAHIVE_DATABASE_URL": rig["db"], "OMEGAHIVE_GATEWAY_DATABASE_URL": ""})
     proc = subprocess.run(
@@ -243,6 +200,8 @@ def _approve_route(rig) -> None:
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
+
+# --- the lifecycle --------------------------------------------------------------------
 
 def test_route_then_start_then_finish_in_order(rig):
     """The ordering claim, checked on the spine rather than on stdout.
@@ -269,22 +228,43 @@ def test_route_then_start_then_finish_in_order(rig):
         "all three facts must carry the one stable execution id"
     )
 
-    _, started, finished = rows
-    # Task attribution: both facts name the task, on the envelope, not in the payload.
+    approved, started, finished = rows
     assert started[2] == "e2e-task"
     assert finished[2] == "e2e-task"
-    # Both are instrument observations. The supervisor never speaks as the worker.
-    assert started[1] == "instrument"
-    assert finished[1] == "instrument"
-    # One stable execution id across the pair.
-    assert started[3]["execution_id"] == finished[3]["execution_id"]
-    assert started[3]["harness_version"] == "fake-harness"
+    assert started[3]["harness_version"] == "9.9.9"
 
     fin = finished[3]
     assert fin["outcome"] == "success"
     assert fin["outcome_certainty"] == "certain"
     assert fin["exit_code"] == 0
 
+    # The runner-trust facts a launch now records, and the retired ones it does not.
+    assert approved[3]["route_source"] == "default"
+    assert approved[3]["runner_fingerprint"].startswith("sha256:")
+    assert approved[3]["order_ref"] == ORDER_REF
+    assert approved[3].get("binding") is None
+    assert approved[3].get("binding_ref") is None
+
+
+def test_the_started_fact_carries_no_boundary_block(rig):
+    """The permission-boundary product is retired, and its absence is deliberate. A
+    reader distinguishes the two eras by this field rather than by a backfilled value."""
+    assert _run_supervisor(rig, "success").returncode == 0
+    started = [e for e in _events(rig) if e[0] == "execution.started"]
+    assert len(started) == 1
+    assert started[0][3].get("binding") is None
+    assert "config_content" not in json.dumps(started[0][3])
+
+
+def test_an_operator_override_is_recorded_as_such(tmp_path):
+    """`--route` is authorized for one launch, and the spine says which launches used it."""
+    plan, _ = resolve_plan(tmp_path, route_name="second",
+                           routes=[route(price_basis=PRICE), route(name="second")])
+    assert plan["route_source"] == "override"
+    assert plan["identity"]["route"] == "second"
+
+
+# --- usage ----------------------------------------------------------------------------
 
 def test_usage_is_deduplicated_and_carries_the_price_basis(rig):
     """The fixture writes message m1 twice; a summing parser would report 300."""
@@ -317,17 +297,6 @@ def test_usage_is_deduplicated_and_carries_the_price_basis(rig):
     # catalog. Cost itself is absent: it is derived, not authored.
     assert fin["price_basis"]["per_mtok_output"] == 5.0
     assert fin["price_basis"]["source"] == "fixture prices"
-    assert "cost" not in json.dumps(fin).lower().replace("cost is derived", "")
-
-
-def test_failure_is_recorded_as_failure_with_its_exit_code(rig):
-    proc = _run_supervisor(rig, "failure")
-    assert proc.returncode == 3, proc.stdout + proc.stderr
-    fin = _events(rig)[-1][3]
-    assert fin["outcome"] == "failure"
-    assert fin["exit_code"] == 3
-    # A failed run still consumed tokens, and they are still recorded.
-    assert fin["usage"]["status"] == "reported"
 
 
 def test_absent_usage_surface_is_unavailable_never_zero(rig):
@@ -339,6 +308,29 @@ def test_absent_usage_surface_is_unavailable_never_zero(rig):
     assert usage["reason"], "an unavailable surface must name its reason"
     for field in ("input_tokens", "cache_read_tokens", "cache_write_tokens", "output_tokens"):
         assert usage[field] is None, f"{field} must be absent, not zero"
+
+
+def test_a_generic_route_records_unavailable_usage_rather_than_failing(tmp_path):
+    """The generic adapter's honest cost. It is not a launch gate: "we cannot read this
+    harness's token counts" is neither a safety question nor a reason to refuse."""
+    plan, _ = resolve_plan(
+        tmp_path,
+        routes=[route(adapter="generic", harness="a-harness-nobody-wrote-code-for")])
+    assert plan["usage_evidence"] == "unavailable"
+    assert plan["model_identity_evidence"] == "declared"
+    assert plan["unproven_reason"]
+
+
+# --- terminal facts ---------------------------------------------------------------------
+
+def test_failure_is_recorded_as_failure_with_its_exit_code(rig):
+    proc = _run_supervisor(rig, "failure")
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    fin = _events(rig)[-1][3]
+    assert fin["outcome"] == "failure"
+    assert fin["exit_code"] == 3
+    # A failed run still consumed tokens, and they are still recorded.
+    assert fin["usage"]["status"] == "reported"
 
 
 def test_model_mismatch_records_terminal_failure_and_never_falls_back(rig):
@@ -353,6 +345,23 @@ def test_model_mismatch_records_terminal_failure_and_never_falls_back(rig):
         "even though the child exited 0"
     )
     assert proc.returncode == 0  # the CHILD succeeded; the execution did not
+
+
+def test_a_missing_executable_is_a_terminal_failure_with_no_started_fact(rig):
+    """The cheap deterministic refusal the doctrine keeps. The launcher checks it before
+    anything is created; the supervisor is the second line, beside the child."""
+    plan_path = rig["run_dir"] / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["version_argv"] = ["/nonexistent/harness", "--version"]
+    plan["argv"][0] = "/nonexistent/harness"
+    plan_path.write_text(json.dumps(plan))
+
+    proc = _run_supervisor(rig, "success")
+    assert proc.returncode == 1
+    assert "execution.started" not in [e[0] for e in _events(rig)]
+    fin = [e for e in _events(rig) if e[0] == "execution.finished"]
+    assert fin and fin[0][3]["outcome"] == "failure"
+    assert fin[0][3]["exit_code"] == 127
 
 
 def test_terminal_emission_is_idempotent(rig):
@@ -370,10 +379,9 @@ def test_terminal_emission_is_idempotent(rig):
 
 def test_reconcile_marks_an_unobserved_end_as_uncertain(rig):
     """The honest answer when tmux died: interrupted, and we say we are not sure."""
-    # Simulate a supervisor that emitted `started` and then died: write started.json
-    # with no finished.json, which is exactly the on-disk state it leaves.
     plan = json.loads((rig["run_dir"] / "plan.json").read_text())
-    (rig["run_dir"] / "started.json").write_text(json.dumps({"execution_id": plan["execution_id"]}))
+    (rig["run_dir"] / "started.json").write_text(
+        json.dumps({"execution_id": plan["execution_id"]}))
 
     env = dict(os.environ)
     env.update({"OMEGAHIVE_DATABASE_URL": rig["db"], "OMEGAHIVE_GATEWAY_DATABASE_URL": ""})
@@ -393,299 +401,53 @@ def test_reconcile_marks_an_unobserved_end_as_uncertain(rig):
     assert fin[3]["usage"]["reason"]
 
 
+# --- the child's environment and argv -----------------------------------------------
+
 def test_the_child_environment_excludes_credentials(rig):
     """The allowlist is a structural control, checked on the plan the supervisor execs."""
     env = rig["plan"]["env"]
     assert "ANTHROPIC_API_KEY" not in env, (
-        "a credential present in the launcher's environment must not reach the worker"
+        "a credential the route did not name must not reach the worker"
     )
     assert "PATH" in env and "HOME" in env
-    assert "HIVE_FAKE_HARNESS" in env  # named by the adapter, so allowed
+    assert "HIVE_FAKE_USAGE_FILE" in env  # named by the route, so allowed
+
+
+def test_a_provider_credential_the_route_names_does_reach_the_child(tmp_path):
+    """The other half of the same rule, and the one the retired shape-based ban broke:
+    an operator running an api-market route has to be able to configure this."""
+    plan, _ = resolve_plan(
+        tmp_path,
+        routes=[route(runner=runner(inherit_env=["SOME_PROVIDER_KEY"]))],
+        extra_env={"SOME_PROVIDER_KEY": "value-the-operator-configured"})
+    assert plan["env"]["SOME_PROVIDER_KEY"] == "value-the-operator-configured"
+    # ...and the preflight still never prints it.
+    assert "value-the-operator-configured" not in json.dumps(plan["argv_redacted"])
 
 
 def test_kickoff_survives_as_one_argv_element(rig):
     """Shell metacharacters in the prompt are data, not syntax."""
     argv = rig["plan"]["argv"]
-    kickoff = "You are hive worker e2e.\nSecond line; with $shell `metacharacters`."
-    assert argv.count(kickoff) == 1, (
+    assert argv.count(KICKOFF) == 1, (
         f"the kickoff must be exactly one argv element, unmodified; got {argv!r}"
     )
 
 
-# --- the permission boundary, across the launcher/supervisor seam -------------------
-
-
-def test_a_tampered_boundary_is_a_terminal_failure_with_no_started_fact(rig):
-    """Between materialization and launch, a clone step, a hook, or a hand edit could
-    change the file the child will read. The supervisor recomputes its digest against
-    the bytes on disk immediately before the child exists, so the drifted case is
-    recorded exactly as the failed version probe is: approved, never started, failed.
-
-    This is the difference between "a configuration was generated" and "the boundary
-    the operator approved is the one in force", which is the whole claim of this
-    milestone and must be checked rather than asserted.
-    """
-    _approve_route(rig)
-    doc = json.loads(rig["config_file"].read_text())
-    doc["permissions"]["deny"] = []          # the tamper: a boundary with nothing in it
-    rig["config_file"].write_text(json.dumps(doc, indent=2) + "\n")
-
-    proc = _run_supervisor(rig, "success")
-    assert proc.returncode == 1
-    assert "BOUNDARY VERIFICATION FAILED" in proc.stdout + proc.stderr
-
-    kinds = [e[0] for e in _events(rig)]
-    assert "execution.started" not in kinds, (
-        "a worker whose boundary does not verify must never be recorded as started"
-    )
-    finished = [e for e in _events(rig) if e[0] == "execution.finished"]
-    assert len(finished) == 1
-    payload = finished[0][3]
-    assert payload["outcome"] == "failure"
-    assert payload["outcome_certainty"] == "certain"
-    assert payload["usage"]["status"] == "unavailable"
-    assert "boundary" in payload["usage"]["reason"]
-
-
-def test_a_missing_boundary_file_is_a_terminal_failure_too(rig):
-    """Absent and drifted are the same answer. A file that was never written is not a
-    permissive default.
-
-    The assertion is on the SPINE, not on a substring of the output. An earlier version
-    asserted `"missing" in proc.stdout + proc.stderr` and could not fail: pytest's own
-    `tmp_path` contains the test's name, which contains the word — so the test stayed
-    green with the fail-closed branch disabled. Proven by mutation.
-    """
-    _approve_route(rig)
-    rig["config_file"].unlink()
-    proc = _run_supervisor(rig, "success")
-    assert proc.returncode == 1
-    assert "BOUNDARY VERIFICATION FAILED" in proc.stdout + proc.stderr
-
-    kinds = [e[0] for e in _events(rig)]
-    assert "execution.started" not in kinds
-    finished = [e for e in _events(rig) if e[0] == "execution.finished"]
-    assert len(finished) == 1
-    assert finished[0][3]["outcome"] == "failure"
-    assert "boundary" in finished[0][3]["usage"]["reason"]
-
-
-def test_an_empty_binding_block_is_the_same_absence_wearing_a_key(rig):
-    """`"binding": {}` used to verify clean: no config_path so the digest branch is
-    skipped, no required_flags so the argv loop never runs, and the function returns
-    success. A present block must carry something that could fail."""
-    _approve_route(rig)
-    plan_path = rig["run_dir"] / "plan.json"
-    plan = json.loads(plan_path.read_text())
-    plan["binding"] = {}
-    plan_path.write_text(json.dumps(plan))
-
-    proc = _run_supervisor(rig, "success")
-    assert proc.returncode == 1
-    assert "nothing in it can be verified" in proc.stdout + proc.stderr
-    assert "execution.started" not in [e[0] for e in _events(rig)]
-
-
-def test_a_pair_flag_missing_from_the_argv_is_caught_too(rig):
-    """The lone-switch branch had a test; the pair branch did not, and it is the branch
-    every shipped descriptor actually uses."""
-    _approve_route(rig)
-    plan_path = rig["run_dir"] / "plan.json"
-    plan = json.loads(plan_path.read_text())
-    plan["binding"]["required_flags"].append(["--setting-sources", "a-value-nobody-passes"])
-    plan_path.write_text(json.dumps(plan))
-
-    proc = _run_supervisor(rig, "success")
-    assert proc.returncode == 1
-    assert "a-value-nobody-passes" in proc.stdout + proc.stderr
-    assert "execution.started" not in [e[0] for e in _events(rig)]
-
-
-def test_the_run_dir_and_plan_are_not_world_readable(tmp_path):
-    """The plan is the root of trust for the boundary check — the supervisor compares the
-    file on disk to the plan's own digest and execs the plan's own argv. It was written
-    at the default umask while the boundary it anchors was carefully chmod 0600."""
+def test_the_supervisor_state_is_not_world_readable(tmp_path):
+    """plan.json is the supervisor's root of trust: it stamps the worker's identity onto
+    every relayed request and takes every publication destination from it."""
     import re
 
     launcher = (REPO / "scripts" / "hive-launch").read_text()
+    common = (REPO / "scripts" / "hive-common.sh").read_text()
     assert re.search(r'chmod 0600 "\$EXEC_DIR/plan\.json"', launcher)
-    assert re.search(r'chmod 0700 "\$EXEC_DIR"', launcher)
+    assert re.search(r'chmod 0700 "\$EXEC_DIR"', common)
 
 
-def test_the_started_fact_carries_the_boundary_that_was_verified(rig):
-    _approve_route(rig)
-    assert _run_supervisor(rig, "success").returncode == 0
-    started = [e for e in _events(rig) if e[0] == "execution.started"]
-    assert len(started) == 1
-    binding = started[0][3]["binding"]
-    plan = json.loads((rig["run_dir"] / "plan.json").read_text())
-    assert binding["config_digest"] == plan["binding"]["config_digest"]
-    assert binding["binding_digest"] == plan["binding"]["binding_digest"]
-    assert set(binding["mechanisms"]) == {"P1", "P2", "P3", "P4"}
-    # The materialized file itself is never on the spine.
-    assert "config_content" not in binding
-    assert "permissions" not in json.dumps(binding)
-
-
-def test_materialize_binding_writes_the_exact_bytes_the_digest_is_over(rig, tmp_path):
-    """The shell writer, exercised as shell.
-
-    A `$(jq -r ...)` round trip strips the config's trailing newline and adds one back,
-    which changes the bytes and therefore the digest — a real defect this helper had
-    until its own read-back check caught it. The read-back is why the bug was loud; this
-    test is why it stays fixed.
-    """
-    root = tmp_path / "materialize-root"
-    root.mkdir()
-    plan = json.dumps(json.loads((rig["run_dir"] / "plan.json").read_text()))
-    proc = subprocess.run(
-        [
-            "bash", "-c",
-            f'set -euo pipefail; source "{REPO}/scripts/hive-common.sh"; '
-            f'materialize_binding "$1" "$2"',
-            "bash", plan, str(root),
-        ],
-        capture_output=True, text=True, cwd=str(REPO), timeout=60,
-    )
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    written = root / ".claude" / "settings.local.json"
-    assert written.read_text() == json.loads(plan)["binding"]["config_content"]
-    assert oct(written.stat().st_mode)[-3:] == "600"
-
-
-def test_materialize_binding_refuses_a_path_outside_the_worker_root(rig, tmp_path):
-    """A descriptor is code, but the config path travels through JSON. An absolute or
-    traversing path would let a boundary be written over something that is not the
-    worker's own root — including the operator's global configuration."""
-    plan = json.loads((rig["run_dir"] / "plan.json").read_text())
-    for evil in ("/etc/claude-code/managed-settings.json", "../../.claude/settings.json"):
-        plan["binding"]["config_path"] = evil
-        proc = subprocess.run(
-            [
-                "bash", "-c",
-                f'set -euo pipefail; source "{REPO}/scripts/hive-common.sh"; '
-                f'materialize_binding "$1" "$2"',
-                "bash", json.dumps(plan), str(tmp_path / "root"),
-            ],
-            capture_output=True, text=True, cwd=str(REPO), timeout=60,
-        )
-        assert proc.returncode != 0, evil
-        assert "outside the worker root" in proc.stderr
-
-
-def test_unb64_round_trips_without_a_help_parsing_guard():
-    """The portability probe must not be a `--help | grep -q` under pipefail.
-
-    That shape is the SIGPIPE class this repository's own drill audit classified as a
-    defect: `grep -q` exits at the first match, the writer takes EPIPE, and the guard
-    fails exactly when the pattern matches — here selecting the BSD flag on a GNU host,
-    which would break every descriptor read. Asserted behaviourally (a round trip) and
-    structurally (the source carries no such guard), because the behavioural half passes
-    by luck on a host whose --help output is small enough to finish first.
-    """
-    payload = b'{"deny": ["Bash(*sudo *)"], "nested": {"n": 1}}'
-    encoded = base64.b64encode(payload).decode()
-    proc = subprocess.run(
-        ["bash", "-c",
-         f'set -euo pipefail; source "{REPO}/scripts/hive-common.sh"; unb64'],
-        input=encoded, capture_output=True, text=True, cwd=str(REPO), timeout=60,
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout == payload.decode()
-
-    source = (REPO / "scripts" / "hive-common.sh").read_text()
-    body = source.split("unb64() {", 1)[1].split("\n}", 1)[0]
-    # Comments in this function NAME the hazard on purpose; the assertion is about the
-    # code, so strip them rather than have the explanation trip the check.
-    code = "\n".join(
-        line for line in body.splitlines() if not line.strip().startswith("#")
-    )
-    assert "--help" not in code, "unb64 must probe by behaviour, not by parsing --help"
-    assert "grep -q" not in code
-
-
-def test_the_launchers_jq_projection_matches_binding_metadata(rig):
-    """One boundary projection, three implementations — held together by a test.
-
-    `hive-launch` builds the `route_approved` payload's `binding` block with jq,
-    `hive-supervise` builds the `started` one the same way, and `binding_metadata` in
-    plan.py is the Python statement of the same rule. Nothing forces them to agree, and
-    a drift would put a differently-shaped boundary on one of the two facts while every
-    Python test stayed green. This extracts the jq expression from the launcher itself
-    rather than restating it, so a change there is caught here.
-    """
-    plan = json.loads((rig["run_dir"] / "plan.json").read_text())
+def test_the_supervisor_state_is_outside_the_worker_task_root(tmp_path):
+    """The structural rule the whole transport rests on: a worker may modify anything in
+    its writable root, so nothing the trusted side reads for a decision may live there."""
     launcher = (REPO / "scripts" / "hive-launch").read_text()
-    # The expression as the launcher actually spells it, lifted from the source.
-    marker = "binding: (.binding | {"
-    assert marker in launcher, "hive-launch no longer projects the binding block with jq"
-    start = launcher.index(marker) + len("binding: (")
-    depth, i = 0, start
-    while i < len(launcher):
-        if launcher[i] == "(":
-            depth += 1
-        elif launcher[i] == ")":
-            if depth == 0:
-                break
-            depth -= 1
-        i += 1
-    expr = launcher[start:i]
-
-    proc = subprocess.run(
-        ["jq", "-S", "-c", expr],
-        input=json.dumps(plan), capture_output=True, text=True, timeout=60,
-    )
-    assert proc.returncode == 0, proc.stderr
-    from_jq = json.loads(proc.stdout)
-    from_python = binding_metadata(plan)
-    assert from_jq == from_python, (
-        "hive-launch's jq projection and binding_metadata disagree about the boundary "
-        "block; one of the two facts would carry a different shape"
-    )
-    # And the invariant both must hold: no file contents, no settings values.
-    assert "config_content" not in from_jq
-    assert "permissions" not in json.dumps(from_jq)
-
-
-def test_a_lone_switch_required_flag_verifies_rather_than_failing_every_launch(rig):
-    """A required flag can be a pair or a lone switch, and the supervisor must know which.
-
-    Read as a pair, a lone switch makes the check look for a following EMPTY argv
-    element, which never exists — so every launch under such a descriptor would fail
-    boundary verification and record a terminal failure with no started fact. Codex's
-    shipped descriptor already carries `--ignore-user-config`, so this is not
-    hypothetical; it is one credential away from being live.
-    """
-    _approve_route(rig)
-    plan_path = rig["run_dir"] / "plan.json"
-    plan = json.loads(plan_path.read_text())
-    # Add a lone switch the argv already carries, and one it does not.
-    plan["binding"]["required_flags"].append(["--model"])          # present in the argv
-    plan_path.write_text(json.dumps(plan))
-    assert _run_supervisor(rig, "success").returncode == 0, "a satisfied lone switch must verify"
-
-    plan["binding"]["required_flags"].append(["--a-switch-nobody-passes"])
-    plan_path.write_text(json.dumps(plan))
-    for stale in ("finished.json", "started.json"):
-        (rig["run_dir"] / stale).unlink(missing_ok=True)
-    proc = _run_supervisor(rig, "success")
-    assert proc.returncode == 1
-    assert "--a-switch-nobody-passes" in proc.stdout + proc.stderr
-
-
-def test_a_harness_series_change_stops_the_launch_with_no_started_fact(rig):
-    """A boundary's proof is a point measurement against one build. Driving it through
-    the real supervisor rather than the pure function, because the comparison can only
-    happen where the version is probed — beside the child, not in the resolver."""
-    _approve_route(rig)
-    plan_path = rig["run_dir"] / "plan.json"
-    plan = json.loads(plan_path.read_text())
-    plan["binding"]["proven_harness_version"] = "1.0.0"   # the fixture reports otherwise
-    plan_path.write_text(json.dumps(plan))
-
-    proc = _run_supervisor(rig, "success")
-    assert proc.returncode == 1
-    assert "BOUNDARY EVIDENCE IS STALE" in proc.stdout + proc.stderr
-    assert "execution.started" not in [e[0] for e in _events(rig)]
-    finished = [e for e in _events(rig) if e[0] == "execution.finished"]
-    assert finished and finished[0][3]["outcome"] == "failure"
+    assert 'TASK_ROOT="$WORK_ROOT/$WORKER"' in launcher
+    assert 'EXEC_DIR="$HIVE_EXEC_ROOT/$WORKER"' in launcher
+    assert 'EXEC_DIR="$TASK_ROOT' not in launcher
