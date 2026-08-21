@@ -374,7 +374,7 @@ def board_view_cmd(
     the active window — because a full-history board grows monotonically and fills a
     screen with settled work. `--all` restores every task.
 
-    `--json` emits the folded board as a JSON array (task/status/owner/depends_on/
+    `--json` emits the folded board as a JSON array (task/status/pruned/owner/depends_on/
     review) for tooling that must not parse the rendered table — a long task id wraps the
     table's column across lines, which no awk fragment survives. It is **always the run's
     full history**, filter or no filter: `hive-common.sh` looks a task up by id, and a task

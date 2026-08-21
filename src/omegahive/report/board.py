@@ -32,7 +32,8 @@ def render_board(board: Board, console: Console | None = None, *, title: str = "
 
 def board_rows(board: Board) -> list[dict]:
     """One dict per task — the machine projection of the same columns render_board
-    shows: task, status, owner, depends_on, review. Sorted by task id (as the table
+    shows plus the pruning disposition: task, status, pruned, owner, depends_on,
+    review. Sorted by task id (as the table
     is). owner/review are null when absent (the table's blank cell); depends_on is a
     sorted list. No reducer or board semantics here — pure projection of existing
     state. The portfolio projection reuses this so the two can never drift into two
@@ -41,6 +42,7 @@ def board_rows(board: Board) -> list[dict]:
         {
             "task": tid,
             "status": s.status,
+            "pruned": s.pruned,
             "owner": s.owner or None,
             "depends_on": sorted(s.depends_on),
             "review": s.latest_review or None,

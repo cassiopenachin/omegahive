@@ -105,6 +105,20 @@ _SIM_RUN = [  # server_time=False: no wall_ts anywhere (a simulated/replayed run
     _event(2, "task.assigned", {"worker": "w1"}, task_id="S1", wall_ts=None, logical_ts=1),
 ]
 
+_PRUNED_RUN = [
+    _event(1, "task.created", {"title": "Abandoned review"}, task_id="P1"),
+    _event(2, "task.assigned", {"worker": "w1"}, task_id="P1"),
+    _event(3, "task.accepted", {}, task_id="P1", actor=WORKER),
+    _event(
+        4,
+        "task.result_posted",
+        {"artifact_refs": [{"ref": "reports/p.md@abc1234", "quality": "ok"}]},
+        task_id="P1",
+        actor=WORKER,
+    ),
+    _event(5, "task.pruned", {"reason": "superseded"}, task_id="P1"),
+]
+
 
 def _summary_row(run_id: str, last_ts: datetime | None) -> dict:
     return {"run_id": run_id, "events": 1, "first_ts": last_ts, "last_ts": last_ts}
@@ -138,9 +152,28 @@ def test_portfolio_task_summary_carries_blocker_context():
     task = resp.runs[0].tasks[0]
     assert task.task_id == "T1"
     assert task.status == "blocked"
+    assert task.pruned is False
     assert task.blocker_reason == "image digest missing"
     assert task.blocker_needs == "operator ack"
     assert task.title == "Freeze the grid"
+
+
+def test_portfolio_task_summary_carries_pruned_without_replacing_raw_status():
+    factory = _factory({"r1": _view(_PRUNED_RUN)})
+    runs = _runs([_summary_row("r1", NOW)])
+
+    resp = portfolio_snapshot(factory, runs, show_all=False, window_days=7, exclude=(), now=NOW)
+
+    task = resp.runs[0].tasks[0]
+    assert task.status == "in_review"
+    assert task.pruned is True
+    assert resp.runs[0].task_counts == {
+        "total": 1,
+        "active": 0,
+        "attention": 0,
+        "abandoned": 1,
+        "completed": 0,
+    }
 
 
 def test_portfolio_wall_clock_elapsed_is_honest():
