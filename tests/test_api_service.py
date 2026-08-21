@@ -117,6 +117,22 @@ _PRUNED_RUN = [
         actor=WORKER,
     ),
     _event(5, "task.pruned", {"reason": "superseded"}, task_id="P1"),
+    _event(6, "task.created", {"title": "Abandoned progress"}, task_id="P2"),
+    _event(7, "task.assigned", {"worker": "w1"}, task_id="P2"),
+    _event(8, "task.accepted", {}, task_id="P2", actor=WORKER),
+    _event(9, "task.pruned", {"reason": "superseded"}, task_id="P2"),
+    _event(10, "task.created", {"title": "Abandoned blocker"}, task_id="P3"),
+    _event(11, "task.assigned", {"worker": "w1"}, task_id="P3"),
+    _event(12, "task.accepted", {}, task_id="P3", actor=WORKER),
+    _event(
+        13,
+        "task.blocked",
+        {"reason": "obsolete decision", "needs": "operator"},
+        task_id="P3",
+        actor=WORKER,
+    ),
+    _event(14, "task.escalated", {"reason": "obsolete"}, task_id="P3"),
+    _event(15, "task.pruned", {"reason": "superseded"}, task_id="P3"),
 ]
 
 
@@ -164,14 +180,19 @@ def test_portfolio_task_summary_carries_pruned_without_replacing_raw_status():
 
     resp = portfolio_snapshot(factory, runs, show_all=False, window_days=7, exclude=(), now=NOW)
 
-    task = resp.runs[0].tasks[0]
-    assert task.status == "in_review"
-    assert task.pruned is True
+    tasks = {task.task_id: task for task in resp.runs[0].tasks}
+    assert (tasks["P1"].status, tasks["P1"].pruned) == ("in_review", True)
+    assert (tasks["P2"].status, tasks["P2"].pruned) == ("in_progress", True)
+    assert (tasks["P3"].status, tasks["P3"].pruned, tasks["P3"].escalated) == (
+        "blocked",
+        True,
+        True,
+    )
     assert resp.runs[0].task_counts == {
-        "total": 1,
+        "total": 3,
         "active": 0,
         "attention": 0,
-        "abandoned": 1,
+        "abandoned": 3,
         "completed": 0,
     }
 

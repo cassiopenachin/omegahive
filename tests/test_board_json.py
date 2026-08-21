@@ -81,11 +81,20 @@ def test_pruned_review_retains_raw_status_and_exposes_disposition():
         board_to_json(
             _board(
                 TaskState(task_id="abandoned-review", status="in_review", pruned=True),
+                TaskState(task_id="abandoned-progress", status="in_progress", pruned=True),
+                TaskState(
+                    task_id="abandoned-blocked",
+                    status="blocked",
+                    pruned=True,
+                    escalated=True,
+                ),
                 TaskState(task_id="live-review", status="in_review"),
             )
         )
     )
     assert [(r["task"], r["status"], r["pruned"]) for r in rows] == [
+        ("abandoned-blocked", "blocked", True),
+        ("abandoned-progress", "in_progress", True),
         ("abandoned-review", "in_review", True),
         ("live-review", "in_review", False),
     ]
