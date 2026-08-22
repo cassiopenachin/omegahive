@@ -30,7 +30,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -59,7 +59,7 @@ class ReviewerCellSpec(BaseModel):
     home_seed: list[str] = Field(default_factory=lambda: list(DEFAULT_HOME_SEED))
     env_passthrough: list[str] = Field(default_factory=list)
     timeout_s: int = 3600
-    prompt_mode: str = "argv"
+    prompt_mode: Literal["argv"] = "argv"
 
 
 class HomeError(RuntimeError):
@@ -75,6 +75,15 @@ def build_fresh_home(spec: ReviewerCellSpec, root: str | Path) -> Path:
     home.chmod(0o700)
     real = Path(os.path.expanduser("~"))
     for rel in spec.home_seed:
+        # Validated HERE and not only in preflight: an absolute path or a `..` component
+        # makes `real / rel` and `home / rel` the same absolute location, so the copy reads
+        # and writes outside the isolated home — and a caller that never ran preflight would
+        # get that silently.
+        if Path(rel).is_absolute() or ".." in Path(rel).parts:
+            raise HomeError(
+                f"home seed {rel!r} must be a relative path under the operator's home with "
+                "no parent components; this one escapes the fresh home it is meant to fill"
+            )
         src = real / rel
         if not src.exists():
             raise HomeError(
@@ -180,9 +189,29 @@ def run_probe(
         return CellProbe(
             False, False, {}, {"probe_failed": proc.stderr.strip()[-2000:], "exit": proc.returncode}
         )
-    data = json.loads(proc.stdout)
-    denied = {k: bool(v) for k, v in data["denied"].items()}
-    inputs = bool(data["readable"]) and all(data["readable"].values())
+    try:
+        data = json.loads(proc.stdout)
+        denied = {k: bool(v) for k, v in data["denied"].items()}
+        readable: dict[str, bool] = {k: bool(v) for k, v in data["readable"].items()}
+    except (ValueError, KeyError, AttributeError, TypeError) as exc:
+        # A wrapper that prints a banner, or a probe truncated mid-write, must produce a
+        # FAILED probe with the detail attached. Raising here would take the whole batch
+        # down for one cell, and the record would lose the diagnosis.
+        return CellProbe(
+            False, False, {},
+            {"probe_failed": f"probe output was unreadable ({type(exc).__name__}: {exc})",
+             "stdout_tail": proc.stdout[-500:]},
+        )
+    if not declared_inputs:
+        # Reading every member of an empty set is vacuously true, which would make the probe
+        # pass having proved nothing about readability. A packet with nothing declared is a
+        # packet-construction fault, and it is named as one.
+        return CellProbe(
+            False, False, denied,
+            {"probe_failed": "the packet declared no inputs, so readability proves nothing",
+             **data},
+        )
+    inputs = all(readable.values())
     return CellProbe(all(denied.values()) and inputs, inputs, denied, data)
 
 
@@ -220,6 +249,13 @@ def run_reviewer(
             "the isolation probe failed; the reviewer was not launched",
         )
 
+    # Remove any verdict before the reviewer starts. A packet directory is fresh per cell
+    # today, so nothing here should exist — which is exactly why leaving it to chance is
+    # cheap to fix and expensive to be wrong about: a reviewer that crashes or times out
+    # would otherwise inherit whatever verdict was already on disk and be scored for it.
+    verdict_file = packet / verdict_name
+    verdict_file.unlink(missing_ok=True)
+
     wrapper = sandbox_wrapper(spec, packet, Path(home))
     argv = [*wrapper, *spec.argv]
     brief = (packet / "README.md").read_text()
@@ -252,14 +288,26 @@ def run_reviewer(
     from .runner import parse_result_envelope
 
     usage = parse_result_envelope(spec.result_envelope, out.read_text(errors="replace"))
-    verdict_file = packet / verdict_name
     verdict: dict[str, Any] | None = None
     reason = ""
     if verdict_file.is_file():
         try:
-            verdict = json.loads(verdict_file.read_text())
+            parsed = json.loads(verdict_file.read_text())
         except json.JSONDecodeError as exc:
             reason = f"the reviewer wrote {verdict_name} and it is not JSON ({exc})"
+        else:
+            # A list or a string is valid JSON and is not a verdict. Passing one downstream
+            # would fail somewhere less legible than here.
+            if isinstance(parsed, dict):
+                verdict = parsed
+            else:
+                reason = (
+                    f"the reviewer wrote {verdict_name} as a {type(parsed).__name__}, not an "
+                    "object"
+                )
     else:
         reason = f"the reviewer produced no {verdict_name}"
+    # A nonzero exit is recorded and does NOT by itself void a verdict: an agent CLI can
+    # exit nonzero having written a perfectly good one, and discarding it would turn a
+    # harness quirk into a reviewer result. `rc` is in the record for whoever reads the cell.
     return ReviewCellOutcome(packet_id, blind_id, probe, verdict, rc, True, reason, usage)

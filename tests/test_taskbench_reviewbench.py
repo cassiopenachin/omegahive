@@ -169,6 +169,27 @@ def test_a_packet_shows_exactly_base_to_head_and_nothing_after(corpus, tmp_path)
     assert repair_message and repair_message not in blob
 
 
+@pytest.mark.skipif(not (WORKSPACE / ".git").exists(), reason="needs the workspace clone")
+def test_the_scan_reads_contents_and_not_only_filenames(corpus, tmp_path):
+    """A filename check alone would miss the answer arriving inside an innocuous file.
+    Caught by the cross-vendor review of this branch."""
+    from taskbench.review_packet import scan_packet
+
+    pid = "run-registration-pre-review"
+    built = build_packet(
+        corpus, pid, dest=tmp_path / "p",
+        workspace_repo_path=str(WORKSPACE), run_checks=False,
+    )
+    gold = corpus.gold(pid)
+    assert not scan_packet(built, corpus.packets[pid], gold=gold)
+
+    (built.root / "verification" / "innocuous.log").write_text(
+        "check output\n" + gold.must_find[0].summary + "\n"
+    )
+    violations = scan_packet(built, corpus.packets[pid], gold=gold)
+    assert any("answer key" in v for v in violations), violations
+
+
 def test_a_packet_refuses_a_directory_that_is_not_empty(corpus, tmp_path):
     (tmp_path / "p").mkdir()
     (tmp_path / "p" / "stray").write_text("x")
@@ -422,6 +443,26 @@ def test_a_fresh_home_is_fresh(tmp_path):
     with pytest.raises(HomeError, match="not empty"):
         (home / "x").write_text("x")
         build_fresh_home(spec, home)
+
+
+@pytest.mark.parametrize("seed", ["/etc/passwd", "../.ssh/id_rsa", "a/../../x"])
+def test_a_home_seed_cannot_escape_the_fresh_home(tmp_path, seed):
+    """An absolute or parent-bearing seed makes the source and the destination the same
+    place outside the home, so the copy reads and writes operator state. Caught by the
+    cross-vendor review of this branch."""
+    spec = ReviewerCellSpec(argv=["true"], labels={}, home_seed=[seed])
+    with pytest.raises(HomeError, match="escapes|relative"):
+        build_fresh_home(spec, tmp_path / "home")
+
+
+def test_a_probe_with_nothing_declared_does_not_pass_vacuously(tmp_path):
+    """Reading every member of an empty set is true and proves nothing."""
+    packet = tmp_path / "packet"
+    packet.mkdir()
+    spec = ReviewerCellSpec(argv=["true"], labels={}, sandbox_argv=[], home_seed=[])
+    home = build_fresh_home(spec, tmp_path / "home")
+    probe = run_probe(spec, packet_dir=packet, home=home, deny={}, declared_inputs=[])
+    assert not probe.ok and "proves nothing" in probe.detail["probe_failed"]
 
 
 def test_a_missing_home_seed_refuses_rather_than_producing_an_empty_cell(tmp_path):
