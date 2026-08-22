@@ -11,9 +11,15 @@ questions, and structure is what this checks.
 
 It deliberately does NOT judge whether an encoding is SOUND, whether a gap's recommended
 treatment is the right one, or whether the arithmetic in the protocol holds. Those are the
-substance of the task and they are the rubric's, stated there as such. What a script can
-tell is whether the document leaves a hole where the converter order needs an answer —
-which is the failure mode a research note actually has.
+substance of the task and they are the rubric's, stated there as such.
+
+Read what follows as a HOLE-DETECTOR and nothing more. Every check below is satisfied by a
+mention: a note that says "we provide no confidence calibration" contains the word
+`calibrat` and passes, a frequency table is four numeric rows, and a micro-example is a
+file containing the word `assert` — this script never runs one. That is the honest ceiling
+of a static check over a research note, and it is stated here so a green result is read as
+"no obvious hole" rather than as "the note is right". Everything the checks gesture at is
+also a rubric leg, judged by a reader.
 
 Every construct and section below is named by the order itself. Nothing is read off the
 accepted document.
@@ -67,20 +73,31 @@ def read(root: Path, rel: str) -> str | None:
     return p.read_text(errors="replace") if p.is_file() else None
 
 
+class GitUnavailable(RuntimeError):
+    """The changed-file list could not be read. Never reported as "nothing changed"."""
+
+
 def changed_files(root: Path) -> list[str]:
-    """Paths the attempt changed, relative to the cell's single baseline commit."""
-    base = subprocess.run(
-        ["git", "-C", str(root), "rev-list", "--max-parents=0", "HEAD"],
-        capture_output=True, text=True, check=False,
-    ).stdout.split()
-    if not base:
-        return []
-    subprocess.run(["git", "-C", str(root), "add", "-A"], capture_output=True, check=False)
+    """Paths the attempt changed, relative to the cell's single baseline commit.
+
+    Reads `status --porcelain` rather than staging with `add -A`: staging mutates the
+    candidate's own index and runs whatever clean filters it configured, which a grader has
+    no business doing. And every exit status is checked, because a failed `diff` prints
+    nothing, and nothing is indistinguishable from "the stop-line was not crossed".
+    """
     out = subprocess.run(
-        ["git", "-C", str(root), "diff", "--name-only", base[-1], "--", "."],
-        capture_output=True, text=True, check=False,
+        ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"],
+        capture_output=True, text=True, check=False, timeout=600,
     )
-    return [f for f in out.stdout.splitlines() if f]
+    if out.returncode != 0:
+        raise GitUnavailable(f"`git status` failed in {root}: {out.stderr.strip()[-300:]}")
+    changed: list[str] = []
+    for line in out.stdout.splitlines():
+        if len(line) > 3:
+            path = line[3:]
+            # A rename prints "old -> new"; the destination is what was written.
+            changed.append(path.split(" -> ")[-1].strip().strip('"'))
+    return changed
 
 
 def _cited(note: str, name: str, stem: str) -> str | None:
@@ -102,12 +119,24 @@ def _cited(note: str, name: str, stem: str) -> str | None:
 
 
 def has_frequency_table(text: str) -> bool:
-    """A markdown table with at least four data rows carrying a count or a percentage."""
+    """A markdown table whose rows name constructs AND carry counts.
+
+    Four unrelated numeric rows used to satisfy this, which would have accepted any table at
+    all as "the inventory, measured". A row now counts only when it also names one of the
+    construct families the order enumerates, so the table has to be about the thing it
+    claims to measure.
+    """
     rows = 0
     for line in text.splitlines():
-        if line.count("|") >= 3 and re.search(r"\d[\d,]*(\.\d+)?\s*%?", line):
-            if re.search(r"\|\s*\d[\d,]*(\.\d+)?\s*%?\s*\|", line):
-                rows += 1
+        if line.count("|") < 3:
+            continue
+        if not re.search(r"\|\s*\d[\d,]*(\.\d+)?\s*%?\s*\|", line):
+            continue
+        if any(
+            any(re.search(pattern, line, re.I) for pattern in patterns)
+            for patterns in CONSTRUCTS.values()
+        ):
+            rows += 1
     return rows >= 4
 
 
@@ -198,7 +227,11 @@ def main(root_str: str) -> int:
                     "known-results frame and it is only useful with its sources."
                 )
 
-    touched_vendor = [f for f in changed_files(root) if f.startswith("vendor/")]
+    try:
+        touched_vendor = [f for f in changed_files(root) if f.startswith("vendor/")]
+    except GitUnavailable as exc:
+        findings.append(f"FAIL stop-line: could not read what the attempt changed ({exc})")
+        touched_vendor = []
     if touched_vendor:
         findings.append(
             "FAIL stop-line: the attempt edited the vendored runtime "

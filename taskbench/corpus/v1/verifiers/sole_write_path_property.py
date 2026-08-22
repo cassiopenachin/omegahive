@@ -104,11 +104,23 @@ def _roles_exist(conn) -> list[str]:
         return sorted(r[0] for r in cur.fetchall())
 
 
-def _has_password(conn, role: str) -> bool:
-    with conn.cursor() as cur:
-        cur.execute("SELECT rolpassword IS NOT NULL FROM pg_authid WHERE rolname = %s", (role,))
-        row = cur.fetchone()
-    return bool(row and row[0])
+def _has_password(conn, role: str) -> bool | None:
+    """Whether a role can authenticate. `None` when this session may not look.
+
+    `pg_authid` is itself privileged, so a session that satisfies everything else this check
+    needs — membership in both roles — can still be refused here. That must not abort a
+    verifier whose result does not depend on the answer.
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT rolpassword IS NOT NULL FROM pg_authid WHERE rolname = %s", (role,)
+            )
+            row = cur.fetchone()
+        return bool(row and row[0])
+    except psycopg.Error:
+        conn.rollback()
+        return None
 
 
 INSERT_EVENT = """
@@ -127,7 +139,13 @@ def run_cases(conn, run_id: str) -> list[str]:
             f"{GATEWAY} and {READER}, and the migration is what creates them"
         ]
     print(f"pass  both roles exist: {', '.join(present)}")
-    if any(_has_password(conn, r) for r in (GATEWAY, READER)):
+    passwords = [_has_password(conn, r) for r in (GATEWAY, READER)]
+    if None in passwords:
+        print(
+            "NOTE this session may not read pg_authid, so whether a migration gave either "
+            "role a password is unobservable here. It is a rubric question either way"
+        )
+    elif any(passwords):
         # Cluster-global state, so on a host whose durable deployment has already cut over
         # this says nothing about the candidate. Reported, never scored — see the module
         # docstring's note on what is measurable here and what is not.
@@ -138,6 +156,21 @@ def run_cases(conn, run_id: str) -> list[str]:
         )
 
     # The open test, both halves.
+    # Asked of the catalog as well as of the server. A behavioural 42501 could come from a
+    # missing sequence USAGE rather than from a missing table INSERT, and those are
+    # different grants with different consequences; this says which one is absent.
+    with conn.cursor() as cur:
+        cur.execute("SELECT has_table_privilege(%s, 'events', 'INSERT')", (READER,))
+        row = cur.fetchone()
+    if row and row[0]:
+        findings.append(
+            f"FAIL open-test: {READER} holds INSERT on events in the catalog. A behavioural "
+            "refusal would then be some other grant's doing, and the read role could still "
+            "append by supplying the column the sequence fills."
+        )
+    else:
+        print(f"pass  {READER} holds no INSERT privilege on events in the catalog")
+
     code = _as_role(conn, READER, INSERT_EVENT, (run_id,))
     if code == "42501":
         print("pass  the read role's direct INSERT is refused on privilege (42501)")
@@ -171,11 +204,14 @@ def run_cases(conn, run_id: str) -> list[str]:
 
     # Append-only, against the credential every emit uses. A DELETE leaves a gap in the
     # sequence; an overwrite of the identity columns leaves nothing at all.
+    # `WHERE false` and not `WHERE seq = -1`: a predicate that names a column needs SELECT
+    # on that column, so a role holding UPDATE but not SELECT would be refused for the wrong
+    # reason and the check would read that refusal as proof it cannot write.
     for label, sql in (
-        ("delete an event", "DELETE FROM events WHERE seq = -1"),
-        ("rewrite an event's actor", "UPDATE events SET actor_id = 'x' WHERE seq = -1"),
-        ("rewrite an event's type", "UPDATE events SET event_type = 'x' WHERE seq = -1"),
-        ("rewrite an event's run", "UPDATE events SET run_id = 'x' WHERE seq = -1"),
+        ("delete an event", "DELETE FROM events WHERE false"),
+        ("rewrite an event's actor", "UPDATE events SET actor_id = 'x' WHERE false"),
+        ("rewrite an event's type", "UPDATE events SET event_type = 'x' WHERE false"),
+        ("rewrite an event's run", "UPDATE events SET run_id = 'x' WHERE false"),
     ):
         code = _as_role(conn, GATEWAY, sql)
         if code == "42501":
@@ -192,11 +228,17 @@ def run_cases(conn, run_id: str) -> list[str]:
                 "privilege refusal"
             )
 
-    code = _as_role(conn, GATEWAY, "CREATE TABLE taskbench_probe (x int)")
+    code = _as_role(conn, GATEWAY, f"CREATE TABLE taskbench_probe_{uuid.uuid4().hex[:8]} (x int)")
     if code == "42501":
         print("pass  the gateway role cannot do DDL")
     elif code is None:
         findings.append("FAIL scope: the gateway role can create tables; DDL is the owner's")
+    else:
+        findings.append(
+            f"FAIL scope: the DDL probe failed with SQLSTATE {code}, which is neither a "
+            "privilege refusal nor success. Letting that fall through would report an "
+            "unrelated error as proof the grant is absent."
+        )
 
     return findings
 

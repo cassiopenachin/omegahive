@@ -1,5 +1,5 @@
 {
-  "corpus_content_hash": "sha256:5d4b7c061ff2e68c261e8b032d8af97d449f514c333fe9a00b0f3baa2efdaacd",
+  "corpus_content_hash": "sha256:319c051127ee469318f109812479c6bc2280cd38c445330d81b21a69070ab43d",
   "corpus_version": "v1",
   "files": {
     "corpus.yaml": "sha256:ddbf2005b714414e8a1a64d5ac4cc501e7c29ef114b8f912003d85e91ff741f8",
@@ -20,15 +20,16 @@
     "tasks/sole-write-path.yaml": "sha256:cb61a2c6d4afea2585fc0c0817f4ce68c080a8bf23e5eb8c39aedfeff2a2473e",
     "verifiers/__pycache__/cli_qol2_loop_behaviour.cpython-312.pyc": "sha256:e5b5f56b1e4250ce58cb7891bfab3bdb6621db548043d03df042877acb77aaec",
     "verifiers/__pycache__/cli_qol2_loop_behaviour.cpython-314.pyc": "sha256:83a928945c172984c15a29581c41148463c4bb3c74288bf61348f520bc857bb6",
-    "verifiers/__pycache__/fol_pln_note_shape.cpython-312.pyc": "sha256:89787c9aadb87a1bfd279cbd28d78a3e9c26dd4bcd753cafd9dd7e0e1411a82c",
-    "verifiers/__pycache__/hive_mcp_contract.cpython-312.pyc": "sha256:3cef093e2f2eda9c8143df8ec4942d5dce407d8c5f6af9c1ca64ae97778b5fd6",
-    "verifiers/__pycache__/pw_writeup_legibility.cpython-312.pyc": "sha256:a1df2cee2a999ff289463b4132b5942b1f58cccdccf9435175874ed7c10016fe",
-    "verifiers/__pycache__/sole_write_path_property.cpython-312.pyc": "sha256:1eeb83b9607543521aeaddf2404105de874d919034a33a4466356221fad8dbae",
+    "verifiers/__pycache__/fol_pln_note_shape.cpython-312.pyc": "sha256:37d353ebdd51dec810d29abda3f20a923cd67393f5ae8f9b548bca4466146c1e",
+    "verifiers/__pycache__/hive_mcp_contract.cpython-312.pyc": "sha256:418b7c2964c1d8533cd141dd85da58a48730d031a593162ec28d4363c721d5a0",
+    "verifiers/__pycache__/hive_mcp_contract.cpython-314.pyc": "sha256:74c7b2d21843581d7c6a2c8339de8d30a14566b805cc972ef27da93600556515",
+    "verifiers/__pycache__/pw_writeup_legibility.cpython-312.pyc": "sha256:826f199b3349ffd51c3f8a57e90a81bd133ef7bdaa73ccd5067dde82ef3f86fb",
+    "verifiers/__pycache__/sole_write_path_property.cpython-312.pyc": "sha256:29997060ebad099cce2afc1755019884f46b76faeae90125c20243da67eeea25",
     "verifiers/cli_qol2_loop_behaviour.py": "sha256:79c7948604a87c254b1e20297035e888d0fd8d27379a0fb0af667fa1e98dd070",
-    "verifiers/fol_pln_note_shape.py": "sha256:7cd81ece0a9b5c74b405a57884c3a9f5d8da8413466cb8f0b33283527ba975b0",
-    "verifiers/hive_mcp_contract.py": "sha256:77238833d5cbe6429d0050c488a28b5b79c6b3a117daaf1b0c77206c12389980",
-    "verifiers/pw_writeup_legibility.py": "sha256:8ddb1871e4007a5f4abaf84d0ce03256118a551c58b0557ae424294fd7548e9b",
-    "verifiers/sole_write_path_property.py": "sha256:f7651e8ef60b3cc7ecc6264f2c46f3860d5244cf4f6a7d8b6182a1f7ef0fce28"
+    "verifiers/fol_pln_note_shape.py": "sha256:52c6a5e8417a2c26005b30fa8513b1b8c3425b3028f1ed71dd9f78888fb138af",
+    "verifiers/hive_mcp_contract.py": "sha256:8b1b5b6cb7755b53961aab794d1cc22c18d6171b62a3f6e0da66b0e1f2515014",
+    "verifiers/pw_writeup_legibility.py": "sha256:3cace3a7d3ca62bce34dad2f18b5a216555a3f7ae2a865c9add54b14839fb950",
+    "verifiers/sole_write_path_property.py": "sha256:eaf95322f0551f13ae833ed7a8e9a327266e3c87166a674906d3f32776ba16c0"
   },
   "frozen_on": "2026-08-21"
 }

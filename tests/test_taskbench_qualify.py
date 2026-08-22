@@ -56,10 +56,16 @@ def test_every_change_since_the_pin_is_additive_or_dispositioned():
 
 
 def test_the_frozen_set_covers_what_a_verdict_is_actually_made_of():
-    """A frozen list that omitted the grader would pass while the pass rule moved underneath."""
-    frozen = set(qualify.SCORING_FROZEN)
+    """A frozen list that omitted the grader would pass while the pass rule moved underneath.
+
+    Frozen OR dispositioned — those are the two ways a path stays accounted for, and the
+    disposition route is checked separately below for saying what actually changed. What
+    this refuses is an essential path leaving the check by neither route.
+    """
+    accounted = set(qualify.SCORING_FROZEN) | set(qualify.DISPOSITIONED)
     for essential in (
-        "taskbench/corpus",       # the tasks, rubrics and verifiers themselves
+        "taskbench/corpus/v0",    # the tasks, rubrics and verifiers this study scores on
+        "taskbench/corpus/v0.1",
         "taskbench/grade.py",     # how a verdict is computed
         "taskbench/review.py",    # the blinded review and its sandbox
         "taskbench/remediation.py",  # the one repair cycle
@@ -67,7 +73,7 @@ def test_the_frozen_set_covers_what_a_verdict_is_actually_made_of():
         "taskbench/manifest.py",  # what a packet may contain
         "taskbench/materialize.py",  # what the candidate is given
     ):
-        assert essential in frozen
+        assert essential in accounted, f"{essential} is neither frozen nor dispositioned"
 
 
 def test_no_additive_entry_stands_in_for_a_frozen_path():

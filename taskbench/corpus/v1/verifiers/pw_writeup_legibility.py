@@ -4,15 +4,21 @@
 Usage: pw_writeup_legibility.py <repo-root>
 
 The order (`orders/2026-07-29-pw-writeup.md`, attempt 2) does not ask for a style; it
-states four rules and gives each one a test. Three of those tests are literally
-mechanical — a vocabulary sweep, an abbreviation check, a denominator check — and one
-(the sources manifest) is a presence check the DoD names. They are run here so the
-blinded reviewer spends its judgment on whether the prose is *checkable by an outsider*
-rather than on counting words.
+states four rules and gives each one a test. Two of those tests are literally mechanical —
+a vocabulary sweep and an abbreviation check — and two more are presence checks the
+definition of done names: a sources manifest, and an as-of stamp on the published figures.
+They are run here so the blinded reviewer spends its judgment on whether the prose is
+*checkable by an outsider* rather than on counting words.
 
-What this deliberately does NOT check: whether the arc reads well, whether question 4 is
-answered honestly, or whether a surviving coinage earned its place. Those are rubric
-items. This script decides only what a script can decide.
+What this deliberately does NOT check, said explicitly because a script that is trusted for
+more than it does is worse than no script. It does not check rule 3, that every number
+carries its denominator, nor rule 4, mechanism over metaphor: both need a reader who knows
+what the number is OF, and both are rubric legs (`denominators-in-words`,
+`mechanism-over-metaphor`). It does not judge whether the arc reads well, whether question
+4 is answered honestly, or whether a surviving coinage earned its place. And it detects the
+ABSENCE of things, not the substance of what is there: a document can carry three
+`path@sha` refs that name nothing it consumed and pass this, and be marked down for it in
+review. This is a hole-detector, not a grader.
 
 Every token below is read off the ORDER, never off the accepted document:
 
@@ -35,6 +41,7 @@ Exit 0 when every check passes, 1 otherwise. Findings print one per line.
 
 from __future__ import annotations
 
+import html as html_lib
 import re
 import sys
 from pathlib import Path
@@ -88,10 +95,14 @@ CITED_PATH = re.compile(
 
 
 def text_of(html: str) -> str:
-    """Rendered text, so a token hidden in an attribute is not counted as prose."""
+    """Rendered text, so a token hidden in an attribute is not counted as prose.
+
+    Entities are decoded first. Without that, `P&#76;N` renders to a reader as the very
+    abbreviation this checks for and slips past the sweep as a different string.
+    """
     body = re.sub(r"<script.*?</script>", " ", html, flags=re.S | re.I)
     body = re.sub(r"<style.*?</style>", " ", body, flags=re.S | re.I)
-    return TAG.sub(" ", body)
+    return html_lib.unescape(TAG.sub(" ", body))
 
 
 def main(root: str) -> int:

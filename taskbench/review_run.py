@@ -172,6 +172,12 @@ def run_batch(
     # dispute, and this refuses too: `run_batch` is callable directly, and a scored record
     # produced without the audit — or over one that objected — would look exactly like a
     # scored record produced with it.
+    if audits is None:
+        raise BatchAborted(
+            "this batch has no gold audit. The audit is a precondition and not an "
+            "attachment: a scored record produced without one is indistinguishable "
+            "from a scored record produced with one."
+        )
     if audits is not None:
         missing = sorted(set(selected) - set(audits))
         if missing:

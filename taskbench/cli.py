@@ -918,10 +918,6 @@ def sandbox_default() -> None:
     console.print(json.dumps(DEFAULT_SANDBOX_ARGV, indent=2))
 
 
-if __name__ == "__main__":
-    app()
-
-
 # --- the reviewer instrument (HIP-1 middle-tier study) ---------------------------------
 #
 # A second, independent five-case instrument. It shares record idioms with the worker
@@ -942,7 +938,13 @@ def _review_corpus(path: str | None):
 def review_corpus_cmd(
     corpus: str | None = typer.Option(None, "--corpus"),
 ) -> None:
-    """List the reviewer corpus: each packet, and what the hidden gold expects of it."""
+    """List the reviewer corpus: each packet, and what the hidden gold expects of it.
+
+    OPERATOR-ONLY, and it prints the answer. Its output is the de-blinding map — expected
+    disposition and must-find counts per packet — in the same way a worker record's
+    `cells.json` is. It never runs inside a cell, and its output must not be pasted into
+    one.
+    """
     c = _review_corpus(corpus)
     console.print(
         f"reviewer corpus [bold]{c.catalog.corpus_version}[/bold] frozen {c.catalog.frozen_on} · "
@@ -1045,7 +1047,8 @@ def freeze_review_cmd(corpus: str | None = typer.Option(None, "--corpus")) -> No
             cfg = rec / "config.json"
             if cfg.is_file():
                 data = json.loads(cfg.read_text())
-                if data.get("corpus_version") == c.catalog.corpus_version:
+                same_version = data.get("corpus_version") == c.catalog.corpus_version
+                if same_version and data.get("instrument") == "reviewer":
                     console.print(
                         f"[bold]refused[/bold]: {rec.name} already pins reviewer corpus "
                         f"{c.catalog.corpus_version}. Increment the version instead."
@@ -1131,7 +1134,19 @@ def middle_preflight_cmd(
     from . import middle_preflight
 
     worker = yaml.safe_load(Path(worker_config).read_text())
-    _, reviewer_cell, auditor = _reviewer_config(config)
+    reviewer_data, reviewer_cell, auditor = _reviewer_config(config)
+    # The two configs name their own repository paths, and the reviewer commands use the
+    # reviewer config's. Preflight checking the worker's would validate a different
+    # environment from the one that runs — a false pass or a false refusal, either way about
+    # the wrong thing.
+    for key in ("source_repos", "workspace_repo_path"):
+        if reviewer_data.get(key) != worker.get(key):
+            console.print(
+                f"[bold]preflight refused[/bold]: the two configs disagree about {key}. "
+                "The reviewer legs would run against a different environment than this "
+                "checks."
+            )
+            raise typer.Exit(code=3)
     c = _corpus(corpus)
     rc = _review_corpus(review_corpus)
     problems = middle_preflight.run_middle_preflight(
@@ -1230,7 +1245,12 @@ def run_reviewers_cmd(
     work_root: str = typer.Option(..., "--work-root"),
     out: str = typer.Option(..., "--out"),
     expect_corpus_hash: str = typer.Option(..., "--expect-corpus-hash"),
-    audits: str | None = typer.Option(None, "--audits"),
+    audits: str = typer.Option(
+        ...,
+        "--audits",
+        help="the audits JSON `audit-gold` wrote. Required: a scored record produced without "
+        "one looks exactly like a scored record produced with one",
+    ),
     supersedes: str | None = typer.Option(None, "--supersedes"),
     review_corpus: str | None = typer.Option(None, "--review-corpus"),
 ) -> None:
@@ -1245,7 +1265,7 @@ def run_reviewers_cmd(
             f"launch's {expect_corpus_hash}"
         )
         raise typer.Exit(code=3)
-    audit_data = json.loads(Path(audits).read_text()) if audits else None
+    audit_data = json.loads(Path(audits).read_text())
     root, scores = review_run.run_batch(
         c,
         work_root=work_root,
@@ -1267,7 +1287,13 @@ def run_reviewers_cmd(
 def score_reviewers_cmd(
     record: str = typer.Argument(..., help="a reviewer record directory"),
 ) -> None:
-    """Re-render a reviewer record's aggregate from its cells. Reads only; writes nothing."""
+    """Print a reviewer record's aggregate. Reads only; writes nothing, recomputes nothing.
+
+    This prints the file the batch wrote. It does not re-derive the scores from the cells,
+    so it cannot tell you that a cell and the aggregate disagree — deliberately, because a
+    record is immutable and re-deriving would invite editing one. If you need the scores
+    again, read `cells/<id>/score.json`.
+    """
     console.print((Path(record) / "aggregate.md").read_text())
 
 
@@ -1312,3 +1338,9 @@ def endpoint_witness_cmd(
         f"{report.non_discriminating} of {len(report.pairs)} gate(s) behave identically at "
         "both ends and are no-regression bars rather than discriminators"
     )
+
+
+# Last in the file, deliberately. It used to sit in the middle, so `python taskbench/cli.py`
+# dispatched before the decorators below it had run and none of those commands existed.
+if __name__ == "__main__":
+    app()

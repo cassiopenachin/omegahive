@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -80,103 +81,148 @@ def api_cases() -> list[str]:
         return [f"FAIL api: could not build the application ({type(exc).__name__}: {exc})"]
 
     app = create_app()
-    client = TestClient(app)
+    # Inside the context manager, so the application's lifespan startup runs. A
+    # correct implementation that builds its read service at startup would otherwise
+    # be exercised before it exists, and fail for the harness's reason.
+    with TestClient(app) as client:
 
-    # Read the route table from the application's own OpenAPI document rather than by
-    # walking `app.routes`: a router included with a prefix appears there as an opaque
-    # object with no `.path` on current FastAPI, and a route table this check cannot see
-    # is a route table it would report as absent.
-    try:
-        schema_paths: dict = app.openapi().get("paths", {})
-    except Exception as exc:  # noqa: BLE001
-        return [f"FAIL api: the application could not produce its OpenAPI document ({exc})"]
+        # Read the route table from the application's own OpenAPI document rather than by
+        # walking `app.routes`: a router included with a prefix appears there as an opaque
+        # object with no `.path` on current FastAPI, and a route table this check cannot see
+        # is a route table it would report as absent.
+        try:
+            schema_paths: dict = app.openapi().get("paths", {})
+        except Exception as exc:  # noqa: BLE001
+            return [f"FAIL api: the application could not produce its OpenAPI document ({exc})"]
 
-    api_paths = {p: ops for p, ops in schema_paths.items() if p.startswith(API)}
-    if not api_paths:
-        return [
-            f"FAIL api: the application registers no route under {API}. The order's whole "
-            "read surface is three paths there, on this same origin."
-        ]
+        api_paths = {p: ops for p, ops in schema_paths.items() if p.startswith(API)}
+        if not api_paths:
+            return [
+                f"FAIL api: the application registers no route under {API}. The order's whole "
+                "read surface is three paths there, on this same origin."
+            ]
 
-    for path, ops in sorted(api_paths.items()):
-        writes = {m.upper() for m in ops} - {"GET", "HEAD", "OPTIONS", "PARAMETERS"}
-        if writes:
+        for path, ops in sorted(api_paths.items()):
+            writes = {m.upper() for m in ops} - {"GET", "HEAD", "OPTIONS", "PARAMETERS"}
+            if writes:
+                findings.append(
+                    f"FAIL api-read-only: {path} accepts {sorted(writes)}. The order stop-lines "
+                    "every write capability on this surface."
+                )
+        if not findings:
+            print(f"pass  every {API} route is read-only ({len(api_paths)} route(s))")
+
+        r = client.get(HEALTH)
+        if r.status_code == 200:
+            print(f"pass  {HEALTH} answers 200")
+        else:
+            findings.append(f"FAIL api: {HEALTH} answered {r.status_code}")
+
+        r = client.get(PORTFOLIO)
+        if r.status_code != 200:
+            findings.append(f"FAIL api: {PORTFOLIO} answered {r.status_code}: {r.text[:200]}")
+            return findings
+        try:
+            portfolio = r.json()
+        except ValueError:
+            return findings + [f"FAIL api: {PORTFOLIO} did not answer JSON"]
+        print(f"pass  {PORTFOLIO} answers 200 with JSON")
+
+        keys = walk_keys(portfolio, set())
+        for fact, needles in FRESHNESS.items():
+            if any(any(n in k for n in needles) for k in keys):
+                print(f"pass  the portfolio response carries {fact}")
+            else:
+                findings.append(
+                    f"FAIL api-freshness: the portfolio response carries no field naming {fact}. "
+                    "The order requires every response to say when it was observed and what cut "
+                    "it used — a board with no anchor cannot be told from a stale one."
+                )
+
+        run_id, task_id = _first_task(portfolio)
+        # Scoped to the run object, not to the payload as a whole: a single `cursor` anywhere
+        # would otherwise satisfy "each run's cursor and generation" for every run.
+        for fact, needles in PER_RUN.items():
+            if _run_objects(portfolio) and all(
+                any(any(n in k for n in needles) for k in walk_keys(run, set()))
+                for run in _run_objects(portfolio)
+            ):
+                print(f"pass  every run in the portfolio carries {fact}")
+            else:
+                findings.append(
+                    f"FAIL api-freshness: not every run in the portfolio carries {fact}. Each "
+                    "run snapshot is anchored by its own cursor and generation; one shared "
+                    "anchor would claim the whole portfolio was read in one transaction."
+                )
+        if run_id is None:
             findings.append(
-                f"FAIL api-read-only: {path} accepts {sorted(writes)}. The order stop-lines "
-                "every write capability on this surface."
+                "FAIL api: the demo portfolio exposed no run/task pair, so task detail could not "
+                "be exercised. The portfolio must return active runs and their active tasks."
             )
-    if not findings:
-        print(f"pass  every {API} route is read-only ({len(api_paths)} route(s))")
+            return findings
 
-    r = client.get(HEALTH)
-    if r.status_code == 200:
-        print(f"pass  {HEALTH} answers 200")
-    else:
-        findings.append(f"FAIL api: {HEALTH} answered {r.status_code}")
+        detail_path = f"{API}/runs/{run_id}/tasks/{task_id}"
+        r = client.get(detail_path)
+        if r.status_code == 200:
+            detail_keys = walk_keys(r.json(), set())
+            print(f"pass  {detail_path} answers 200")
+            if any("event" in k for k in detail_keys):
+                print("pass  task detail carries a task-specific event timeline")
+            else:
+                findings.append(
+                    "FAIL api: task detail carries no event timeline. The order names a bounded, "
+                    "task-specific one as part of the surface."
+                )
+        else:
+            findings.append(f"FAIL api: {detail_path} answered {r.status_code}: {r.text[:200]}")
 
-    r = client.get(PORTFOLIO)
-    if r.status_code != 200:
-        findings.append(f"FAIL api: {PORTFOLIO} answered {r.status_code}: {r.text[:200]}")
-        return findings
-    try:
-        portfolio = r.json()
-    except ValueError:
-        return findings + [f"FAIL api: {PORTFOLIO} did not answer JSON"]
-    print(f"pass  {PORTFOLIO} answers 200 with JSON")
-
-    keys = walk_keys(portfolio, set())
-    for fact, needles in {**FRESHNESS, **PER_RUN}.items():
-        if any(any(n in k for n in needles) for k in keys):
-            print(f"pass  the portfolio response carries {fact}")
+        r = client.get(f"{API}/runs/no-such-run/tasks/no-such-task")
+        typed = False
+        content_type = r.headers.get("content-type", "")
+        if r.status_code == 404 and content_type.startswith("application/json"):
+            try:
+                body = r.json()
+            except ValueError:
+                body = None
+            # A framework's own 404 for an unregistered path is also `404 application/json`, so
+            # status and content type alone would pass a candidate that never implemented the
+            # route at all. What the order asks for is a TYPED response — one that names which
+            # kind of not-found this is, so an unknown run stays distinguishable from an
+            # upstream failure — and that means a body carrying more than a bare detail string.
+            typed = (
+                isinstance(body, dict)
+                and bool(body)
+                and any(str(k).lower() not in ("detail",) for k in body)
+            )
+        if typed:
+            print("pass  an unknown run/task returns a typed JSON not-found")
         else:
             findings.append(
-                f"FAIL api-freshness: the portfolio response carries no field naming {fact}. "
-                "The order requires every response to say when it was observed, what cut it "
-                "used, and which cursor and generation each run was read at — a board with "
-                "no anchor cannot be told from a stale one."
+                f"FAIL api-not-found: an unknown run/task answered {r.status_code} "
+                f"({r.headers.get('content-type')}) with body {r.text[:200]!r}. The order "
+                "requires a TYPED not-found, distinguishable from an upstream failure; a bare "
+                "framework 404 is what an unimplemented route returns."
             )
 
-    run_id, task_id = _first_task(portfolio)
-    if run_id is None:
-        findings.append(
-            "FAIL api: the demo portfolio exposed no run/task pair, so task detail could not "
-            "be exercised. The portfolio must return active runs and their active tasks."
-        )
+        if "/" not in schema_paths:
+            findings.append(
+                "FAIL api: the existing HTML operator view is gone from the route table; this "
+                "order adds a JSON surface beside it, it does not replace it"
+            )
+        else:
+            print("pass  the existing HTML operator view is still served")
         return findings
 
-    detail_path = f"{API}/runs/{run_id}/tasks/{task_id}"
-    r = client.get(detail_path)
-    if r.status_code == 200:
-        detail_keys = walk_keys(r.json(), set())
-        print(f"pass  {detail_path} answers 200")
-        if any("event" in k for k in detail_keys):
-            print("pass  task detail carries a task-specific event timeline")
-        else:
-            findings.append(
-                "FAIL api: task detail carries no event timeline. The order names a bounded, "
-                "task-specific one as part of the surface."
-            )
-    else:
-        findings.append(f"FAIL api: {detail_path} answered {r.status_code}: {r.text[:200]}")
 
-    r = client.get(f"{API}/runs/no-such-run/tasks/no-such-task")
-    if r.status_code == 404 and r.headers.get("content-type", "").startswith("application/json"):
-        print("pass  an unknown run/task returns a typed JSON not-found")
-    else:
-        findings.append(
-            f"FAIL api-not-found: an unknown run/task answered {r.status_code} "
-            f"({r.headers.get('content-type')}). The order requires a typed not-found "
-            "response, distinguishable from an upstream failure."
-        )
-
-    if "/" not in schema_paths:
-        findings.append(
-            "FAIL api: the existing HTML operator view is gone from the route table; this "
-            "order adds a JSON surface beside it, it does not replace it"
-        )
-    else:
-        print("pass  the existing HTML operator view is still served")
-    return findings
+def _run_objects(portfolio) -> list[dict]:
+    """The run snapshots in a portfolio response, whatever shape it chose."""
+    runs = portfolio if isinstance(portfolio, list) else None
+    if runs is None and isinstance(portfolio, dict):
+        for key in ("runs", "portfolio", "items", "data"):
+            if isinstance(portfolio.get(key), list):
+                runs = portfolio[key]
+                break
+    return [r for r in (runs or []) if isinstance(r, dict)]
 
 
 def _ident(container, *keys) -> str | None:
@@ -223,8 +269,14 @@ def _first_task(portfolio) -> tuple[str | None, str | None]:
     return None, None
 
 
-def find_mcp_project(root: Path) -> Path | None:
-    """The directory whose pyproject declares the executable the order names."""
+def find_mcp_project(root: Path) -> list[Path]:
+    """Every directory whose pyproject declares the executable the order names.
+
+    More than one is not a tie to break lexicographically: it means the tree offers two
+    things by the same name, and the operator setup the order describes would install one of
+    them without saying which.
+    """
+    found: list[Path] = []
     for candidate in sorted(root.rglob("pyproject.toml")):
         if ".venv" in candidate.parts or "node_modules" in candidate.parts:
             continue
@@ -233,23 +285,25 @@ def find_mcp_project(root: Path) -> Path | None:
         except (OSError, tomllib.TOMLDecodeError):
             continue
         if SCRIPT in (data.get("project", {}).get("scripts") or {}):
-            return candidate.parent
-    return None
-
-
-def _rpc(proc, message: dict) -> None:
-    proc.stdin.write(json.dumps(message) + "\n")
-    proc.stdin.flush()
+            found.append(candidate.parent)
+    return found
 
 
 def mcp_cases(root: Path) -> list[str]:
     findings: list[str] = []
-    project = find_mcp_project(root)
-    if project is None:
+    projects = find_mcp_project(root)
+    if not projects:
         return [
             f"FAIL mcp: no pyproject.toml in the tree declares a `{SCRIPT}` console script. "
             "The order names that executable and makes installing it the one operator act."
         ]
+    if len(projects) > 1:
+        return [
+            f"FAIL mcp: {len(projects)} projects declare a `{SCRIPT}` console script "
+            f"({', '.join(str(p.relative_to(root)) for p in projects)}). The operator setup "
+            "the order describes installs one executable by name and cannot say which."
+        ]
+    project = projects[0]
     print(f"pass  `{SCRIPT}` is declared by {project.relative_to(root)}/pyproject.toml")
 
     if shutil.which("uv") is None:
@@ -259,6 +313,13 @@ def mcp_cases(root: Path) -> list[str]:
         ["uv", "sync", "--group", "dev"], cwd=str(project), capture_output=True, text=True,
         check=False, timeout=1800,
     )
+    if sync.returncode != 0:
+        # A `dev` group is a convention, not part of the order. Fall back rather than fail a
+        # correct implementation that organised its dependencies differently.
+        sync = subprocess.run(
+            ["uv", "sync"], cwd=str(project), capture_output=True, text=True,
+            check=False, timeout=1800,
+        )
     if sync.returncode != 0:
         return findings + [
             f"FAIL mcp: `uv sync` in {project.name} failed: {sync.stderr.strip()[-500:]}"
@@ -270,6 +331,10 @@ def mcp_cases(root: Path) -> list[str]:
     )
     if tests.returncode == 0:
         print(f"pass  {project.name}'s own suite is green")
+    elif tests.returncode == 5:
+        # pytest's "no tests collected". The order requires the executable's behaviour, not
+        # that it ship a suite; the review reads what tests exist.
+        print(f"note  {project.name} collected no tests; the review reads its coverage")
     else:
         findings.append(
             f"FAIL mcp: {project.name}'s own suite fails: {(tests.stdout + tests.stderr)[-800:]}"
@@ -292,9 +357,15 @@ def _serve_argv(project: Path, env: dict[str, str]) -> list[str]:
         capture_output=True, text=True, check=False, timeout=300,
     )
     text = help_out.stdout + help_out.stderr
+    # Only a word inside a `{a,b,c}` choices block counts. Matching it anywhere in the help
+    # text would take `server` out of an option's prose description and invoke a
+    # sub-command that does not exist.
+    choices: set[str] = set()
+    for block in re.findall(r"\{([a-z0-9_,\-]+)\}", text):
+        choices.update(block.split(","))
     for word in _SERVE_WORDS:
-        if f"{word}," in text or f"{word}}}" in text or f" {word} " in text:
-            print(f"note  the executable advertises a `{word}` sub-command; using it")
+        if word in choices:
+            print(f"note  the executable lists a `{word}` sub-command; using it")
             return [word]
     return []
 
@@ -336,29 +407,31 @@ def _stdio_cases(project: Path) -> list[str]:
             argv, cwd=str(project), env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
-        try:
-            _rpc(proc, {
-                "jsonrpc": "2.0", "id": 1, "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-06-18",
-                    "capabilities": {},
-                    "clientInfo": {"name": "taskbench", "version": "1"},
+        # Everything in one write: communicate() sends stdin, closes it, and drains both
+        # pipes together. Closing stdin by hand first and then calling communicate() raises
+        # on the flush, and draining after wait() deadlocks on a server that fills a pipe.
+        handshake = "\n".join(
+            json.dumps(m)
+            for m in (
+                {
+                    "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {},
+                        "clientInfo": {"name": "taskbench", "version": "1"},
+                    },
                 },
-            })
-            _rpc(proc, {"jsonrpc": "2.0", "method": "notifications/initialized"})
-            _rpc(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-            proc.stdin.close()
-            proc.wait(timeout=180)
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+            )
+        ) + "\n"
+        try:
+            out, err = proc.communicate(input=handshake, timeout=180)
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.wait()
+            out, err = proc.communicate()
             findings.append("FAIL mcp-stdio: the server did not answer a tools/list within 180s")
             return findings
-        finally:
-            out = proc.stdout.read()
-            err = proc.stderr.read()
-            proc.stdout.close()
-            proc.stderr.close()
 
         messages = []
         stray = []
@@ -382,13 +455,15 @@ def _stdio_cases(project: Path) -> list[str]:
             (m for m in messages if m.get("id") == 2 and "result" in m), None
         )
         if listed is None:
-            print(
-                "NOTE the server did not return a tool list here — it exited or refused to "
-                f"start (exit {proc.returncode}). Startup validation of its own config is "
-                "one of the order's requirements, and the path that config lives at is not "
-                "fixed by the order, so this is reported and NOT scored. The tool inventory "
-                "is a rubric question for this attempt. stderr tail: "
-                + (err.strip()[-300:] or "(empty)")
+            findings.append(
+                "FAIL mcp-inventory: the server returned no tool list (exit "
+                f"{proc.returncode}). The order's central requirement is exactly two named "
+                "tools over stdio, and an executable that never serves them has not met it. "
+                "Its operator config was offered through every seam a reasonable "
+                "implementation reads — an explicit environment variable, an origin variable, "
+                "and four conventional paths under a fresh HOME — so a refusal here is the "
+                "executable's, not the harness's. stderr tail: "
+                + (err.strip()[-400:] or "(empty)")
             )
             return findings
 
