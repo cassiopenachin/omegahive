@@ -29,14 +29,20 @@ def test_pruned_tasks_are_abandoned_before_status_or_attention():
         "progress": TaskState("progress", "in_progress", pruned=True),
         "review": TaskState("review", "in_review", pruned=True),
         "blocked": TaskState("blocked", "blocked", pruned=True, escalated=True),
+        "done": TaskState("done", "done", pruned=True),
     })
     lanes = board_lanes(board)
-    assert [task.task_id for task in lanes["abandoned"]] == ["blocked", "progress", "review"]
+    assert [task.task_id for task in lanes["abandoned"]] == [
+        "blocked",
+        "done",
+        "progress",
+        "review",
+    ]
     assert board_summary(board) == {
-        "total": 8,
+        "total": 9,
         "active": 1,
         "attention": 2,
-        "abandoned": 3,
+        "abandoned": 4,
         "completed": 1,
     }
 

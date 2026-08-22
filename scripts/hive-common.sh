@@ -41,7 +41,7 @@ set -euo pipefail
 # and the environment variable names it needs — and a deployment string beside the
 # catalog was a second, weaker way to say the same thing that recorded no model, vendor,
 # billing market or credential pool. Every launch goes through the route resolver.
-: "${HIVE_WIP_REVIEW_MAX:=3}"                       # hive-launch refuses at this many in_review tasks (review debt, summed across all projects); --anyway overrides
+: "${HIVE_WIP_REVIEW_MAX:=3}"                       # hive-launch refuses at this many live in_review tasks (review debt, excluding abandoned/pruned work, summed across all projects); --anyway overrides
 
 # --- worker execution routing -------------------------------------------------------
 # The route catalog is a DEPLOYMENT fact and lives outside every project: it names what
@@ -893,8 +893,8 @@ board_owner() {  # board_owner <task>  -> prints owner (may be empty)
 }
 
 # List the in_review task ids on RUN, one per line (empty if none). The review-debt
-# signal the launch throttle paces against: `blocked` tasks are answer debt, not
-# review debt, so they are deliberately excluded.
+# signal the launch throttle paces against: `blocked` tasks are answer debt and pruned
+# tasks are abandoned work, not review debt, so both are deliberately excluded.
 board_in_review() {  # board_in_review  -> prints in_review task ids on RUN, one per line
   board_json \
     | jq -r '.[] | select(.status == "in_review" and .pruned != true) | .task' 2>/dev/null

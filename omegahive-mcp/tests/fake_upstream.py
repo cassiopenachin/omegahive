@@ -32,6 +32,7 @@ PORTFOLIO = {
                 {
                     "task_id": "T1",
                     "status": "blocked",
+                    "pruned": False,
                     "owner": "w1",
                     "title": "Freeze the grid",
                     "task_type": None,

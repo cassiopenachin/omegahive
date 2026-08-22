@@ -47,6 +47,7 @@ class RunAnchor(_Model):
 class TaskSummary(_Model):
     task_id: str
     status: str
+    pruned: bool
     owner: str | None
     title: str
     task_type: str | None
