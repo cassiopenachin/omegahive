@@ -215,9 +215,14 @@ def _minimal(**over) -> dict:
     return body
 
 
-def test_manifest_refuses_a_non_bounded_task():
-    with pytest.raises(ValueError, match="bounded-class tasks only"):
-        TaskManifest.model_validate(_minimal(task_class="judgment"))
+def test_a_task_must_argue_the_predicate_its_own_class_needs():
+    """Which classes a corpus may seed became a CATALOG fact when corpus v1 seeded larger
+    orders (`load_corpus` enforces it, and `tests/test_taskbench_corpus_v1.py` covers the
+    refusal). What every manifest still owes, whatever its class, is the argument for it."""
+    with pytest.raises(ValueError, match="replayable_because"):
+        TaskManifest.model_validate(_minimal(task_class="judgment", bounded_because=""))
+    with pytest.raises(ValueError, match="bounded_because"):
+        TaskManifest.model_validate(_minimal(bounded_because="   "))
 
 
 def test_manifest_refuses_zero_or_two_orders():

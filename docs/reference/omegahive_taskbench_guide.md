@@ -406,7 +406,7 @@ cd ~/src/SNET/omegahive && uv run --frozen taskbench middle-preflight \
   --work-root    ~/work/taskbench/<record> \
   --out          taskbench/records \
   --expect-worker-hash sha256:5d4b7c061ff2e68c261e8b032d8af97d449f514c333fe9a00b0f3baa2efdaacd \
-  --expect-review-hash sha256:463d6285f994a221463d8254b572b87c3de82140b524afaeb6753c5079a48899
+  --expect-review-hash sha256:94cd90ecea2f50d4e5b8a4a2a99d2f2aadb70f79c33a1a25af0861c5e471e6ab
 ```
 
 The two configs are written by the launcher below; run it once to generate them, or write

@@ -35,7 +35,10 @@ set -euo pipefail
 # Both hashes are literals. If either corpus moved after it was frozen, this refuses rather
 # than quietly measuring something else under the same name.
 readonly EXPECT_WORKER_HASH="sha256:5d4b7c061ff2e68c261e8b032d8af97d449f514c333fe9a00b0f3baa2efdaacd"
-readonly EXPECT_REVIEW_HASH="sha256:463d6285f994a221463d8254b572b87c3de82140b524afaeb6753c5079a48899"
+readonly EXPECT_REVIEW_HASH="sha256:94cd90ecea2f50d4e5b8a4a2a99d2f2aadb70f79c33a1a25af0861c5e471e6ab"
+# Literal, for the same reason the hashes are: asking the corpus which packets it has and
+# then checking that against itself is a check that agrees with itself.
+readonly EXPECT_REVIEW_PACKETS="docs-triage-accepted,run-registration-pre-review,hive-mcp-pre-review,sole-write-path-pre-correctness,pw-writeup-rejected"
 readonly WORKER_RECORD_BASE="middle-seed-worker-fidelity"
 readonly REVIEW_RECORD_BASE="middle-seed-reviewer-fidelity"
 readonly MODEL_ALIAS="opus"          # a request; the resolved id is read back from the harness
@@ -203,7 +206,8 @@ set +e
     --out "$RECORDS_DIR" \
     --record-id "$WORKER_RECORD_ID" \
     --expect-worker-hash "$EXPECT_WORKER_HASH" \
-    --expect-review-hash "$EXPECT_REVIEW_HASH"
+    --expect-review-hash "$EXPECT_REVIEW_HASH" \
+    --expect-review-packets "$EXPECT_REVIEW_PACKETS"
 )
 status=$?
 set -e

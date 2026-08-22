@@ -56,7 +56,10 @@ class ReviewerCellSpec(BaseModel):
     #: Relative paths under the operator's home, copied into the fresh home. A path that
     #: does not exist is a refusal, not a shrug: a reviewer that cannot authenticate
     #: produces an empty cell that looks like a model result.
-    home_seed: list[str] = Field(default_factory=lambda: list(DEFAULT_HOME_SEED))
+    #: `None` means the launch did not say — refused by preflight, because an omission that
+    #: was not meant produces cells that authenticate nothing and write no verdict. `[]` is
+    #: the explicit statement that this reviewer needs no seeded file.
+    home_seed: list[str] | None = Field(default_factory=lambda: list(DEFAULT_HOME_SEED))
     env_passthrough: list[str] = Field(default_factory=list)
     timeout_s: int = 3600
     prompt_mode: Literal["argv"] = "argv"
@@ -74,7 +77,7 @@ def build_fresh_home(spec: ReviewerCellSpec, root: str | Path) -> Path:
     home.mkdir(parents=True, exist_ok=True)
     home.chmod(0o700)
     real = Path(os.path.expanduser("~"))
-    for rel in spec.home_seed:
+    for rel in spec.home_seed or []:
         # Validated HERE and not only in preflight: an absolute path or a `..` component
         # makes `real / rel` and `home / rel` the same absolute location, so the copy reads
         # and writes outside the isolated home — and a caller that never ran preflight would

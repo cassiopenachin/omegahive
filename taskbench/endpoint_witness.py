@@ -46,14 +46,23 @@ class VerifierPair:
 class EndpointReport:
     pairs: list[VerifierPair] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
+    #: Gates that behave identically at both endpoints. That is legitimate — a lint that was
+    #: already clean is a no-regression bar — but it is a NUMBER a reader should see rather
+    #: than a note buried per row, because a corpus drifting toward all-bar-no-discriminator
+    #: looks green the whole way.
+    non_discriminating: int = 0
 
     @property
     def ok(self) -> bool:
         return not self.problems
 
     def to_json(self) -> dict:
-        return {"ok": self.ok, "pairs": [p.to_json() for p in self.pairs],
-                "problems": self.problems}
+        return {
+            "ok": self.ok,
+            "non_discriminating": self.non_discriminating,
+            "pairs": [p.to_json() for p in self.pairs],
+            "problems": self.problems,
+        }
 
 
 def _tree(source: Path, sha: str, dest: Path) -> Path:
@@ -65,7 +74,15 @@ def _tree(source: Path, sha: str, dest: Path) -> Path:
         ["git", "-C", str(dest), "add", "-A"],
         ["git", "-C", str(dest), "commit", "--quiet", "-m", "state", "--no-verify"],
     ):
-        subprocess.run(cmd, capture_output=True, check=False)
+        # A swallowed failure here leaves a tree with no baseline commit, and the graders
+        # that read their own baseline would then report a difference between two broken
+        # exports as a difference between the two endpoints.
+        out = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=300)
+        if out.returncode != 0:
+            raise RuntimeError(
+                f"could not build the endpoint tree at {dest}: `{' '.join(cmd[:4])}` failed: "
+                f"{out.stderr.strip()[-300:]}"
+            )
     return dest
 
 
@@ -91,10 +108,20 @@ def run(
 
         tmp = Path(tempfile.mkdtemp(prefix=f"taskbench-endpoint-{tid}-"))
         try:
-            trees = {
-                "baseline": _tree(source, m.code.pre_task_base_sha, tmp / "baseline" / "code"),
-                "accepted": _tree(source, facts.historical_solution_sha, tmp / "accepted" / "code"),
-            }
+            try:
+                trees = {
+                    "baseline": _tree(
+                        source, m.code.pre_task_base_sha, tmp / "baseline" / "code"
+                    ),
+                    "accepted": _tree(
+                        source, facts.historical_solution_sha, tmp / "accepted" / "code"
+                    ),
+                }
+            except (RuntimeError, OSError) as exc:
+                # One task whose endpoints cannot be built must not stop the other four from
+                # being checked; the report is the product here.
+                report.problems.append(f"{tid}: could not build its endpoints: {exc}")
+                continue
             discriminating = 0
             for v in m.offline_verifiers():
                 exits: dict[str, int | None] = {}
@@ -114,6 +141,13 @@ def run(
                     except OSError as exc:
                         exits[label] = None
                         note = f"could not execute at the {label} end: {exc}"
+                if None in exits.values():
+                    report.problems.append(
+                        f"{tid}/{v.id}: could not execute at the "
+                        f"{'baseline' if exits['baseline'] is None else 'accepted'} end "
+                        f"({note}). A gate nobody could run tells you nothing about either "
+                        "endpoint, and a corpus is not proven while one is in that state."
+                    )
                 good = exits["baseline"] != v.expect_exit and exits["accepted"] == v.expect_exit
                 if exits["accepted"] not in (v.expect_exit, None):
                     report.problems.append(
@@ -128,6 +162,9 @@ def run(
                 report.pairs.append(
                     VerifierPair(tid, v.id, exits["baseline"], exits["accepted"], good, note)
                 )
+            report.non_discriminating += sum(
+                1 for p in report.pairs if p.task_id == tid and not p.discriminates
+            )
             if not discriminating:
                 report.problems.append(
                     f"{tid}: no deterministic gate tells the pre-task baseline from the accepted "

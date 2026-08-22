@@ -66,7 +66,7 @@ must_find:
     - --section-from
     - ^def create_app
     - --section-to
-    - '^def '
+    - ^app = create_app
     - --present
     - port_factory is None
     - --why
@@ -100,8 +100,6 @@ must_find:
     - src/omegahive/api/service.py
     - --section-from
     - ^def task_detail
-    - --section-to
-    - '^def '
     - --present
     - available = len\(task_events\)[\s\S]{0,300}if before_seq is not None
     - --why

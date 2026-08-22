@@ -130,39 +130,71 @@ def check_review_pins(
     return problems
 
 
-def check_reviewer_cell(spec: ReviewerCellSpec) -> list[str]:
-    """The reviewer's own launch, checkable without launching it."""
+def check_reviewer_cell(
+    spec: ReviewerCellSpec, *, must_not_reach: list[Path] | None = None
+) -> list[str]:
+    """The reviewer's own launch, checkable without launching it.
+
+    `must_not_reach` is the set of directories a reviewer must never see: the corpus that
+    holds the answer key, the repositories that hold the repairs, the workspace. The probe
+    proves the boundary per cell at run time, and this refuses the configuration that would
+    have failed it — an operator who binds a parent of the corpus to give the reviewer its
+    toolchain should learn that here, not from five red cells.
+    """
     problems: list[str] = []
     if not spec.argv:
         return ["the reviewer command is empty"]
-    if shutil.which(spec.argv[0]) is None and not Path(spec.argv[0]).exists():
+    resolved_cmd = shutil.which(spec.argv[0]) or (
+        str(Path(spec.argv[0])) if Path(spec.argv[0]).is_file() else None
+    )
+    if resolved_cmd is None:
         problems.append(f"reviewer command {spec.argv[0]!r} is not on PATH and is not a file")
+    elif not os.access(resolved_cmd, os.X_OK):
+        problems.append(f"reviewer command {resolved_cmd!r} is not executable")
     for arg in spec.argv:
-        if any(c in arg for c in ";|&$`\n"):
-            problems.append(f"reviewer argv carries a shell metacharacter: {arg!r}")
+        # Only characters that would corrupt the record or the wrapper. argv is never
+        # shell-interpreted here, and refusing an argument for containing `$` would refuse
+        # a perfectly ordinary prompt.
+        if "\n" in arg or "\x00" in arg:
+            problems.append(f"reviewer argv carries a newline or NUL: {arg!r}")
     if not spec.sandbox_argv:
         problems.append(
             "the reviewer has no sandbox wrapper. The isolation this instrument's validity "
             "rests on would not exist, and the probe would pass by seeing everything."
         )
-    elif shutil.which(spec.sandbox_argv[0]) is None:
-        problems.append(f"sandbox wrapper {spec.sandbox_argv[0]!r} is not on PATH")
+    else:
+        if shutil.which(spec.sandbox_argv[0]) is None:
+            problems.append(f"sandbox wrapper {spec.sandbox_argv[0]!r} is not on PATH")
+        if not any("{packet}" in a for a in spec.sandbox_argv):
+            problems.append(
+                "the sandbox wrapper never mentions {packet}, so the packet would not be "
+                "bound into it and the cell would review an empty directory"
+            )
     real_home = Path("~").expanduser()
-    if not spec.home_seed:
+    if spec.home_seed is None:
         problems.append(
-            "the reviewer launch seeds nothing into its fresh home. Either name the files its "
-            "tool needs to authenticate, or say explicitly that it needs none — an empty seed "
-            "list that was not meant produces five cells that write no verdict."
+            "the reviewer launch does not say what its fresh home needs. Name the files its "
+            "tool needs to authenticate, or set `home_seed: []` to state that it needs none "
+            "— an omission that was not meant produces five cells that write no verdict."
         )
-    for rel in spec.home_seed:
+    for rel in spec.home_seed or []:
         if Path(rel).is_absolute() or ".." in Path(rel).parts:
             problems.append(f"home seed {rel!r} must be a relative path under the operator's home")
         elif not (real_home / rel).exists():
             problems.append(f"home seed {rel!r} does not exist under {real_home}")
+    forbidden = [Path(p).expanduser().resolve() for p in (must_not_reach or [])]
     for path in spec.sandbox_ro_binds:
         resolved = Path(path).expanduser()
         if not resolved.exists():
             problems.append(f"sandbox read-only bind {path!r} does not exist")
+            continue
+        bind = resolved.resolve()
+        for target in forbidden:
+            if bind == target or bind in target.parents or target in bind.parents:
+                problems.append(
+                    f"sandbox read-only bind {path!r} reaches {target} — the reviewer would "
+                    "be able to read the answer key, a repair, or the workspace"
+                )
     return problems
 
 
@@ -177,6 +209,7 @@ def run_middle_preflight(
     task_ids: list[str],
     expect_worker_hash: str,
     expect_review_hash: str,
+    expect_review_packets: list[str],
     work_root: Path,
     out_dir: Path,
     record_id: str,
@@ -195,11 +228,18 @@ def run_middle_preflight(
         ),
         *check_source_snapshots(worker_corpus, task_ids, cache=source_cache),
         *check_review_corpus(
-            review_corpus, expect_hash=expect_review_hash,
-            expect_packets=list(review_corpus.catalog.packets),
+            review_corpus, expect_hash=expect_review_hash, expect_packets=expect_review_packets
         ),
         *check_review_pins(
             review_corpus, source_repos=source_repos, workspace_repo_path=workspace_repo_path
         ),
-        *check_reviewer_cell(reviewer_cell),
+        *check_reviewer_cell(
+            reviewer_cell,
+            must_not_reach=[
+                worker_corpus.root,
+                review_corpus.root,
+                *([Path(workspace_repo_path)] if workspace_repo_path else []),
+                *[Path(p) for p in source_repos.values()],
+            ],
+        ),
     ]

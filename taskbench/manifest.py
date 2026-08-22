@@ -21,7 +21,7 @@ requires a corpus-version increment that invalidates every earlier cell.
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal, cast
 
 import yaml
@@ -156,6 +156,22 @@ class DependencySnapshot(BaseModel):
             raise ValueError(f"{self.name}: a source_snapshot must pin at least one file")
         if self.kind != "source_snapshot" and self.files:
             raise ValueError(f"{self.name}: only a source_snapshot may pin files")
+        if self.kind == "source_snapshot":
+            # These names are joined onto the operator's cache path. An absolute one throws
+            # the cache prefix away and a `..` walks out of it, so preflight would hash a
+            # file somewhere else while reporting the pinned one.
+            for component in [self.name, *(f.name for f in self.files)]:
+                path = PurePosixPath(component)
+                if path.is_absolute() or ".." in path.parts or not component.strip():
+                    raise ValueError(
+                        f"{self.name}: {component!r} must be a safe relative path component"
+                    )
+            names = [f.name for f in self.files]
+            if len(set(names)) != len(names):
+                raise ValueError(
+                    f"{self.name}: two pinned files share a name, so one would overwrite the "
+                    f"other in the cache: {sorted(names)}"
+                )
         return self
 
 
@@ -390,6 +406,26 @@ class ReservedTask(BaseModel):
     contaminated_by: list[str] = Field(default_factory=list)
     contamination_note: str = ""
 
+    @field_validator("pre_task_base_sha", "accepted_sha")
+    @classmethod
+    def _full_sha(cls, v: str) -> str:
+        if len(v) != 40 or not all(c in "0123456789abcdef" for c in v):
+            raise ValueError(f"a reservation pin must be a full 40-hex sha, got {v!r}")
+        return v
+
+    @model_validator(mode="after")
+    def _pins_are_usable(self) -> ReservedTask:
+        # A reservation stands in for a manifest, so an unusable one is worse than none: it
+        # looks like the task is preserved when nothing about it can be rebuilt.
+        if "@" not in self.order_ref or not self.order_ref.split("@")[0].strip():
+            raise ValueError(f"{self.id}: order_ref must be `<path>@<sha>`, got {self.order_ref!r}")
+        for field_name in ("code_repo", "why_reserved"):
+            if not getattr(self, field_name).strip():
+                raise ValueError(f"{self.id}: {field_name} is empty")
+        if self.pre_task_base_sha == self.accepted_sha:
+            raise ValueError(f"{self.id}: the two endpoints are the same commit")
+        return self
+
     @model_validator(mode="after")
     def _contamination_is_explained(self) -> ReservedTask:
         if self.contaminated_by and not self.contamination_note.strip():
@@ -534,8 +570,13 @@ def load_corpus(root: str | Path) -> LoadedCorpus:
             f"on disk but not in the catalog: {stray}"
         )
 
+    # Held-in only: `allowed_task_classes` says what this corpus SEEDS, and a held-out task
+    # is reserved rather than seeded. A catalog that manifests a reserved task of another
+    # class is not thereby qualifying models on it.
     allowed = set(catalog.allowed_task_classes)
     for task_id, m in sorted(manifests.items()):
+        if task_id not in catalog.held_in:
+            continue
         if m.task_class not in allowed:
             raise ValueError(
                 f"{task_id}: corpus {catalog.corpus_version} seeds "

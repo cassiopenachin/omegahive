@@ -1114,6 +1114,12 @@ def middle_preflight_cmd(
     record_id: str = typer.Option("middle-preflight", "--record-id"),
     expect_worker_hash: str = typer.Option(..., "--expect-worker-hash"),
     expect_review_hash: str = typer.Option(..., "--expect-review-hash"),
+    expect_review_packets: str = typer.Option(
+        ...,
+        "--expect-review-packets",
+        help="comma-separated packet ids the LAUNCH expects; checking the corpus against its "
+        "own list would agree with itself",
+    ),
     corpus: str | None = typer.Option(None, "--corpus"),
     review_corpus: str | None = typer.Option(None, "--review-corpus"),
 ) -> None:
@@ -1138,6 +1144,7 @@ def middle_preflight_cmd(
         task_ids=list(c.catalog.held_in),
         expect_worker_hash=expect_worker_hash,
         expect_review_hash=expect_review_hash,
+        expect_review_packets=[p.strip() for p in expect_review_packets.split(",") if p.strip()],
         work_root=Path(work_root),
         out_dir=Path(out),
         record_id=record_id,
@@ -1300,4 +1307,8 @@ def endpoint_witness_cmd(
         for p in report.problems:
             console.print(f"[bold]✗[/bold] {p}")
         raise typer.Exit(code=1)
-    console.print("\nevery task has at least one gate that tells the two endpoints apart")
+    console.print(
+        f"\nevery task has at least one gate that tells the two endpoints apart · "
+        f"{report.non_discriminating} of {len(report.pairs)} gate(s) behave identically at "
+        "both ends and are no-regression bars rather than discriminators"
+    )
