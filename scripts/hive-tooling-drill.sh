@@ -286,6 +286,13 @@ WORK="$SANDBOX/work"
 WRAPPERS="$SANDBOX/wrappers"
 
 git init --quiet --bare "$HUB"
+# The hub's own HEAD must name `main`, because everything here pushes to `main` and a
+# WORKER's clone takes its checked-out branch from it. `git init --bare` uses this host's
+# `init.defaultBranch` — commonly `master` — which leaves every worker clone on an unborn
+# branch with no HEAD commit: `hive sync workspace` then dies with "Could not resolve HEAD
+# to a commit" against a hub that is perfectly healthy. The real hub is `main`, so a
+# fixture that is not is testing a deployment nobody runs.
+git -C "$HUB" symbolic-ref HEAD refs/heads/main
 git clone --quiet "$HUB" "$WS"
 git -C "$WS" config user.email drill@example.invalid
 git -C "$WS" config user.name  drill

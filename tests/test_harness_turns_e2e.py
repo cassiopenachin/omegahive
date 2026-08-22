@@ -102,8 +102,13 @@ def tmux_isolation():
     socket_dir = tempfile.mkdtemp(prefix="hts-")
     env = {"TMUX_TMPDIR": socket_dir}
     yield env
-    subprocess.run(["tmux", "kill-server"], capture_output=True,
-                   env={**os.environ, **env, "TMUX": "", "TMUX_PANE": ""})
+    # Guarded, because not every test in this file needs tmux to exist: section 6 runs the
+    # launch against a stub and must stay green on a host with no tmux installed. An
+    # unguarded teardown would raise FileNotFoundError there and fail tests that never
+    # touched a pane.
+    if shutil.which("tmux"):
+        subprocess.run(["tmux", "kill-server"], capture_output=True,
+                       env={**os.environ, **env, "TMUX": "", "TMUX_PANE": ""})
     shutil.rmtree(socket_dir, ignore_errors=True)
 
 
@@ -1430,10 +1435,14 @@ def launch_a_fresh_task(dep, task: str) -> dict:
 
     task_root = dep["work_root"] / worker
     turn = json.loads((task_root / "run" / "turns" / "001" / "turn.json").read_text())
+    # The clone roots come out of the RESOLVED TURN, never reconstructed here. The relative
+    # tokens are only correct because the turn's own recorded cwd is a clone root beside
+    # `run/`; a test that rebuilt those paths itself would stay green if `hive-launch`
+    # started recording a different cwd, while every real worker's `../run/…` broke.
     return {
         "task": task, "worker": worker, "task_root": task_root,
-        "ws_root": task_root / "hive", "code_root": task_root / PROJECT,
-        "prompt": turn["argv"][-1], "env": env,
+        "cwd": Path(turn["cwd"]), "code_root": Path(turn["code_root"]),
+        "prompt": turn["argv"][-1], "env": env, "turn": turn,
     }
 
 
@@ -1469,7 +1478,17 @@ def test_the_launch_kickoff_issues_only_stable_relative_worker_commands(deployme
     # The header is still informative: a worker is told where it lives, just not asked to
     # type it. Dropping this would let an empty prompt pass the assertion above.
     assert str(launched["task_root"]) in prompt
-    assert str(launched["ws_root"]) in prompt and str(launched["code_root"]) in prompt
+    assert str(launched["cwd"]) in prompt and str(launched["code_root"]) in prompt
+
+    # The PREMISE of every relative token above, asserted rather than assumed: the turn the
+    # harness will actually run starts in a clone root, and both clone roots are siblings
+    # of the interface directory. A launch that recorded `<task-root>` as the cwd would
+    # leave every assertion above true and every `../run/…` broken.
+    assert launched["cwd"] == launched["task_root"] / "hive"
+    assert launched["code_root"] == launched["task_root"] / PROJECT
+    for clone in (launched["cwd"], launched["code_root"]):
+        assert (clone / RELATIVE_EMIT).resolve() == launched["task_root"] / "run" / "emit"
+        assert (clone / RELATIVE_BRIDGE).resolve() == launched["task_root"] / "run" / "hive"
 
 
 def test_the_issued_interface_resolves_from_the_workspace_clone_root(deployment):
@@ -1477,7 +1496,7 @@ def test_the_issued_interface_resolves_from_the_workspace_clone_root(deployment)
     as cwd, which is where the launch starts a turn."""
     launched = launch_a_fresh_task(deployment, "path-exec-ws")
     env = worker_env(deployment, launched)
-    ws = launched["ws_root"]
+    ws = launched["cwd"]          # the turn's OWN recorded cwd, not a reconstructed path
 
     synced = subprocess.run([RELATIVE_BRIDGE, "sync", "workspace"], cwd=str(ws),
                             capture_output=True, text=True, env=env, timeout=120)
@@ -1525,13 +1544,34 @@ def test_the_issued_interface_resolves_from_the_code_clone_root(deployment):
     assert synced.returncode == 0, synced.stdout + synced.stderr
 
 
+def assert_resume_prompt_is_relative_and_resolves(dep) -> None:
+    """The prompt `hive-answer` prepared, and the cwd it prepared it for.
+
+    A resume that stopped preserving the initial turn's cwd would break `../run/hive`
+    while leaving the prompt's text untouched, so the recorded cwd is read out of the
+    resume turn and the token is EXECUTED from it — the same round trip a woken worker
+    makes on its first line.
+    """
+    turn = json.loads((dep["run_dir"] / "turns" / "002" / "turn.json").read_text())
+    prompt = turn["argv"][-1]
+    assert f"First: {RELATIVE_BRIDGE} sync workspace" in prompt.splitlines()
+    no_absolute_worker_command(prompt, dep["task_root"])
+
+    cwd = Path(turn["cwd"])
+    assert cwd == dep["ws_root"], "a resume must wake the worker in its clone root"
+    synced = subprocess.run(
+        [RELATIVE_BRIDGE, "sync", "workspace"], cwd=str(cwd), capture_output=True, text=True,
+        timeout=120,
+        env={"PATH": os.environ["PATH"], "HOME": str(dep["tmp"] / "clean-home"),
+             "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"})
+    assert synced.returncode == 0, synced.stdout + synced.stderr
+    assert "workspace synced to" in synced.stdout
+
+
 def test_the_answer_resume_prompt_issues_the_stable_relative_sync(deployment):
     block_the_worker(deployment)
     assert run_answer(deployment, "use event time").returncode == 0
-    prompt = json.loads(
-        (deployment["run_dir"] / "turns" / "002" / "turn.json").read_text())["argv"][-1]
-    assert f"First: {RELATIVE_BRIDGE} sync workspace" in prompt.splitlines()
-    no_absolute_worker_command(prompt, deployment["task_root"])
+    assert_resume_prompt_is_relative_and_resolves(deployment)
 
 
 def test_the_resume_only_prompt_issues_the_stable_relative_sync(deployment):
@@ -1541,7 +1581,4 @@ def test_the_resume_only_prompt_issues_the_stable_relative_sync(deployment):
     assert finished(deployment)["classification"] == "budget"
 
     assert run_answer(deployment, "--resume-only", "five hour window reset").returncode == 0
-    prompt = json.loads(
-        (deployment["run_dir"] / "turns" / "002" / "turn.json").read_text())["argv"][-1]
-    assert f"First: {RELATIVE_BRIDGE} sync workspace" in prompt.splitlines()
-    no_absolute_worker_command(prompt, deployment["task_root"])
+    assert_resume_prompt_is_relative_and_resolves(deployment)
