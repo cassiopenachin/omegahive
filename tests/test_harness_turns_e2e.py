@@ -25,6 +25,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -1318,3 +1319,229 @@ def test_the_two_deliberate_exceptions_are_the_only_ones_and_are_still_doing_the
 def test_the_supervisor_and_its_spool_are_gone_from_the_tree():
     assert not (REPO / "scripts" / "hive-supervise").exists()
     assert not (REPO / "src" / "omegahive" / "harness" / "spool.py").exists()
+
+
+# =====================================================================================
+# 6. The worker-facing command contract — one stable token per operation, every task
+# =====================================================================================
+#
+# The interface FILES are task-specific and absolute (`<task-root>/run/emit`,
+# `<task-root>/run/hive`); what the prompts ISSUE is `../run/emit` and `../run/hive`.
+# Both clones are siblings of `run/` and a turn starts in a clone root, so those two
+# tokens resolve from either clone and never change between tasks — which is what lets
+# one operator-approved runner rule cover every launch. Naming the absolute file instead
+# forced a rule per task root, and the next task fell straight out of it: `capacity-view`
+# could not publish on 2026-08-21.
+#
+# Every test below reads the prompt the harness would actually receive (`argv[-1]` of the
+# resolved turn), never the source of the script that built it, and the interface is then
+# EXECUTED from both clone roots — a string assertion alone would not notice a cwd that
+# stopped being a clone root.
+
+RELATIVE_EMIT = "../run/emit"
+RELATIVE_BRIDGE = "../run/hive"
+
+
+def no_absolute_worker_command(prompt: str, task_root) -> None:
+    """Fail if the prompt asks the worker to EXECUTE a task-specific absolute path.
+
+    Deliberately not "the task root never appears": the informational header still names
+    the task root and both clones, and should. What must not appear is that root followed
+    by `/run/emit` or `/run/hive` in command position — the exact shape a runner rule
+    cannot generalize over.
+    """
+    offenders = [
+        line for line in prompt.splitlines()
+        if re.search(rf"{re.escape(str(task_root))}/run/(emit|hive)\b", line)
+    ]
+    assert not offenders, (
+        "the prompt issues a task-specific absolute worker command:\n" + "\n".join(offenders)
+    )
+
+
+def stub_tmux(dep) -> Path:
+    """A tmux stand-in for the launch path, so these tests read a prompt rather than race
+    a pane.
+
+    A real `tmux new-window` here would start a SECOND turn runner on the very turn
+    directory the test wants to read, and its evidence would be indistinguishable from a
+    deliberate one. Section 3b above owns real windows and asserts what they run; nothing
+    here is about the pane. The stub also means the command contract is guarded on a host
+    with no tmux installed, which is where a regression would otherwise slip through.
+    """
+    bin_dir = dep["tmp"] / "stubbin"
+    bin_dir.mkdir(exist_ok=True)
+    # `publish code` ends in `gh`, so the same directory carries a forge stub. It is the
+    # smallest one that answers what the bridge asks; section 4's richer fake drives CI
+    # sequences these tests have no use for.
+    gh = bin_dir / "gh"
+    gh.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        'case "$1 ${2:-}" in\n'
+        '  "pr view") exit 1 ;;\n'
+        '  "pr create") echo "https://forge.invalid/pr/1" ;;\n'
+        '  *) echo "fake gh: unhandled $*" >&2; exit 64 ;;\n'
+        "esac\n"
+    )
+    gh.chmod(0o755)
+    stub = bin_dir / "tmux"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf "%s\\n" "$*" >> "{dep["tmp"]}/tmux-calls.txt"\n'
+        'case "${1:-}" in\n'
+        "  has-session) exit 1 ;;\n"          # no session yet -> the new-session branch
+        "  new-session|new-window) echo 'stub:1' ;;\n"
+        "esac\n"
+        "exit 0\n"
+    )
+    stub.chmod(0o755)
+    return bin_dir
+
+
+def launch_a_fresh_task(dep, task: str) -> dict:
+    """Run the REAL `hive-launch` end to end on a second task in this deployment.
+
+    Second task, because the fixture's own task root already exists and a launch clones
+    into a fresh one. Everything else is the shipped path: the order is committed and
+    pushed to the hub, the route resolves from the catalog, the clones are made, the
+    interface is issued by `hive-common.sh`, and turn 001 is written — which is where the
+    prompt the harness receives can be read.
+    """
+    worker = f"sess-{task}-0821"
+    order_rel = f"projects/{PROJECT}/orders/2026-08-21-{task}.md"
+    write(dep["ops_ws"] / order_rel, f"# Order: {task}\n\nA fixture order.\n")
+    git(dep["ops_ws"], "add", "-A")
+    git(dep["ops_ws"], "commit", "--quiet", "-m", f"order: {task}")
+    git(dep["ops_ws"], "push", "--quiet", "origin", "HEAD:main")
+
+    bin_dir = stub_tmux(dep)
+    env = shell_env(
+        dep,
+        PATH=f"{bin_dir}:{os.environ['PATH']}",
+        # The canonical checkout this host would clone from, and a compose command that is
+        # never run: `HIVE_CLI_CMD` reaches the CLI directly, but `resolve_compose` still
+        # insists on naming one, and a CI host need not have a container runtime at all.
+        CANON_CODE=str(dep["tmp"] / "code-seed"),
+        OMEGAHIVE_COMPOSE="compose-never-invoked-in-this-test",
+    )
+    proc = subprocess.run([str(LAUNCH), order_rel, "--worker", worker],
+                          capture_output=True, text=True, env=env, cwd=str(REPO), timeout=300)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    task_root = dep["work_root"] / worker
+    turn = json.loads((task_root / "run" / "turns" / "001" / "turn.json").read_text())
+    return {
+        "task": task, "worker": worker, "task_root": task_root,
+        "ws_root": task_root / "hive", "code_root": task_root / PROJECT,
+        "prompt": turn["argv"][-1], "env": env,
+    }
+
+
+def worker_env(dep, launched) -> dict:
+    """The environment a worker's own commands run in: the governed CLI it reaches, a git
+    identity, and nothing ambient."""
+    return {
+        "PATH": launched["env"]["PATH"],
+        "HOME": str(dep["tmp"] / "clean-home"),
+        "HIVE_CLI_CMD": dep["env"]["HIVE_CLI_CMD"],
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+        "GIT_AUTHOR_NAME": "drill worker", "GIT_AUTHOR_EMAIL": "w@example.invalid",
+        "GIT_COMMITTER_NAME": "drill worker", "GIT_COMMITTER_EMAIL": "w@example.invalid",
+    }
+
+
+def test_the_launch_kickoff_issues_only_stable_relative_worker_commands(deployment):
+    launched = launch_a_fresh_task(deployment, "path-contract")
+    prompt = launched["prompt"]
+
+    assert f"First: {RELATIVE_BRIDGE} sync workspace" in prompt.splitlines(), (
+        "the very first instruction must be the stable token, on its own line"
+    )
+    assert f"{RELATIVE_EMIT} --type <t> --task <task> --payload <json>" in prompt
+    assert f"{RELATIVE_BRIDGE} publish workspace" in prompt
+    assert f"{RELATIVE_BRIDGE} publish code" in prompt
+    # The protocol explanation further down names the emit command a second time; it must
+    # carry the same token, not the absolute file.
+    assert f"run '{RELATIVE_EMIT} ...'" in prompt
+
+    no_absolute_worker_command(prompt, launched["task_root"])
+    # The header is still informative: a worker is told where it lives, just not asked to
+    # type it. Dropping this would let an empty prompt pass the assertion above.
+    assert str(launched["task_root"]) in prompt
+    assert str(launched["ws_root"]) in prompt and str(launched["code_root"]) in prompt
+
+
+def test_the_issued_interface_resolves_from_the_workspace_clone_root(deployment):
+    """The tokens are executed, not merely read. Everything here runs with the clone root
+    as cwd, which is where the launch starts a turn."""
+    launched = launch_a_fresh_task(deployment, "path-exec-ws")
+    env = worker_env(deployment, launched)
+    ws = launched["ws_root"]
+
+    synced = subprocess.run([RELATIVE_BRIDGE, "sync", "workspace"], cwd=str(ws),
+                            capture_output=True, text=True, env=env, timeout=120)
+    assert synced.returncode == 0, synced.stdout + synced.stderr
+    assert "workspace synced to" in synced.stdout
+
+    emitted = subprocess.run(
+        [RELATIVE_EMIT, "--type", "task.accepted", "--task", launched["task"]],
+        cwd=str(ws), capture_output=True, text=True, env=env, timeout=300)
+    assert emitted.returncode == 0, emitted.stdout + emitted.stderr
+    assert "task.accepted" in emitted.stdout
+
+    report = f"projects/{PROJECT}/reports/2026-08-21-{launched['task']}-result.md"
+    write(ws / report, "# result\n")
+    git(ws, "add", "-A")
+    git(ws, "commit", "--quiet", "-m", "report")
+    published = subprocess.run([RELATIVE_BRIDGE, "publish", "workspace"], cwd=str(ws),
+                               capture_output=True, text=True, env=env, timeout=120)
+    assert published.returncode == 0, published.stdout + published.stderr
+    hub = subprocess.run(["git", "-C", str(deployment["hub"]), "show", f"main:{report}"],
+                         capture_output=True, text=True)
+    assert hub.returncode == 0 and "# result" in hub.stdout
+
+
+def test_the_issued_interface_resolves_from_the_code_clone_root(deployment):
+    """`publish code` is typed from the CODE clone — the sibling, not the workspace — and
+    that is the cwd a mismatch would break first."""
+    launched = launch_a_fresh_task(deployment, "path-exec-code")
+    env = worker_env(deployment, launched)
+    code = launched["code_root"]
+
+    write(code / "CHANGE.md", "change\n")
+    git(code, "add", "-A")
+    git(code, "commit", "--quiet", "-m", "the change")
+    published = subprocess.run([RELATIVE_BRIDGE, "publish", "code"], cwd=str(code),
+                               capture_output=True, text=True, env=env, timeout=120)
+    assert published.returncode == 0, published.stdout + published.stderr
+    remote = subprocess.run(
+        ["git", "-C", str(deployment["code_remote"]), "show",
+         f"worker/{launched['task']}:CHANGE.md"], capture_output=True, text=True)
+    assert remote.returncode == 0 and "change" in remote.stdout
+    # And the sync token resolves from here too, so neither clone is the privileged one.
+    synced = subprocess.run([RELATIVE_BRIDGE, "sync", "workspace"], cwd=str(code),
+                            capture_output=True, text=True, env=env, timeout=120)
+    assert synced.returncode == 0, synced.stdout + synced.stderr
+
+
+def test_the_answer_resume_prompt_issues_the_stable_relative_sync(deployment):
+    block_the_worker(deployment)
+    assert run_answer(deployment, "use event time").returncode == 0
+    prompt = json.loads(
+        (deployment["run_dir"] / "turns" / "002" / "turn.json").read_text())["argv"][-1]
+    assert f"First: {RELATIVE_BRIDGE} sync workspace" in prompt.splitlines()
+    no_absolute_worker_command(prompt, deployment["task_root"])
+
+
+def test_the_resume_only_prompt_issues_the_stable_relative_sync(deployment):
+    seed_board(deployment)
+    set_child_env(deployment, HIVE_FAKE_BEHAVIOUR="budget")
+    assert run_turn(deployment).returncode == 0
+    assert finished(deployment)["classification"] == "budget"
+
+    assert run_answer(deployment, "--resume-only", "five hour window reset").returncode == 0
+    prompt = json.loads(
+        (deployment["run_dir"] / "turns" / "002" / "turn.json").read_text())["argv"][-1]
+    assert f"First: {RELATIVE_BRIDGE} sync workspace" in prompt.splitlines()
+    no_absolute_worker_command(prompt, deployment["task_root"])
