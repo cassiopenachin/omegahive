@@ -80,24 +80,37 @@ class GitUnavailable(RuntimeError):
 def changed_files(root: Path) -> list[str]:
     """Paths the attempt changed, relative to the cell's single baseline commit.
 
-    Reads `status --porcelain` rather than staging with `add -A`: staging mutates the
-    candidate's own index and runs whatever clean filters it configured, which a grader has
-    no business doing. And every exit status is checked, because a failed `diff` prints
-    nothing, and nothing is indistinguishable from "the stop-line was not crossed".
+    Two sources, because a candidate may or may not have committed: everything that differs
+    from the cell's single baseline commit, plus everything untracked. `status --porcelain`
+    alone would have missed committed work entirely — it compares against HEAD, and a
+    candidate that committed its change would have shown a clean tree and no stop-line
+    crossing at all.
+
+    No `git add -A` first: staging mutates the candidate's own index and runs whatever clean
+    filters it configured, which a grader has no business doing. And every exit status is
+    checked, because a failed command prints nothing, and nothing is indistinguishable from
+    "the stop-line was not crossed".
     """
-    out = subprocess.run(
-        ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"],
+    base = subprocess.run(
+        ["git", "-C", str(root), "rev-list", "--max-parents=0", "HEAD"],
         capture_output=True, text=True, check=False, timeout=600,
     )
-    if out.returncode != 0:
-        raise GitUnavailable(f"`git status` failed in {root}: {out.stderr.strip()[-300:]}")
+    if base.returncode != 0 or not base.stdout.split():
+        raise GitUnavailable(
+            f"could not find the baseline commit in {root}: {base.stderr.strip()[-300:]}"
+        )
     changed: list[str] = []
-    for line in out.stdout.splitlines():
-        if len(line) > 3:
-            path = line[3:]
-            # A rename prints "old -> new"; the destination is what was written.
-            changed.append(path.split(" -> ")[-1].strip().strip('"'))
-    return changed
+    for argv in (
+        ["git", "-C", str(root), "diff", "--name-only", base.stdout.split()[-1], "--", "."],
+        ["git", "-C", str(root), "ls-files", "--others", "--exclude-standard"],
+    ):
+        out = subprocess.run(argv, capture_output=True, text=True, check=False, timeout=600)
+        if out.returncode != 0:
+            raise GitUnavailable(
+                f"`git {argv[3]}` failed in {root}: {out.stderr.strip()[-300:]}"
+            )
+        changed += [line for line in out.stdout.splitlines() if line.strip()]
+    return sorted(set(changed))
 
 
 def _cited(note: str, name: str, stem: str) -> str | None:

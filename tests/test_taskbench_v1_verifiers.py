@@ -23,7 +23,7 @@ VERIFIERS = CORPUS_ROOT / "v1" / "verifiers"
 def run(script: str, tree: Path) -> tuple[int, str]:
     out = subprocess.run(
         [sys.executable, str(VERIFIERS / script), str(tree)],
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, check=False, timeout=600,
     )
     return out.returncode, out.stdout + out.stderr
 
@@ -231,7 +231,10 @@ def test_a_construct_the_note_never_mentions_is_a_hole(tmp_path):
     assert code == 1 and "existential" in out
 
 
-def test_editing_the_vendored_runtime_is_caught_as_a_stop_line(tmp_path):
+@pytest.mark.parametrize("commit_it", [False, True])
+def test_editing_the_vendored_runtime_is_caught_as_a_stop_line(tmp_path, commit_it):
+    """Committed as well as uncommitted. A check that reads only the working tree would miss
+    a candidate that committed its work, which is the ordinary case."""
     files = {
         NOTE: FULL_NOTE,
         REPRO: "!(assertEqual (a) (b))\n",
@@ -242,8 +245,28 @@ def test_editing_the_vendored_runtime_is_caught_as_a_stop_line(tmp_path):
     }
     tree = baseline_repo(tmp_path, files)
     (tree / "vendor" / "PLN" / "rules.metta").write_text("edited\n")
+    if commit_it:
+        git(tree, "add", "-A")
+        git(tree, "commit", "--quiet", "-m", "the attempt")
     code, out = run("fol_pln_note_shape.py", tree)
     assert code == 1 and "vendored runtime" in out
+
+
+def test_an_untracked_deliverable_still_counts_as_written(tmp_path):
+    """A candidate that never commits must still be graded on what it wrote."""
+    tree = baseline_repo(tmp_path, {"README.md": "x\n"})
+    for rel, text in {
+        NOTE: FULL_NOTE,
+        REPRO: "!(assertEqual (a) (b))\n",
+        "tests/repros/fol/02-x.metta": "!(assertEqual (a) (b))\n",
+        "tests/repros/fol/03-y.metta": "!(assertEqual (a) (b))\n",
+        FOLIO_REPORT: GOOD_REPORT,
+    }.items():
+        pth = tree / rel
+        pth.parent.mkdir(parents=True, exist_ok=True)
+        pth.write_text(text)
+    code, out = run("fol_pln_note_shape.py", tree)
+    assert code == 0, out
 
 
 # --- every grader is at least loadable ------------------------------------------------------
@@ -261,6 +284,6 @@ def test_editing_the_vendored_runtime_is_caught_as_a_stop_line(tmp_path):
 def test_every_grader_compiles(script):
     out = subprocess.run(
         [sys.executable, "-m", "py_compile", str(VERIFIERS / script)],
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, check=False, timeout=300,
     )
     assert out.returncode == 0, out.stderr

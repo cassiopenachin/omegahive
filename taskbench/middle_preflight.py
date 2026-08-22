@@ -182,6 +182,12 @@ def check_reviewer_cell(
             problems.append(f"home seed {rel!r} must be a relative path under the operator's home")
         elif not (real_home / rel).exists():
             problems.append(f"home seed {rel!r} does not exist under {real_home}")
+        elif (real_home / rel).is_dir():
+            problems.append(
+                f"home seed {rel!r} is a directory. An agent CLI's state directory holds its "
+                "prompt history and its per-project transcripts beside its credential; seeding "
+                "it hands a reviewer the record of the task it is grading."
+            )
     forbidden = [Path(p).expanduser().resolve() for p in (must_not_reach or [])]
     for path in spec.sandbox_ro_binds:
         resolved = Path(path).expanduser()

@@ -47,8 +47,12 @@ def test_the_earlier_corpora_still_hash_to_what_their_records_pin(version, expec
 # --- membership and class ----------------------------------------------------------------
 
 def test_membership_is_what_the_order_fixed(corpus):
-    assert set(corpus.catalog.held_in) == HELD_IN
-    assert set(corpus.catalog.held_out) == HELD_OUT
+    # Lists, not just sets: a duplicated id would satisfy a set comparison while distorting
+    # every count downstream.
+    assert sorted(corpus.catalog.held_in) == sorted(HELD_IN)
+    assert sorted(corpus.catalog.held_out) == sorted(HELD_OUT)
+    assert len(corpus.catalog.held_in) == len(HELD_IN)
+    assert len(corpus.catalog.held_out) == len(HELD_OUT)
 
 
 def test_every_task_argues_its_own_replayability(corpus):

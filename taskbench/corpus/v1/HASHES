@@ -1,5 +1,5 @@
 {
-  "corpus_content_hash": "sha256:319c051127ee469318f109812479c6bc2280cd38c445330d81b21a69070ab43d",
+  "corpus_content_hash": "sha256:80df85c6fa98f0e55fe44e42fded82d97684f650dec60c8ec02c2e485bf96aae",
   "corpus_version": "v1",
   "files": {
     "corpus.yaml": "sha256:ddbf2005b714414e8a1a64d5ac4cc501e7c29ef114b8f912003d85e91ff741f8",
@@ -20,13 +20,13 @@
     "tasks/sole-write-path.yaml": "sha256:cb61a2c6d4afea2585fc0c0817f4ce68c080a8bf23e5eb8c39aedfeff2a2473e",
     "verifiers/__pycache__/cli_qol2_loop_behaviour.cpython-312.pyc": "sha256:e5b5f56b1e4250ce58cb7891bfab3bdb6621db548043d03df042877acb77aaec",
     "verifiers/__pycache__/cli_qol2_loop_behaviour.cpython-314.pyc": "sha256:83a928945c172984c15a29581c41148463c4bb3c74288bf61348f520bc857bb6",
-    "verifiers/__pycache__/fol_pln_note_shape.cpython-312.pyc": "sha256:37d353ebdd51dec810d29abda3f20a923cd67393f5ae8f9b548bca4466146c1e",
+    "verifiers/__pycache__/fol_pln_note_shape.cpython-312.pyc": "sha256:6fb56f3373bde1a0618f9d65d87248a931e0747d305cdae534392e821afdf01a",
     "verifiers/__pycache__/hive_mcp_contract.cpython-312.pyc": "sha256:418b7c2964c1d8533cd141dd85da58a48730d031a593162ec28d4363c721d5a0",
     "verifiers/__pycache__/hive_mcp_contract.cpython-314.pyc": "sha256:74c7b2d21843581d7c6a2c8339de8d30a14566b805cc972ef27da93600556515",
     "verifiers/__pycache__/pw_writeup_legibility.cpython-312.pyc": "sha256:826f199b3349ffd51c3f8a57e90a81bd133ef7bdaa73ccd5067dde82ef3f86fb",
     "verifiers/__pycache__/sole_write_path_property.cpython-312.pyc": "sha256:29997060ebad099cce2afc1755019884f46b76faeae90125c20243da67eeea25",
-    "verifiers/cli_qol2_loop_behaviour.py": "sha256:79c7948604a87c254b1e20297035e888d0fd8d27379a0fb0af667fa1e98dd070",
-    "verifiers/fol_pln_note_shape.py": "sha256:52c6a5e8417a2c26005b30fa8513b1b8c3425b3028f1ed71dd9f78888fb138af",
+    "verifiers/cli_qol2_loop_behaviour.py": "sha256:9bd172a1874b258eeb9ae94efd1be9797f2588f2e36715a1b12ed03a8dde4002",
+    "verifiers/fol_pln_note_shape.py": "sha256:18563d12aa40c1d33541878e6f487d3cda3877836dae17f1fe3eb09ffb5fedcb",
     "verifiers/hive_mcp_contract.py": "sha256:8b1b5b6cb7755b53961aab794d1cc22c18d6171b62a3f6e0da66b0e1f2515014",
     "verifiers/pw_writeup_legibility.py": "sha256:3cace3a7d3ca62bce34dad2f18b5a216555a3f7ae2a865c9add54b14839fb950",
     "verifiers/sole_write_path_property.py": "sha256:eaf95322f0551f13ae833ed7a8e9a327266e3c87166a674906d3f32776ba16c0"

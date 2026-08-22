@@ -7,8 +7,11 @@ This is a behavioural check, not a code read. It builds a disposable fixture —
 workspace clone with its own hub, a project, two orders, a calibration file already
 carrying the two duplicated rows the order names, and a recording stub for the hive CLI
 — and then runs the candidate's own `scripts/hive-close`, `scripts/hive-score` and
-`scripts/hive-answer` against it, asserting the seven behaviours the order's definition
-of done states.
+`scripts/hive-answer` against it, asserting the definition-of-done cases a fixture can
+drive: (a) through (f). Case (g) — that the legacy text-answer path and the safe resume
+stay green — is NOT driven here and is a rubric leg, because the resume needs a live
+worker's turn state, a whole subsystem this order does not touch. What IS asserted of the
+answer path is its verification half and its no-write stop-line.
 
 Why a stub CLI rather than a spine: `hive-common.sh` already carries `HIVE_CLI_CMD`, the
 seam an operator uses to run the CLI on the host instead of in the container. Pointing it
@@ -286,8 +289,35 @@ class Fixture:
     def rows_for(self, task: str) -> int:
         return len(re.findall(rf"^### {re.escape(task)} — ", self.calibration(), re.M))
 
+    def entry_for(self, task: str) -> str:
+        """One task's calibration entry, ending at the next task's heading."""
+        cal = self.calibration()
+        m = re.search(rf"^### {re.escape(task)} — .*$", cal, re.M)
+        if not m:
+            return ""
+        rest = cal[m.end():]
+        nxt = re.search(r"^### ", rest, re.M)
+        return rest[: nxt.start()] if nxt else rest
+
+    @staticmethod
+    def review_verdict_in(entry: str) -> str:
+        """The verdict cell of the review-outcome row — the column that records the human's
+        judgement, not the column that quotes what the order predicted."""
+        for line in entry.splitlines():
+            if "review outcome" in line.lower() and line.count("|") >= 4:
+                cells = [c.strip() for c in line.strip().strip("|").split("|")]
+                if len(cells) >= 4:
+                    return cells[-1].lower()
+        return ""
+
     def emits(self) -> list[str]:
         return [ln for ln in self.log.read_text().splitlines() if ln.startswith("emit ")]
+
+    def emitted(self, event_type: str, task: str) -> bool:
+        """Did a close really happen? `emit ` alone proves only that something was said."""
+        return any(
+            event_type in line and f"--task {task}" in line for line in self.emits()
+        )
 
 
 def case(findings: list[str], ok: bool, label: str, detail: str = "") -> None:
@@ -335,7 +365,10 @@ def main(repo_root: str) -> int:
         r = f.run("hive-close", "alpha", "--no-score")
         case(findings, r.returncode == 0, "(a) --no-score still closes",
              (r.stdout + r.stderr)[-400:])
-        case(findings, len(f.emits()) > before, "(a) --no-score emitted the close")
+        case(findings,
+             f.emitted("review.passed", "alpha") and f.emitted("task.status_override", "alpha"),
+             "(a) --no-score still emitted both governed close events",
+             "; ".join(f.emits()[-4:]))
         case(findings, f.rows_for("alpha") == rows_before,
              "(a) --no-score recorded no calibration entry")
 
@@ -352,13 +385,17 @@ def main(repo_root: str) -> int:
         # (d) With no explicit --review, a replacement carries the newest human verdict
         #     forward instead of silently downgrading it to unscored.
         r = f.run("hive-score", "alpha", "--again", "--no-commit")
-        cal = f.calibration()
-        alpha_entry = cal[cal.index("### alpha"):]
+        alpha_entry = f.entry_for("alpha")
+        verdict = f.review_verdict_in(alpha_entry)
         case(findings, r.returncode == 0, "(d) --again with no --review succeeds",
              (r.stdout + r.stderr)[-400:])
-        case(findings, "rework" in alpha_entry.lower() and "unscored" not in alpha_entry.lower(),
+        # The VERDICT cell of the review-outcome row, not "does the word appear somewhere in
+        # the entry": every alpha entry quotes `minor rework` in its PREDICTED column, so a
+        # substring test over the whole entry would pass whatever the verdict became — and
+        # the entry used to be sliced to end of file, which swept in the next task's row too.
+        case(findings, verdict == "rework",
              "(d) it carried the newest human verdict forward rather than writing unscored",
-             alpha_entry[:400])
+             f"the review-outcome verdict cell reads {verdict!r}; entry was {alpha_entry[:300]}")
 
         # (c) A false clean is refused, and the refusal writes no row.
         cal_before = f.calibration()
@@ -373,14 +410,22 @@ def main(repo_root: str) -> int:
         # (b) A valid close produces one scored row; and an injected post-close scoring
         #     failure leaves the close intact and says so loudly. `beta` is that
         #     injection: it is closeable, and its scoring leg refuses the false clean.
-        f.set_events({"alpha": 0, "beta": 0})
+        # `closed=False` here: the scoring cases above need a task the events show as
+        # CLOSED, and a close case needs one they do not. Presenting both at once — a board
+        # saying in_review over an event history saying done — would let an implementation
+        # that reads the history correctly refuse, and one that trusts a stale board pass.
+        f.set_events({"alpha": 0, "beta": 0}, closed=False)
         rows_before = f.rows_for("alpha")
         r = f.run("hive-close", "alpha", "--review", "minor rework")
         case(findings, r.returncode == 0, "(b) a valid close succeeds",
              (r.stdout + r.stderr)[-400:])
+        case(findings,
+             f.emitted("review.passed", "alpha") and f.emitted("task.status_override", "alpha"),
+             "(b) and the close really happened — both governed events, on this task",
+             "; ".join(f.emits()[-4:]))
         case(findings, f.rows_for("alpha") == 1, "(b) and leaves exactly one scored row")
 
-        f.set_events({"alpha": 0, "beta": 3})
+        f.set_events({"alpha": 0, "beta": 3}, closed=False)
         cal_before = f.calibration()
         r = f.run("hive-close", "beta", "--review", "clean")
         combined = r.stdout + r.stderr
@@ -487,6 +532,7 @@ def sha_cases(f: Fixture) -> list[str]:
     before_file = order.read_text()
     before_head = git(f.ws, "rev-parse", "HEAD").strip()
     before_hub = git(f.hub, "rev-parse", "main").strip()
+    before_status = git(f.ws, "status", "--porcelain").strip()
     r = f.run("hive-answer", "alpha", "--sha", good)
     combined = (r.stdout + r.stderr).lower()
     if "verified" in combined and "not committing" in combined:
@@ -500,6 +546,9 @@ def sha_cases(f: Fixture) -> list[str]:
         order.read_text() == before_file
         and git(f.ws, "rev-parse", "HEAD").strip() == before_head
         and git(f.hub, "rev-parse", "main").strip() == before_hub
+        # The INDEX too: "never stages" is half of the stop-line, and a staged file leaves
+        # the working tree, HEAD and the hub all exactly as they were.
+        and git(f.ws, "status", "--porcelain").strip() == before_status
     )
     if unchanged:
         print("pass  (f) verifying wrote nothing: no stage, no commit, no push")

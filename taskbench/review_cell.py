@@ -60,6 +60,11 @@ class ReviewerCellSpec(BaseModel):
     #: was not meant produces cells that authenticate nothing and write no verdict. `[]` is
     #: the explicit statement that this reviewer needs no seeded file.
     home_seed: list[str] | None = Field(default_factory=lambda: list(DEFAULT_HOME_SEED))
+    #: Top-level keys stripped from every seeded `.json`. An agent CLI's global config is a
+    #: legitimate seed — without it the tool re-runs onboarding — and it is ALSO where that
+    #: tool keeps its per-directory prompt history. Naming the keys makes the removal a
+    #: stated, checkable act rather than a hope that the file is only configuration.
+    home_seed_strip_json_keys: list[str] = Field(default_factory=list)
     env_passthrough: list[str] = Field(default_factory=list)
     timeout_s: int = 3600
     prompt_mode: Literal["argv"] = "argv"
@@ -76,6 +81,7 @@ def build_fresh_home(spec: ReviewerCellSpec, root: str | Path) -> Path:
         raise HomeError(f"{home} already exists and is not empty; a reviewer home is fresh")
     home.mkdir(parents=True, exist_ok=True)
     home.chmod(0o700)
+    stripped: list[str] = []
     real = Path(os.path.expanduser("~"))
     for rel in spec.home_seed or []:
         # Validated HERE and not only in preflight: an absolute path or a `..` component
@@ -94,14 +100,45 @@ def build_fresh_home(spec: ReviewerCellSpec, root: str | Path) -> Path:
                 "that cannot authenticate writes no verdict, and an empty verdict is not a "
                 "model result."
             )
+        if src.is_dir():
+            # A directory seed is refused outright. An agent CLI's state directory holds its
+            # credential AND its prompt history, its per-project transcripts and its debug
+            # logs, so copying the directory "for the credential" copies the transcripts of
+            # the very tasks a reviewer is about to grade. That is the contamination corpus
+            # v0.1 shipped with, and naming a directory is how it happens.
+            raise HomeError(
+                f"home seed {rel!r} is a directory. Seeds are files: name the credential "
+                "itself, not the state directory that happens to contain it."
+            )
         dest = home / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
-        if src.is_dir():
-            shutil.copytree(src, dest, symlinks=True, dirs_exist_ok=True)
-        else:
-            shutil.copyfile(src, dest)
-            dest.chmod(0o600)
+        shutil.copyfile(src, dest)
+        dest.chmod(0o600)
+        if dest.suffix == ".json" and spec.home_seed_strip_json_keys:
+            stripped += _strip_json_keys(dest, spec.home_seed_strip_json_keys, rel)
+    if stripped:
+        (home / "TASKBENCH-SEED.txt").write_text(
+            "This home was built fresh and seeded with named files only.\n"
+            "Keys removed from seeded JSON, so a reviewer cannot read its own case's history:\n"
+            + "".join(f"  {line}\n" for line in stripped)
+        )
     return home
+
+
+def _strip_json_keys(path: Path, keys: list[str], label: str) -> list[str]:
+    """Remove named top-level keys from a seeded JSON file. Returns what it removed."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise HomeError(f"home seed {label!r} is not readable JSON ({exc})") from exc
+    if not isinstance(data, dict):
+        return []
+    removed = [k for k in keys if k in data]
+    for k in removed:
+        del data[k]
+    path.write_text(json.dumps(data))
+    path.chmod(0o600)
+    return [f"{label}: {k}" for k in removed]
 
 
 def sandbox_wrapper(spec: ReviewerCellSpec, packet: Path, home: Path) -> list[str]:

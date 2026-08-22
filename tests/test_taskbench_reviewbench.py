@@ -501,6 +501,40 @@ def test_a_home_seed_cannot_escape_the_fresh_home(tmp_path, seed):
         build_fresh_home(spec, tmp_path / "home")
 
 
+def test_a_directory_home_seed_is_refused(tmp_path, monkeypatch):
+    """An agent CLI's state directory holds its prompt history and its per-project
+    transcripts beside its credential. Seeding it hands a reviewer the record of the task it
+    is grading — the contamination corpus v0.1 shipped with. Caught by the cross-vendor
+    review of this branch."""
+    fake_home = tmp_path / "operator"
+    (fake_home / ".claude").mkdir(parents=True)
+    (fake_home / ".claude" / ".credentials.json").write_text('{"token": "x"}')
+    (fake_home / ".claude" / "history.jsonl").write_text("a transcript\n")
+    monkeypatch.setenv("HOME", str(fake_home))
+
+    spec = ReviewerCellSpec(argv=["true"], labels={}, home_seed=[".claude"])
+    with pytest.raises(HomeError, match="is a directory"):
+        build_fresh_home(spec, tmp_path / "h1")
+
+
+def test_a_seeded_config_is_stripped_of_its_own_history(tmp_path, monkeypatch):
+    fake_home = tmp_path / "operator"
+    fake_home.mkdir()
+    (fake_home / ".claude.json").write_text(
+        json.dumps({"projects": {"/some/task": {"history": ["what I asked"]}}, "theme": "dark"})
+    )
+    monkeypatch.setenv("HOME", str(fake_home))
+
+    spec = ReviewerCellSpec(
+        argv=["true"], labels={}, home_seed=[".claude.json"],
+        home_seed_strip_json_keys=["projects"],
+    )
+    home = build_fresh_home(spec, tmp_path / "h2")
+    seeded = json.loads((home / ".claude.json").read_text())
+    assert "projects" not in seeded and seeded["theme"] == "dark"
+    assert "projects" in (home / "TASKBENCH-SEED.txt").read_text()
+
+
 def test_a_probe_with_nothing_declared_does_not_pass_vacuously(tmp_path):
     """Reading every member of an empty set is true and proves nothing."""
     packet = tmp_path / "packet"
