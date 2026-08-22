@@ -51,6 +51,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from omegahive.port.keys import canonical_payload
 
+from .manifest import is_runtime_artefact
+
 Disposition = Literal["required_change", "no_required_change"]
 #: `approach` is not a bigger `high`: it is a defect about who the work is FOR or how it is
 #: framed, which no line-level reading finds. The rejected writing attempt is entirely that.
@@ -362,9 +364,14 @@ class LoadedReviewCorpus(BaseModel):
 
 
 def _hash_tree(root: Path) -> dict[str, str]:
+    """The freeze fingerprint, over what the corpus declares and not what a tool left.
+
+    Shares `is_runtime_artefact` with the worker corpus deliberately: two hashing rules that
+    could drift is exactly one rule too many, and this corpus's checks are Python too.
+    """
     out: dict[str, str] = {}
     for p in sorted(root.rglob("*")):
-        if p.is_file() and p.name != "HASHES":
+        if p.is_file() and not is_runtime_artefact(p.relative_to(root)):
             out[str(p.relative_to(root))] = sha256_bytes(p.read_bytes())
     return out
 

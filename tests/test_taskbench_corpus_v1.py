@@ -9,6 +9,7 @@ What is here is what can be true or false without leaving the repository.
 from __future__ import annotations
 
 import json
+import pathlib
 
 import pytest
 import yaml
@@ -229,3 +230,42 @@ def test_the_frozen_hashes_match_the_tree(corpus):
     frozen = json.loads((V1 / "HASHES").read_text())
     assert frozen["corpus_content_hash"] == corpus.content_hash
     assert frozen["files"] == corpus.file_hashes
+
+
+def test_running_the_corpus_does_not_change_the_corpus(tmp_path):
+    """A fingerprint over what a TOOL left behind is a fingerprint of the machine.
+
+    The graders are Python, so executing one writes a `.pyc` beside it. Hashing that made a
+    cell invalidate the very record it had just pinned — and the first CI run on a clean
+    checkout is where it surfaced, because the working tree that froze the corpus had run
+    the graders and the checkout that validated it had not. The freeze is now a property of
+    what the corpus commits.
+    """
+    from taskbench.manifest import _hash_tree, is_runtime_artefact
+
+    tree = tmp_path / "corpus"
+    (tree / "verifiers").mkdir(parents=True)
+    (tree / "corpus.yaml").write_text("corpus_version: t\n")
+    (tree / "verifiers" / "check.py").write_text("print('hi')\n")
+    before = _hash_tree(tree)
+
+    cache = tree / "verifiers" / "__pycache__"
+    cache.mkdir()
+    (cache / "check.cpython-312.pyc").write_bytes(b"\x00compiled\x00")
+    (tree / ".DS_Store").write_bytes(b"junk")
+    (tree / ".pytest_cache" / "v").mkdir(parents=True)
+    (tree / ".pytest_cache" / "v" / "cache").write_text("{}")
+
+    assert _hash_tree(tree) == before, "a runtime artefact moved the corpus fingerprint"
+    assert is_runtime_artefact(pathlib.Path("verifiers/__pycache__/x.pyc"))
+    assert not is_runtime_artefact(pathlib.Path("verifiers/check.py"))
+
+
+@pytest.mark.parametrize("version", ["v0", "v0.1", "v1"])
+def test_no_frozen_hash_file_names_a_runtime_artefact(version):
+    hashes = CORPUS_ROOT / version / "HASHES"
+    frozen = json.loads(hashes.read_text())
+    from taskbench.manifest import is_runtime_artefact
+
+    named = [f for f in frozen["files"] if is_runtime_artefact(pathlib.Path(f))]
+    assert not named, f"{version} froze runtime artefacts: {named}"

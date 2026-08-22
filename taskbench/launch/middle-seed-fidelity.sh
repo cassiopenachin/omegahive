@@ -34,7 +34,7 @@ set -euo pipefail
 # --- what this batch is --------------------------------------------------------------------
 # Both hashes are literals. If either corpus moved after it was frozen, this refuses rather
 # than quietly measuring something else under the same name.
-readonly EXPECT_WORKER_HASH="sha256:80df85c6fa98f0e55fe44e42fded82d97684f650dec60c8ec02c2e485bf96aae"
+readonly EXPECT_WORKER_HASH="sha256:5d8ae131dee0b7f029fd2a3e15a902a6ac44966ce6a71a8a7bfcc70864deb758"
 readonly EXPECT_REVIEW_HASH="sha256:94cd90ecea2f50d4e5b8a4a2a99d2f2aadb70f79c33a1a25af0861c5e471e6ab"
 # Literal, for the same reason the hashes are: asking the corpus which packets it has and
 # then checking that against itself is a check that agrees with itself.

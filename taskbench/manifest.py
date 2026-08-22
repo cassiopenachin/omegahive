@@ -527,11 +527,40 @@ def sha256_bytes(b: bytes) -> str:
     return "sha256:" + hashlib.sha256(b).hexdigest()
 
 
+#: Directory names and suffixes a RUNTIME leaves behind, never content a corpus declares.
+#: Hashing them made the fingerprint a property of the machine rather than of the corpus:
+#: a cell that runs a verifier writes a `.pyc` beside it, and the next `validate-corpus`
+#: then disagrees with the record that cell had just pinned. An instrument that invalidates
+#: itself by being used is worse than one that is never checked, because the check looks
+#: like it is working.
+#:
+#: An explicit list rather than "whatever git ignores": hashing has to give the same answer
+#: for a corpus exported without a `.git` directory as for one inside a checkout, and asking
+#: git would make it depend on a file the corpus does not contain.
+_RUNTIME_ARTEFACT_DIRS = frozenset({"__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache"})
+_RUNTIME_ARTEFACT_SUFFIXES = (".pyc", ".pyo", ".pyd")
+_RUNTIME_ARTEFACT_NAMES = frozenset({".DS_Store", "HASHES"})
+
+
+def is_runtime_artefact(rel: Path) -> bool:
+    """Is this path something a tool wrote, rather than something the corpus declares?"""
+    if _RUNTIME_ARTEFACT_DIRS & set(rel.parts):
+        return True
+    if rel.name in _RUNTIME_ARTEFACT_NAMES:
+        return True
+    return rel.suffix in _RUNTIME_ARTEFACT_SUFFIXES
+
+
 def _hash_tree(root: Path) -> dict[str, str]:
-    """Hash every corpus file, path-relative and sorted — the freeze fingerprint."""
+    """Hash every corpus file, path-relative and sorted — the freeze fingerprint.
+
+    Runtime artefacts are excluded; see `is_runtime_artefact`. The result is a property of
+    what the corpus commits, so a clean checkout and a working tree that has just run a cell
+    hash identically.
+    """
     out: dict[str, str] = {}
     for p in sorted(root.rglob("*")):
-        if p.is_file() and p.name != "HASHES":
+        if p.is_file() and not is_runtime_artefact(p.relative_to(root)):
             out[str(p.relative_to(root))] = sha256_bytes(p.read_bytes())
     return out
 

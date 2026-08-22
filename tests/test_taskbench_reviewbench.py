@@ -159,6 +159,16 @@ def test_the_frozen_hashes_match_the_tree(corpus):
     assert frozen["files"] == corpus.file_hashes
 
 
+def test_the_reviewer_corpus_freeze_ignores_runtime_artefacts(corpus):
+    """Same rule as the worker corpus, and the same reason: this corpus's checks are Python
+    too, so running a witness writes a `.pyc` under it."""
+    from taskbench.manifest import is_runtime_artefact
+
+    frozen = json.loads((REVIEW / "HASHES").read_text())
+    named = [f for f in frozen["files"] if is_runtime_artefact(Path(f))]
+    assert not named, f"the reviewer corpus froze runtime artefacts: {named}"
+
+
 # --- building a packet ------------------------------------------------------------------------
 
 @pytest.mark.skipif(not (WORKSPACE / ".git").exists(), reason="needs the workspace clone")
