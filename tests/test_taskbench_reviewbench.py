@@ -75,6 +75,52 @@ def test_gold_refuses_a_must_find_whose_only_basis_is_someone_saying_so():
         )
 
 
+def test_a_witness_must_distinguish_its_two_ends():
+    """A witness expecting the same exit at both states proves nothing about either.
+    Caught by the cross-vendor review of this branch."""
+    from taskbench.reviewbench import Witness
+
+    with pytest.raises(ValueError, match="distinguishes nothing"):
+        Witness.model_validate({"argv": ["true"], "bad_end_exit": 0, "accepted_end_exit": 0})
+    with pytest.raises(ValueError, match="synthetic -1"):
+        Witness.model_validate({"argv": ["true"], "bad_end_exit": -1, "accepted_end_exit": 0})
+    with pytest.raises(ValueError, match="relative subpath"):
+        Witness.model_validate({"argv": ["true"], "cwd": "/etc"})
+
+
+def test_a_pattern_that_does_not_compile_fails_the_corpus_not_a_grading_run():
+    with pytest.raises(ValueError, match="does not compile"):
+        MustFind.model_validate(
+            {
+                "id": "x", "severity": "high", "summary": "s",
+                "files": ["a.py"], "patterns": ["(unclosed"],
+                "witness": {"argv": [], "documentary": "d"},
+                "basis": ["diff"],
+            }
+        )
+
+
+def test_a_finding_matches_on_the_file_field_the_schema_asks_for():
+    """The verdict schema has a `file` field. A reviewer that fills it in correctly and does
+    not also repeat the path in its sentence was scored as a miss — the instrument
+    penalising a reviewer for using the form it handed out."""
+    m = MustFind.model_validate(
+        {
+            "id": "x", "severity": "high", "summary": "s",
+            "files": ["src/thing.py"], "patterns": ["idempot"],
+            "witness": {"argv": [], "documentary": "d"}, "basis": ["diff"],
+        }
+    )
+    assert m.matches(
+        {"file": "src/thing.py", "summary": "the idempotency check runs too late",
+         "why_blocking": "a replay is skipped", "evidence": "line 40"}
+    )
+    assert not m.matches(
+        {"file": "src/other.py", "summary": "the idempotency check runs too late",
+         "why_blocking": "", "evidence": ""}
+    )
+
+
 def test_gold_refuses_an_incoherent_disposition():
     base = {
         "packet_id": "p", "accepted_sha": "a" * 40, "adjudication": "x", "source_refs": [],

@@ -159,6 +159,38 @@ def run_batch(
     supersedes: str | None = None,
 ) -> tuple[Path, list[review_score.PacketScore]]:
     """Run the reviewer over every packet and write one immutable record."""
+    selected = list(corpus.catalog.packets) if packet_ids is None else list(packet_ids)
+    unknown = sorted(set(selected) - set(corpus.catalog.packets))
+    if unknown:
+        raise BatchAborted(f"unknown packet id(s): {unknown}")
+    if len(set(selected)) != len(selected):
+        raise BatchAborted(f"the same packet appears twice in this batch: {selected}")
+    if not selected:
+        raise BatchAborted("this batch selects no packet at all")
+
+    # The audit is a precondition, not an attachment. The launcher already stops on a
+    # dispute, and this refuses too: `run_batch` is callable directly, and a scored record
+    # produced without the audit — or over one that objected — would look exactly like a
+    # scored record produced with it.
+    if audits is not None:
+        missing = sorted(set(selected) - set(audits))
+        if missing:
+            raise BatchAborted(
+                f"the gold audit does not cover {missing}. Every packet in this batch needs "
+                "one before any of them is scored."
+            )
+        objected = sorted(
+            pid for pid in selected
+            if (audits[pid].get("disputed") or audits[pid].get("missing")
+                or str(audits[pid].get("verdict", "")).strip().lower() != "supported")
+        )
+        if objected:
+            raise BatchAborted(
+                f"the gold audit did not support {objected}. Resolving that is a decision: "
+                "either the evidence carries the must-find and the audit is wrong, or it does "
+                "not and this corpus needs a new version. It is not an edit to make here."
+            )
+
     work = Path(work_root)
     canary = ensure_canary(work)
     config = build_config(
@@ -167,13 +199,16 @@ def run_batch(
     )
     if audits:
         config["gold_audit"] = audits
+    # What was actually run, beside what the corpus holds. A record that named the whole
+    # catalog while a subset ran would misdescribe itself.
+    config["packets_run"] = selected
     root = record.open_record(out_dir, config)
     (root / "cells").mkdir(exist_ok=True)
 
     scores: list[review_score.PacketScore] = []
     rows: list[dict] = []
     try:
-        for pid in packet_ids or corpus.catalog.packets:
+        for pid in selected:
             cell = work / f"reviewcell-{pid}"
             built = review_packet.build_packet(
                 corpus, pid, dest=cell / "packet",
@@ -245,9 +280,7 @@ def run_batch(
             )
     finally:
         (root / "packets.json").write_text(json.dumps(rows, indent=2) + "\n")
-        fidelity = review_score.reviewer_fidelity(
-            scores, expected_packets=len(packet_ids or corpus.catalog.packets)
-        )
+        fidelity = review_score.reviewer_fidelity(scores, expected_packets=len(selected))
         (root / "fidelity.json").write_text(json.dumps(fidelity.to_json(), indent=2) + "\n")
         (root / "aggregate.md").write_text(render_aggregate(config, corpus, scores, fidelity))
     return root, scores
@@ -272,10 +305,12 @@ def render_aggregate(
     ]
     for s in scores:
         found = f"{sum(1 for m in s.must_find if m.found)}/{len(s.must_find)}"
+        verdict_cell = (
+            "INCONCLUSIVE" if s.inconclusive else ("yes" if s.disposition_correct else "NO")
+        )
         lines.append(
             f"| {s.packet_id} | {s.expected_disposition} | {s.reported_disposition or '—'} | "
-            f"{'yes' if s.disposition_correct else 'NO'} | {found} | "
-            f"{len(s.unsupported_high_severity)} |"
+            f"{verdict_cell} | {found} | {len(s.unsupported_high_severity)} |"
         )
     lines += ["", "## What decided each cell", ""]
     for s in scores:
@@ -303,7 +338,10 @@ def render_aggregate(
         "unchanged, where an unsupported high-severity finding IS the failure being measured.",
         "",
         "Read `cells/<id>/probe.json` before trusting any cell. A cell whose probe failed was "
-        "never run, and its score is absent rather than red.",
+        "never launched — the reviewer process does not start behind a failed probe — and its "
+        "row below is marked INCONCLUSIVE. The row and its `score.json` still exist, because "
+        "the diagnosis is the thing worth keeping; what they do not contain is a reviewer "
+        "opinion, and nothing in the fidelity verdict counts them as one.",
         "",
     ]
     return "\n".join(lines)

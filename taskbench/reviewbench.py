@@ -181,6 +181,20 @@ class Witness(BaseModel):
     def _executable_or_documentary(self) -> Witness:
         if not self.argv and not self.documentary.strip():
             raise ValueError("a witness needs either an argv to run or a documentary basis")
+        if self.argv:
+            if self.bad_end_exit == self.accepted_end_exit:
+                raise ValueError(
+                    f"a witness that expects exit {self.bad_end_exit} at BOTH ends "
+                    "distinguishes nothing; it would pass whatever the two states contain"
+                )
+            if self.bad_end_exit < 0 or self.accepted_end_exit < 0:
+                raise ValueError(
+                    "a negative expected exit collides with the synthetic -1 the runner uses "
+                    "for a witness that timed out or could not execute, so an infrastructure "
+                    "failure would be recorded as the expected outcome"
+                )
+            if Path(self.cwd).is_absolute() or ".." in Path(self.cwd).parts:
+                raise ValueError(f"witness cwd {self.cwd!r} must be a relative subpath")
         return self
 
 
@@ -206,6 +220,11 @@ class MustFind(BaseModel):
     def _basis_is_more_than_hearsay(self) -> MustFind:
         if not self.files or not self.patterns:
             raise ValueError(f"{self.id}: a must-find needs both files and patterns to match on")
+        for pattern in self.patterns:
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(f"{self.id}: pattern {pattern!r} does not compile: {exc}") from exc
         if set(self.basis) <= {"contemporaneous-review"}:
             raise ValueError(
                 f"{self.id}: the only basis is the contemporaneous review. A review statement "
@@ -214,13 +233,22 @@ class MustFind(BaseModel):
         return self
 
     def matches(self, finding: dict) -> bool:
-        """Does this reported finding name this defect?"""
-        blob = " ".join(
+        """Does this reported finding name this defect?
+
+        The location half reads `file` as well as the prose. The schema every reviewer is
+        given HAS a `file` field, so a verdict that fills it in correctly and does not also
+        repeat the path in its sentence was being scored as a miss — the instrument
+        penalising a reviewer for using the form it handed out.
+        """
+        located = " ".join(
+            str(finding.get(k, "")) for k in ("file", "evidence", "summary", "why_blocking")
+        )
+        if not any(f.lower() in located.lower() for f in self.files):
+            return False
+        described = " ".join(
             str(finding.get(k, "")) for k in ("summary", "why_blocking", "evidence", "detail")
         )
-        if not any(f.lower() in blob.lower() for f in self.files):
-            return False
-        return any(re.search(p, blob, re.I) for p in self.patterns)
+        return any(re.search(p, described, re.I) for p in self.patterns)
 
 
 class OptionalFinding(BaseModel):
@@ -241,14 +269,17 @@ class OptionalFinding(BaseModel):
     patterns: list[str] = Field(default_factory=list)
 
     def matches(self, finding: dict) -> bool:
-        blob = " ".join(
+        located = " ".join(
+            str(finding.get(k, "")) for k in ("file", "evidence", "summary", "why_blocking")
+        )
+        if self.files and not any(f.lower() in located.lower() for f in self.files):
+            return False
+        described = " ".join(
             str(finding.get(k, "")) for k in ("summary", "why_blocking", "evidence", "detail")
         )
-        if self.files and not any(f.lower() in blob.lower() for f in self.files):
-            return False
         if not self.patterns:
             return bool(self.files)
-        return any(re.search(p, blob, re.I) for p in self.patterns)
+        return any(re.search(p, described, re.I) for p in self.patterns)
 
 
 class PacketGold(BaseModel):
@@ -359,6 +390,16 @@ def load_review_corpus(root: str | Path) -> LoadedReviewCorpus:
     if not (root / "brief.md").is_file():
         raise ValueError("the reviewer corpus has no brief.md")
 
+    on_disk = {p.stem for p in (root / "gold").glob("*.yaml")}
+    orphaned = sorted(on_disk - set(packets))
+    if orphaned:
+        raise ValueError(
+            f"gold files with no packet: {orphaned}. A stale answer key left in the tree is "
+            "hashed into the corpus and read by nobody, which is how a removed packet's truth "
+            "quietly outlives it."
+        )
+
+    clean = 0
     for pid in sorted(packets):
         gold_path = root / "gold" / f"{pid}.yaml"
         if not gold_path.is_file():
@@ -366,6 +407,13 @@ def load_review_corpus(root: str | Path) -> LoadedReviewCorpus:
         gold = PacketGold.model_validate(yaml.safe_load(gold_path.read_text()))
         if gold.packet_id != pid:
             raise ValueError(f"{gold_path}: packet_id {gold.packet_id!r} does not match {pid!r}")
+        clean += gold.expected_disposition == "no_required_change"
+    if not clean:
+        raise ValueError(
+            "no packet in this corpus is expected to need no change. Without one there is no "
+            "measurement of false positives at all, and a reviewer that flags everything "
+            "scores well on every remaining packet."
+        )
 
     file_hashes = _hash_tree(root)
     content_hash = sha256_bytes(

@@ -18,7 +18,10 @@ cannot be demonstrated.
 
 from __future__ import annotations
 
+import contextlib
+import os
 import shutil
+import signal
 import subprocess
 import tempfile
 from dataclasses import asdict, dataclass, field
@@ -61,15 +64,28 @@ class WitnessReport:
 
 
 def _run(argv: list[str], cwd: Path, timeout_s: int) -> tuple[int, str]:
+    """Run one witness in its own process group, and take the group down on timeout.
+
+    A witness shells out through `uv run`, so the process that would be killed is not the
+    one holding the output pipe. Without the group kill, the timeout that bounds validation
+    waits on a grandchild instead.
+    """
     try:
-        proc = subprocess.run(  # noqa: S603 — argv from a hashed corpus, shell=False
-            argv, cwd=str(cwd), capture_output=True, text=True, timeout=timeout_s, check=False
+        proc = subprocess.Popen(  # noqa: S603 — argv from a hashed corpus, shell=False
+            argv, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, start_new_session=True,
         )
-        return proc.returncode, ((proc.stdout or "") + (proc.stderr or ""))[-2000:]
-    except subprocess.TimeoutExpired:
-        return -1, f"(timed out after {timeout_s}s)"
     except OSError as exc:
         return -1, f"(could not execute: {exc})"
+    try:
+        out, _ = proc.communicate(timeout=timeout_s)
+        return proc.returncode, (out or "")[-2000:]
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.communicate(timeout=30)
+        return -1, f"(timed out after {timeout_s}s; the process group was killed)"
 
 
 def check_one(
@@ -92,7 +108,12 @@ def check_one(
         exits: dict[str, int] = {}
         outputs: dict[str, str] = {}
         for label, sha in (("bad", head_sha), ("accepted", accepted_sha)):
-            tree = tmp / label / (w.cwd or "code")
+            # The repository always lands at `<state>/code`; `cwd` then selects a directory
+            # WITHIN that state, exactly as a packet check's `cwd` does. It used to be the
+            # export destination, so any witness naming a subdirectory would have found the
+            # repository root's files sitting there instead of that subdirectory's.
+            state = tmp / label
+            tree = state / "code"
             export_tree(source, sha, tree)
             # A single-baseline commit, because some witnesses read the tree's own baseline.
             for cmd in (
@@ -102,9 +123,19 @@ def check_one(
                 ["git", "-C", str(tree), "add", "-A"],
                 ["git", "-C", str(tree), "commit", "--quiet", "-m", "state", "--no-verify"],
             ):
-                subprocess.run(cmd, capture_output=True, check=False)
+                # NOT check=False-and-forget. A failed `add` or `commit` leaves no baseline
+                # commit, and a witness that reads the baseline would then report a
+                # difference between the two states that is really a difference between two
+                # broken exports.
+                out = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=300)
+                if out.returncode != 0:
+                    raise PacketError(
+                        f"could not build the {label}-end state for {must_find.id}: "
+                        f"`{' '.join(cmd[:4])}` failed: {out.stderr.strip()[-300:]}"
+                    )
+            workdir = state / w.cwd if w.cwd else state
             argv = resolve_argv(w.argv, corpus_root=corpus.root, tree=tree)
-            exits[label], outputs[label] = _run(argv, tree, w.timeout_s)
+            exits[label], outputs[label] = _run(argv, workdir, w.timeout_s)
         ok = exits["bad"] == w.bad_end_exit and exits["accepted"] == w.accepted_end_exit
         detail = ""
         if not ok:
@@ -131,7 +162,11 @@ def validate(
     """Run every packet's witnesses. No model is called and nothing is written."""
     report = WitnessReport()
     overrides = dict(source_repos or {})
-    for pid in packet_ids or sorted(corpus.packets):
+    selected = sorted(corpus.packets) if packet_ids is None else packet_ids
+    unknown = sorted(set(selected) - set(corpus.packets))
+    if unknown:
+        report.problems.append(f"unknown packet id(s): {unknown}")
+    for pid in [p for p in selected if p in corpus.packets]:
         packet = corpus.packets[pid]
         gold = corpus.gold(pid)
         local = overrides.get(packet.code.repo) or packet.code.local_path
