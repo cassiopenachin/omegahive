@@ -15,6 +15,16 @@ findings are reported and not penalised — with exactly one exception, the clea
 where an unsupported finding IS the failure mode being measured. There the bar is
 `acceptable_optional`: a finding that matches one of those is a fair reading of real code,
 and anything else on a packet that shipped unchanged is a false positive.
+
+Two limits of that exception, stated because the code is narrower than the sentence above
+would suggest on its own. First, only `critical`, `high` and `approach` inventions decide
+fidelity — that is the rule the order fixes, and a `medium` invention is carried in
+`unsupported_lower_severity` and reported rather than scored. Second, `acceptable_optional`
+does not make a clean packet's finding free: the brief defines `findings` as defects the
+reviewer would REQUIRE changed, so listing one at all means answering `required_change`,
+and that disposition is wrong here. What `acceptable_optional` buys is that the finding is
+not ALSO counted as an invention. The rule allows one wrong disposition out of five, which
+is where a fair-but-firm reading of the clean packet lands.
 """
 
 from __future__ import annotations
@@ -43,8 +53,14 @@ class PacketScore:
     must_find: list[MustFindResult] = field(default_factory=list)
     #: Findings that matched neither a must-find nor an acceptable-optional entry.
     unmatched_findings: list[dict] = field(default_factory=list)
-    #: On a clean packet only: unmatched findings at high or critical severity.
+    #: On a clean packet only: unmatched findings at critical, high or approach severity.
+    #: These decide fidelity, by the rule the order fixes before any cell runs.
     unsupported_high_severity: list[dict] = field(default_factory=list)
+    #: On a clean packet only: unmatched findings BELOW that bar. The order's rule does not
+    #: let these decide green, so they do not — but a reviewer inventing medium-severity
+    #: defects against work that shipped unchanged is a real signal, reported here rather
+    #: than left invisible.
+    unsupported_lower_severity: list[dict] = field(default_factory=list)
     #: The cell said nothing usable. Never scored as a reviewer opinion.
     inconclusive: bool = False
     because: str = ""
@@ -81,6 +97,20 @@ def score_packet(
             disposition_correct=False, inconclusive=True,
             because="`findings` is not a list, so nothing in this verdict can be read",
         )
+    malformed = [i for i, f in enumerate(findings) if not isinstance(f, dict)]
+    if malformed:
+        # Skipping these and scoring the rest would let a verdict earn disposition credit
+        # while carrying entries nobody can read. "The reviewer did not answer" must never
+        # read as "the reviewer answered and I could not match it".
+        return PacketScore(
+            packet_id=gold.packet_id, blind_id=blind_id,
+            expected_disposition=gold.expected_disposition, reported_disposition="",
+            disposition_correct=False, inconclusive=True,
+            because=(
+                f"{len(malformed)} finding(s) are not objects (indices {malformed}), so this "
+                "verdict cannot be read as a whole"
+            ),
+        )
     if reported not in ("required_change", "no_required_change"):
         return PacketScore(
             packet_id=gold.packet_id, blind_id=blind_id,
@@ -102,8 +132,16 @@ def score_packet(
     results: list[MustFindResult] = []
     claimed: set[int] = set()
     for m in gold.must_find:
+        # One reported finding satisfies at most ONE must-find. Without the `claimed`
+        # exclusion a single broad finding that mentions two gold defects marks both as
+        # found, and a reviewer that noticed one thing is credited with noticing two —
+        # which is the "scored well without having found it" failure this module exists
+        # to prevent.
         hit = next(
-            ((i, f) for i, f in enumerate(findings) if isinstance(f, dict) and m.matches(f)),
+            (
+                (i, f) for i, f in enumerate(findings)
+                if i not in claimed and isinstance(f, dict) and m.matches(f)
+            ),
             None,
         )
         if hit is None:
@@ -124,11 +162,12 @@ def score_packet(
         unmatched.append(f)
 
     unsupported: list[dict] = []
+    unsupported_lower: list[dict] = []
     if gold.expected_disposition == "no_required_change":
-        unsupported = [
-            f for f in unmatched
-            if str(f.get("severity", "")).strip().lower() in ("critical", "high", "approach")
-        ]
+        deciding = ("critical", "high", "approach")
+        for f in unmatched:
+            sev = str(f.get("severity", "")).strip().lower()
+            (unsupported if sev in deciding else unsupported_lower).append(f)
 
     correct = reported == gold.expected_disposition
     missed = [m.id for m in results if not m.found]
@@ -148,6 +187,7 @@ def score_packet(
         must_find=results,
         unmatched_findings=unmatched,
         unsupported_high_severity=unsupported,
+        unsupported_lower_severity=unsupported_lower,
         because="; ".join(reasons) if reasons else "disposition correct, every must-find named",
     )
 
@@ -172,9 +212,19 @@ class ReviewerFidelity:
 MIN_DISPOSITIONS_CORRECT = 4
 
 
-def reviewer_fidelity(scores: list[PacketScore]) -> ReviewerFidelity:
+def reviewer_fidelity(
+    scores: list[PacketScore], *, expected_packets: int | None = None
+) -> ReviewerFidelity:
     """Green only when every blocking defect was found, at least four of five dispositions
-    are right, and the clean packet drew no unsupported high-severity finding."""
+    are right, and the clean packet drew no unsupported high-severity finding.
+
+    `expected_packets` is how many packets the corpus HAS. Counting only the scores handed
+    in would let four correct cells out of an intended five read as green while the fifth —
+    and every blocking defect in it — simply never appeared; and four copies of one correct
+    score would do the same. A rule that says "four of five" has to know what five is.
+    """
+    ids = [s.packet_id for s in scores]
+    duplicated = sorted({i for i in ids if ids.count(i) > 1})
     inconclusive = [s.packet_id for s in scores if s.inconclusive]
     scored = [s for s in scores if not s.inconclusive]
     blocking_all = all(s.blocking_found for s in scored)
@@ -182,6 +232,16 @@ def reviewer_fidelity(scores: list[PacketScore]) -> ReviewerFidelity:
     unsupported = sum(len(s.unsupported_high_severity) for s in scored)
 
     reasons: list[str] = []
+    if duplicated:
+        reasons.append(
+            f"the same packet was scored more than once ({', '.join(duplicated)}); a "
+            "duplicated cell inflates the count the rule reads"
+        )
+    if expected_packets is not None and len(scores) != expected_packets:
+        reasons.append(
+            f"{len(scores)} cell(s) were scored and the corpus has {expected_packets}. A "
+            "packet that was never run cannot be counted as anything, least of all as green"
+        )
     if inconclusive:
         reasons.append(
             f"{len(inconclusive)} cell(s) produced no usable verdict ({', '.join(inconclusive)}); "

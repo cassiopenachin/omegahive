@@ -245,7 +245,9 @@ def run_batch(
             )
     finally:
         (root / "packets.json").write_text(json.dumps(rows, indent=2) + "\n")
-        fidelity = review_score.reviewer_fidelity(scores)
+        fidelity = review_score.reviewer_fidelity(
+            scores, expected_packets=len(packet_ids or corpus.catalog.packets)
+        )
         (root / "fidelity.json").write_text(json.dumps(fidelity.to_json(), indent=2) + "\n")
         (root / "aggregate.md").write_text(render_aggregate(config, corpus, scores, fidelity))
     return root, scores

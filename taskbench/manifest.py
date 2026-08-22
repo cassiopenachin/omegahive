@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -412,7 +412,9 @@ class CorpusCatalog(BaseModel):
     held_out: list[str]
     #: Which order classes this corpus may seed. v0/v0.1 omit it and get the bounded-only
     #: default they were frozen under; v1 widens it deliberately and visibly.
-    allowed_task_classes: list[TaskClass] = Field(default_factory=lambda: ["bounded"])
+    allowed_task_classes: list[TaskClass] = Field(
+        default_factory=lambda: [cast(TaskClass, "bounded")]
+    )
     #: Pins for the held-out set. When present it must cover the held-out set exactly, and
     #: those tasks then need no manifest — see `load_corpus`.
     reserved: list[ReservedTask] = Field(default_factory=list)

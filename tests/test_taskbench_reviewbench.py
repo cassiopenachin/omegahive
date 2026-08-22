@@ -10,9 +10,9 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
-import yaml
 from taskbench import CORPUS_ROOT
 from taskbench.review_cell import HomeError, ReviewerCellSpec, build_fresh_home, run_probe
 from taskbench.review_packet import build_packet
@@ -285,6 +285,65 @@ def test_on_the_clean_packet_an_unsupported_high_severity_finding_is_the_failure
     assert not fair.unsupported_high_severity, "an acceptable-optional reading is not invented"
 
 
+def test_one_finding_cannot_satisfy_two_must_finds():
+    """A broad finding that brushes two gold defects credits a reviewer with noticing two
+    things when it noticed one. Caught by the cross-vendor review of this branch."""
+    gold = _gold(
+        must_find=[
+            {
+                "id": "first", "severity": "critical", "summary": "s",
+                "files": ["src/thing.py"], "patterns": ["idempot"],
+                "witness": {"argv": ["true"]}, "basis": ["order", "diff"],
+            },
+            {
+                "id": "second", "severity": "high", "summary": "s",
+                "files": ["src/thing.py"], "patterns": ["early.return"],
+                "witness": {"argv": ["true"]}, "basis": ["order", "diff"],
+            },
+        ]
+    )
+    broad = _finding(summary="the idempotency early-return in src/thing.py is misplaced")
+    s = score_packet(gold, {"disposition": "required_change", "findings": [broad]})
+    assert [m.found for m in s.must_find] == [True, False]
+
+    s2 = score_packet(
+        gold,
+        {
+            "disposition": "required_change",
+            "findings": [
+                broad,
+                _finding(summary="src/thing.py returns early before registering",
+                         why_blocking="the early-return skips it"),
+            ],
+        },
+    )
+    assert all(m.found for m in s2.must_find)
+
+
+def test_a_finding_that_is_not_an_object_makes_the_verdict_unreadable():
+    s = score_packet(
+        _gold(), {"disposition": "required_change", "findings": [_finding(), "oops"]}
+    )
+    assert s.inconclusive and "not objects" in s.because
+
+
+def test_a_lower_severity_invention_on_the_clean_packet_is_reported_not_scored():
+    """The order's rule makes only critical/high/approach decide green. A medium invention
+    against work that shipped unchanged is still a signal, so it is carried in its own field
+    rather than dropped."""
+    gold = _gold(expected_disposition="no_required_change", must_find=[])
+    s = score_packet(
+        gold,
+        {
+            "disposition": "required_change",
+            "findings": [_finding(summary="invented", severity="medium", file="src/x.py",
+                                  evidence="src/x.py:1")],
+        },
+    )
+    assert not s.unsupported_high_severity
+    assert len(s.unsupported_lower_severity) == 1
+
+
 def test_a_self_inconsistent_verdict_is_inconclusive_not_red():
     s = score_packet(_gold(), {"disposition": "no_required_change", "findings": [_finding()]})
     assert s.inconclusive and "self-inconsistent" in s.because
@@ -298,7 +357,7 @@ def test_no_verdict_at_all_is_inconclusive():
 # --- the fidelity rule -------------------------------------------------------------------------
 
 def _score(**over) -> PacketScore:
-    base = {
+    base: dict[str, Any] = {
         "packet_id": "p", "blind_id": "b", "expected_disposition": "required_change",
         "reported_disposition": "required_change", "disposition_correct": True,
     }
@@ -332,6 +391,19 @@ def test_fidelity_is_green_only_under_all_three_conditions():
 
     invented = [*good[:4], _score(packet_id="p4", unsupported_high_severity=[{"summary": "x"}])]
     assert not reviewer_fidelity(invented).green
+
+
+def test_a_short_or_duplicated_score_set_is_never_green():
+    """Four correct cells out of an intended five is not four of five — the fifth packet,
+    and every blocking defect in it, simply never appeared. Caught by the cross-vendor
+    review of this branch."""
+    four = [_score(packet_id=f"p{i}") for i in range(4)]
+    assert reviewer_fidelity(four).green, "with no expectation stated, four is all there is"
+    short = reviewer_fidelity(four, expected_packets=5)
+    assert not short.green and "never run" in short.because
+
+    duped = [*[_score(packet_id=f"p{i}") for i in range(4)], _score(packet_id="p0")]
+    assert not reviewer_fidelity(duped, expected_packets=5).green
 
 
 def test_a_cell_that_produced_nothing_is_never_green():
