@@ -1,0 +1,175 @@
+# taskbench corpus v1 — manifest for hive-mcp. Frozen; edits increment the corpus version.
+id: hive-mcp
+project: omegahive
+run: omegahive
+title: hive-mcp — live read-only hive state through the desktop bridge
+task_class: standard
+work_shape: api-service
+replayable_because: 'The order specifies its own interface precisely enough to grade without
+  reading a patch: three paths under /api/v1 on the existing operator origin, two MCP tools by
+  name, one executable by name, stdio transport, stdout that carries protocol only. The
+  application factory the routes must attach to already accepted injected factories and already
+  had a memory-backed demo mode at the task''s baseline, so the routes are called for real with
+  no database; and a stdio server''s tool inventory answers a plain protocol handshake with no
+  upstream. The two legs that need a machine this instrument does not have — the operator''s
+  desktop-bridge round-trip and a deployment check over live containers — are declared, not
+  quietly scored.'
+workspace_repo: hive-workspace
+workspace_inputs:
+- path: projects/omegahive/orders/2026-08-13-hive-mcp.md
+  sha: 2217150cb1ff7a928e24fc7acfe992c9549b891a
+  role: order
+- path: projects/omegahive/WORKER.md
+  sha: a07979a4e21dfc40605f335b8e7f927ac1f9c687
+  role: context
+- path: projects/omegahive/decisions.md
+  sha: cd42ce639e9287d7a36eb2ba04756c79eebf165f
+  role: context
+- path: projects/omegahive/capacity-routing.md
+  sha: cc36021e5be3e456d8a3e96ca4016142b8cdf738
+  role: context
+- path: projects/omegahive/2026-08-12-trigger-sweep.md
+  sha: cc36021e5be3e456d8a3e96ca4016142b8cdf738
+  role: context
+code:
+  repo: cassiopenachin/omegahive
+  pre_task_base_sha: cff5ceb4cbc01a82f1e9b303ec365a36c72593ea
+  local_path: ~/src/SNET/omegahive
+expected_output_kinds:
+- code_patch
+- tests
+- doc_update
+required_artefacts:
+- src/omegahive/ui/app.py
+required_changes:
+- src/omegahive/ui/*
+environment_needs:
+- uv on PATH, with a warm cache or network. The check builds a second, standalone project's
+  environment as well as the repository's own.
+- A reachable Postgres for the repository's own test suite. The API contract check itself needs
+  no database — it builds the application in its memory-backed demo mode.
+- 'Network reachability for the official protocol SDK the order requires the executable to pin.
+  A cell with no package cache and no network cannot build that executable, and the resulting
+  red is an environment diagnosis rather than a model result.'
+verifiers:
+- id: read-surface-contract
+  argv:
+  - uv
+  - run
+  - --frozen
+  - python
+  - '{corpus}/verifiers/hive_mcp_contract.py'
+  timeout_s: 2400
+  description: 'the interface the order names, asked of the running application and the built
+    executable: three read-only paths under /api/v1 on the same origin as the operator view,
+    responses that carry a schema version, an observed time, the cut in force and each run''s
+    cursor and generation, a typed JSON not-found for an unknown run or task, a bounded
+    task-specific event timeline, an executable named omegahive-mcp whose own suite is green,
+    stdout that carries protocol only, and exactly the two tools the order names'
+- id: pytest
+  argv:
+  - uv
+  - run
+  - --frozen
+  - pytest
+  - -q
+  timeout_s: 2400
+  description: the repository's suite green — the order's no-regressions bar
+- id: ruff
+  argv:
+  - uv
+  - run
+  - --frozen
+  - ruff
+  - check
+  - .
+  timeout_s: 600
+  description: lint clean
+- id: mypy
+  argv:
+  - uv
+  - run
+  - --frozen
+  - mypy
+  timeout_s: 900
+  description: types clean
+checklist:
+- id: one-read-service
+  text: The operator view and the JSON surface call one shared read service rather than
+    maintaining parallel projections, and fold, window, run-discovery, visibility, cursor and
+    restore semantics stayed with their current owners.
+- id: honest-duration
+  text: Elapsed-in-state is reported only where the run's clock supports it; a simulated or
+    otherwise non-wall-clock run reports duration unavailable with its clock kind rather than
+    subtracting logical ticks from wall time.
+- id: bounded-output
+  text: Full history has an explicit maximum and a truncation marker, and task events are
+    newest-first or cursor-paged with a documented hard cap. No unbounded event dump can reach a
+    model's context.
+- id: fixed-origin
+  text: The executable reads its upstream from operator-owned configuration validated at
+    startup, appends only its own fixed paths, and no tool argument can select a host, scheme,
+    port, path, redirect target or TLS mode.
+- id: distinct-safe-errors
+  text: Unreachable, timeout, invalid certificate, schema mismatch and malformed JSON produce
+    distinct safe errors, and no stale board is ever represented as current.
+- id: no-secondary-capability
+  text: No prompt, sampling, elicitation, resource, write tool, generic fetch or model callback
+    is registered, and the process opens no listening port and holds no database, gateway or
+    provider credential.
+- id: payloads-are-data
+  text: Event payload text, refs, filenames and URLs are returned as data and are never
+    interpreted as instructions or tool arguments by the service.
+- id: setup-is-one-act
+  text: One no-argument setup entry point installs or refreshes the executable, asks once for
+    the origin if its own config is absent, verifies its pins and upstream health, runs a
+    list-tools smoke, and prints ready-to-paste standard registration blocks — without editing
+    any client's global configuration.
+- id: capacity-extension-contract
+  text: The documentation states precisely how a later capacity order adds its own response
+    object and third tool through the same client and process, without making that order
+    conform to this one's shapes.
+- id: result-report
+  text: A result report exists under the project's reports directory carrying What shipped / How
+    verified / To operate / Reflection, and its claims match what the attempt actually did.
+  applicable: offline
+stop_lines:
+- id: no-write-capability
+  text: No write tool, emit, assignment, answer, close, review, launch, shell, SQL, filesystem,
+    git, browser-control or arbitrary-fetch capability. Read authority is not a stepping stone
+    to seat authority.
+- id: no-credential-on-the-client
+  text: No database or SSH connection from the client process; no gateway credential in the API
+    or the server; no remote CLI over SSH as the transport.
+- id: no-new-listener
+  text: No new listener anywhere and no new port on the server host. The access layer, reverse
+    proxy, tailnet, certificates and host binding are untouched.
+- id: no-cache-as-live
+  text: No git-generated status snapshot, automated workspace commit, cache presented as live
+    state, or state stored outside the spine.
+- id: no-capacity-inference
+  text: No usage-window, token, cost, model, provider, harness, review-attempt or structured-
+    progress inference. A later order owns those facts.
+- id: no-doctrine-edit
+  text: No workspace doctrine edit. Any adoption text is listed for separate operator
+    disposition.
+non_replayable_legs:
+- leg: The designed operator round-trip — deploy from main, run the setup command, register the
+    printed block in the desktop bridge, and drive both tools from a fresh bridge-connected
+    session, twice, across a client restart.
+  reason: Needs a second physical machine, a desktop bridge and a merged deployment. An offline
+    replay has none of them. What the attempt WROTE about the round-trip — the steps, the
+    registration shape, the fallback — is still in the diff and is graded.
+  executed_by: operator
+- leg: Deployment checks proving the new routes share the existing service, route, auth
+    dependency and reader credential on the live stack.
+  reason: Requires the running deployment, which this instrument never touches.
+  executed_by: operator
+- leg: Announce the result on the spine per WORKER.md.
+  reason: A spine emit, which this instrument's own scope forbids. The report the order asks for
+    IS written and graded — only the announcement is out of reach.
+  executed_by: not-executed
+writable_workspace_paths:
+- projects/omegahive/reports/*
+rubric: rubrics/hive-mcp.md
+grading: grading/hive-mcp.yaml

@@ -1,0 +1,184 @@
+# GRADER-ONLY. Never enters a packet directory.
+packet_id: sole-write-path-pre-correctness
+expected_disposition: required_change
+accepted_sha: 47994ae43a6f8ed3a513094a4e63778d482559b4
+must_find:
+- id: bootstrap-arms-a-half-configured-cutover
+  severity: high
+  summary: 'The documented, safe-to-re-run bootstrap seeds every credential example in the
+    repository root, a set this change silently grew from one to three, and both new examples
+    carry live placeholder connection strings. On a host that has NOT cut over, running it
+    therefore SETS both new variables to garbage: the fallback the whole design rests on stops
+    firing, and every write path, the migrator, the test suite''s scratch databases and the backup
+    drills all start authenticating as roles that have no password yet. "Not cut over" must stay
+    indistinguishable from "this file does not exist".'
+  files:
+  - hive-init-secrets
+  - gateway.env.example
+  - owner.env.example
+  patterns:
+  - bootstrap|init-secrets|seed
+  - example
+  - placeholder|CHANGEME|garbage
+  - fallback
+  - pre-?cutover|not cut over
+  witness:
+    argv:
+    - python3
+    - '{corpus}/checks/text_property.py'
+    - --file
+    - gateway.env.example
+    - --absent
+    - ^[A-Z][A-Z_]*=
+    - --why
+    - a seeded example must be inert — present, correct in shape, setting nothing
+    cwd: code
+    bad_end_exit: 1
+    accepted_end_exit: 0
+  basis:
+  - order
+  - diff
+  - repair
+  - contemporaneous-review
+- id: deploy-checks-cannot-tell-unconfigured-from-failed
+  severity: high
+  summary: 'The deploy-time harness resolves the scratch spine''s per-role connection strings
+    through a command whose error output and exit status it discards, and a genuinely unconfigured
+    role legitimately produces an empty answer — so "there is no write credential" and "that
+    command did not run" arrive identically. The realistic trigger is a stale image. The
+    consequence is not a failed check: the write credential is left out of the override, so the
+    write path keeps pointing at the DURABLE database while the harness believes it is on a
+    scratch one.'
+  files:
+  - deploy_checks.sh
+  patterns:
+  - role_urls|roleurls
+  - exit status|return code|swallow|2>/dev/null|\|\| true
+  - stale image
+  - durable|production
+  witness:
+    argv:
+    - python3
+    - '{corpus}/checks/text_property.py'
+    - --file
+    - scripts/deploy_checks.sh
+    - --section-from
+    - ^role_urls\(\)
+    - --section-to
+    - ^\}
+    - --present
+    - rc=\$\?
+    - --why
+    - the resolver's exit status must be captured and acted on, not discarded
+    cwd: code
+    bad_end_exit: 1
+    accepted_end_exit: 0
+  basis:
+  - order
+  - diff
+  - repair
+  - contemporaneous-review
+- id: could-not-run-reads-as-found-nothing
+  severity: medium
+  summary: The deploy check that runs the credential scan treats "the scan could not execute" and
+    "the scan found something" as the same non-fatal outcome, so a missing dependency makes the
+    deployment go green over a scan that never ran.
+  files:
+  - deploy_checks.sh
+  - credential_scope_scan.sh
+  patterns:
+  - could not run|did not run|never ran
+  - exit (code|status)|WARN|non-fatal
+  - jq|dependency|missing
+  witness:
+    argv: []
+    documentary: 'At this packet''s head the scan''s caller collapses both outcomes into one
+      non-fatal warning. At the accepted state the scan exits 2 for could-not-run and 1 for
+      findings, and 2 is always fatal — the policy knob does not reach it. The difference is
+      visible in scripts/deploy_checks.sh and scripts/credential_scope_scan.sh between
+      bb0ba023cf4a193b08ea1e1df9cd5ceb784a3af0 and 47994ae43a6f8ed3a513094a4e63778d482559b4.'
+  basis:
+  - order
+  - diff
+  - repair
+- id: test-passes-whether-or-not-the-input-was-used
+  severity: medium
+  summary: The test that is supposed to prove the scan reads the manifest handed to it on standard
+    input passes either way, because the repository's own manifest produces the same verdict. It
+    proves nothing about the behaviour it names.
+  files:
+  - test_credential_scan.py
+  patterns:
+  - stdin|standard input
+  - vacuous|passes (either way|regardless)|proves nothing
+  - manifest
+  witness:
+    argv: []
+    documentary: 'At this packet''s head the assertion is reachable with the repository''s own
+      manifest, so honouring the injected one and ignoring it are indistinguishable. At the
+      accepted state the test is built around a service that exists ONLY in the injected manifest,
+      so a clean verdict is reachable only if that manifest was used. Visible in
+      tests/test_credential_scan.py between the two states.'
+  basis:
+  - diff
+  - repair
+acceptable_optional:
+- id: create-role-check-then-act
+  summary: Cluster-global role creation is check-then-act while concurrent scratch databases are
+    the documented normal mode, so two suites starting together can race. Real, and caught in the
+    same round.
+  files:
+  - tests/scratch_db.py
+  - migrations/0003_two_roles.sql
+  patterns:
+  - race|concurren|check-then-act|duplicate
+- id: rollback-search-path
+  summary: The rollback's guard names a schema-qualified table while its delete resolves through
+    the search path, so on a cluster ordered differently the ledger keeps a claim it should drop.
+  files:
+  - roles_rollback.sql
+  patterns:
+  - search_path|schema|rollback|ledger
+- id: refused-helper-swallows-its-own-privilege-error
+  summary: A test helper swallows the privilege error raised by the role switch itself, which
+    would make every "cannot" assertion pass vacuously on a non-superuser session.
+  files:
+  - test_two_roles.py
+  patterns:
+  - vacuous|swallow|SET (LOCAL )?ROLE|InsufficientPrivilege
+- id: restore-db-name-interpolated-unquoted
+  summary: A generated database name reaches a shell client unquoted. Pre-existing and
+    unreachable at this state; raising it is fair and it was deliberately not fixed here.
+  files:
+  - pg_restore_check.sh
+  patterns:
+  - quote|interpolat|OMEGAHIVE_RESTORE_DB
+- id: two-compose-resolvers-disagree
+  summary: Two compose-command resolvers order their candidates differently. Real, and
+    consolidating them would move the live deployment's route, which this change is stop-lined
+    against.
+  files:
+  - deploy_checks.sh
+  - hive-common.sh
+  patterns:
+  - compose|resolver|podman|docker
+- id: column-scoped-update-grants
+  summary: A question about why the write grants are column-scoped rather than table-wide. The
+    narrow grant is the correct choice and explaining it is fair.
+  files:
+  - migrations/0003_two_roles.sql
+  patterns:
+  - grant|UPDATE|column
+adjudication: 'The two high-severity must-finds each carry a property check that fails at this
+  packet''s head and passes at the state the repair reached, plus the repair itself, plus the
+  order — the order requires the credential-scope work to be non-destructive on a host that has
+  not cut over, and requires the worker never to mutate the durable stack. The two medium ones are
+  carried documentarily, naming the exact files and the two commits between which the property
+  changes; they are not blocking under the fidelity rule and do not decide green. The nine
+  findings the same review round raised that the repair declined, or that belong to lenses this
+  packet is not about, are acceptable_optional rather than gold: a finding the diff and the repair
+  do not support is not gold even when a real reviewer said it. A fresh strong-model audit of this
+  set runs before any scored reviewer cell.'
+source_refs:
+- projects/omegahive/orders/2026-07-29-sole-write-path.md@8d95b46edacc4e7283737377a54af9e311a52600
+- projects/omegahive/reports/2026-08-01-sole-write-path-result.md

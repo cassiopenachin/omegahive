@@ -1,0 +1,92 @@
+# taskbench corpus v1 — the middle-tier seed for HIP-1.
+#
+# Corpus v0.1 did its job and then saturated: the incumbent and DeepSeek both finished 5/5
+# on it. It can qualify a cheap route for bounded, low-complexity hive work. It cannot
+# answer whether a middle tier can carry ORDINARY tenant work, because every task in it is
+# small enough that finishing says little.
+#
+# v1 holds five larger, less mechanically bounded orders. None of them is `bounded` class:
+# each leaves real design or authorship to the worker, and each was closed through a review
+# cycle rather than in one pass. Where v0.1's manifests argue `bounded_because`, these argue
+# `replayable_because` — outside the bounded class, "it closed once" stops implying "it can
+# close again", and that is the claim a seed has to make good on.
+#
+# COMPOSITION, stated so no reader has to infer it and no aggregate can quietly widen:
+# three hive-infrastructure tasks (cli-qol-2, hive-mcp, sole-write-path) and two tenant
+# research/writing tasks (fol-pln-mapping, pw-writeup). Five tasks give 20-point resolution.
+# This is NOT a claim about software work in general, and the two tenant tasks are not a
+# claim about applied PLN research; they are a second repository, a second ecosystem and
+# two work shapes the hive corpus does not contain.
+#
+# THE RESERVED SET is carried as pins rather than as manifests (`reserved` below). A
+# reservation has to survive; it does not have to be gradeable today, and building a grader
+# for work nobody may run cannot be validated at either endpoint. Two of the three
+# reservations are PARTIAL and say so: a held-in task that launched after a reserved one
+# necessarily starts from a tree that already contains the reserved task's accepted code.
+#
+# Changing anything under this directory after a cell has run against it increments
+# `corpus_version` and invalidates every earlier cell. `taskbench freeze` refuses to
+# re-freeze a version a record already pins.
+
+corpus_version: v1
+frozen_on: '2026-08-21'
+description: Task-replay corpus v1 — five middle-tier orders across the hive and its tenant
+  project, seeded for the middle-tier worker study. Larger and less mechanically bounded than
+  v0.1's eight; every one of them closed through at least one review-and-repair cycle, which is
+  why the replay pipeline's single repair opportunity is the right shape for them. It extends
+  v0.1's instrument and rewrites none of it.
+allowed_task_classes:
+- standard
+- judgment
+held_in:
+- cli-qol-2
+- hive-mcp
+- sole-write-path
+- fol-pln-mapping
+- pw-writeup
+held_out:
+- worker-turns
+- pw-d5-comparable
+- result-revision
+reserved:
+- id: worker-turns
+  why_reserved: A protocol-and-tooling order on the worker lifecycle, closed after every
+    held-in task here. It is the cleanest regression probe in the set — nothing held in
+    contains any part of it — and it is reserved so a later change to WORKER.md, the order
+    template or this benchmark can be measured against a task no model in this study has seen.
+  order_ref: projects/omegahive/orders/2026-08-21-worker-turns.md@a8e39d48cd1ec78d9de1255e97a23132dc5b7a97
+  code_repo: cassiopenachin/omegahive
+  pre_task_base_sha: 423c63a77e33546e94bd00dcf11e8707a37344bf
+  accepted_sha: b430e4b2700ff090dd8b0f9f9f10b50386ac7aa2
+- id: pw-d5-comparable
+  why_reserved: The tenant project's measurement-shaped order, reserved so the tenant side of
+    a later corpus is not entirely research/writing.
+  order_ref: projects/pln-benchmarks/orders/2026-07-28-pw-d5-comparable.md@a73aef36008096aa79b1b88b530085918c9cc240
+  code_repo: cassiopenachin/plnbench
+  pre_task_base_sha: a4705c741f16e3dd18a18d991e670e7ab1c44856
+  accepted_sha: 972abc5cb92af016ae673955216718a45bc366fb
+  contaminated_by:
+  - pw-writeup
+  contamination_note: 'PARTIAL RESERVATION. pw-writeup launched after this task closed and
+    exists to narrate its figure, so pw-writeup''s pre-task base IS this task''s accepted
+    merge: every line of the accepted outcome is in the tree a pw-writeup candidate starts
+    from. What the reservation still buys: the task is never executed, never entered into a
+    launch packet, never used to pick a canary and never used to tune a prompt or rubric, and
+    its own workspace result report is withheld from the pw-writeup packet. What it no longer
+    buys: a cold read for any model that has run the pw-writeup cell. Recorded rather than
+    quietly relied on, because the order fixed both memberships and the sequence is a fact
+    about the history, not a choice made here.'
+- id: result-revision
+  why_reserved: A doctrine-and-tooling order on how a posted result is revised. Reserved as a
+    second hive-side regression probe alongside worker-turns.
+  order_ref: projects/omegahive/orders/2026-08-01-result-revision.md@aa098e9eeaf82e6e936bee0c470e293e51f2f695
+  code_repo: cassiopenachin/omegahive
+  pre_task_base_sha: c3b8c1bf1734ead1fa4223c991099e8748fc29f8
+  accepted_sha: 2527f07df4840f8002eb4a64e59c4c1e43298de9
+  contaminated_by:
+  - hive-mcp
+  contamination_note: 'PARTIAL RESERVATION. This task merged before hive-mcp branched, so its
+    accepted outcome is inside hive-mcp''s single-baseline export. The reservation still keeps
+    it out of every execution, launch packet, canary choice and tuning pass; it no longer makes
+    it a cold read for a model that has run the hive-mcp cell. cli-qol-2 and sole-write-path
+    are unaffected — neither baseline contains it.'

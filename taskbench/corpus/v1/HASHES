@@ -1,0 +1,28 @@
+{
+  "corpus_content_hash": "sha256:5d8ae131dee0b7f029fd2a3e15a902a6ac44966ce6a71a8a7bfcc70864deb758",
+  "corpus_version": "v1",
+  "files": {
+    "corpus.yaml": "sha256:ddbf2005b714414e8a1a64d5ac4cc501e7c29ef114b8f912003d85e91ff741f8",
+    "grading/cli-qol-2.yaml": "sha256:168a0c701ca2e17916b3be4910854a1727f412470b51c411955146b5da704201",
+    "grading/fol-pln-mapping.yaml": "sha256:27866e98ff6f287f76bc675a91f20c72a4b8a057d25ef9aa6fcaf58dbaf96e16",
+    "grading/hive-mcp.yaml": "sha256:b54991716b966fadf4432a34a5d1834dcfb0fec81a948939f18a4754d47f1d76",
+    "grading/pw-writeup.yaml": "sha256:7616eb2b2d95c210faffff6f2f4d643acb7d3f31e2ee2e2c1c7d86702ab24452",
+    "grading/sole-write-path.yaml": "sha256:d810ebd932fb425322119096f5ff1ddf129f361ba832620f1118f51605267d9a",
+    "rubrics/cli-qol-2.md": "sha256:bef55de62817eb6496791f761eff82e965cfe83241680b352bdade974ea5bb25",
+    "rubrics/fol-pln-mapping.md": "sha256:814926bbdaee5cbd8e4dbc1e91393482245058c9e9c2a6c238fa750d419e5b15",
+    "rubrics/hive-mcp.md": "sha256:49abbf8b63cc2150afe7b26888cd18bd5be6aec9fe68bf2610e2c39327be0f0c",
+    "rubrics/pw-writeup.md": "sha256:3a34c19be778e95b97d7cfc433caede84b9f77b14a4780bc686796c3f45e4540",
+    "rubrics/sole-write-path.md": "sha256:ac3c587cab57980a8f3f4de9274e4c11597863394c10c887d78c553296e2531b",
+    "tasks/cli-qol-2.yaml": "sha256:4628aec8182ea52c8b961fffc56d44d74ae3d4e8318badb988a27183ba91eada",
+    "tasks/fol-pln-mapping.yaml": "sha256:a1ac84b6f1c788af1e08564c741dd01644aee6f3508c170ccbd98f006f5f9a8f",
+    "tasks/hive-mcp.yaml": "sha256:956983edba7917f9180e67e0d2b893a4c8f598a56ecb95c0360e6f589ea7e105",
+    "tasks/pw-writeup.yaml": "sha256:d5332f7c2155e5710f9adde779100efb2ffc378ab0a5314cdb7a7f003598f22a",
+    "tasks/sole-write-path.yaml": "sha256:cb61a2c6d4afea2585fc0c0817f4ce68c080a8bf23e5eb8c39aedfeff2a2473e",
+    "verifiers/cli_qol2_loop_behaviour.py": "sha256:9bd172a1874b258eeb9ae94efd1be9797f2588f2e36715a1b12ed03a8dde4002",
+    "verifiers/fol_pln_note_shape.py": "sha256:18563d12aa40c1d33541878e6f487d3cda3877836dae17f1fe3eb09ffb5fedcb",
+    "verifiers/hive_mcp_contract.py": "sha256:8b1b5b6cb7755b53961aab794d1cc22c18d6171b62a3f6e0da66b0e1f2515014",
+    "verifiers/pw_writeup_legibility.py": "sha256:3cace3a7d3ca62bce34dad2f18b5a216555a3f7ae2a865c9add54b14839fb950",
+    "verifiers/sole_write_path_property.py": "sha256:eaf95322f0551f13ae833ed7a8e9a327266e3c87166a674906d3f32776ba16c0"
+  },
+  "frozen_on": "2026-08-21"
+}

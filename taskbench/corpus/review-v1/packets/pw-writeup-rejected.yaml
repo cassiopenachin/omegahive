@@ -1,0 +1,42 @@
+# Reviewer packet. Frozen; edits increment the corpus version.
+id: pw-writeup-rejected
+project: pln-benchmarks
+title: a narrative pass over a benchmark report, for a reader outside the project
+state_note: This is the document as it stood when it was put up for review. The order stop-lines
+  execution, so nothing was run against it and the verification directory is empty by design.
+code:
+  repo: cassiopenachin/plnbench
+  base_sha: 972abc5cb92af016ae673955216718a45bc366fb
+  head_sha: d4f60cc1d0816b6811c31ffdc41c3ff46c2d63a9
+  local_path: ~/src/SNET/plnbench
+workspace_repo: hive-workspace
+inputs:
+- path: projects/pln-benchmarks/orders/2026-07-29-pw-writeup.md
+  sha: 01914807f11d7aee4cc57a6258d1f957d90657fd
+  role: order
+- path: projects/omegahive/writeup-genre.md
+  sha: 9b0531fc3b9ad1e7fcbc3baff1e01853d969e27f
+  role: source
+- path: projects/pln-benchmarks/reports/2026-07-28-ptc-revalidate-result.md
+  sha: 82b6238eaf43ac039378220a694661f668d49089
+  role: source
+- path: projects/pln-benchmarks/reports/2026-07-28-pw-libpln-slice-result.md
+  sha: 9d87407fac9fc20c862285aef8b439043d21e69b
+  role: source
+- path: projects/pln-benchmarks/reports/2026-07-30-pw-d5-comparable-result.md
+  sha: eb3895a28423fb06e8bf210f9afa9bb4b727367f
+  role: source
+- path: projects/pln-benchmarks/notes/2026-07-28-ptc-independent-repro.md
+  sha: 80084cf62aad25899165704ed722e9b25dfba9a0
+  role: source
+- path: projects/omegahive/decisions.md
+  sha: 133d03733a5f1aced0dbbf853727f95d82938e99
+  role: source
+whole_artefacts:
+- benchmarks/proofwriter/REPORT.html
+review_focus: 'One document, against one order. Decide whether it would ship. Read the whole
+  rendered document under `artefacts/`, not only the diff: this is a prose rewrite, and a diff of
+  prose does not show you what a reader gets. The source set under `sources/` is complete — every
+  document this work cites is there, at the revision it cited. If a claim cannot be checked
+  against anything in it, say so plainly; do not assume the claim is invented, and do not assume
+  it is fine.'

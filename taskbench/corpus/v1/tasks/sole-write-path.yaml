@@ -1,0 +1,192 @@
+# taskbench corpus v1 — manifest for sole-write-path. Frozen; edits increment the corpus version.
+id: sole-write-path
+project: omegahive
+run: omegahive
+title: sole-write-path — the gateway becomes the only writer, and the manifest gets teeth
+task_class: standard
+work_shape: python-service
+replayable_because: 'The order''s central deliverable is a privilege boundary in a database, and
+  a privilege boundary is reproducible anywhere Postgres is: the migration the candidate writes is
+  applied to a scratch database and the boundary is then interrogated by asking the server, not by
+  reading the diff. Every consumer re-point is ordinary Python in the same repository. The two legs
+  that genuinely need a running deployment — the durable cutover and the scan against live
+  containers — are declared, one as the operator''s and one as a rubric judgement over the
+  candidate''s own evidence, and neither is silently scored. The pre-task base is main immediately
+  before the accepted merge and the accepted outcome is that merge.'
+workspace_repo: hive-workspace
+workspace_inputs:
+- path: projects/omegahive/orders/2026-07-29-sole-write-path.md
+  sha: 8d95b46edacc4e7283737377a54af9e311a52600
+  role: order
+- path: projects/omegahive/WORKER.md
+  sha: 0f1170faf446d6318a1044ddd0a6982074b9b533
+  role: context
+- path: projects/omegahive/OPERATIONS.md
+  sha: 133d03733a5f1aced0dbbf853727f95d82938e99
+  role: context
+- path: projects/omegahive/decisions.md
+  sha: 133d03733a5f1aced0dbbf853727f95d82938e99
+  role: context
+- path: projects/omegahive/reports/2026-07-27-test-db-isolation-result.md
+  sha: d40b3d16563d85d9955304feacfdaf2d035f99ca
+  role: context
+- path: projects/omegahive/retros/2026-07-29-retro.md
+  sha: ac7fea9ac8c52ba65a2f6082499506d90fe62215
+  role: context
+- path: projects/omegahive/RUNBOOK.md
+  sha: 1cf998390a165d80b819b232b966439c05ec674f
+  role: context
+code:
+  repo: cassiopenachin/omegahive
+  pre_task_base_sha: e35b12fce38e62c4d81c291637cf76331c4b8930
+  local_path: ~/src/SNET/omegahive
+expected_output_kinds:
+- code_patch
+- tests
+- doc_update
+required_artefacts:
+- migrations/*.sql
+- secrets-manifest.yaml
+required_changes:
+- migrations/*
+- secrets-manifest.yaml
+- src/omegahive/*
+environment_needs:
+- A reachable Postgres the check can create and drop a scratch database on, named by
+  OMEGAHIVE_TEST_DATABASE_URL. The session must be a superuser or a member of both roles, because
+  the roles the order creates deliberately have no password and cannot log in.
+- 'Note for the operator reading a result: database ROLES are cluster-global while GRANTS are
+  per-database. On a host whose durable deployment has already cut over, both roles exist before
+  any cell runs. The grant matrix is what discriminates, and the property check says so in its own
+  output rather than quietly crediting the host''s history to the candidate.'
+- uv on PATH, with a warm cache or network for `uv sync`.
+- 'Three test modules are excluded from the suite gate because they compare fixture data
+  against the real wall clock and that data has aged out of the window they assert on. The
+  exclusion is a property of the calendar, not of the attempt, and it is stated in the
+  verifier''s own description so a reader of a green cell knows what was not run.'
+- shellcheck, for the lint leg the order's definition of done names.
+verifiers:
+- id: two-role-property
+  argv:
+  - uv
+  - run
+  - --frozen
+  - python
+  - '{corpus}/verifiers/sole_write_path_property.py'
+  timeout_s: 900
+  description: 'the order''s definition-of-done (b), asked of the database rather than of the
+    diff: the candidate''s own migrations are applied to a scratch database, then a direct INSERT
+    as the read role must fail with insufficient_privilege, an append as the gateway role must
+    succeed, the read role must still read, and the gateway role must be unable to delete an
+    event, rewrite its actor, type or run, or do DDL'
+- id: pytest
+  argv:
+  - uv
+  - run
+  - --frozen
+  - pytest
+  - -q
+  - --ignore=tests/test_notifier_portfolio.py
+  - --ignore=tests/test_portfolio_cli.py
+  - --ignore=tests/test_ui_portfolio.py
+  timeout_s: 2400
+  description: 'the suite green — the order''s no-regressions bar, minus three modules that
+    have since stopped being replayable. Those three assert against a live wall clock and
+    fixture data that has now aged out of the window they check, which a later task fixed by
+    injecting a clock; at THIS baseline there is no clock to inject, so they fail at the
+    pre-task state and at the accepted outcome alike. Excluding them is named here rather than
+    discovered mid-batch, and it tells a candidate nothing: the exclusion is about the calendar,
+    not about the work'
+- id: ruff
+  argv:
+  - uv
+  - run
+  - --frozen
+  - ruff
+  - check
+  - .
+  timeout_s: 600
+  description: lint clean
+- id: mypy
+  argv:
+  - uv
+  - run
+  - --frozen
+  - mypy
+  timeout_s: 900
+  description: types clean
+- id: shellcheck
+  argv:
+  - shellcheck
+  - -x
+  - scripts/deploy_checks.sh
+  - scripts/hive-init-secrets
+  timeout_s: 600
+  description: 'shellcheck -x clean on the deploy-path scripts. A no-regression gate: it is clean
+    at the pre-task baseline too'
+checklist:
+- id: rollback-rehearsed
+  text: A scripted rollback exists beside the forward migration and the report shows it was run —
+    revoking, dropping both roles and un-recording the migration — and re-applied cleanly
+    afterwards. The order refuses a durable cutover until the rollback has been rehearsed.
+- id: scan-asymmetry
+  text: The credential-scope check is asymmetric as the order specifies — a key present in a
+    service and absent from its manifest row exits non-zero naming the service and the key name;
+    a declared key the service lacks is reported and does not fail — and it gained no exception
+    list.
+- id: scan-prints-no-values
+  text: The scan reads, prints, logs and diffs key NAMES only. The report shows its full output
+    and that output is safe to paste into a shared terminal.
+- id: consumers-re-pointed
+  text: Write paths connect as the writing role, read paths as the reading role, and the report
+    demonstrates it rather than asserting it from a code read.
+- id: deploy-checks-disposition
+  text: The conditional deploy-checks trigger the order names is executed and stated — either the
+    scan is wired there and the named Postgres-bounce defect is fixed in the same change, or the
+    scan landed elsewhere and the report says the trigger did not fire. Silence is the one
+    unavailable outcome.
+- id: docs-marked
+  text: RUNBOOK is updated where the operator surface changed, and the operations document's
+    Phase 2 gate item is marked with this task's evidence.
+- id: cutover-in-to-operate
+  text: The result report's To operate carries the durable cutover procedure and its rollback as
+    steps the operator can run without reconstructing anything from the session.
+- id: result-report
+  text: A result report exists under the project's reports directory carrying What shipped / How
+    verified / To operate / Reflection, and its claims match what the attempt actually did.
+  applicable: offline
+stop_lines:
+- id: gate-item-one-only
+  text: This is the first gate mechanism only. No per-seat credentials, no credential-to-identity
+    derivation, no role-from-secret, and no unix-user cutover.
+- id: no-durable-cutover
+  text: The worker never mutates the durable stack. Everything is proved against an isolated test
+    database and a transient branch stack, and the state found is restored.
+- id: no-scan-exceptions
+  text: The scan gains no exception list. A legitimately undeclared platform variable is fixed by
+    adding the manifest row.
+- id: no-review-authority-change
+  text: Review and instrument authority are untouched; nothing changes who may emit review.passed.
+- id: no-event-model-change
+  text: No event-model, board-guard, or adopt-logic changes.
+non_replayable_legs:
+- leg: Apply the durable cutover on the running deployment.
+  reason: The order itself reserves this to the operator and forbids the worker from doing it. An
+    offline replay could not do it and must not.
+  executed_by: operator
+- leg: Run the credential-scope scan against the live stack's running containers.
+  reason: Requires the running deployment, which this instrument never touches. The scan's
+    SEMANTICS are still graded — the order states them as an asymmetry, an injected over-scope key
+    and a never-print-values constraint — from the candidate's own tests and evidence, as a rubric
+    item rather than as a verifier.
+  executed_by: operator
+- leg: Announce the result on the spine per WORKER.md.
+  reason: A spine emit, which this instrument's own scope forbids. The report the order asks for
+    IS written and graded — only the announcement is out of reach.
+  executed_by: not-executed
+writable_workspace_paths:
+- projects/omegahive/RUNBOOK.md
+- projects/omegahive/OPERATIONS.md
+- projects/omegahive/reports/*
+rubric: rubrics/sole-write-path.md
+grading: grading/sole-write-path.yaml

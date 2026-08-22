@@ -1,0 +1,64 @@
+# GRADER-ONLY. Never enters a candidate root and never enters a review packet.
+task_id: hive-mcp
+accepted_outcome:
+- |-
+  One shared read service produces the projections both the operator view and the JSON surface
+  return, so there is one fold rather than two that can disagree.
+- |-
+  Three read-only paths under /api/v1 on the existing operator origin — health, portfolio, and
+  one task's detail — with typed response models whose schemas are published in the code
+  documentation.
+- |-
+  Every response says when it was observed, which window or cut produced it, and which cursor
+  and generation each run was read at; duration is reported only where the run's clock supports
+  it, and is unavailable with its clock kind named otherwise.
+- |-
+  Output is bounded everywhere it could grow: an explicit maximum and truncation marker on full
+  history, and a documented hard cap on a task's event timeline.
+- |-
+  A standalone stdio executable registers exactly two structured-output tools and nothing else —
+  no prompt, sampling, elicitation, resource, write tool or generic fetch — with stdout carrying
+  protocol only and logs on stderr.
+- |-
+  The upstream origin comes from operator-owned configuration validated at startup; no tool
+  argument can move it, and unreachable, timeout, invalid TLS, schema mismatch and malformed
+  JSON are distinct safe errors.
+- |-
+  The client machine holds no database, gateway, provider or reverse-proxy credential, opens no
+  listening port, and the access layer is untouched.
+known_defect_classes:
+- |-
+  A transport-error classifier that looks for the underlying cause in one place only. The
+  libraries in this space nest the real cause several levels deep and in a different attribute,
+  so a shallow check silently reports every certificate failure as unreachable — the two errors
+  the order requires to be distinguishable become one.
+- |-
+  A test default that keys off the wrong condition, so tests that mean to exercise a fake
+  backend silently exercise the real one. The tell is a health route that works in a suite with
+  no database configured for it.
+- |-
+  An "untruncated total" computed after the page filter, so it shrinks as a caller pages
+  backward — a field that contradicts its own description.
+- |-
+  Unhandled error types escaping the bounded client: a library's malformed-URL or decoding error
+  that is not a subclass of the one exception the caller catches reaches every call site raw.
+- |-
+  An install or refresh subprocess with no timeout, which turns a flaky network into a hung
+  bridge process the operator cannot diagnose.
+- |-
+  Duplicated error-mapping at every route and tool rather than in one place, which is where the
+  next extension will diverge.
+- |-
+  Logging to stdout in a stdio protocol server, which corrupts the transport.
+source_refs:
+- projects/omegahive/orders/2026-08-13-hive-mcp.md@2217150cb1ff7a928e24fc7acfe992c9549b891a
+- projects/omegahive/reports/2026-08-14-hive-mcp-result.md
+historical_solution_sha: b9952158a2094780866e2b8fa3f9bb04a082d846
+notes: 'The order authorises two reviewer invocations and the closed task used both. The state
+  immediately before the first of them is the hive-mcp packet of the reviewer corpus. Two things
+  this cell cannot decide and says so in the rubric rather than pretending: whether the freshness
+  metadata is TRUTHFUL (a wall-clock claim over a simulated run is a defect no schema check can
+  see) and whether the fixed origin resists a redirect — both need an upstream the candidate
+  configures at a path the order does not fix. The executable''s own suite is run as a
+  no-regression and coherence bar; it is the candidate''s own suite, so it is evidence about
+  self-consistency rather than an independent gate, and the blinded review reads it as such.'

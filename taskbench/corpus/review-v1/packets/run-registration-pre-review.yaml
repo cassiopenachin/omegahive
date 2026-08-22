@@ -1,0 +1,37 @@
+# Reviewer packet. Frozen; edits increment the corpus version.
+id: run-registration-pre-review
+project: omegahive
+title: run registration on the emit write path
+state_note: This is the change as it stood when it was put up for review, together with the output
+  of the checks that were run against it.
+code:
+  repo: cassiopenachin/omegahive
+  base_sha: 67ddac88f52560e4171f8e0cc432d1a70f75873d
+  head_sha: 5cbeed84e45ad3e45ebe7bede9ef7ff6fe152625
+  local_path: ~/src/SNET/omegahive
+workspace_repo: hive-workspace
+inputs:
+- path: projects/omegahive/orders/2026-07-21-run-registration.md
+  sha: 689dc24f7bba6de9849d5e01a8d827e1c640b513
+  role: order
+- path: projects/omegahive/WORKER.md
+  sha: 689dc24f7bba6de9849d5e01a8d827e1c640b513
+  role: source
+- path: projects/omegahive/RUNBOOK.md
+  sha: 1c0a1baa79aa3d5e81c73eaa33f93e24b0819165
+  role: source
+- path: projects/omegahive/reports/2026-07-13-backups-restore-result.md
+  sha: 1c0a1baa79aa3d5e81c73eaa33f93e24b0819165
+  role: source
+whole_artefacts:
+- src/omegahive/gateway/gateway.py
+checks:
+- id: ruff
+  argv: [uv, run, --frozen, ruff, check, .]
+  timeout_s: 900
+  description: lint
+- id: pytest
+  argv: [uv, run, --frozen, pytest, -q]
+  timeout_s: 3000
+  description: the repository's whole test suite
+review_focus: One change, against one order. Decide whether it would ship.

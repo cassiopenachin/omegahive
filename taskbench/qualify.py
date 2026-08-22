@@ -221,9 +221,13 @@ def check_harness_stability(
 #: explicit that a change to any of it "returns to incumbent fidelity" — meaning an Opus rerun,
 #: not a judgment call — so the rule is mechanical rather than left to a reader's discretion.
 SCORING_FROZEN = (
-    "taskbench/corpus",
+    # The two corpora THIS study scores against, named exactly. It used to be the whole
+    # `taskbench/corpus` directory, which meant a later study adding a corpus of its own —
+    # one no candidate cell here ever loads — read as drift in the instrument this one is
+    # frozen to. Naming the two makes the guard say what it protects, and no weaker.
+    "taskbench/corpus/v0",
+    "taskbench/corpus/v0.1",
     "taskbench/grade.py",
-    "taskbench/manifest.py",
     "taskbench/materialize.py",
     "taskbench/pipeline.py",
     "taskbench/remediation.py",
@@ -249,6 +253,20 @@ QUALIFY_ADDITIVE = (
     # every batch made its own preflight refuse the next one. The incumbent record is exempt
     # from this and byte-frozen above, because it is the thing being compared against.
     "taskbench/records/",
+    # A later study's corpora and its own modules. Nothing a candidate cell of THIS study
+    # loads: `run` here resolves `taskbench/corpus/v0.1`, and no scored path imports any of
+    # the modules below.
+    "taskbench/corpus/v1/",
+    "taskbench/corpus/review-v1/",
+    "taskbench/reviewbench.py",
+    "taskbench/review_packet.py",
+    "taskbench/review_cell.py",
+    "taskbench/review_score.py",
+    "taskbench/review_run.py",
+    "taskbench/review_witness.py",
+    "taskbench/rubric.py",
+    "taskbench/endpoint_witness.py",
+    "taskbench/middle_preflight.py",
 )
 
 #: Changed, and each carries a written disposition in the result report. Instrumentation and
@@ -280,7 +298,33 @@ DISPOSITIONED = {
     ),
     "taskbench/cli.py": (
         "adds the qualify-preflight, qualify-smoke, run-gateway, gateway-totals and matrix "
-        "commands; no existing command's behaviour is changed."
+        "commands; no existing command's behaviour is changed. The middle-tier study "
+        "(2026-08-21) adds the review-corpus, validate-review-corpus, freeze-review, "
+        "build-review-packet, middle-preflight, audit-gold, run-reviewers, score-reviewers "
+        "and endpoint-witness commands, and moves the `__main__` guard to the end of the "
+        "file — it sat in the middle, so `python taskbench/cli.py` dispatched before the "
+        "decorators below it had run. `corpus` additionally prints a reserved task that "
+        "carries pins rather than a manifest, which corpus v0.1 does not have. No existing "
+        "command's behaviour is changed."
+    ),
+    "taskbench/manifest.py": (
+        "the middle-tier study (2026-08-21) needs schema this one does not: catalog-declared "
+        "task classes, three work shapes, a `source_snapshot` dependency kind, "
+        "`replayable_because`, and a reserved set carried as pins rather than manifests. Every "
+        "change is additive — a new optional field or a new enum member; the one behavioural "
+        "change to "
+        "an existing rule is that `task_class != bounded` is refused by `load_corpus` against "
+        "the catalog's declared set instead of by `TaskManifest` unconditionally — and "
+        "corpus v0 and v0.1 declare no set, so they keep the bounded-only default and refuse "
+        "exactly what they refused before. `_hash_tree` additionally stops hashing runtime "
+        "artefacts — `__pycache__`, `.pyc`, tool caches — because a cell that runs a Python "
+        "grader writes one beside it, and hashing it made the corpus fingerprint a property "
+        "of the machine: the very act of running a batch invalidated the record it had just "
+        "pinned. v0 and v0.1 hold no such artefact in a clean checkout, so the exclusion "
+        "cannot move them. **Neither corpus moves by a byte**: their content "
+        "hashes are asserted against literals in `tests/test_taskbench_corpus_v1.py`, which is "
+        "the check to read if this disposition is ever in doubt. What a v0.1 cell is asked, "
+        "how it is graded and what passes are untouched."
     ),
     "taskbench/record.py": (
         "`render_aggregate` names the candidate from the strongest evidence the record holds — "

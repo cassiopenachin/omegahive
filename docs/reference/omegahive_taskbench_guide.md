@@ -320,3 +320,206 @@ that could not run is a result of this study, not an absence from it.
   could not drain is labelled a floor.
 - **One task is twenty percentage points.** No figure is quoted finer, no population or
   general-coding claim is made, and ties are left tied.
+
+---
+
+# The middle-tier study: corpus v1 and the reviewer corpus (HIP-1)
+
+Everything above is corpus v0.1 — eight small, bounded orders, on which the incumbent and a
+cheap candidate both finished 5/5. That instrument saturated. It can qualify a cheap route
+for bounded low-complexity hive work; it cannot say whether a middle tier can carry ordinary
+tenant work, and it says nothing at all about review.
+
+This part describes the two instruments that ask those questions. They are **separate
+five-case instruments**, not a grid: five worker cells and five reviewer cells, run in one
+batch and read apart.
+
+## What is in them, and what they are not
+
+**Worker corpus v1** — five larger orders, none of them bounded-class:
+
+| task | project | shape | what makes it hard to replay |
+|---|---|---|---|
+| `cli-qol-2` | omegahive | shell tooling | multi-script operator-loop behaviour and a git-history verifier |
+| `hive-mcp` | omegahive | API + service | an API/service/package boundary and an external protocol client |
+| `sole-write-path` | omegahive | python service | database roles, deployment consumers, a credential scan |
+| `fol-pln-mapping` | pln-benchmarks | research + design | niche-language design plus executable micro-verifications |
+| `pw-writeup` | pln-benchmarks | technical writing | source-grounded synthesis for a reader outside the project |
+
+Reserved and never executed: `worker-turns`, `pw-d5-comparable`, `result-revision`.
+
+**Three of five are hive infrastructure and two are tenant research and writing.** Five
+tasks give 20-point resolution. Do not read an aggregate over them as a claim about software
+work in general, and do not read the two tenant tasks as a claim about applied PLN research.
+
+**Two of the three reservations are PARTIAL, and `taskbench corpus` says so.**
+`pw-d5-comparable`'s accepted merge *is* `pw-writeup`'s pre-task base, and `result-revision`
+merged before `hive-mcp` branched — so each of those reserved tasks' accepted code is
+already in a held-in task's baseline. The reservation still keeps them out of every
+execution, launch packet, canary choice and tuning pass. It no longer makes them a cold read
+for a model that has run the contaminating cell. That is a fact about the history, not a
+choice made here, and it is recorded rather than relied on quietly.
+
+**Reviewer corpus `review-v1`** — five frozen historical states: one that shipped unchanged,
+and four that a real review sent back. The clean one is the only measurement of false
+positives the instrument has; without it, a reviewer that flags everything scores well.
+
+A reviewer packet contains the launch-visible order, the diff as it stood at that moment,
+whole artefacts, the complete source set the work cites, and the output of checks run
+against that state. It never contains the review that happened, the repair, the expected
+disposition, or anything the repository did afterwards.
+
+## Before you launch
+
+```bash
+cd ~/src/SNET/omegahive
+uv run --frozen taskbench corpus --corpus taskbench/corpus/v1
+uv run --frozen taskbench validate-corpus --corpus taskbench/corpus/v1
+uv run --frozen taskbench review-corpus
+uv run --frozen taskbench validate-review-corpus
+```
+
+`validate-review-corpus` runs **every must-find's witness at both ends**: the check must fail
+at the packet's own state and pass at the state the repair reached. Gold that cannot do that
+is a recollection, and this refuses it. It needs both source repositories and a database.
+
+To prove the worker graders the same way — each gate red at its task's pre-task baseline and
+green at its accepted outcome:
+
+```bash
+uv run --frozen taskbench endpoint-witness --corpus taskbench/corpus/v1 \
+  --out /tmp/endpoint-witness.json
+```
+
+A gate that is green at both ends is reported as a no-regression bar rather than a
+discriminator; a task where *nothing* discriminates is a refusal.
+
+## The one command that cannot spend
+
+Use this when you want to know whether the environment agrees and nothing else. It cannot
+call a model: no code path in it launches anything.
+
+```bash
+cd ~/src/SNET/omegahive && uv run --frozen taskbench middle-preflight \
+  --config       ~/work/taskbench/<record>/reviewer-runner-config.yaml \
+  --worker-config ~/work/taskbench/<record>/worker-runner-config.yaml \
+  --work-root    ~/work/taskbench/<record> \
+  --out          taskbench/records \
+  --expect-worker-hash sha256:5d8ae131dee0b7f029fd2a3e15a902a6ac44966ce6a71a8a7bfcc70864deb758 \
+  --expect-review-hash sha256:94cd90ecea2f50d4e5b8a4a2a99d2f2aadb70f79c33a1a25af0861c5e471e6ab
+```
+
+The two configs are written by the launcher below; run it once to generate them, or write
+them by hand from `taskbench schema`. Exit 3 means it refused, and it lists every
+disagreement at once.
+
+## The one command that runs the study
+
+One command, no arguments, from the worker's clone. **Running it is the approval** — it never
+asks again, and it starts spending as soon as preflight agrees.
+
+```bash
+taskbench/launch/middle-seed-fidelity.sh
+```
+
+Four stages, in this order:
+
+| stage | what it does | what stops it |
+|---|---|---|
+| 1 | preflight for both instruments | any disagreement — exit 3, nothing written, nothing called |
+| 2 | one fresh audit of each reviewer packet's proposed must-find set | a dispute — exit 4, nothing scored |
+| 3 | five worker cells on corpus v1 | recorded; a red here does not stop stage 4 |
+| 4 | five reviewer cells on the frozen packets | recorded |
+
+**Stage 2 is the unusual one.** A must-find set assembled by whoever built the corpus is one
+reading of history, so before any scored cell a fresh strong-model pass is shown each packet
+and the proposed answer key, and asked only whether the order, the diff and the repair
+support it. It **never rewrites gold**: the corpus is frozen, and a corpus that can be
+adjusted after seeing an objection measures the adjuster. A dispute is a decision — either
+the evidence supports the must-find and the audit is wrong, or it does not and the corpus
+needs a new version.
+
+**Every session this batch opens is the incumbent.** It calls no candidate model at all.
+
+## What green means, for each instrument
+
+**Worker fidelity is green only at 5/5 FINAL cells.** First-shot and after-repair are
+recorded separately and both are reported: a model that needs rescue must not read as a clean
+generator. A cell the environment killed is `inconclusive`, not red — it is not a model
+result, and re-running the launcher carries the conclusive cells forward.
+
+**Reviewer fidelity is green only when all three hold:**
+
+1. every must-find defect at `critical` or `approach` severity was found;
+2. at least four of five dispositions are correct;
+3. the packet that shipped unchanged drew no unsupported high-severity finding.
+
+Read `aggregate.md` for the split that matters: **disposition** and **must-find coverage**
+are separate columns. A reviewer that returns `required_change` for a reason that is not the
+reason has answered correctly by accident, and only the second column tells you which
+happened. An extra finding is reported and never counted against a reviewer — except on the
+clean packet, where an unsupported one is the failure being measured.
+
+Read `cells/<id>/probe.json` before trusting any cell. Its reviewer ran in a **fresh home**
+seeded with nothing but the two files its own tool needs to authenticate, and the probe had
+to fail to read three things — the work-root canary, that packet's own gold, and the
+operator's own configuration — before the reviewer was launched at all. A cell whose probe
+failed was never run, and its score is absent rather than red. (Corpus v0.1's reviewer
+inherited an operator `$HOME` carrying transcripts of the tasks it was grading. Nothing here
+inherits a home.)
+
+**An honest red stops at diagnosis.** Do not weaken a packet, a rubric or a pass rule to make
+the incumbent green. That is the one repair this study cannot make.
+
+## Interruption, environment failure, and resuming
+
+- **Ctrl-C** keeps every completed cell and every raw log exactly as they are. Re-running the
+  launcher opens **new** records that supersede the partial ones; nothing is overwritten.
+- **An environment-killed cell** — a rate limit, an auth failure, a session that died for a
+  reason that is not judgment — is recorded `inconclusive`. Re-running the launcher carries
+  every conclusive cell forward verbatim and re-runs only those.
+- **Only the first two of those may resume.** An honest semantic red — the model produced
+  work and the work was wrong — is never re-rolled. Re-running a genuine red for a better
+  number is the one thing the resume path refuses.
+- **A rerun must be able to name the package defect that made it necessary.** One that
+  cannot is a model result being re-rolled.
+
+## The one dependency the runner will not fetch
+
+`fol-pln-mapping` measures a public dataset, and the runner never reaches the network. Place
+the two files once, at the digests the corpus pins; preflight verifies both and refuses on a
+mismatch:
+
+```bash
+mkdir -p ~/work/taskbench/sources/folio-dataset
+curl -fsSL -o ~/work/taskbench/sources/folio-dataset/folio-train.jsonl \
+  https://raw.githubusercontent.com/Yale-LILY/FOLIO/main/data/v0.0/folio-train.jsonl
+curl -fsSL -o ~/work/taskbench/sources/folio-dataset/folio-validation.jsonl \
+  https://raw.githubusercontent.com/Yale-LILY/FOLIO/main/data/v0.0/folio-validation.jsonl
+sha256sum ~/work/taskbench/sources/folio-dataset/*.jsonl
+#   008d34b750d31fa7f014e953228adf4db81ec34bbda9e7f67c96c60438d1e6b2  folio-train.jsonl
+#   6922c988ef10987bd6545568ee8e63e897af80994591fa20539767da58f8e3d1  folio-validation.jsonl
+```
+
+A digest mismatch means the upstream moved. **Do not re-pin to whatever a fetch returns
+today** — that silently changes what the benchmark measured. The digests are the ones the
+closed task recorded at launch era and checked on every load.
+
+`TASKBENCH_SOURCE_CACHE` moves the cache if you want it elsewhere.
+
+## Limits of these two instruments, stated once
+
+- **Five cases each.** Twenty-point resolution, no population, no ranking.
+- **The worker corpus is three-fifths hive infrastructure.** The two tenant tasks are a
+  second repository, a second ecosystem and two work shapes the hive side does not contain.
+  They are not evidence about applied research in general.
+- **The reviewer corpus grades against four defect classes and one clean case.** A reviewer
+  that scores well here has been measured on five historical states, not on review.
+- **`fol-pln-mapping` cannot re-verify its published comparison figures**, because those
+  sources never had launch-era digests recorded and there is nothing to pin a snapshot
+  against. That leg is declared not-executed in the manifest and excluded from the rubric; the
+  two figures the order itself states are still checked.
+- **`hive-mcp` and `sole-write-path` each leave a leg to the operator** — a desktop-bridge
+  round-trip and a scan against live containers. Both are declared, and the rubric tells the
+  reviewer not to mark an attempt down for them or credit a claim to have done them.
+- **Two of the three worker-corpus reservations are partial**, as above.

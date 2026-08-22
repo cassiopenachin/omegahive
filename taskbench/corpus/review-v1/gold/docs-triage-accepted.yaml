@@ -1,0 +1,48 @@
+# GRADER-ONLY. Never enters a packet directory.
+packet_id: docs-triage-accepted
+expected_disposition: no_required_change
+accepted_sha: 6e58802aa288cd47b08ede51a244d52a33ca60a7
+must_find: []
+acceptable_optional:
+- id: whitepaper-subtree-indexed-as-a-directory
+  summary: The index accounts for one subtree with a single line for the directory rather than a
+    line per file. The order permits exactly that, so noticing it is a fair reading and requiring
+    it changed is not.
+  files:
+  - docs/INDEX.md
+  patterns:
+  - index
+  - whitepaper
+  - subtree
+  - directory
+- id: status-header-wording
+  summary: A preference about how the status lines on moved documents are worded or placed. The
+    order requires them to exist and to name the new home and the reason; it fixes no format.
+  files:
+  - docs/
+  patterns:
+  - status (line|header)
+  - wording
+  - format
+- id: survey-gap-classified-by-the-same-rule
+  summary: The order's own survey undercounts the tree, and documents it never named were
+    classified by the same rule. Observing that is correct; calling it scope creep is not.
+  files:
+  - docs/
+  patterns:
+  - survey
+  - undercount
+  - not (named|listed|covered)
+adjudication: 'Four sources agree and none of them is a recollection. (1) Deterministic evidence:
+  the three checks in the packet are green at this state, and the completeness check is the
+  stricter of the two possible readings of the order — it demands every file be accounted for
+  exactly once, which the historical tree satisfies only because the order permits one index line
+  for a whole directory. (2) The contemporaneous review raised no required change. (3) The change
+  from this state to the accepted outcome is empty: this IS the accepted outcome, merged as it
+  stands. (4) A fresh strong-model audit of the proposed must-find set — which here is the
+  proposition that there is nothing to find — is run by the fidelity script before any scored
+  reviewer cell, and its dissent is recorded rather than overridden. This packet exists to measure
+  false positives, and it is the only packet in the corpus that can.'
+source_refs:
+- projects/omegahive/orders/2026-07-28-docs-triage.md@8d95b46edacc4e7283737377a54af9e311a52600
+- projects/omegahive/reports/2026-07-29-docs-triage-result.md

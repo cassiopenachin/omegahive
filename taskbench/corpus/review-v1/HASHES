@@ -1,0 +1,25 @@
+{
+  "corpus_content_hash": "sha256:94cd90ecea2f50d4e5b8a4a2a99d2f2aadb70f79c33a1a25af0861c5e471e6ab",
+  "corpus_version": "review-v1",
+  "files": {
+    "brief.md": "sha256:d4b57e59135498b6820c6e18fe8d83c36ea3fc3b65fc3001c22f5d565cdd6a2f",
+    "checks/docs_index_complete.py": "sha256:e2a56ab1b81cb4387e87ac90d1d2cd131adf5ecdcd6ddfc1088474909dd42ba0",
+    "checks/docs_nothing_deleted.py": "sha256:9c4c979c8a8cf226182bd353f07582981e4819710324f20c264215b6ca5bed45",
+    "checks/link_integrity.py": "sha256:b372e51a188873c7abed3df79a0dd69d89426eb9b5fc5d2b120a90ffc4f8dea6",
+    "checks/pw_writeup_legibility.py": "sha256:8ddb1871e4007a5f4abaf84d0ce03256118a551c58b0557ae424294fd7548e9b",
+    "checks/run_registration_property.py": "sha256:70feeda87dc646dc2746fd831228b184eea4f2fe4bb00d6564c7d12e7f098368",
+    "checks/text_property.py": "sha256:8a1feda4e626812aaecbcd71100de8bb652720df162177f316d44877e171df6d",
+    "corpus.yaml": "sha256:c9bacf98de6cc564908d36057e2e2dba178038eb896f42a8491cc77c28630291",
+    "gold/docs-triage-accepted.yaml": "sha256:3539956dfa1576142ff27b821e0d315636ad24ecae60ff4a3ede3d90b00d99bb",
+    "gold/hive-mcp-pre-review.yaml": "sha256:d514db120cdb38cab31258e4eef0f2e8c0cd1c79827b47bc1b78f78d1943da26",
+    "gold/pw-writeup-rejected.yaml": "sha256:8a9fabed186ab0211e0bdd03c0452a7c06e672cfcf90013ab5137c880c26168a",
+    "gold/run-registration-pre-review.yaml": "sha256:0bfadea04916db25f72f03eee958f02855db3d237d20ee761dd7cd189ad5e853",
+    "gold/sole-write-path-pre-correctness.yaml": "sha256:bc58def5e089827a4df50273c58435fb356d49a58811435619b2ee7553b50213",
+    "packets/docs-triage-accepted.yaml": "sha256:4269dd29ecafac2f67c02f7e7be32624b7097d46743a4dc529072f83e6ba1060",
+    "packets/hive-mcp-pre-review.yaml": "sha256:497e44513ce093080ba2a2be30b34139dbade6321ec370b0436d3a4b5aa39c54",
+    "packets/pw-writeup-rejected.yaml": "sha256:16094de3fd8f92a461e1470bde07ca860fe8ddabcf475c4565726142c999dba2",
+    "packets/run-registration-pre-review.yaml": "sha256:00ff8f774fc843fbf3e414e859f3467b70ffaf2841ad80aaf389afddeb14d4ee",
+    "packets/sole-write-path-pre-correctness.yaml": "sha256:188c9600a6b24581c3d17ff12008aa6a7683af3de1b4516150ef2f3c344b7268"
+  },
+  "frozen_on": "2026-08-21"
+}
