@@ -90,6 +90,7 @@ def _shared_task_fields(
     return {
         "task_id": task.task_id,
         "status": task.status,
+        "pruned": task.pruned,
         "owner": task.owner,
         "title": task.title,
         "task_type": task.task_type,
@@ -116,7 +117,6 @@ def _task_detail(task: TaskState, events_by_seq: dict[int, Event], now: datetime
         tried_by=sorted(task.tried_by),
         ready_when=task.ready_when,
         join_unsatisfiable=task.join_unsatisfiable,
-        pruned=task.pruned,
         last_result_ref=task.last_result_ref,
         last_causing_seq=task.last_causing_seq,
     )

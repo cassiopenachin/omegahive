@@ -1,6 +1,7 @@
 """Pure UI projection helpers: language and grouping are deterministic over log facts."""
 
 from omegahive.board import fold
+from omegahive.board.state import TaskState
 from omegahive.ui.demo import demo_events
 from omegahive.ui.presenters import board_lanes, board_summary, event_sentence, filter_events
 
@@ -13,7 +14,37 @@ def test_demo_board_exercises_all_operator_lanes():
     assert [task.task_id for task in lanes["active"]] == ["T4"]
     assert [task.task_id for task in lanes["attention"]] == ["T1", "T2"]
     assert [task.task_id for task in lanes["completed"]] == ["T3"]
-    assert board_summary(board) == {"total": 5, "active": 1, "attention": 2, "completed": 1}
+    assert board_summary(board) == {
+        "total": 5,
+        "active": 1,
+        "attention": 2,
+        "abandoned": 0,
+        "completed": 1,
+    }
+
+
+def test_pruned_tasks_are_abandoned_before_status_or_attention():
+    board = fold(demo_events())
+    board.tasks.update({
+        "progress": TaskState("progress", "in_progress", pruned=True),
+        "review": TaskState("review", "in_review", pruned=True),
+        "blocked": TaskState("blocked", "blocked", pruned=True, escalated=True),
+        "done": TaskState("done", "done", pruned=True),
+    })
+    lanes = board_lanes(board)
+    assert [task.task_id for task in lanes["abandoned"]] == [
+        "blocked",
+        "done",
+        "progress",
+        "review",
+    ]
+    assert board_summary(board) == {
+        "total": 9,
+        "active": 1,
+        "attention": 2,
+        "abandoned": 4,
+        "completed": 1,
+    }
 
 
 def test_ticker_language_surfaces_a_recorded_refusal():

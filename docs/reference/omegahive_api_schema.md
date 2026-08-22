@@ -239,6 +239,10 @@ Routes: `GET /api/v1/health` -> `HealthResponse`; `GET /api/v1/portfolio` -> `Po
           "title": "Priority",
           "type": "string"
         },
+        "pruned": {
+          "title": "Pruned",
+          "type": "boolean"
+        },
         "review": {
           "anyOf": [
             {
@@ -291,6 +295,7 @@ Routes: `GET /api/v1/health` -> `HealthResponse`; `GET /api/v1/portfolio` -> `Po
       "required": [
         "task_id",
         "status",
+        "pruned",
         "owner",
         "title",
         "task_type",
