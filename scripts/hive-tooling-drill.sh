@@ -609,7 +609,7 @@ seed_in_review "$APROJ" "$ARUN" "drill-rev-pruned" "sess-rev-pruned-${STAMP}"
 raw_emit "$ARUN" coordinator operator task.pruned --task drill-rev-pruned \
   --payload "$(jq -cn '{reason:"abandoned fixture"}')"
 check "pruned review retains raw status and exposes pruned=true" \
-  "[ \"\$(bview '$ARUN' --json | jq -r '.[] | select(.task == \"drill-rev-pruned\") | [.status, .pruned] | @tsv')\" = 'in_review\ttrue' ]"
+  "[ \"\$(dcli board-view '$ARUN' --json | jq -r '.[] | select(.task == \"drill-rev-pruned\") | [.status, .pruned] | join(\"|\")')\" = 'in_review|true' ]"
 check "pruned review contributes zero review WIP beside its live peer" \
   "[ \"\$(bcount_review '$ARUN')\" = 1 ]"
 
@@ -712,7 +712,7 @@ check "board-view --json stays full history under a zero-day window" \
 check "throttle's in_review count unmoved by the portfolio work" \
   "[ \"\$(bcount_review '$ARUN')\" = '$RV_BEFORE' ]"
 check "throttle's in_review count unmoved under a zero-day window" \
-  "[ \"\$(bview '$ARUN' --json --days 0 | jq -r '[.[] | select(.status == \"in_review\")] | length')\" = '$RV_BEFORE' ]"
+  "[ \"\$(bview '$ARUN' --json --days 0 | jq -r '[.[] | select(.status == \"in_review\" and .pruned != true)] | length')\" = '$RV_BEFORE' ]"
 
 echo
 echo "== an order file with no '# ' heading launches, titled by task id =="
