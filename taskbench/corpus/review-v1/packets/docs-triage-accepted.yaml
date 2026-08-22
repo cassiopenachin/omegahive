@@ -1,0 +1,46 @@
+# Reviewer packet — the state that shipped unchanged. Frozen; edits increment the corpus version.
+id: docs-triage-accepted
+project: omegahive
+title: documentation triage — current, labeled, or archived; nothing ambiguous
+state_note: This is the complete change as it was proposed for merge, together with the output of
+  the checks that were run against it.
+code:
+  repo: cassiopenachin/omegahive
+  base_sha: 058be94a30340e176a20ef5df048a43943e7506d
+  head_sha: 6e58802aa288cd47b08ede51a244d52a33ca60a7
+  local_path: ~/src/SNET/omegahive
+workspace_repo: hive-workspace
+inputs:
+- path: projects/omegahive/orders/2026-07-28-docs-triage.md
+  sha: 8d95b46edacc4e7283737377a54af9e311a52600
+  role: order
+- path: projects/omegahive/INDEX.md
+  sha: f01070ea94d02e62117948a27caf849229ffa762
+  role: source
+- path: projects/omegahive/WORKER.md
+  sha: 0f1170faf446d6318a1044ddd0a6982074b9b533
+  role: source
+whole_artefacts:
+- docs/INDEX.md
+- docs/archive/README.md
+- docs/reference/README.md
+checks:
+- id: docs-index-complete
+  argv:
+  - python3
+  - '{corpus}/checks/docs_index_complete.py'
+  - .
+  description: every document in the tree is accounted for exactly once in the index
+- id: link-integrity
+  argv:
+  - python3
+  - '{corpus}/checks/link_integrity.py'
+  - .
+  description: every relative markdown link in the documentation tree and the README resolves
+- id: nothing-deleted
+  argv:
+  - python3
+  - '{corpus}/checks/docs_nothing_deleted.py'
+  - .
+  description: no document that existed before this change is gone
+review_focus: One change, against one order. Decide whether it would ship.

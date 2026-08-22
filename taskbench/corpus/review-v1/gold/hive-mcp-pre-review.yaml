@@ -1,0 +1,190 @@
+# GRADER-ONLY. Never enters a packet directory.
+packet_id: hive-mcp-pre-review
+expected_disposition: required_change
+accepted_sha: 40218f9098a0fa338a22e40f8d4f95cdf9ed0846
+must_find:
+- id: tls-failure-classified-as-unreachable
+  severity: high
+  summary: 'The transport-error classifier decides "invalid certificate" by looking at the
+    exception''s direct cause only. The HTTP library nests the real certificate error deeper and
+    in a different attribute, so every genuine certificate failure is reported as "unreachable" —
+    collapsing two errors the order requires to stay distinguishable, and telling an operator the
+    machine is down when the trust chain is broken.'
+  files:
+  - client.py
+  - omegahive_mcp/client.py
+  patterns:
+  - tls
+  - ssl
+  - certificat
+  - __cause__
+  - unreachable
+  witness:
+    argv:
+    - python3
+    - '{corpus}/checks/text_property.py'
+    - --file
+    - omegahive-mcp/src/omegahive_mcp/client.py
+    - --section-from
+    - ^def _classify_transport_error
+    - --section-to
+    - '^class '
+    - --absent
+    - exc\.__cause__
+    - --why
+    - the certificate error is not reachable at __cause__, so a classifier that reads only there
+      misreports every one of them
+    cwd: code
+    bad_end_exit: 1
+    accepted_end_exit: 0
+  basis:
+  - diff
+  - repair
+  - contemporaneous-review
+- id: health-route-reaches-the-real-database-in-tests
+  severity: high
+  summary: 'The health route''s backend check defaults on demo mode alone while the data backend
+    defaults on demo mode OR an injected factory, so the two defaults disagree. A caller that
+    injects a fake backend — which every route test does — still gets the REAL database on the
+    health route. The tests that are supposed to prove the surface never touch production are
+    touching it.'
+  files:
+  - ui/app.py
+  - app.py
+  patterns:
+  - db_check
+  - health
+  - demo
+  - inject
+  - real (database|backend|DSN)
+  witness:
+    argv:
+    - python3
+    - '{corpus}/checks/text_property.py'
+    - --file
+    - src/omegahive/ui/app.py
+    - --section-from
+    - ^def create_app
+    - --section-to
+    - '^def '
+    - --present
+    - port_factory is None
+    - --why
+    - the health default must key off whether a backend was actually injected, the same condition
+      the data path uses
+    cwd: code
+    bad_end_exit: 1
+    accepted_end_exit: 0
+  basis:
+  - diff
+  - repair
+  - contemporaneous-review
+- id: untruncated-total-shrinks-while-paging
+  severity: high
+  summary: 'The task detail''s "how many events exist in total" figure is computed after the page
+    filter, so it shrinks as a caller pages backward through older events. The field contradicts
+    its own description, and a client using it to decide whether more history exists stops early.'
+  files:
+  - api/service.py
+  - service.py
+  patterns:
+  - events_available
+  - total
+  - truncat
+  - page|paging|before_seq
+  witness:
+    argv:
+    - python3
+    - '{corpus}/checks/text_property.py'
+    - --file
+    - src/omegahive/api/service.py
+    - --section-from
+    - ^def task_detail
+    - --section-to
+    - '^def '
+    - --present
+    - available = len\(task_events\)[\s\S]{0,300}if before_seq is not None
+    - --why
+    - the untruncated total must be captured before the page filter, not after it
+    cwd: code
+    bad_end_exit: 1
+    accepted_end_exit: 0
+  basis:
+  - diff
+  - repair
+  - contemporaneous-review
+- id: unbounded-install-subprocess
+  severity: medium
+  summary: The one install-mutating step shells out with no timeout, so a stalled package resolve
+    over a flaky link hangs the operator's setup command forever with no diagnosis.
+  files:
+  - omegahive_mcp/cli.py
+  - cli.py
+  patterns:
+  - timeout
+  - hang|stall
+  - install
+  witness:
+    argv:
+    - python3
+    - '{corpus}/checks/text_property.py'
+    - --file
+    - omegahive-mcp/src/omegahive_mcp/cli.py
+    - --section-from
+    - ^def _install_or_refresh
+    - --section-to
+    - '^def '
+    - --present
+    - timeout
+    - --why
+    - the install subprocess must be bounded
+    cwd: code
+    bad_end_exit: 1
+    accepted_end_exit: 0
+  basis:
+  - diff
+  - repair
+  - contemporaneous-review
+acceptable_optional:
+- id: duplicated-error-mapping
+  summary: The same error-to-response mapping is repeated at every route and every tool rather
+    than living in one place. The repair folded it; a reviewer that raises it is right.
+  files:
+  - routes.py
+  - server.py
+  patterns:
+  - duplicat
+  - repeat
+  - one place
+  - extract
+- id: pre-existing-patterns-out-of-scope
+  summary: A finding about a pattern that predates this change and that the order does not license
+    touching. Legitimate to raise and legitimate to have declined.
+  files:
+  - src/omegahive/
+  patterns:
+  - pre-?existing
+  - out of scope
+  - unrelated
+- id: schema-version-policy
+  summary: A request for a stated policy on how the response schema version will evolve. Reasonable
+    and not a would-have-shipped defect at this state.
+  files:
+  - api/models.py
+  patterns:
+  - schema version
+  - evolution
+  - versioning
+adjudication: 'Every must-find here is carried by two independent legs and never by the
+  contemporaneous review alone. (1) Deterministic: each carries a property check that fails at this
+  packet''s head and passes at the state the repair reached — those are two fixed commits, so the
+  check is a statement about history rather than a comparison against a solution a model might have
+  written differently. (2) The change from this state to the accepted outcome makes exactly the
+  repair each summary describes. (3) The contemporaneous review named all four. The two findings
+  that review dispositioned as won''t-fix are NOT gold and appear under acceptable_optional
+  instead; a review statement the diff and the repair do not support would not be gold either. A
+  fresh strong-model audit of this set runs before any scored reviewer cell and its dissent is
+  recorded.'
+source_refs:
+- projects/omegahive/orders/2026-08-13-hive-mcp.md@2217150cb1ff7a928e24fc7acfe992c9549b891a
+- projects/omegahive/reports/2026-08-14-hive-mcp-result.md

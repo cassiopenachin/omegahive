@@ -1,0 +1,44 @@
+# Reviewer packet. Frozen; edits increment the corpus version.
+id: hive-mcp-pre-review
+project: omegahive
+title: a read-only JSON surface and a local protocol server over it
+state_note: This is the change as it stood when it was first put up for review, together with the
+  output of the checks that were run against it.
+code:
+  repo: cassiopenachin/omegahive
+  base_sha: bbde0392e2964da711fdf6192feb7fb66c3b7316
+  head_sha: 8587ea41cf577e8606c3a0f1dcb65dd4d90eb605
+  local_path: ~/src/SNET/omegahive
+workspace_repo: hive-workspace
+inputs:
+- path: projects/omegahive/orders/2026-08-13-hive-mcp.md
+  sha: 2217150cb1ff7a928e24fc7acfe992c9549b891a
+  role: order
+- path: projects/omegahive/WORKER.md
+  sha: a07979a4e21dfc40605f335b8e7f927ac1f9c687
+  role: source
+- path: projects/omegahive/capacity-routing.md
+  sha: cc36021e5be3e456d8a3e96ca4016142b8cdf738
+  role: source
+- path: projects/omegahive/decisions.md
+  sha: cd42ce639e9287d7a36eb2ba04756c79eebf165f
+  role: source
+whole_artefacts:
+- src/omegahive/api/service.py
+- src/omegahive/api/routes.py
+- src/omegahive/api/models.py
+- src/omegahive/ui/app.py
+- omegahive-mcp/src/omegahive_mcp/client.py
+- omegahive-mcp/src/omegahive_mcp/server.py
+- omegahive-mcp/src/omegahive_mcp/cli.py
+- omegahive-mcp/src/omegahive_mcp/config.py
+checks:
+- id: ruff
+  argv: [uv, run, --frozen, ruff, check, .]
+  timeout_s: 900
+  description: lint on the repository
+- id: pytest
+  argv: [uv, run, --frozen, pytest, -q]
+  timeout_s: 3000
+  description: the repository's whole test suite
+review_focus: One change, against one order. Decide whether it would ship.

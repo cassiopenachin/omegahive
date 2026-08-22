@@ -1,0 +1,49 @@
+# Reviewer packet. Frozen; edits increment the corpus version.
+id: sole-write-path-pre-correctness
+project: omegahive
+title: the gateway becomes the only writer, and the credential manifest gets teeth
+state_note: This is the change as it stood at the point it was reviewed, together with the output
+  of the checks that were run against it. An earlier pass over it looked only at privilege,
+  injection and leakage; this one is not bounded to those.
+code:
+  repo: cassiopenachin/omegahive
+  base_sha: ccc45f6629317c6924bf1b271632ee856ca4582a
+  head_sha: bb0ba023cf4a193b08ea1e1df9cd5ceb784a3af0
+  local_path: ~/src/SNET/omegahive
+workspace_repo: hive-workspace
+inputs:
+- path: projects/omegahive/orders/2026-07-29-sole-write-path.md
+  sha: 8d95b46edacc4e7283737377a54af9e311a52600
+  role: order
+- path: projects/omegahive/WORKER.md
+  sha: 0f1170faf446d6318a1044ddd0a6982074b9b533
+  role: source
+- path: projects/omegahive/OPERATIONS.md
+  sha: 133d03733a5f1aced0dbbf853727f95d82938e99
+  role: source
+- path: projects/omegahive/reports/2026-07-27-test-db-isolation-result.md
+  sha: d40b3d16563d85d9955304feacfdaf2d035f99ca
+  role: source
+- path: projects/omegahive/RUNBOOK.md
+  sha: 1cf998390a165d80b819b232b966439c05ec674f
+  role: source
+whole_artefacts:
+- migrations/0003_two_roles.sql
+- scripts/deploy_checks.sh
+- scripts/hive-init-secrets
+- scripts/credential_scope_scan.sh
+- scripts/roles_rollback.sql
+- secrets-manifest.yaml
+- gateway.env.example
+- owner.env.example
+- src/omegahive/deploy/credential_scan.py
+checks:
+- id: shellcheck
+  argv: [shellcheck, -x, scripts/deploy_checks.sh, scripts/hive-init-secrets, scripts/credential_scope_scan.sh]
+  timeout_s: 600
+  description: shell lint on the scripts this change touches
+- id: ruff
+  argv: [uv, run, --frozen, ruff, check, .]
+  timeout_s: 900
+  description: lint on the repository
+review_focus: One change, against one order. Decide whether it would ship.

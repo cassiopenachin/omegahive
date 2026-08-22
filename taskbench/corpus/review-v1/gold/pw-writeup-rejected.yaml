@@ -1,0 +1,153 @@
+# GRADER-ONLY. Never enters a packet directory.
+packet_id: pw-writeup-rejected
+expected_disposition: required_change
+accepted_sha: c9206d0d7a532b56cd3b21a6c97bc26d571afb2b
+must_find:
+- id: written-for-the-wrong-reader
+  severity: approach
+  summary: 'The document is written for people inside the project rather than for the outside
+    reader the order declares. It carries organisation-internal vocabulary that reader cannot
+    define from the field — the project''s own name, its worker-report idiom, its internal issue
+    file cited by number, terms one agent coined and another adopted — and it never expands the
+    abbreviation for the reasoning stack it is about. This is not a list of word choices to fix
+    one at a time; it is the document being aimed at the wrong audience, and it is the reason the
+    order sets a declared audience and five comprehension questions in the first place.'
+  files:
+  - REPORT.html
+  patterns:
+  - audience|reader|outside
+  - vocabulary|jargon|dialect|internal term|coined
+  - abbreviat|never (defined|expanded|introduced)
+  witness:
+    argv:
+    - python3
+    - '{corpus}/checks/pw_writeup_legibility.py'
+    - .
+    cwd: code
+    bad_end_exit: 1
+    accepted_end_exit: 0
+    timeout_s: 600
+  basis:
+  - order
+  - diff
+  - repair
+  - contemporaneous-review
+- id: a-negative-result-defended-at-length
+  severity: approach
+  summary: 'The section on the reasoning path that returns nothing spends most of its length
+    proving the finding is real — upstream test-suite tallies, version comparisons, reproduction
+    narrative — where the order asks for a short honest statement and a pointer to the document
+    that already carries the detail. Length spent on our own confidence displaces the reader''s
+    questions, and the order names this shape specifically.'
+  files:
+  - REPORT.html
+  patterns:
+  - length|proportion|too (much|long)|disproportion
+  - negative result|absent|returns nothing|does not (work|return)
+  - defend|justif|argu|convince
+  witness:
+    argv:
+    - python3
+    - '{corpus}/checks/text_property.py'
+    - --file
+    - benchmarks/proofwriter/REPORT.html
+    - --absent
+    - 17 of 17
+    - --why
+    - the upstream suite tally belongs in the linked verdict document, not in the narrative
+    cwd: code
+    bad_end_exit: 1
+    accepted_end_exit: 0
+  basis:
+  - order
+  - diff
+  - repair
+  - contemporaneous-review
+- id: verification-asserted-that-nothing-supports
+  severity: high
+  summary: 'The document states that its published comparison figures were checked at their
+    sources. Nothing in the source set attests to any such check, and several of those figures
+    are not in the record at all — so the claim is unverifiable from what the document itself
+    offers a reader. Carrying the figures forward marked and dated is available and honest;
+    asserting a verification that cannot be shown is not.'
+  files:
+  - REPORT.html
+  patterns:
+  - at source|verified|checked
+  - unsupported|no (evidence|source|record)|cannot be checked
+  - published|comparison|baseline|prior work
+  witness:
+    argv:
+    - python3
+    - '{corpus}/checks/text_property.py'
+    - --file
+    - benchmarks/proofwriter/REPORT.html
+    - --absent
+    - (verified|checked) at source
+    - --why
+    - the claim of having verified the published figures at source is replaced by an as-of stamp
+      at the state the repair reached
+    cwd: code
+    bad_end_exit: 1
+    accepted_end_exit: 0
+  basis:
+  - order
+  - diff
+  - repair
+  - contemporaneous-review
+acceptable_optional:
+- id: arithmetic-contradicts-the-table
+  summary: A count in the prose disagrees with the table beside it. Real, and correctly a finding.
+  files:
+  - REPORT.html
+  patterns:
+  - arithmetic|contradict|disagree|does not match
+- id: two-incompatible-statistical-rules
+  summary: The document uses two different rules for when a difference is resolved. Real.
+  files:
+  - REPORT.html
+  patterns:
+  - interval|significan|statistic|points
+- id: buckets-named-but-never-counted
+  summary: The failure-attribution categories are named and no distribution is given. Real.
+  files:
+  - REPORT.html
+  patterns:
+  - bucket|categor|distribution|never counted|no (numbers|table)
+- id: no-repository-url
+  summary: The document tells the reader paths can be checked out and never gives the repository.
+    Real.
+  files:
+  - REPORT.html
+  patterns:
+  - repositor|url|check ?out|where to find
+- id: base-rate-floor-not-applied
+  summary: The document names the floor a dead reasoner would score and never reads its own
+    headline numbers against it. Real.
+  files:
+  - REPORT.html
+  patterns:
+  - base ?rate|floor|chance|baseline
+- id: fidelity-is-good
+  summary: 'A reviewer noting that the arithmetic and provenance survive checking is right: the
+    rejection is about who the document is for, not about its fidelity. Saying so alongside the
+    approach findings is correct and must not be read as a pass.'
+  files:
+  - REPORT.html
+  patterns:
+  - arithmetic (survives|holds|checks out)|fidelity|provenance
+adjudication: 'Two independent audits of this state ran at the time — a cold reader with no project
+  context answering the order''s own comprehension questions, and an adversarial check of every
+  claim against the source records — and one of the second audit''s findings was itself void,
+  because the audit''s source set omitted a note the document cited correctly. That is the reason
+  this packet ships the COMPLETE source set: a reviewer bounded by a curated set will accuse a
+  truthful writer, and the instrument would then be measuring the packet rather than the reviewer.
+  The three must-finds are each carried by the order (which fixes the audience, the coinage budget
+  and the treatment of a negative result), by a property that differs between this state and the
+  state the repair reached, and by the repair itself. Everything the audits raised that the repair
+  did not act on, and everything a fresh reviewer might reasonably see instead, is
+  acceptable_optional and scores nothing either way.'
+source_refs:
+- projects/pln-benchmarks/orders/2026-07-29-pw-writeup.md@01914807f11d7aee4cc57a6258d1f957d90657fd
+- projects/pln-benchmarks/notes/2026-08-01-pw-report-audit-findings.md@66c871cd9a1dac22f4b56c6d87421b9e5e7e744a
+- projects/pln-benchmarks/reports/2026-08-01-pw-writeup-result-2.md

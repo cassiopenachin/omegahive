@@ -1,0 +1,35 @@
+# taskbench reviewer corpus v1 — five frozen historical states and what a reviewer must see in them.
+#
+# The worker corpus asks whether a model can close a written order. This asks whether a model
+# can review one. They are separate questions with separate answers, and the second one is the
+# reason the first one is affordable: if a middle tier can carry review, the strong-review cost
+# floor moves.
+#
+# WHY HISTORICAL STATES, and not patches this study generates. Grading reviewers on generated
+# work would either cross every reviewer with every worker cell — twenty by twenty, which the
+# order forbids — or pick five cases after seeing how they turned out, which is selection after
+# the fact. A frozen set is cheaper and lets nobody choose the cases once the answers are known.
+#
+# COMPOSITION: one packet that shipped unchanged, and four that a real review sent back. The
+# clean one is not filler — it is the only measurement of false positives this instrument has,
+# and a reviewer that flags everything scores well on the other four.
+#
+# WHAT A PACKET NEVER CONTAINS: the review that actually happened, the repair, the expected
+# disposition, or anything the repository did after the packet's head. Those live in `gold/`,
+# which no packet directory ever sees, and the packet builder scans its own output for them.
+#
+# THIS IS BENCHMARK-LOCAL SCORING. It adds no live review event, no rejection vocabulary, and
+# nothing here may be read as a hive review outcome.
+
+corpus_version: review-v1
+frozen_on: '2026-08-21'
+description: Reviewer corpus v1 — five frozen historical review states across the hive and its
+  tenant project, for the middle-tier reviewer study. Four required a change and one did not.
+  Every must-find defect carries a witness that fails at the packet's own state and passes at the
+  state the repair reached.
+packets:
+- docs-triage-accepted
+- run-registration-pre-review
+- hive-mcp-pre-review
+- sole-write-path-pre-correctness
+- pw-writeup-rejected

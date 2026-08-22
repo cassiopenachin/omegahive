@@ -1,0 +1,68 @@
+# GRADER-ONLY. Never enters a packet directory.
+packet_id: run-registration-pre-review
+expected_disposition: required_change
+accepted_sha: 9853d59e9d9c67de27e78463fed6f87b408bc94c
+must_find:
+- id: registration-below-the-idempotency-return
+  severity: critical
+  summary: 'Run registration happens after the write path''s idempotency early-return, so an emit
+    that de-duplicates against an existing event returns success WITHOUT registering the run. A run
+    that already has events but no registry row therefore never acquires one, and the generation
+    bump that recovery depends on stays inert on exactly the runs that most need it — including
+    the live run, whose events predate registration.'
+  files:
+  - src/omegahive/gateway/gateway.py
+  - gateway.py
+  patterns:
+  - idempot
+  - early[ -]return
+  - replay
+  - de-?dup
+  - before the .{0,30}return
+  - open_run
+  witness:
+    argv:
+    - uv
+    - run
+    - --frozen
+    - python
+    - '{corpus}/checks/run_registration_property.py'
+    cwd: code
+    bad_end_exit: 1
+    accepted_end_exit: 0
+    timeout_s: 900
+  basis:
+  - order
+  - diff
+  - repair
+  - contemporaneous-review
+acceptable_optional:
+- id: runbook-wording
+  summary: A preference about how the recovery runbook words the drained-writer case.
+  files:
+  - docs/omegahive_recovery_runbook.md
+  patterns:
+  - runbook
+  - wording
+  - restore step
+- id: registration-test-coverage
+  summary: A request for more registration test cases than the state carries. Reasonable, and not
+    by itself a would-have-shipped defect.
+  files:
+  - tests/test_run_registration_cli.py
+  patterns:
+  - coverage
+  - more tests
+  - additional case
+adjudication: 'The order states the property — every run touched by an emit carries a generation
+  token from its first event — and the packet''s own code does not hold it. The deterministic
+  witness is a property test written against the ORDER rather than against either state: it fails
+  at this packet''s head and passes at the state the repair reached, and the same test caught the
+  same defect independently when a replay of this task reproduced it (corpus v0.1''s incumbent
+  fidelity run). The contemporaneous review named it in the same terms, and the repair moved
+  registration above the idempotency lookup. Four sources, and the first two do not depend on the
+  last two.'
+source_refs:
+- projects/omegahive/orders/2026-07-21-run-registration.md@689dc24f7bba6de9849d5e01a8d827e1c640b513
+- projects/omegahive/reports/2026-07-21-run-registration-result.md
+- projects/omegahive/reports/2026-08-13-hip1-bench-seed-result.md
