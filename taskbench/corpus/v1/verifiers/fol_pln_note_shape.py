@@ -159,7 +159,8 @@ def main(root_str: str) -> int:
         print(f"pass  {len(repros)} micro-example(s) under {REPROS}")
         unverifying = [
             p.name for p in repros
-            if p.suffix == ".metta" and not re.search(r"assert", p.read_text(errors="replace"), re.I)
+            if p.suffix == ".metta"
+            and not re.search(r"assert", p.read_text(errors="replace"), re.I)
         ]
         if unverifying:
             findings.append(

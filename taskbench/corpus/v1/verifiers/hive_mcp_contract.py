@@ -402,7 +402,9 @@ def _stdio_cases(project: Path) -> list[str]:
             )
         for tool in listed["result"].get("tools") or []:
             if not tool.get("inputSchema"):
-                findings.append(f"FAIL mcp-schema: tool {tool.get('name')} declares no input schema")
+                findings.append(
+                    f"FAIL mcp-schema: tool {tool.get('name')} declares no input schema"
+                )
     finally:
         shutil.rmtree(home, ignore_errors=True)
     return findings

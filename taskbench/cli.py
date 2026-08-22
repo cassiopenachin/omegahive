@@ -920,3 +920,176 @@ def sandbox_default() -> None:
 
 if __name__ == "__main__":
     app()
+
+
+# --- the reviewer instrument (HIP-1 middle-tier study) ---------------------------------
+#
+# A second, independent five-case instrument. It shares record idioms with the worker
+# instrument above and nothing else: `taskbench` asks whether a model can close an order,
+# `taskbench review-*` asks whether a model can review one. Neither may be relabelled as
+# the other, and no cell of one grades a cell of the other.
+
+REVIEW_CORPUS = CORPUS_ROOT / "review-v1"
+
+
+def _review_corpus(path: str | None):
+    from .reviewbench import load_review_corpus
+
+    return load_review_corpus(Path(path) if path else REVIEW_CORPUS)
+
+
+@app.command("review-corpus")
+def review_corpus_cmd(
+    corpus: str | None = typer.Option(None, "--corpus"),
+) -> None:
+    """List the reviewer corpus: each packet, and what the hidden gold expects of it."""
+    c = _review_corpus(corpus)
+    console.print(
+        f"reviewer corpus [bold]{c.catalog.corpus_version}[/bold] frozen {c.catalog.frozen_on} · "
+        f"content {c.content_hash[:19]}…\n"
+    )
+    for pid in c.catalog.packets:
+        p, g = c.packets[pid], c.gold(pid)
+        blocking = len(g.blocking)
+        console.print(
+            f"  {pid:34} {p.project:16} {g.expected_disposition:20} "
+            f"{len(g.must_find)} must-find ({blocking} blocking) · "
+            f"{len(g.acceptable_optional)} optional"
+        )
+
+
+@app.command("validate-review-corpus")
+def validate_review_corpus_cmd(
+    corpus: str | None = typer.Option(None, "--corpus"),
+    hashes: bool = typer.Option(True, "--hashes/--no-hashes"),
+    witnesses: bool = typer.Option(
+        True,
+        "--witnesses/--no-witnesses",
+        help="run every must-find's witness at BOTH ends (needs the local source repositories)",
+    ),
+    source_repo: list[str] = typer.Option(  # noqa: B008
+        [], "--source-repo", help="repo=path override, repeatable"
+    ),
+) -> None:
+    """Cross-validate the reviewer corpus, its frozen hashes, and its gold.
+
+    With `--witnesses` (the default) every must-find is demonstrated: its check must FAIL at
+    the packet's own state and PASS at the state the repair reached. Gold that cannot do
+    that is a recollection, and this refuses it.
+    """
+    from . import review_witness
+
+    try:
+        c = _review_corpus(corpus)
+    except Exception as exc:  # noqa: BLE001 — the message is the product here
+        console.print(f"[bold]invalid reviewer corpus[/bold]: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    problems: list[str] = []
+    if hashes:
+        hash_file = c.root / "HASHES"
+        if not hash_file.is_file():
+            problems.append("HASHES missing — run `taskbench freeze-review`")
+        else:
+            frozen = json.loads(hash_file.read_text())
+            if frozen.get("corpus_content_hash") != c.content_hash:
+                problems.append(
+                    f"content hash drift: frozen {frozen.get('corpus_content_hash')} vs "
+                    f"on-disk {c.content_hash}"
+                )
+            for path, h in sorted(frozen.get("files", {}).items()):
+                if c.file_hashes.get(path) != h:
+                    problems.append(f"changed since freeze: {path}")
+            for path in sorted(set(c.file_hashes) - set(frozen.get("files", {}))):
+                problems.append(f"added since freeze: {path}")
+
+    for pid in c.catalog.packets:
+        packet_dir_text = json.dumps(c.packets[pid].model_dump(), default=str)
+        gold = c.gold(pid)
+        if gold.expected_disposition in packet_dir_text:
+            problems.append(f"{pid}: the packet manifest names its own expected disposition")
+        for m in gold.must_find:
+            if m.summary[:40] in packet_dir_text:
+                problems.append(f"{pid}: the packet manifest quotes must-find {m.id}")
+
+    if witnesses:
+        overrides = dict(p.split("=", 1) for p in source_repo)
+        report = review_witness.validate(c, source_repos=overrides)
+        for r in report.results:
+            mark = "✓" if r.ok else "✗"
+            console.print(
+                f"  {mark} {r.packet_id}/{r.must_find_id} [{r.kind}]"
+                + (f" — {r.detail.splitlines()[0]}" if not r.ok and r.detail else "")
+            )
+            if not r.ok:
+                problems.append(f"{r.packet_id}/{r.must_find_id}: witness does not hold")
+        problems += report.problems
+
+    if problems:
+        for p in problems:
+            console.print(f"[bold]✗[/bold] {p}")
+        raise typer.Exit(code=1)
+    console.print(
+        f"reviewer corpus {c.catalog.corpus_version} valid · {len(c.catalog.packets)} packets · "
+        f"{c.content_hash}"
+    )
+
+
+@app.command("freeze-review")
+def freeze_review_cmd(corpus: str | None = typer.Option(None, "--corpus")) -> None:
+    """Write the reviewer corpus HASHES file. Refuses once a record pins this version."""
+    c = _review_corpus(corpus)
+    records = TASKBENCH_ROOT / "records"
+    if records.is_dir():
+        for rec in records.iterdir():
+            cfg = rec / "config.json"
+            if cfg.is_file():
+                data = json.loads(cfg.read_text())
+                if data.get("corpus_version") == c.catalog.corpus_version:
+                    console.print(
+                        f"[bold]refused[/bold]: {rec.name} already pins reviewer corpus "
+                        f"{c.catalog.corpus_version}. Increment the version instead."
+                    )
+                    raise typer.Exit(code=1)
+    (c.root / "HASHES").write_text(
+        json.dumps(
+            {
+                "corpus_version": c.catalog.corpus_version,
+                "frozen_on": c.catalog.frozen_on,
+                "corpus_content_hash": c.content_hash,
+                "files": c.file_hashes,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    console.print(f"froze {c.catalog.corpus_version}: {c.content_hash}")
+
+
+@app.command("build-review-packet")
+def build_review_packet_cmd(
+    packet: str = typer.Argument(..., help="packet id"),
+    dest: str = typer.Option(..., "--dest", help="empty directory to build into"),
+    corpus: str | None = typer.Option(None, "--corpus"),
+    workspace_repo: str | None = typer.Option(None, "--workspace-repo"),
+    source_repo: list[str] = typer.Option([], "--source-repo"),  # noqa: B008
+    checks: bool = typer.Option(True, "--checks/--no-checks"),
+) -> None:
+    """Build one reviewer packet and scan it. No model is called and nothing is scored."""
+    from . import review_packet as rp
+
+    c = _review_corpus(corpus)
+    built = rp.build_packet(
+        c, packet, dest=dest, source_repos=dict(p.split("=", 1) for p in source_repo),
+        workspace_repo_path=workspace_repo, run_checks=checks,
+    )
+    console.print(f"built {packet} at {built.root} as [bold]{built.blind_id}[/bold]")
+    console.print(f"  {len(built.declared_inputs)} declared input(s)")
+    for cid, code in sorted(built.check_exits.items()):
+        console.print(f"  check {cid}: exit {code}")
+    if built.violations:
+        for v in built.violations:
+            console.print(f"[bold]LEAK[/bold] {v}")
+        raise typer.Exit(code=1)
+    console.print("packet scan clean")

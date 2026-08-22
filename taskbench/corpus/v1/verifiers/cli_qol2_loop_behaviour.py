@@ -307,7 +307,8 @@ def main(repo_root: str) -> int:
         # (a) --no-score still closes, and records no calibration entry.
         rows_before = f.rows_for("alpha")
         r = f.run("hive-close", "alpha", "--no-score")
-        case(findings, r.returncode == 0, "(a) --no-score still closes", (r.stdout + r.stderr)[-400:])
+        case(findings, r.returncode == 0, "(a) --no-score still closes",
+             (r.stdout + r.stderr)[-400:])
         case(findings, len(f.emits()) > before, "(a) --no-score emitted the close")
         case(findings, f.rows_for("alpha") == rows_before,
              "(a) --no-score recorded no calibration entry")
