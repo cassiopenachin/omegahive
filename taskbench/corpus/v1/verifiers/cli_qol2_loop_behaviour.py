@@ -36,6 +36,24 @@ import sys
 import tempfile
 from pathlib import Path
 
+COMPOSE_STUB = r"""#!/usr/bin/env bash
+# Recording stub for the container-compose command. The scripts of this task's era reach
+# the spine as `<compose> run --rm -T cli <args>` and have no host-side seam of their own,
+# so the seam used here is the one they DO have: OMEGAHIVE_COMPOSE, which hive-common.sh
+# takes at its word rather than probing. Everything up to and including the service name
+# is dropped and the rest is answered by the CLI stub beside this file.
+set -u
+printf 'compose %s\n' "$*" >> "$TASKBENCH_STUB_LOG"
+seen_cli=0
+args=()
+for a in "$@"; do
+  if [ "$seen_cli" -eq 1 ]; then args+=("$a"); continue; fi
+  [ "$a" = "cli" ] && seen_cli=1
+done
+[ "$seen_cli" -eq 1 ] || { echo "compose stub: no cli service in: $*" >&2; exit 1; }
+exec "$(dirname "$0")/hivecli" "${args[@]}"
+"""
+
 CLI_STUB = r"""#!/usr/bin/env bash
 # Recording stub for the hive CLI. Answers the two read commands taskbench's fixture
 # needs and records every emit; it never touches a database.
@@ -206,7 +224,9 @@ class Fixture:
         git(self.canon / "code", "init", "--quiet", "--initial-branch=main")
 
         self.bin.mkdir()
-        for name, body in (("hivecli", CLI_STUB), ("tmux", TMUX_STUB)):
+        for name, body in (
+            ("hivecli", CLI_STUB), ("hivecompose", COMPOSE_STUB), ("tmux", TMUX_STUB)
+        ):
             p = self.bin / name
             p.write_text(body)
             p.chmod(0o755)
@@ -234,7 +254,13 @@ class Fixture:
                 "OMEGA_DIR": str(self.repo),
                 "WORK_ROOT": str(self.root / "work"),
                 "HIVE_TMUX_SESSION": "taskbench-fixture",
+                # Three seams, because the scripts changed which one they offer over the
+                # window this corpus spans and a candidate may reasonably reach the spine
+                # through any of them. Setting all three means the check measures the
+                # candidate's behaviour rather than its choice of seam.
                 "HIVE_CLI_CMD": str(self.bin / "hivecli"),
+                "OMEGAHIVE_COMPOSE": str(self.bin / "hivecompose"),
+                "HIVE_SPINE_JSON": str(self.events),
                 "TASKBENCH_STUB_LOG": str(self.log),
                 "TASKBENCH_STUB_EVENTS": str(self.events),
                 "TASKBENCH_STUB_BOARD": str(self.board),

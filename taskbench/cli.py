@@ -1262,3 +1262,42 @@ def score_reviewers_cmd(
 ) -> None:
     """Re-render a reviewer record's aggregate from its cells. Reads only; writes nothing."""
     console.print((Path(record) / "aggregate.md").read_text())
+
+
+@app.command("endpoint-witness")
+def endpoint_witness_cmd(
+    corpus: str | None = typer.Option(None, "--corpus"),
+    tasks: str | None = typer.Option(None, "--tasks", help="comma-separated ids"),
+    source_repo: list[str] = typer.Option([], "--source-repo"),  # noqa: B008
+    out: str | None = typer.Option(None, "--out", help="write the report as JSON"),
+) -> None:
+    """Run every worker gate at BOTH real endpoints: the pre-task baseline and the accepted
+    outcome. No model is called.
+
+    A gate that is green at the baseline measures nothing; a gate that is red at the accepted
+    outcome reports a grader defect as a model result. This is how both are found before a
+    cell runs rather than after.
+    """
+    from . import endpoint_witness
+
+    c = _corpus(corpus)
+    ids = [t.strip() for t in tasks.split(",")] if tasks else None
+    report = endpoint_witness.run(
+        c, task_ids=ids, source_repos=dict(p.split("=", 1) for p in source_repo)
+    )
+    for pair in report.pairs:
+        mark = "✓" if pair.discriminates else "·"
+        console.print(
+            f"  {mark} {pair.task_id}/{pair.verifier_id}: baseline exit "
+            f"{pair.baseline_exit} → accepted exit {pair.accepted_exit}"
+            + (f"  ({pair.note})" if pair.note else "")
+        )
+    if out:
+        Path(out).write_text(json.dumps(report.to_json(), indent=2) + "\n")
+        console.print(f"\nwritten to {out}")
+    if report.problems:
+        console.print("")
+        for p in report.problems:
+            console.print(f"[bold]✗[/bold] {p}")
+        raise typer.Exit(code=1)
+    console.print("\nevery task has at least one gate that tells the two endpoints apart")
