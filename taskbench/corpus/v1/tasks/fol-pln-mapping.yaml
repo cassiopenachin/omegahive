@@ -95,6 +95,12 @@ environment_needs:
 - SWI-Prolog and the pinned runtime's own prerequisites, for the micro-examples the note's
   encoding decisions rest on.
 - uv on PATH, with a warm cache or network.
+- 'NO suite gate. The tenant repository carried no lockfile at this task''s baseline, so
+  `uv run --frozen` cannot resolve there and an unpinned resolve is a different
+  environment on every run — a bar that cannot be demonstrated at either endpoint is not a
+  bar, and shipping one would have produced a red nobody could attribute. What the suite
+  would have covered — that the micro-examples actually run against the pinned runtime and
+  assert what they claim — is a rubric leg, judged from the evidence the attempt records.'
 verifiers:
 - id: note-answers-the-converter-order
   argv:
@@ -108,19 +114,6 @@ verifiers:
     runtime, a run protocol with scale, budget, timeout and liveness canaries, micro-examples
     that assert rather than merely run, and a seeded report section carrying the two published
     baselines the order quotes with at least one source'
-- id: pytest-offline
-  argv:
-  - uv
-  - run
-  - --frozen
-  - pytest
-  - -q
-  - -m
-  - not runtime
-  timeout_s: 1800
-  description: the repository's own offline suite green — the no-regressions bar. The
-    runtime-marked tests are excluded here because they shell out to the pinned runtime and are
-    the micro-examples' own leg, judged in review from the evidence the attempt records
 checklist:
 - id: encodings-verified-not-argued
   text: Every encoding decision at or above the order's frequency threshold rests on a runnable

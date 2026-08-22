@@ -60,6 +60,10 @@ environment_needs:
   any cell runs. The grant matrix is what discriminates, and the property check says so in its own
   output rather than quietly crediting the host''s history to the candidate.'
 - uv on PATH, with a warm cache or network for `uv sync`.
+- 'Three test modules are excluded from the suite gate because they compare fixture data
+  against the real wall clock and that data has aged out of the window they assert on. The
+  exclusion is a property of the calendar, not of the attempt, and it is stated in the
+  verifier''s own description so a reader of a green cell knows what was not run.'
 - shellcheck, for the lint leg the order's definition of done names.
 verifiers:
 - id: two-role-property
@@ -82,8 +86,17 @@ verifiers:
   - --frozen
   - pytest
   - -q
+  - --ignore=tests/test_notifier_portfolio.py
+  - --ignore=tests/test_portfolio_cli.py
+  - --ignore=tests/test_ui_portfolio.py
   timeout_s: 2400
-  description: the whole suite green — the order's no-regressions bar
+  description: 'the suite green — the order''s no-regressions bar, minus three modules that
+    have since stopped being replayable. Those three assert against a live wall clock and
+    fixture data that has now aged out of the window they check, which a later task fixed by
+    injecting a clock; at THIS baseline there is no clock to inject, so they fail at the
+    pre-task state and at the accepted outcome alike. Excluding them is named here rather than
+    discovered mid-batch, and it tells a candidate nothing: the exclusion is about the calendar,
+    not about the work'
 - id: ruff
   argv:
   - uv

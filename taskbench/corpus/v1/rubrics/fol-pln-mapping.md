@@ -14,7 +14,6 @@ closes the order is a pass.
 - **escalation-honoured** — If a construct above the order's escalation threshold has no sound encoding candidate at all, that is raised as a question rather than resolved unilaterally.
 - **result-report** — A result report exists under the project's reports directory carrying What shipped / How verified / To operate / Reflection, and its claims match what the attempt actually did.
 - **note-answers-the-converter-order** (checked mechanically) — the holes a converter order would fall into, checked against what this order enumerates: a decision or declared gap for every FOL construct it lists, a measured frequency table, both reporting arms with a realization path that does not edit the vendored runtime, a run protocol with scale, budget, timeout and liveness canaries, micro-examples that assert rather than merely run, and a seeded report section carrying the two published baselines the order quotes with at least one source
-- **pytest-offline** (checked mechanically) — the repository's own offline suite green — the no-regressions bar. The runtime-marked tests are excluded here because they shell out to the pinned runtime and are the micro-examples' own leg, judged in review from the evidence the attempt records
 
 ## Not defects
 

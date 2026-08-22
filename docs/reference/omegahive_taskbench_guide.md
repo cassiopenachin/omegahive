@@ -405,7 +405,7 @@ cd ~/src/SNET/omegahive && uv run --frozen taskbench middle-preflight \
   --worker-config ~/work/taskbench/<record>/worker-runner-config.yaml \
   --work-root    ~/work/taskbench/<record> \
   --out          taskbench/records \
-  --expect-worker-hash sha256:b6e0bd56562a05a343a492d9bc6e75db9bb2fc7d1f13e6711d63ae12bf10fccc \
+  --expect-worker-hash sha256:5d4b7c061ff2e68c261e8b032d8af97d449f514c333fe9a00b0f3baa2efdaacd \
   --expect-review-hash sha256:463d6285f994a221463d8254b572b87c3de82140b524afaeb6753c5079a48899
 ```
 
