@@ -1,0 +1,29 @@
+{
+  "corpus_content_hash": "sha256:c0fe01547debcfd7dc14ddd1c4defa86bf0321c7d336ee0cef96afa09b6727ba",
+  "corpus_version": "v1",
+  "files": {
+    "corpus.yaml": "sha256:ddbf2005b714414e8a1a64d5ac4cc501e7c29ef114b8f912003d85e91ff741f8",
+    "grading/cli-qol-2.yaml": "sha256:168a0c701ca2e17916b3be4910854a1727f412470b51c411955146b5da704201",
+    "grading/fol-pln-mapping.yaml": "sha256:27866e98ff6f287f76bc675a91f20c72a4b8a057d25ef9aa6fcaf58dbaf96e16",
+    "grading/hive-mcp.yaml": "sha256:b54991716b966fadf4432a34a5d1834dcfb0fec81a948939f18a4754d47f1d76",
+    "grading/pw-writeup.yaml": "sha256:7616eb2b2d95c210faffff6f2f4d643acb7d3f31e2ee2e2c1c7d86702ab24452",
+    "grading/sole-write-path.yaml": "sha256:d810ebd932fb425322119096f5ff1ddf129f361ba832620f1118f51605267d9a",
+    "rubrics/cli-qol-2.md": "sha256:bef55de62817eb6496791f761eff82e965cfe83241680b352bdade974ea5bb25",
+    "rubrics/fol-pln-mapping.md": "sha256:cd56f07806629cceace0c074bd0eed982432202b7067a362ff4a6860ed8fcdd2",
+    "rubrics/hive-mcp.md": "sha256:49abbf8b63cc2150afe7b26888cd18bd5be6aec9fe68bf2610e2c39327be0f0c",
+    "rubrics/pw-writeup.md": "sha256:3a34c19be778e95b97d7cfc433caede84b9f77b14a4780bc686796c3f45e4540",
+    "rubrics/sole-write-path.md": "sha256:a7c55e485265a940e7b518fcd3be118d5ae8f640643a5b8bcc61da609c7c1f2d",
+    "tasks/cli-qol-2.yaml": "sha256:4628aec8182ea52c8b961fffc56d44d74ae3d4e8318badb988a27183ba91eada",
+    "tasks/fol-pln-mapping.yaml": "sha256:3cc449aa631fdece21776ca8ec3358db733e52c62fba9dd547ded1697ad91292",
+    "tasks/hive-mcp.yaml": "sha256:956983edba7917f9180e67e0d2b893a4c8f598a56ecb95c0360e6f589ea7e105",
+    "tasks/pw-writeup.yaml": "sha256:d5332f7c2155e5710f9adde779100efb2ffc378ab0a5314cdb7a7f003598f22a",
+    "tasks/sole-write-path.yaml": "sha256:f5a58b1e38c28d17f5236e3319c52581e8fd983edb8a2124f33a68b6d2f6b89d",
+    "verifiers/__pycache__/cli_qol2_loop_behaviour.cpython-314.pyc": "sha256:83a928945c172984c15a29581c41148463c4bb3c74288bf61348f520bc857bb6",
+    "verifiers/cli_qol2_loop_behaviour.py": "sha256:dd5107895d3fdf7cabcc566c978d158b37443407a2477665cd51f860a335d941",
+    "verifiers/fol_pln_note_shape.py": "sha256:c9f09e4230775bea3657101c3fb629dabb6b9a19dc9ce47e97e6a5af97e17221",
+    "verifiers/hive_mcp_contract.py": "sha256:afdb6554d6e7415759d498e81802d3a09880385f35b9a5a2b99375dce7f9177c",
+    "verifiers/pw_writeup_legibility.py": "sha256:8ddb1871e4007a5f4abaf84d0ce03256118a551c58b0557ae424294fd7548e9b",
+    "verifiers/sole_write_path_property.py": "sha256:f7651e8ef60b3cc7ecc6264f2c46f3860d5244cf4f6a7d8b6182a1f7ef0fce28"
+  },
+  "frozen_on": "2026-08-21"
+}

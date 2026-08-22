@@ -3,34 +3,44 @@
 # description of the historical patch, because exact-diff scoring is a stop-line.
 task_id: cli-qol-2
 accepted_outcome:
-- A close carries the review verdict: the verdict is required unless the close is explicitly
+- |-
+  A close carries the review verdict: the verdict is required unless the close is explicitly
   unscored, its value is validated before any spine write, and it reaches scoring through the
   close rather than through a second command the operator has to remember.
-- A false clean is refused. Scoring reads the task's own review history and refuses a clean
+- |-
+  A false clean is refused. Scoring reads the task's own review history and refuses a clean
   verdict when the task's post-result review cycle recorded a failure, naming the count and the
   legal alternatives, and writing no calibration row when it refuses.
-- One task, one calibration row. A re-score replaces that task's entry in place and removes
+- |-
+  One task, one calibration row. A re-score replaces that task's entry in place and removes
   older duplicates; with no explicit verdict it carries the newest prior human verdict forward,
   and only a task that never carried one stays unscored.
-- A long-form answer can be committed by the seat and blessed by the operator: the command
+- |-
+  A long-form answer can be committed by the seat and blessed by the operator: the command
   verifies an already-pushed commit is reachable from the hub's main, changes only the target
   order, and adds only content below the Answers heading — refusing an abbreviated sha, an
   unreachable or merge commit, a mixed commit, a deletion, and an edit above the heading — and
   never stages, commits or pushes anything itself.
-- The close stays first and stays loud: a scoring or metrics failure after a successful close
+- |-
+  The close stays first and stays loud: a scoring or metrics failure after a successful close
   never makes the close look failed, and names the one command that recovers it.
 known_defect_classes:
-- 'Validating the verdict after the spine write rather than before it: the close is durable, so
+- |-
+  Validating the verdict after the spine write rather than before it: the close is durable, so
   an argument error discovered afterwards leaves a closed task with no score and no clean way
-  back.'
-- 'An in-place calibration rewrite that disturbs unrelated rows, the generated-file header, or
+  back.
+- |-
+  An in-place calibration rewrite that disturbs unrelated rows, the generated-file header, or
   the stable task ordering. The rewrite is the destructive-looking part of this order and the
-  reason it needs fixtures rather than a manual read.'
-- 'Carrying a verdict forward by matching the row text loosely, so a legacy row''s capitalisation
-  or a task id containing a regular-expression metacharacter selects the wrong row — or none.'
-- 'A reachability check that consults the local clone rather than the hub, blessing an answer
-  commit that exists on the operator''s machine and nowhere the worker can pull it from.'
-- An allow-only diff check that accepts a commit touching a second path, or that reads a binary
+  reason it needs fixtures rather than a manual read.
+- |-
+  Carrying a verdict forward by matching the row text loosely, so a legacy row's capitalisation
+  or a task id containing a regular-expression metacharacter selects the wrong row — or none.
+- |-
+  A reachability check that consults the local clone rather than the hub, blessing an answer
+  commit that exists on the operator's machine and nowhere the worker can pull it from.
+- |-
+  An allow-only diff check that accepts a commit touching a second path, or that reads a binary
   or deletion-bearing diff as a pure addition.
 source_refs:
 - projects/omegahive/orders/2026-08-12-cli-qol-2.md@aa098e9eeaf82e6e936bee0c470e293e51f2f695

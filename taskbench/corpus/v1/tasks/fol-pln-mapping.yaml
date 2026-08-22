@@ -1,0 +1,183 @@
+# taskbench corpus v1 — manifest for fol-pln-mapping. Frozen; edits increment the corpus version.
+id: fol-pln-mapping
+project: pln-benchmarks
+run: plnbench
+title: fol-pln-mapping — FOLIO's FOL inventory vs lib_pln, encodings decided or gaps declared
+task_class: judgment
+work_shape: research-design
+replayable_because: 'The order''s deliverable is a design note plus runnable micro-examples, and
+  both are checkable against what the order itself enumerates: a decision or a declared gap for
+  every FOL construct it lists, a measured frequency table, the two-arm recommendation with a
+  realization path, and a run protocol with budget, timeout and liveness policy. The inputs are a
+  public dataset and three pinned upstream repositories, all supplied to the cell as content-
+  hashed snapshots, so the note is measured against the same bytes the historical worker read.
+  One leg — verifying the published neurosymbolic comparison figures at source — needs fresh web
+  retrieval this instrument cannot supply and is declared, not silently graded.'
+workspace_repo: hive-workspace
+workspace_inputs:
+- path: projects/pln-benchmarks/orders/2026-07-28-fol-pln-mapping.md
+  sha: e587e92738036a7ab49b28fd74c1fa02be6e4075
+  role: order
+- path: projects/omegahive/WORKER.md
+  sha: 0f1170faf446d6318a1044ddd0a6982074b9b533
+  role: context
+- path: projects/pln-benchmarks/charter.md
+  sha: 5ed42c6b96205ba59ad3c93c9f4e7319234d5b41
+  role: context
+- path: projects/pln-benchmarks/ROADMAP.md
+  sha: 7b0144d5626353e2d8a221ad597027133c596820
+  role: context
+- path: projects/pln-benchmarks/reports/2026-07-28-pw-libpln-slice-result.md
+  sha: 9d87407fac9fc20c862285aef8b439043d21e69b
+  role: context
+- path: projects/pln-benchmarks/notes/stall-ledger.md
+  sha: 2c0cbfc1a57934382013533e3e94e7fb07fd042b
+  role: context
+- path: projects/omegahive/decisions.md
+  sha: 8fc2b8a860d98a1a8de0c1b8689002eb0d453c05
+  role: context
+code:
+  repo: cassiopenachin/plnbench
+  pre_task_base_sha: 585c60e4ba955b21108e4f2e658f27a73609ecea
+  local_path: ~/src/SNET/plnbench
+dependency_snapshots:
+- name: PeTTa
+  kind: git_bundle
+  ref: trueagi-io/PeTTa
+  sha: 43705f5d9ff8958ffe7f0aa6777fb8477f2401f2
+  local_path: ~/src/SNET/PeTTa
+  note: the runtime the micro-examples run on, at the sha the repository's own pins file carries
+    at this task's baseline
+- name: PLN
+  kind: git_bundle
+  ref: trueagi-io/PLN
+  sha: 4405956947c4b53c7ff01bd565aa3b114bc970a1
+  local_path: ~/src/SNET/PLN
+  note: the rule set whose shape the whole note is about, at the pinned sha
+- name: metta-examples
+  kind: git_bundle
+  ref: cassiopenachin/metta-examples
+  sha: d1294b72587ffbc23eb52ad14a49bdf8ae450c79
+  local_path: ~/src/SNET/metta-examples
+  note: the language documentation the pins file names, at the pinned sha
+- name: folio-dataset
+  kind: source_snapshot
+  ref: Yale-LILY/FOLIO data/v0.0
+  note: 'The public release the inventory is measured on. The two digests are the ones the
+    closed task recorded on 2026-07-29 and checked on every load, so they are launch-era by
+    construction rather than by a fetch made later. The runner NEVER fetches: the operator
+    places these two files in the source cache once, preflight verifies both digests, and a
+    mismatch refuses the cell rather than measuring a different dataset under the same name.
+    The benchmark therefore measures this task against THIS packet, not against a fresh web
+    search — which is also the only way two harnesses can be compared on it at all.'
+  files:
+  - name: folio-train.jsonl
+    url: https://raw.githubusercontent.com/Yale-LILY/FOLIO/main/data/v0.0/folio-train.jsonl
+    sha256: 008d34b750d31fa7f014e953228adf4db81ec34bbda9e7f67c96c60438d1e6b2
+  - name: folio-validation.jsonl
+    url: https://raw.githubusercontent.com/Yale-LILY/FOLIO/main/data/v0.0/folio-validation.jsonl
+    sha256: 6922c988ef10987bd6545568ee8e63e897af80994591fa20539767da58f8e3d1
+expected_output_kinds:
+- doc_update
+- repro_script
+- tests
+required_artefacts:
+- docs/fol-pln-mapping.md
+- benchmarks/folio/REPORT.html
+required_changes:
+- docs/fol-pln-mapping.md
+- tests/repros/fol/*
+environment_needs:
+- The FOLIO source snapshot in the operator's taskbench source cache, both files matching their
+  pinned digests. Preflight refuses without them; the runner never fetches.
+- The three dependency bundles are exported into deps/ and are the only source for the pinned
+  upstream repositories; there is no network fetch of them.
+- SWI-Prolog and the pinned runtime's own prerequisites, for the micro-examples the note's
+  encoding decisions rest on.
+- uv on PATH, with a warm cache or network.
+verifiers:
+- id: note-answers-the-converter-order
+  argv:
+  - python3
+  - '{corpus}/verifiers/fol_pln_note_shape.py'
+  - .
+  timeout_s: 900
+  description: 'the holes a converter order would fall into, checked against what this order
+    enumerates: a decision or declared gap for every FOL construct it lists, a measured
+    frequency table, both reporting arms with a realization path that does not edit the vendored
+    runtime, a run protocol with scale, budget, timeout and liveness canaries, micro-examples
+    that assert rather than merely run, and a seeded report section carrying the two published
+    baselines the order quotes with at least one source'
+- id: pytest-offline
+  argv:
+  - uv
+  - run
+  - --frozen
+  - pytest
+  - -q
+  - -m
+  - not runtime
+  timeout_s: 1800
+  description: the repository's own offline suite green — the no-regressions bar. The
+    runtime-marked tests are excluded here because they shell out to the pinned runtime and are
+    the micro-examples' own leg, judged in review from the evidence the attempt records
+checklist:
+- id: encodings-verified-not-argued
+  text: Every encoding decision at or above the order's frequency threshold rests on a runnable
+    micro-example whose expected value was captured from the runtime before being asserted, not
+    on an argument about what the rule set ought to do.
+- id: gaps-compared
+  text: Every declared gap compares the candidate treatments the order names — a rewrite,
+    abstaining on the item, excluding with a count — and recommends one, with the reason.
+- id: semantics-not-score
+  text: 'No encoding is argued for on the grounds that it scores better. The order disqualifies
+    that argument by construction because this benchmark family rewards weakening the reasoner;
+    reporting the effect is fine, reasoning from it is not.'
+- id: errata-recorded-not-fixed
+  text: Dataset annotation quirks encountered are recorded with a count and examples, and are
+    not repaired.
+- id: arithmetic-checked
+  text: The run protocol's cost arithmetic is checked against the dataset's actual size rather
+    than carried over from the previous benchmark, and the note says which figures it re-derived.
+- id: escalation-honoured
+  text: If a construct above the order's escalation threshold has no sound encoding candidate at
+    all, that is raised as a question rather than resolved unilaterally.
+- id: result-report
+  text: A result report exists under the project's reports directory carrying What shipped / How
+    verified / To operate / Reflection, and its claims match what the attempt actually did.
+  applicable: offline
+stop_lines:
+- id: no-converter-no-scale-runs
+  text: No converter implementation and no dataset-scale runs — micro-examples only.
+- id: no-vendor-edits
+  text: No edits under the vendored runtime. A derived rule file, if recommended, is specified in
+    the note with its provenance and regeneration, never built here.
+  forbidden_paths:
+  - vendor/*
+- id: semantics-only
+  text: Encoding choices are justified by FOL semantics and micro-verification only.
+non_replayable_legs:
+- leg: Re-verify the published neurosymbolic comparison figures at their sources.
+  reason: 'Needs fresh retrieval of public papers, which this offline instrument does not supply
+    — and unlike the dataset, their launch-era digests were never recorded, so there is nothing
+    to pin a snapshot against. The two figures the ORDER itself states are required and checked;
+    the rest of section 2 is graded for shape and for honest marking, never for having been
+    verified. A future corpus version can close this by pinning a source packet at first fetch.'
+  executed_by: not-executed
+- leg: Record the two-arm recommendation in the workspace decisions log for operator
+    ratification.
+  reason: A write to the live hive workspace. The instrument never touches it, and the
+    recommendation itself IS in the note and is graded.
+  executed_by: operator
+- leg: Post the prepared upstream filings.
+  reason: The order already leaves posting to the operator. What the attempt PREPARED — repro
+    plus suggested text — is in the diff and is graded.
+  executed_by: operator
+- leg: Announce the result on the spine per WORKER.md.
+  reason: A spine emit, which this instrument's own scope forbids. The report the order asks for
+    IS written and graded — only the announcement is out of reach.
+  executed_by: not-executed
+writable_workspace_paths:
+- projects/pln-benchmarks/reports/*
+rubric: rubrics/fol-pln-mapping.md
+grading: grading/fol-pln-mapping.yaml

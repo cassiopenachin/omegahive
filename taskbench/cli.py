@@ -50,10 +50,24 @@ def corpus_cmd(
         f"content {c.content_hash[:19]}…"
     )
     sections = (("held-in", c.catalog.held_in), ("HELD-OUT (reserved)", c.catalog.held_out))
+    reserved = c.catalog.reserved_by_id
     for section, ids in sections:
         console.print(f"\n[bold]{section}[/bold]")
         for tid in ids:
-            m = c.manifests[tid]
+            m = c.manifests.get(tid)
+            if m is None:
+                # A reservation carried as pins rather than as a manifest. It still has to
+                # be visible here, and a PARTIAL one has to say so where the operator reads
+                # the corpus rather than only in the catalog file.
+                r = reserved.get(tid)
+                note = (
+                    f" · PARTIAL — already in {', '.join(sorted(r.contaminated_by))}'s baseline"
+                    if r and r.contaminated_by
+                    else " · pins only, no grader"
+                )
+                repo = (r.code_repo.split("/")[-1] if r else "?")
+                console.print(f"  {tid:24} {repo:16} {'(reserved)':22}{note}")
+                continue
             legs = (
                 f" · {len(m.non_replayable_legs)} excluded leg(s)"
                 if m.non_replayable_legs

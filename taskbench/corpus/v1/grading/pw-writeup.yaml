@@ -3,34 +3,44 @@
 # description of the historical patch, because exact-diff scoring is a stop-line.
 task_id: pw-writeup
 accepted_outcome:
-- The report reads as one arc for a reader who knows reasoning benchmarks and nothing about this
+- |-
+  The report reads as one arc for a reader who knows reasoning benchmarks and nothing about this
   project: the shallow-depth validation run, what it showed about the reasoner's behaviour when
   search resources change, and the depth-5 figure that can sit beside published work.
-- No organisation-internal vocabulary survives anywhere in the rendered document, the stack's
+- |-
+  No organisation-internal vocabulary survives anywhere in the rendered document, the stack's
   abbreviation is introduced before it is used, and at most three coined terms remain, each
   justified in the result report against the standard term it replaces.
-- Every quoted figure carries its denominator in words and traces to a generated file; the
+- |-
+  Every quoted figure carries its denominator in words and traces to a generated file; the
   absent chainer path is stated briefly with a pointer rather than defended at length.
-- Section 2's published comparison figures are re-verified where they live, corrected with the
+- |-
+  Section 2's published comparison figures are re-verified where they live, corrected with the
   source cited where they were wrong, marked where they could not be verified, and stamped with
   an as-of date; a sources manifest of path@sha refs names every artifact consumed.
-- Entry data, committed results and code are untouched: the accepted change is confined to the
+- |-
+  Entry data, committed results and code are untouched: the accepted change is confined to the
   one report document.
 known_defect_classes:
-- 'The document is written for us rather than for the declared audience: private vocabulary,
-  task ids, seat and wave names, or an internal issue file cited by entry number. This is the
-  defect class that rejected the first attempt, and a replay that reproduces it is reproducing
-  the historical failure rather than the historical success.'
-- 'A section that argues at length that a negative result is real — version sweeps, upstream
+- |-
+  The document is written for us rather than for the declared audience: private vocabulary, task
+  ids, seat and wave names, or an internal issue file cited by entry number. This is the defect
+  class that rejected the first attempt, and a replay that reproduces it is reproducing the
+  historical failure rather than the historical success.
+- |-
+  A section that argues at length that a negative result is real — version sweeps, upstream
   suite tallies, reproduction narratives — where the order asks for a short honest statement and
-  a pointer. Length spent on confidence reads as displacement activity.'
-- 'A figure quoted without its denominator, or a figure the tooling does not emit. Both make a
+  a pointer. Length spent on confidence reads as displacement activity.
+- |-
+  A figure quoted without its denominator, or a figure the tooling does not emit. Both make a
   claim the reader cannot check, which is the defect this order defines even when the claim is
-  true.'
-- 'Published comparison figures asserted as verified at source with nothing in the record
+  true.
+- |-
+  Published comparison figures asserted as verified at source with nothing in the record
   attesting to the check. Carrying them forward as the previous state left them, marked and
-  as-of stamped, is correct; re-asserting an unsupported verification is not.'
-- An arithmetic claim in the prose that contradicts the table beside it.
+  as-of stamped, is correct; re-asserting an unsupported verification is not.
+- |-
+  An arithmetic claim in the prose that contradicts the table beside it.
 source_refs:
 - projects/pln-benchmarks/orders/2026-07-29-pw-writeup.md@66c871cd9a1dac22f4b56c6d87421b9e5e7e744a
 - projects/pln-benchmarks/reports/2026-08-01-pw-writeup-result-2.md

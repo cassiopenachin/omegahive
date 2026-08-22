@@ -1,0 +1,52 @@
+# GRADER-ONLY. Never enters a candidate root and never enters a review packet.
+task_id: fol-pln-mapping
+accepted_outcome:
+- |-
+  A construct inventory measured from the dataset's own gold annotations rather than assumed,
+  with frequencies, and with the release's real size and split structure stated where they
+  differ from the numbers the literature quotes.
+- |-
+  Every construct above the order's threshold carries either an encoding verified by a runnable
+  micro-example, or a declared gap whose candidate treatments are compared and one recommended.
+- |-
+  The two reporting arms are recommended with a realization path that does not edit the vendored
+  runtime, and the recommendation is argued from the logic rather than from what would score
+  better.
+- |-
+  A run protocol a later converter order can execute: scale and cost checked against this
+  dataset's own size, a budget policy, a per-question timeout set off the tail, and liveness
+  probes that are existing assertions rather than non-empty counts.
+- |-
+  The report's benchmark-description and known-results sections are seeded with the published
+  baselines and their sources, and anomalies found on the way are prepared for filing rather
+  than filed.
+known_defect_classes:
+- |-
+  Reporting the dataset's headline size from the literature when the public release is smaller
+  and shaped differently — and, worse, building the cost arithmetic on the larger number.
+- |-
+  A gold field that exists in one split and not the other, so a construct frequency is computed
+  over a subset while being reported over the whole.
+- |-
+  An encoding whose micro-example runs and asserts nothing, so it proves the runtime accepted
+  the syntax rather than that the encoding derives what it claims.
+- |-
+  Skolemizing a conclusion: a fresh constant is not a witness, and an encoding that derives one
+  is unsound rather than merely incomplete.
+- |-
+  Recommending the arm that scores better without disclosing that it scores better. The record
+  already measures that this benchmark family rewards weakening the reasoner, so an undisclosed
+  score-maximizing choice reads as purely principled when it is not.
+- |-
+  Silently repairing a dataset annotation error instead of recording it.
+source_refs:
+- projects/pln-benchmarks/orders/2026-07-28-fol-pln-mapping.md@e587e92738036a7ab49b28fd74c1fa02be6e4075
+- projects/pln-benchmarks/reports/2026-07-29-fol-pln-mapping-result.md
+historical_solution_sha: a4705c741f16e3dd18a18d991e670e7ab1c44856
+notes: 'This is the corpus''s only research/design task and its only MeTTa-language task, and it
+  is the one whose cell is most likely to go red for the environment rather than for the model:
+  it needs the pinned runtime built, the dataset snapshot present, and enough patience for
+  micro-examples that shell out. Read a red here against the verifier logs before reading it as a
+  model result. The published-figures verification leg is declared not-executed — with the two
+  figures the order itself states as the exception — because their launch-era digests were never
+  recorded and there is nothing to pin a snapshot against.'
