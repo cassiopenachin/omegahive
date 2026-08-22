@@ -220,10 +220,22 @@ same-user route is isolated by it.
 
 ### The three commands a worker is given
 
+The interface FILES live at `<task-root>/run/emit` and `<task-root>/run/hive`, which is a
+task-specific absolute path. What the launch and resume prompts issue is not that path:
+
 ```
-<task-root>/run/emit --type <t> --task <task> --payload <json>
-<task-root>/run/hive sync workspace | publish workspace | publish code
+../run/emit --type <t> --task <task> --payload <json>
+../run/hive sync workspace | publish workspace | publish code
 ```
+
+Both clones are siblings of `run/`, and a turn starts in a clone root (`hive/` initially;
+a native resume preserves that cwd), so `../run/…` resolves from the workspace clone and
+from the code clone alike, and is the **same token for every task**. That is what lets one
+operator-approved runner rule — an execution policy, an allowlist, a sandbox profile —
+cover every launch. A prompt that named the absolute file instead would need a rule per
+task root, and the next task would fall out of it: that is exactly how `capacity-view`
+lost its ability to publish on 2026-08-21. There is one contract, not two — the physical
+layout is for the operator standing on the host, the relative token is for the worker.
 
 All of them run **in the worker's own process**: `emit` calls the governed CLI, `sync
 workspace` is ordinary `git fetch` + rebase, and publication is `git push` plus `gh` with

@@ -320,13 +320,19 @@ fi
 # names the commit that carries it and repeats the protocol's conditional-unblock rule
 # verbatim; a RECOVERY resume says only that the process ended and why, appends no answer,
 # and asks for no `task.unblocked` — there is nothing to consume.
+#
+# Both open with the SAME stable token the launch kickoff issues, `../run/hive`, and never
+# a reconstructed absolute path. A resume preserves the initial turn's cwd — a clone root,
+# beside the task root's `run/` — so the relative form resolves, and one operator-approved
+# runner rule covers every task instead of one rule per historical task root.
+WORKER_BRIDGE="../run/hive"
 if [ -n "$RESUME_ONLY" ]; then
   read -r -d '' RESUME_PROMPT <<PROMPT || true
 Your previous turn ended without posting a result, and the operator is resuming you.
 Recorded reason: $RESUME_ONLY
 This is process recovery, not an answer: no new decision has landed on your order, and
 there is nothing here for you to consume. Do NOT emit task.unblocked.
-First: $WORKER_RUN_DIR/hive sync workspace
+First: $WORKER_BRIDGE sync workspace
 Then re-read your order at HEAD, re-read your own report and question files to recover
 where you were, and continue from there. If you were blocked awaiting a decision, you are
 still blocked: say so and stop rather than proceeding without it.
@@ -334,7 +340,7 @@ PROMPT
 else
   read -r -d '' RESUME_PROMPT <<PROMPT || true
 An answer landed on your order in commit ${ANSWER_SHA:-$(git -C "$OPS_WS" rev-parse HEAD)}.
-First: $WORKER_RUN_DIR/hive sync workspace
+First: $WORKER_BRIDGE sync workspace
 Then re-read your order at HEAD — the answer is in its '## Answers' section — and emit
 task.unblocked ONLY if that answer actually resolves what you asked. If the order is
 unchanged, or the answer does not resolve the ambiguity, do NOT unblock: emit

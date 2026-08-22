@@ -149,6 +149,26 @@ WRAPPER="$RUN_DIR/emit"                   # the worker's own emit command, insid
 BRIDGE="$RUN_DIR/hive"                    # the worker's sync/publish command
 CODE_BRANCH="worker/$TASK"                # the publication branch, fixed by the plan
 
+# --- what the WORKER is told to type, as against where the files live -----------------
+# The paths above are task-specific and absolute; the commands below are neither. A
+# worker's turn starts in a CLONE ROOT — `hive/` on the initial turn, and a native resume
+# preserves that cwd — and both clones are siblings of `run/` inside the one task root:
+#
+#   <task-root>/hive        workspace clone   <- turn cwd
+#   <task-root>/<project>   code clone
+#   <task-root>/run         emit, emit-instrument, hive
+#
+# so `../run/emit` and `../run/hive` resolve from EITHER clone root and are the same two
+# tokens for every task. That is what lets one operator-approved runner rule cover every
+# launch: a prompt naming a task-specific absolute path forces a rule per task root, and
+# the next task necessarily falls out of it (capacity-view could not publish, 2026-08-21).
+# The relative contract therefore depends on the turn cwd being a clone root — anything
+# that moves it must change these tokens with it. They are separate variables from
+# WRAPPER/BRIDGE on purpose: operator output and half-launch recovery still name the real
+# files, because those are instructions for a human standing on this host.
+WORKER_EMIT="../run/emit"                 # what the worker types, from either clone root
+WORKER_BRIDGE="../run/hive"
+
 # --- the order pin, the kickoff, and the route ---------------------------------------
 # All three are resolved HERE, before any decision that mutates something, because
 # `--check` must be able to answer "what would this launch do" using the very same code
@@ -161,24 +181,31 @@ resolve_compose
 # The kickoff is built before the route so the preflight can show the ACTUAL argv the
 # harness would receive, kickoff included (elided in the display, counted in the shape).
 #
-# It names the worker's THREE commands by path and nothing else about transport, because
-# there is only one: every operation runs in the worker's own process, with the governed
-# CLI and the runner's own git and forge commands. If a configured runner cannot reach
-# one of them, the command fails loudly and the worker blocks and says so — which is a
-# deployment fact the operator can act on, and better than a bridge that hides it.
+# It names the worker's THREE commands and nothing else about transport, because there is
+# only one: every operation runs in the worker's own process, with the governed CLI and
+# the runner's own git and forge commands. If a configured runner cannot reach one of
+# them, the command fails loudly and the worker blocks and says so — which is a deployment
+# fact the operator can act on, and better than a bridge that hides it.
+#
+# The commands are the STABLE relative tokens, never the absolute files behind them (see
+# WORKER_EMIT above): the header still names the task root and both clones, because those
+# are facts a worker needs, but nothing it is asked to EXECUTE is task-specific.
 read -r -d '' KICKOFF <<KICK || true
 You are hive worker $WORKER on task $TASK (run: $RUN).
 Your task root is $TASK_ROOT — everything you may write is inside it.
 Your clones: workspace $WS_ROOT · code $CODE_ROOT.
-Your emit command:            $WRAPPER --type <t> --task <task> --payload <json>
-Your workspace sync command:  $BRIDGE sync workspace
-Your publication commands:    $BRIDGE publish workspace   (your report/question commits)
-                              $BRIDGE publish code        (branch $CODE_BRANCH, opens/updates its PR)
-First: $BRIDGE sync workspace
+Every command below is written relative to a clone root, and both clones sit beside the
+interface directory, so all of them resolve from the workspace clone and from the code
+clone alike. Your turn starts in the workspace clone; run them from a clone root.
+Your emit command:            $WORKER_EMIT --type <t> --task <task> --payload <json>
+Your workspace sync command:  $WORKER_BRIDGE sync workspace
+Your publication commands:    $WORKER_BRIDGE publish workspace   (your report/question commits)
+                              $WORKER_BRIDGE publish code        (branch $CODE_BRANCH, opens/updates its PR)
+First: $WORKER_BRIDGE sync workspace
 Your order: $REL in your workspace clone.
 Protocol: read projects/omegahive/WORKER.md there first and follow it exactly.
 The emit wrapper bakes in --run-id/--role worker/--actor $WORKER. Everywhere WORKER.md
-writes 'hive emit --run-id \$RUN --role worker --actor \$WORKER ...', run '$WRAPPER ...'
+writes 'hive emit --run-id \$RUN --role worker --actor \$WORKER ...', run '$WORKER_EMIT ...'
 with only the remaining flags (--type/--task/--payload). Never use raw hive emit.
 Commit your code work on branch $CODE_BRANCH; the publication commands take the branch,
 the destination and the credentials from the launch and accept none from you.
