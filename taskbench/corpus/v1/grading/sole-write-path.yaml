@@ -1,0 +1,47 @@
+# GRADER-ONLY. Never enters a candidate root and never enters a review packet.
+task_id: sole-write-path
+accepted_outcome:
+- Two roles exist with the write scope stated in the migration rather than applied by hand: one
+  role may append to event storage and register runs, the other may only read. The refusal is a
+  privilege refusal at the server, reproducible by asking the database.
+- The write grants are narrow enough that the credential every emit already holds cannot rewrite
+  recorded history — no delete, and no update of an event's identifying columns.
+- No migration in the repository carries a credential. The roles exist unable to authenticate
+  until the operator's cutover, which is what makes the cutover a deployment act rather than a
+  code release.
+- Every consumer connects under the role its job needs, demonstrated by the stack running without
+  the owning role's credential rather than by a code read.
+- A credential-scope check diffs each service's actual environment key NAMES against its declared
+  row and is asymmetric — over-scope fails, an absent declared key reports — with no exception
+  list and no value ever read, printed, logged or diffed.
+- The forward migration and a scripted rollback were both run, in both directions, and the
+  durable cutover was left to the operator with its procedure and rollback written down.
+known_defect_classes:
+- 'A bootstrap or setup path that seeds a half-configured cutover on a host that has not cut over.
+  The design rests on "not cut over" being indistinguishable from "this file does not exist"; a
+  seeded file that SETS its variables to placeholder values breaks the fallback everywhere at once
+  — every write path, the migrator, the test suite''s scratch databases and the backup drills all
+  start authenticating as roles that have no password yet.'
+- 'A deploy-time check that cannot distinguish "no credential is configured" from "the query that
+  would have told me failed". The realistic trigger is a stale image, and the failure mode points
+  every write path at the durable database while the harness believes it is on a scratch one. A
+  swallowed exit status plus an empty string that is also a legitimate answer is the shape.'
+- 'Collapsing "the scan could not run" into the same non-fatal outcome as "the scan found
+  nothing". A missing dependency then reads as a clean scan.'
+- 'A test that passes whether or not the thing under test was used — an injected manifest whose
+  verdict is identical to the repository''s own, so honouring it and ignoring it look the same.'
+- 'Cluster-global objects created check-then-act while concurrent scratch databases are the
+  documented normal mode: two suites starting together race and one fails unreproducibly.'
+- 'A privilege test whose "cannot" cases pass vacuously because the role switch itself was refused
+  and the refusal was swallowed.'
+- A table-wide UPDATE grant where the running system performs exactly two column updates.
+source_refs:
+- projects/omegahive/orders/2026-07-29-sole-write-path.md@8d95b46edacc4e7283737377a54af9e311a52600
+- projects/omegahive/reports/2026-08-01-sole-write-path-result.md
+historical_solution_sha: 2d20e7df8d21cbdfae80cb5c7d897c868472981e
+notes: 'This task closed through two review rounds with different lenses: a security pass first,
+  then a correctness and simplification pass that found two HIGH defects the security lens could
+  not see. Both HIGH defects are in the known-defect classes above, in behavioural terms. The state
+  between those two rounds is the sole-write-path packet of the reviewer corpus, so a worker cell
+  here and a reviewer cell there look at the same task from opposite ends; neither may be used to
+  grade the other.'

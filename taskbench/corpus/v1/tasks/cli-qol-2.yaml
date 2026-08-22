@@ -1,0 +1,131 @@
+# taskbench corpus v1 — manifest for cli-qol-2. Frozen; edits increment the corpus version.
+id: cli-qol-2
+project: omegahive
+run: omegahive
+title: cli-qol-2 — one close, one verdict, one row; committed answers without the CLI-text bottleneck
+task_class: standard
+work_shape: shell-tooling
+replayable_because: 'Four changes on three shell scripts whose inputs are all reconstructable
+  offline. Every spine read these scripts make goes through hive-common.sh''s own HIVE_CLI_CMD
+  seam, so a recording stub reproduces exactly what they read without a database; the git-history
+  verifier acts on an ordinary repository and a hub, both of which a fixture can build; and the
+  calibration rewrite acts on a markdown file. The pre-task base is main immediately before the
+  accepted merge, the accepted outcome is that merge, and the finish-time checks drive the
+  candidate''s own scripts against the order''s seven definition-of-done cases rather than
+  comparing text.'
+workspace_repo: hive-workspace
+workspace_inputs:
+- path: projects/omegahive/orders/2026-08-12-cli-qol-2.md
+  sha: aa098e9eeaf82e6e936bee0c470e293e51f2f695
+  role: order
+- path: projects/omegahive/WORKER.md
+  sha: 01aafc75e04a4341baa4d13715bd92c8b9dc1d02
+  role: context
+- path: projects/omegahive/OPERATIONS.md
+  sha: 3b1ff1b86d308467fdba1958b89a8b54351fa26b
+  role: context
+- path: projects/omegahive/retros/2026-08-12-retro.md
+  sha: d2640d95d60210c62b5cac3e0361376842736dbd
+  role: context
+- path: projects/omegahive/RUNBOOK.md
+  sha: d4d80925d934596ac0e3f358d434dfd426e355e9
+  role: context
+withheld_inputs:
+- path: projects/omegahive/reports/2026-07-28-cli-qol-result.md
+  reason: 'The direct predecessor''s result report, and a controlling ref of this order. It is
+    withheld because `cli-qol` is held out of corpus v0.1, which is still in use: shipping its
+    result report here would spend that reservation by citation, for a task this instrument may
+    still want as a cold regression probe. The scripts the predecessor produced ARE in the code
+    baseline, so what is lost is its narrative, not its work.'
+code:
+  repo: cassiopenachin/omegahive
+  pre_task_base_sha: 342ab48d63987f59f671ed9ef11b97e7295285a8
+  local_path: ~/src/SNET/omegahive
+expected_output_kinds:
+- code_patch
+- tests
+- doc_update
+required_artefacts:
+- scripts/hive-close
+- scripts/hive-score
+- scripts/hive-answer
+required_changes:
+- scripts/hive-close
+- scripts/hive-score
+- scripts/hive-answer
+environment_needs:
+- bash, git, jq and awk. No stack, no database, no network and no tmux server — the check
+  builds its own workspace, hub and recording stubs.
+- shellcheck, for the lint leg the order's definition of done names.
+verifiers:
+- id: loop-behaviour
+  argv:
+  - python3
+  - '{corpus}/verifiers/cli_qol2_loop_behaviour.py'
+  - .
+  timeout_s: 1200
+  description: 'the order''s definition-of-done cases (a) through (f), driven against the
+    candidate''s own scripts in a disposable fixture: a workspace with its own hub, a project,
+    two orders, a calibration file already carrying the duplicated rows the order names, a
+    recording stub for the hive CLI and a recording stub for tmux. It checks what the scripts
+    DO — refuse before writing, close, score, replace one row, carry a verdict forward, refuse
+    a false clean, and accept or refuse a pushed answer commit — never how they are written'
+- id: shellcheck
+  argv:
+  - shellcheck
+  - -x
+  - scripts/hive-close
+  - scripts/hive-score
+  - scripts/hive-answer
+  - scripts/hive-common.sh
+  timeout_s: 600
+  description: 'shellcheck -x clean on the scripts this order touches. This is a
+    no-regression gate rather than a discriminator: it is clean at the pre-task baseline too'
+checklist:
+- id: runbook-updates
+  text: RUNBOOK names the new close syntax, --no-score, the one-row re-score semantics, and the
+    long-form answer flow.
+- id: drill-cases-read-as-code
+  text: The focused drill cases are real cases a reader can follow — each names the input it
+    sets up and the outcome it requires — rather than a smoke that would pass over the bug.
+- id: nudge-after-verify
+  text: A verified --sha goes on to perform the same safe resume the text form performs, without
+    rewriting or recommitting the file. The fixture proves the verification and the no-write
+    stop-line; whether the resume itself fires needs a live worker's turn state, so judge it
+    from the code and the drill rather than from a verifier log.
+- id: restore-commands
+  text: The result report's To operate carries the exact two operator commands that restore the
+    two cross-project calibration rows the context names, and does not run them.
+- id: result-report
+  text: A result report exists under the project's reports directory carrying What shipped / How
+    verified / To operate / Reflection, and its claims match what the attempt actually did.
+  applicable: offline
+stop_lines:
+- id: no-new-authority
+  text: No new event type, calibration field, review value, or review authority. The operator
+    still makes the verdict and still signs the answer commit.
+- id: sha-never-writes
+  text: --sha verifies an already-pushed commit; it never stages, commits, rebases, or pushes,
+    and never accepts an answer embedded in a mixed commit.
+- id: no-general-drill-rewrite
+  text: No general drill rewrite. The order refuses the fired drill-hygiene trigger to its own
+    separate pass.
+- id: no-prediction-parsing-change
+  text: No scoring of Named risks, no change to prediction parsing, and no change to the
+    task-versus-final-artefact semantics already decided.
+non_replayable_legs:
+- leg: Run the two operator commands that restore the ptc-revalidate and pw-libpln-slice
+    calibration rows.
+  reason: A write to the live workspace on another project, which the order itself assigns to
+    the operator rather than to the task. The report must still CARRY both commands, and that
+    is graded.
+  executed_by: operator
+- leg: Announce the result on the spine per WORKER.md.
+  reason: A spine emit, which this instrument's own scope forbids. The report the order asks for
+    IS written and graded — only the announcement is out of reach.
+  executed_by: not-executed
+writable_workspace_paths:
+- projects/omegahive/RUNBOOK.md
+- projects/omegahive/reports/*
+rubric: rubrics/cli-qol-2.md
+grading: grading/cli-qol-2.yaml
