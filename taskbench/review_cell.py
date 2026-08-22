@@ -207,6 +207,7 @@ def run_reviewer(
     blind_id: str,
     probe: CellProbe,
     log_dir: str | Path,
+    verdict_name: str = "verdict.json",
 ) -> ReviewCellOutcome:
     """Run the reviewer, but only behind a probe that passed."""
     packet = Path(packet_dir).resolve()
@@ -251,14 +252,14 @@ def run_reviewer(
     from .runner import parse_result_envelope
 
     usage = parse_result_envelope(spec.result_envelope, out.read_text(errors="replace"))
-    verdict_file = packet / "verdict.json"
+    verdict_file = packet / verdict_name
     verdict: dict[str, Any] | None = None
     reason = ""
     if verdict_file.is_file():
         try:
             verdict = json.loads(verdict_file.read_text())
         except json.JSONDecodeError as exc:
-            reason = f"the reviewer wrote verdict.json and it is not JSON ({exc})"
+            reason = f"the reviewer wrote {verdict_name} and it is not JSON ({exc})"
     else:
-        reason = "the reviewer produced no verdict.json"
+        reason = f"the reviewer produced no {verdict_name}"
     return ReviewCellOutcome(packet_id, blind_id, probe, verdict, rc, True, reason, usage)

@@ -1093,3 +1093,172 @@ def build_review_packet_cmd(
             console.print(f"[bold]LEAK[/bold] {v}")
         raise typer.Exit(code=1)
     console.print("packet scan clean")
+
+
+def _reviewer_config(path: str):
+    """Read a reviewer runner config. The launcher writes it; nobody hand-edits it."""
+    from .review_cell import ReviewerCellSpec
+
+    data = yaml.safe_load(Path(path).read_text())
+    reviewer = ReviewerCellSpec.model_validate(data["reviewer"])
+    auditor = ReviewerCellSpec.model_validate(data["auditor"]) if data.get("auditor") else None
+    return data, reviewer, auditor
+
+
+@app.command("middle-preflight")
+def middle_preflight_cmd(
+    config: str = typer.Option(..., "--config", help="the generated reviewer runner config"),
+    worker_config: str = typer.Option(..., "--worker-config", help="the worker runner config"),
+    work_root: str = typer.Option(..., "--work-root"),
+    out: str = typer.Option(..., "--out", help="records directory"),
+    record_id: str = typer.Option("middle-preflight", "--record-id"),
+    expect_worker_hash: str = typer.Option(..., "--expect-worker-hash"),
+    expect_review_hash: str = typer.Option(..., "--expect-review-hash"),
+    corpus: str | None = typer.Option(None, "--corpus"),
+    review_corpus: str | None = typer.Option(None, "--review-corpus"),
+) -> None:
+    """Every precondition for BOTH instruments, checked without calling a model.
+
+    This is the command to run when you only want to know whether the environment agrees.
+    It cannot spend: no code path here launches anything.
+    """
+    from . import middle_preflight
+
+    worker = yaml.safe_load(Path(worker_config).read_text())
+    _, reviewer_cell, auditor = _reviewer_config(config)
+    c = _corpus(corpus)
+    rc = _review_corpus(review_corpus)
+    problems = middle_preflight.run_middle_preflight(
+        worker_corpus=c,
+        review_corpus=rc,
+        repo_root=TASKBENCH_ROOT.parent,
+        agent=AgentSpec.model_validate(worker["agent"]),
+        worker_reviewer=ReviewerSpec.model_validate(worker["reviewer"]),
+        reviewer_cell=reviewer_cell,
+        task_ids=list(c.catalog.held_in),
+        expect_worker_hash=expect_worker_hash,
+        expect_review_hash=expect_review_hash,
+        work_root=Path(work_root),
+        out_dir=Path(out),
+        record_id=record_id,
+        date=_date.today().isoformat(),
+        source_repos=dict(worker.get("source_repos") or {}),
+        workspace_repo_path=worker.get("workspace_repo_path"),
+    )
+    if auditor is not None:
+        problems += [f"auditor: {p}" for p in middle_preflight.check_reviewer_cell(auditor)]
+    if problems:
+        console.print("[bold]preflight refused[/bold] — every disagreement, at once:\n")
+        for p in problems:
+            console.print(f"  ✗ {p}")
+        console.print("\nNothing was written and no model was called.")
+        raise typer.Exit(code=3)
+    console.print("preflight agrees. Both instruments may spend.")
+
+
+@app.command("audit-gold")
+def audit_gold_cmd(
+    config: str = typer.Option(..., "--config"),
+    work_root: str = typer.Option(..., "--work-root"),
+    out: str = typer.Option(..., "--out", help="where to write the audits JSON"),
+    review_corpus: str | None = typer.Option(None, "--review-corpus"),
+) -> None:
+    """One fresh strong-model audit of each packet's proposed must-find set.
+
+    Runs BEFORE any scored reviewer cell, because a must-find set assembled by whoever built
+    the corpus is one reading of history. The audit never edits gold — the corpus is frozen,
+    and an audit that could rewrite the answer key would simply move the problem. A dispute
+    is recorded and stops the batch; resolving it is a decision, not an edit.
+    """
+    from . import review_cell, review_run
+
+    data, _, auditor = _reviewer_config(config)
+    if auditor is None:
+        console.print("[bold]refused[/bold]: this config declares no auditor")
+        raise typer.Exit(code=2)
+    c = _review_corpus(review_corpus)
+    work = Path(work_root)
+    audits: dict[str, dict] = {}
+    disputes = 0
+    for pid in c.catalog.packets:
+        cell = work / f"gold-audit-{pid}"
+        root = review_run.build_audit_packet(
+            c, pid, dest=cell,
+            source_repos=dict(data.get("source_repos") or {}),
+            workspace_repo_path=data.get("workspace_repo_path"),
+        )
+        home = review_cell.build_fresh_home(auditor, cell / "home")
+        probe = review_cell.run_probe(
+            auditor, packet_dir=root, home=home,
+            deny={
+                "gold": str(c.root / "gold" / f"{pid}.yaml"),
+                "operator_home": str(Path("~").expanduser() / ".config"),
+            },
+            declared_inputs=["README.md", "proposed.json"],
+        )
+        outcome = review_cell.run_reviewer(
+            auditor, packet_dir=root, home=home, packet_id=pid, blind_id=pid,
+            probe=probe, log_dir=cell / "log", verdict_name="audit.json",
+        )
+        audit = outcome.verdict or {"verdict": "no-answer", "reason": outcome.reason}
+        audits[pid] = audit
+        n = len(audit.get("disputed") or []) + len(audit.get("missing") or [])
+        disputes += n
+        console.print(f"  {pid}: {audit.get('verdict', '?')} · {n} dispute(s)")
+    Path(out).write_text(json.dumps(audits, indent=2, sort_keys=True) + "\n")
+    console.print(f"\naudits written to {out}")
+    if disputes:
+        console.print(
+            f"[bold]{disputes} dispute(s)[/bold]. The batch stops here: a must-find the audit "
+            "cannot support is a decision to make, not a number to work around. Nothing was "
+            "scored."
+        )
+        raise typer.Exit(code=4)
+
+
+@app.command("run-reviewers")
+def run_reviewers_cmd(
+    config: str = typer.Option(..., "--config"),
+    record_id: str = typer.Option(..., "--record-id"),
+    work_root: str = typer.Option(..., "--work-root"),
+    out: str = typer.Option(..., "--out"),
+    expect_corpus_hash: str = typer.Option(..., "--expect-corpus-hash"),
+    audits: str | None = typer.Option(None, "--audits"),
+    supersedes: str | None = typer.Option(None, "--supersedes"),
+    review_corpus: str | None = typer.Option(None, "--review-corpus"),
+) -> None:
+    """Run the reviewer over every packet and write one immutable record."""
+    from . import review_run
+
+    data, reviewer, _ = _reviewer_config(config)
+    c = _review_corpus(review_corpus)
+    if c.content_hash != expect_corpus_hash:
+        console.print(
+            f"[bold]refused[/bold]: reviewer corpus hash {c.content_hash} does not match the "
+            f"launch's {expect_corpus_hash}"
+        )
+        raise typer.Exit(code=3)
+    audit_data = json.loads(Path(audits).read_text()) if audits else None
+    root, scores = review_run.run_batch(
+        c,
+        work_root=work_root,
+        out_dir=out,
+        record_id=record_id,
+        date=_date.today().isoformat(),
+        reviewer=reviewer,
+        audits=audit_data,
+        supersedes=supersedes,
+        source_repos=dict(data.get("source_repos") or {}),
+        workspace_repo_path=data.get("workspace_repo_path"),
+    )
+    console.print((root / "aggregate.md").read_text())
+    fidelity = json.loads((root / "fidelity.json").read_text())
+    raise typer.Exit(code=0 if fidelity["green"] else 1)
+
+
+@app.command("score-reviewers")
+def score_reviewers_cmd(
+    record: str = typer.Argument(..., help="a reviewer record directory"),
+) -> None:
+    """Re-render a reviewer record's aggregate from its cells. Reads only; writes nothing."""
+    console.print((Path(record) / "aggregate.md").read_text())

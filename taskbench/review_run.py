@@ -37,7 +37,8 @@ class BatchAborted(RuntimeError):
 
 
 def build_config(
-    *, record_id: str, date: str, corpus: LoadedReviewCorpus, reviewer: ReviewerCellSpec
+    *, record_id: str, date: str, corpus: LoadedReviewCorpus,
+    reviewer: ReviewerCellSpec, supersedes: str | None = None,
 ) -> dict:
     return {
         "record_id": record_id,
@@ -55,6 +56,7 @@ def build_config(
             "no_unsupported_high_severity_on_the_clean_packet": True,
         },
         "host": {"platform": platform.platform(), "python": platform.python_version()},
+        "supersedes": supersedes,
     }
 
 
@@ -154,11 +156,15 @@ def run_batch(
     source_repos: dict[str, str] | None = None,
     workspace_repo_path: str | None = None,
     packet_ids: list[str] | None = None,
+    supersedes: str | None = None,
 ) -> tuple[Path, list[review_score.PacketScore]]:
     """Run the reviewer over every packet and write one immutable record."""
     work = Path(work_root)
     canary = ensure_canary(work)
-    config = build_config(record_id=record_id, date=date, corpus=corpus, reviewer=reviewer)
+    config = build_config(
+        record_id=record_id, date=date, corpus=corpus, reviewer=reviewer,
+        supersedes=supersedes,
+    )
     if audits:
         config["gold_audit"] = audits
     root = record.open_record(out_dir, config)
