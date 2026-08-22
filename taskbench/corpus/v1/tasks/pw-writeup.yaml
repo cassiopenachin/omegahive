@@ -1,0 +1,135 @@
+# taskbench corpus v1 — manifest for pw-writeup (attempt 2). Frozen; edits increment the corpus version.
+id: pw-writeup
+project: pln-benchmarks
+run: plnbench
+title: pw-writeup — the ProofWriter cluster narrative, written for a reader outside the project
+task_class: judgment
+work_shape: technical-writing
+replayable_because: 'Everything this order consumes is a committed document at a resolvable sha,
+  and the order itself stop-lines execution — no runs, no smoke, no reproduction — so the replay
+  needs no runtime, no dataset and no network at all. The pre-task state is the plnbench merge that
+  the order says the story needs; the accepted outcome is a single-file rewrite of the report; and
+  the finish-time checks test the order''s own writing standard, which the order states as four
+  rules with a test each, rather than testing the accepted prose. The one real difference from the
+  historical launch is declared under withheld_inputs.'
+workspace_repo: hive-workspace
+workspace_inputs:
+- path: projects/pln-benchmarks/orders/2026-07-29-pw-writeup.md
+  sha: 66c871cd9a1dac22f4b56c6d87421b9e5e7e744a
+  role: order
+- path: projects/omegahive/WORKER.md
+  sha: 0f1170faf446d6318a1044ddd0a6982074b9b533
+  role: context
+- path: projects/omegahive/writeup-genre.md
+  sha: 9b0531fc3b9ad1e7fcbc3baff1e01853d969e27f
+  role: context
+- path: projects/pln-benchmarks/notes/2026-08-01-pw-report-audit-findings.md
+  sha: 66c871cd9a1dac22f4b56c6d87421b9e5e7e744a
+  role: context
+- path: projects/pln-benchmarks/notes/2026-07-28-ptc-independent-repro.md
+  sha: 80084cf62aad25899165704ed722e9b25dfba9a0
+  role: context
+- path: projects/pln-benchmarks/notes/2026-08-01-pw-cluster-evidence.md
+  sha: 66c871cd9a1dac22f4b56c6d87421b9e5e7e744a
+  role: context
+- path: projects/pln-benchmarks/reports/2026-07-28-ptc-revalidate-result.md
+  sha: 82b6238eaf43ac039378220a694661f668d49089
+  role: context
+- path: projects/pln-benchmarks/reports/2026-07-28-pw-libpln-slice-result.md
+  sha: 9d87407fac9fc20c862285aef8b439043d21e69b
+  role: context
+- path: projects/pln-benchmarks/charter.md
+  sha: 5ed42c6b96205ba59ad3c93c9f4e7319234d5b41
+  role: context
+- path: projects/omegahive/decisions.md
+  sha: 133d03733a5f1aced0dbbf853727f95d82938e99
+  role: context
+withheld_inputs:
+- path: projects/pln-benchmarks/reports/2026-07-30-pw-d5-comparable-result.md
+  reason: 'A controlling ref of this order that names a task held out of corpus v1. Shipping it
+    would spend that reservation by citation. What it carries that this task needs — the depth-5
+    figure, its budget and its provenance — is in the code baseline the candidate starts from:
+    the generated results files under benchmarks/proofwriter/results/ and their .meta.json
+    sidecars, and the report entry that quotes them. The candidate is told the document is
+    unavailable, so a missing citation is an honest gap rather than a silent one. This is a
+    larger withholding than corpus v0.1 ever made and it is the single biggest declared
+    difference between this cell and the historical launch.'
+code:
+  repo: cassiopenachin/plnbench
+  pre_task_base_sha: 972abc5cb92af016ae673955216718a45bc366fb
+  local_path: ~/src/SNET/plnbench
+expected_output_kinds:
+- doc_update
+required_artefacts:
+- benchmarks/proofwriter/REPORT.html
+required_changes:
+- benchmarks/proofwriter/REPORT.html
+environment_needs:
+- python3 only. This order stop-lines execution, so the cell needs no runtime, no dataset, no
+  container and no network.
+verifiers:
+- id: writing-standard
+  argv:
+  - python3
+  - '{corpus}/verifiers/pw_writeup_legibility.py'
+  - .
+  description: the three mechanical tests the order's writing standard states — no
+    organisation-internal vocabulary, the named coinages within the order's budget of three, the
+    stack's abbreviation introduced — plus the DoD's sources manifest and section 2's as-of stamp.
+    Source citations are removed before the sweep, because citing a path is what the DoD asks for
+checklist:
+- id: comprehension-questions
+  text: The order's five comprehension questions are answerable from the document alone, by a
+    reader who knows reasoning benchmarks and nothing about this project, and each answer can be
+    judged true or false without opening any internal record.
+- id: absent-path-proportion
+  text: The absent chainer path is stated in a few sentences plus a pointer to the linked verdict
+    document, not defended at length with version sweeps, upstream suite tallies or reproduction
+    narratives.
+- id: denominators-in-words
+  text: Every quoted figure carries its denominator in words rather than as a bare proportion or
+    a nominalized class name, and every figure traces to a generated file.
+- id: mechanism-over-metaphor
+  text: Claims say what the machine did rather than naming an effect; the order's two worked
+    transformations are the standard.
+- id: coinage-justification
+  text: Each surviving coined term is listed in the result report with the standard term it
+    replaces and why that term failed.
+- id: falsifier-measurement
+  text: The result report states what fraction of the existing entry prose survived versus was
+    rewritten.
+- id: result-report
+  text: A result report exists under the project's reports directory carrying What shipped / How
+    verified / To operate / Reflection, and its claims match what the attempt actually did.
+  applicable: offline
+stop_lines:
+- id: report-html-and-deliverables-only
+  text: No edits to entry data, committed results, code, or anything outside REPORT.html and the
+    report/manifest deliverables.
+  forbidden_paths:
+  - benchmarks/proofwriter/results/*
+  - '*.py'
+  - '*.metta'
+  - '*.sh'
+  - Makefile
+  - pins.env
+- id: nothing-executed
+  text: 'Nothing is executed: no runs, no smoke, no reproduction. Mechanical ref resolution only.'
+- id: no-rejected-attempt
+  text: The rejected first attempt is not consulted. The cell root holds one commit and no remote,
+    so the closed branch is absent by construction; a candidate that claims to have read it is
+    claiming something that was not there.
+non_replayable_legs:
+- leg: The operator reviews the document per the writeup genre's two checks.
+  reason: An operator act on the live record. The blinded review in this instrument grades the
+    same document against the same rubric, but it is not the genre's operator check and is not
+    reported as one.
+  executed_by: operator
+- leg: Announce the result on the spine per WORKER.md.
+  reason: A spine emit, which this instrument's own scope forbids. The report the order asks for
+    IS written and graded — only the announcement is out of reach.
+  executed_by: not-executed
+writable_workspace_paths:
+- projects/pln-benchmarks/reports/*
+rubric: rubrics/pw-writeup.md
+grading: grading/pw-writeup.yaml

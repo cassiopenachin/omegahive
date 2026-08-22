@@ -41,6 +41,12 @@ WorkShape = Literal[
     "python-service",
     "docs-reorg",
     "external-verification",
+    # v1 adds three shapes the middle-tier corpus needs. A shape is a reporting label,
+    # never a grading input: it exists so a reader can see the composition of a corpus
+    # instead of a single pass rate over heterogeneous work.
+    "api-service",
+    "research-design",
+    "technical-writing",
 ]
 
 #: What a candidate is expected to leave behind. Used by the artefact-existence leg.
@@ -104,6 +110,23 @@ class WithheldInput(BaseModel):
     reason: str
 
 
+class SnapshotFile(BaseModel):
+    """One file of a pinned public source, named by the URL it came from and its digest."""
+
+    model_config = {"extra": "forbid"}
+
+    name: str
+    url: str
+    sha256: str
+
+    @field_validator("sha256")
+    @classmethod
+    def _hex64(cls, v: str) -> str:
+        if len(v) != 64 or not all(c in "0123456789abcdef" for c in v):
+            raise ValueError(f"sha256 must be 64 hex characters, got {v!r}")
+        return v
+
+
 class DependencySnapshot(BaseModel):
     """An out-of-repo dependency the task needs, pinned and exportable offline.
 
@@ -115,11 +138,25 @@ class DependencySnapshot(BaseModel):
     model_config = {"extra": "forbid"}
 
     name: str
-    kind: Literal["git_bundle", "image", "volume"]
+    kind: Literal["git_bundle", "image", "volume", "source_snapshot"]
     ref: str
     sha: str | None = None
     local_path: str | None = None
     note: str | None = None
+    #: For `kind=source_snapshot`: the launch-era files, each pinned by sha256. The
+    #: operator fetches them once into a local cache; the runner NEVER fetches, and a
+    #: hash mismatch is a refusal, not a warning. A task that depended on a public
+    #: dataset or paper is measured against THIS packet, not against a fresh web
+    #: search, and the manifest says so where a reader of the result will see it.
+    files: list[SnapshotFile] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _snapshot_has_files(self) -> DependencySnapshot:
+        if self.kind == "source_snapshot" and not self.files:
+            raise ValueError(f"{self.name}: a source_snapshot must pin at least one file")
+        if self.kind != "source_snapshot" and self.files:
+            raise ValueError(f"{self.name}: only a source_snapshot may pin files")
+        return self
 
 
 class Verifier(BaseModel):
@@ -222,7 +259,15 @@ class TaskManifest(BaseModel):
     task_class: TaskClass
     work_shape: WorkShape
     #: Why this task is genuinely bounded — the HIP's predicate, argued, not asserted.
-    bounded_because: str
+    #: Required for a `bounded` task and meaningless for any other, which is why v1's
+    #: larger tasks argue `replayable_because` instead.
+    bounded_because: str = ""
+    #: Why this task can still be replayed years after it closed: the pre-task state is
+    #: reconstructable, the launch-era inputs are enough to do the work, the accepted
+    #: outcome is recoverable, and the finish-time checks test the ORDER rather than the
+    #: historical patch. Required for every task a corpus seeds outside the bounded class,
+    #: because that is exactly where "it closed once" stops implying "it can close again".
+    replayable_because: str = ""
 
     workspace_repo: str
     workspace_inputs: list[WorkspaceInput]
@@ -261,8 +306,17 @@ class TaskManifest(BaseModel):
 
     @model_validator(mode="after")
     def _coherent(self) -> TaskManifest:
-        if self.task_class != "bounded":
-            raise ValueError(f"{self.id}: corpus v0 seeds bounded-class tasks only")
+        # Which classes a corpus may seed is a CATALOG fact, checked in `load_corpus`:
+        # v0/v0.1 seed bounded work only, v1 deliberately seeds larger orders. What is
+        # checked here is that whichever class a manifest claims, it argues its own
+        # predicate rather than asserting it.
+        if self.task_class == "bounded" and not self.bounded_because.strip():
+            raise ValueError(f"{self.id}: a bounded task must argue `bounded_because`")
+        if self.task_class != "bounded" and not self.replayable_because.strip():
+            raise ValueError(
+                f"{self.id}: a {self.task_class}-class task must argue `replayable_because` "
+                "— outside the bounded class, replayability is the thing that is not obvious"
+            )
         orders = [w for w in self.workspace_inputs if w.role == "order"]
         if len(orders) != 1:
             raise ValueError(f"{self.id}: exactly one workspace input must have role=order")
@@ -307,6 +361,45 @@ class AcceptanceFacts(BaseModel):
     notes: str = ""
 
 
+class ReservedTask(BaseModel):
+    """A held-out task, pinned but deliberately not built into a gradeable manifest.
+
+    A reservation only has to survive; it does not have to be executable today. Pinning
+    the launch-visible order and both endpoints here is what lets a later corpus version
+    build the manifest from the same historical state, without paying now for a grader
+    nobody may run.
+
+    `contaminated_by` is the honest half. A held-in task that launched *after* a reserved
+    one necessarily carries the reserved task's accepted outcome in its own single-baseline
+    export — the code is simply there, in the tree the candidate starts from. That does not
+    stop the reservation working against tuning and execution, and it does stop the task
+    being a clean cold read for any model that has run the contaminating cell. Declaring it
+    turns a quiet weakness into a hashed corpus fact; `load_corpus` refuses a declaration
+    with no note.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    id: str
+    why_reserved: str
+    #: `<workspace path>@<sha>` — the order as the historical launch showed it.
+    order_ref: str
+    code_repo: str
+    pre_task_base_sha: str
+    accepted_sha: str
+    contaminated_by: list[str] = Field(default_factory=list)
+    contamination_note: str = ""
+
+    @model_validator(mode="after")
+    def _contamination_is_explained(self) -> ReservedTask:
+        if self.contaminated_by and not self.contamination_note.strip():
+            raise ValueError(
+                f"{self.id}: reservation is contaminated by {sorted(self.contaminated_by)} "
+                "and carries no note. A partial reservation must say what it still buys."
+            )
+        return self
+
+
 class CorpusCatalog(BaseModel):
     """The frozen corpus: which tasks qualify models, which are reserved."""
 
@@ -317,6 +410,12 @@ class CorpusCatalog(BaseModel):
     description: str
     held_in: list[str]
     held_out: list[str]
+    #: Which order classes this corpus may seed. v0/v0.1 omit it and get the bounded-only
+    #: default they were frozen under; v1 widens it deliberately and visibly.
+    allowed_task_classes: list[TaskClass] = Field(default_factory=lambda: ["bounded"])
+    #: Pins for the held-out set. When present it must cover the held-out set exactly, and
+    #: those tasks then need no manifest — see `load_corpus`.
+    reserved: list[ReservedTask] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _disjoint(self) -> CorpusCatalog:
@@ -325,7 +424,19 @@ class CorpusCatalog(BaseModel):
             raise ValueError(f"held-in and held-out overlap: {sorted(overlap)}")
         if not self.held_in:
             raise ValueError("catalog has no held-in tasks")
+        if not self.allowed_task_classes:
+            raise ValueError("catalog allows no task class at all")
+        if self.reserved:
+            declared = sorted(r.id for r in self.reserved)
+            if declared != sorted(self.held_out):
+                raise ValueError(
+                    f"reserved pins {declared} but the held-out set is {sorted(self.held_out)}"
+                )
         return self
+
+    @property
+    def reserved_by_id(self) -> dict[str, ReservedTask]:
+        return {r.id: r for r in self.reserved}
 
     @property
     def all_ids(self) -> list[str]:
@@ -407,12 +518,34 @@ def load_corpus(root: str | Path) -> LoadedCorpus:
             raise ValueError(f"{path}: manifest id {m.id!r} does not match filename")
         manifests[m.id] = m
 
+    # A held-in task must have a manifest; a RESERVED task may be carried as pins alone
+    # (`catalog.reserved`), because building a grader for work nobody may run buys nothing
+    # and cannot be validated at either endpoint. Everything on disk must still be listed.
     listed, present = set(catalog.all_ids), set(manifests)
-    if listed != present:
+    missing_held_in = sorted(set(catalog.held_in) - present)
+    stray = sorted(present - listed)
+    missing_held_out = sorted(set(catalog.held_out) - present - set(catalog.reserved_by_id))
+    if missing_held_in or stray or missing_held_out:
         raise ValueError(
-            f"catalog/manifest mismatch — only in catalog: {sorted(listed - present)}; "
-            f"only on disk: {sorted(present - listed)}"
+            f"catalog/manifest mismatch — held-in without a manifest: {missing_held_in}; "
+            f"held-out neither manifested nor pinned under `reserved`: {missing_held_out}; "
+            f"on disk but not in the catalog: {stray}"
         )
+
+    allowed = set(catalog.allowed_task_classes)
+    for task_id, m in sorted(manifests.items()):
+        if m.task_class not in allowed:
+            raise ValueError(
+                f"{task_id}: corpus {catalog.corpus_version} seeds "
+                f"{sorted(allowed)} tasks only, and this one is {m.task_class!r}"
+            )
+
+    for r in catalog.reserved:
+        bad = sorted(set(r.contaminated_by) - set(catalog.held_in))
+        if bad:
+            raise ValueError(
+                f"reserved {r.id}: contaminated_by names {bad}, which are not held-in tasks"
+            )
 
     # The reservation is spent the moment a held-out task's order or result report rides
     # into a qualification launch packet as another task's context. Refuse it structurally
