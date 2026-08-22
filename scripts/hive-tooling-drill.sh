@@ -286,6 +286,13 @@ WORK="$SANDBOX/work"
 WRAPPERS="$SANDBOX/wrappers"
 
 git init --quiet --bare "$HUB"
+# The hub's own HEAD must name `main`, because everything here pushes to `main` and a
+# WORKER's clone takes its checked-out branch from it. `git init --bare` uses this host's
+# `init.defaultBranch` — commonly `master` — which leaves every worker clone on an unborn
+# branch with no HEAD commit: `hive sync workspace` then dies with "Could not resolve HEAD
+# to a commit" against a hub that is perfectly healthy. The real hub is `main`, so a
+# fixture that is not is testing a deployment nobody runs.
+git -C "$HUB" symbolic-ref HEAD refs/heads/main
 git clone --quiet "$HUB" "$WS"
 git -C "$WS" config user.email drill@example.invalid
 git -C "$WS" config user.name  drill
@@ -444,15 +451,38 @@ check "wrapper bakes the project run id"        "grep -Eq -- '--run-id \"?$ARUN'
 check "wrapper bakes worker actor"              "grep -Eq -- '--actor \"?$AWORKER' '$AWRAP'"
 check "wrapper bakes worker role"               "grep -q -- '--role worker' '$AWRAP'"
 check "tmux window named after task"            "tmux list-windows -t '$TMUX_SESSION' -F '#{window_name}' | grep -qxF 'alpha-demo'"
-wait_until 20 "grep -qF '$AWRAP' '$SANDBOX/kickoff.txt'" || true
-check "kickoff references the wrapper"          "grep -qF '$AWRAP' '$SANDBOX/kickoff.txt'"
+# The kickoff issues the STABLE relative tokens, not this task root's absolute files.
+# It used to assert the opposite — that the kickoff contained "$AWRAP" — which is what
+# forced an operator runner rule to name one historical task root, and left the next
+# task unable to publish (capacity-view, 2026-08-21). Both halves are asserted: the
+# tokens are present, and no absolute command from THIS task root is.
+wait_until 20 "grep -qF -- '../run/hive sync workspace' '$SANDBOX/kickoff.txt'" || true
+check "kickoff issues the relative emit command"   "grep -qF -- '../run/emit --type <t> --task <task> --payload <json>' '$SANDBOX/kickoff.txt'"
+check "kickoff issues the relative sync command"   "grep -qF -- '../run/hive sync workspace' '$SANDBOX/kickoff.txt'"
+check "kickoff issues both relative publications"  "grep -qF -- '../run/hive publish workspace' '$SANDBOX/kickoff.txt' && grep -qF -- '../run/hive publish code' '$SANDBOX/kickoff.txt'"
+check "kickoff's First: line is the relative sync" "grep -qxF -- 'First: ../run/hive sync workspace' '$SANDBOX/kickoff.txt'"
+check "kickoff asks for no absolute worker command" "! grep -qE -- '$WORK/$AWORKER/run/(emit|hive) ' '$SANDBOX/kickoff.txt'"
+check "kickoff still names the task root"          "grep -qF '$WORK/$AWORKER' '$SANDBOX/kickoff.txt'"
 check "kickoff names the project run"           "grep -qF 'run: $ARUN' '$SANDBOX/kickoff.txt'"
+# The tokens must RESOLVE, not merely read well: run the issued interface the way a worker
+# does, from a clone root, and from BOTH clone roots — a `publish code` is typed from the
+# code clone, which is the cwd that would break first if the two ever stopped being
+# siblings of `run/`.
+check "relative sync resolves from the workspace clone" \
+  "( cd '$WORK/$AWORKER/hive' && ../run/hive sync workspace >/dev/null )"
+# `|| true` before the pipe on purpose: the bridge's no-argument usage exits 2, and the
+# drill runs under `pipefail`, so an un-neutralized status would fail the check on the
+# very evidence it is reading.
+check "relative bridge resolves from the code clone too" \
+  "( cd '$WORK/$AWORKER/$APROJ' && ../run/hive 2>&1 || true ) | grep -q 'publish code'"
 check "board shows task assigned on the run"    "[ \"\$(bstatus '$ARUN' alpha-demo)\" = assigned ]"
 check "durable omegahive run untouched by launch" "[ -z \"\$(bstatus omegahive alpha-demo)\" ]"
 
 echo
 echo "== project '$APROJ': accept -> block -> answer -> unblock -> result =="
-"$AWRAP" --type task.accepted --task alpha-demo >/dev/null
+# Typed the way the kickoff issues it — from the workspace clone root, through the
+# relative token — so a cwd/path mismatch fails HERE rather than on a live task.
+( cd "$WORK/$AWORKER/hive" && ../run/emit --type task.accepted --task alpha-demo ) >/dev/null
 check "accept -> in_progress" "[ \"\$(bstatus '$ARUN' alpha-demo)\" = in_progress ]"
 "$AWRAP" --type task.blocked --task alpha-demo \
   --payload "$(jq -cn '{reason:"drill question", needs:"decision"}')" >/dev/null
