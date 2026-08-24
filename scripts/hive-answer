@@ -233,6 +233,14 @@ else
   NUDGE="an answer landed in commit ${ANSWER_SHA:-$(git -C "$OPS_WS" rev-parse HEAD)} — ../run/hive sync workspace, re-read your order at HEAD ('## Answers'), and emit task.unblocked ONLY if that answer resolves what you asked; if it does not, emit task.reported(kind=finding) saying so and stay blocked"
 fi
 
+# What is already durable, said correctly for the mode we are in. Every refusal below
+# repeats it, because the first question on a failed nudge is "did I just lose the answer".
+if [ -n "$RESUME_ONLY" ]; then
+  DURABLE="No answer was appended — this was a bare nudge, so nothing is pending."
+else
+  DURABLE="The answer is committed and pushed; it is not lost."
+fi
+
 # --- find the window, and refuse anything ambiguous or dead -----------------------------
 # Every target is `=`-prefixed. Without it tmux falls back to a PREFIX match when no session
 # is named exactly `$HIVE_TMUX_SESSION` — so with that session gone or renamed, a bare
@@ -248,14 +256,14 @@ command -v tmux >/dev/null 2>&1 \
 tmux has-session -t "$SESSION_T" 2>/dev/null \
   || die "no tmux session named '$HIVE_TMUX_SESSION' on this host, so worker '$OWNER' has no
   window to nudge. Its session is gone.
-  The answer is committed and pushed — nothing is lost. Recover the SEAT per RUNBOOK
+  $DURABLE Recover the SEAT per RUNBOOK
   'Dead worker recovery' (fresh worker id, then task.reassigned) — never a relaunch onto
   an owned task."
 
 tmux list-windows -t "$SESSION_T" -F '#{window_name}' 2>/dev/null | grep -qxF "$TASK" \
   || die "session '$HIVE_TMUX_SESSION' has no window named '$TASK', so worker '$OWNER' is not
   seated in it. Windows present: $(tmux list-windows -t "$SESSION_T" -F '#{window_name}' | tr '\n' ' ')
-  The answer is committed and pushed. Recover the seat per RUNBOOK 'Dead worker recovery'."
+  $DURABLE Recover the seat per RUNBOOK 'Dead worker recovery'."
 
 # `remain-on-exit` keeps a window after its session exits, which is what leaves the last
 # screen readable — and it means a window's PRESENCE no longer proves a live process. A
@@ -264,7 +272,7 @@ if [ "$(tmux display-message -p -t "$WINDOW_T" '#{pane_dead}' 2>/dev/null)" = "1
   die "the '$TASK' window exists but its session has EXITED (the pane is dead — its last
   screen is still there to read: tmux attach -t '$HIVE_TMUX_SESSION').
   Typing into it would go nowhere, so this refuses rather than reporting a nudge that
-  never arrived. The answer is committed and pushed.
+  never arrived. $DURABLE
   A worker whose session ended without posting a result is a seat to recover, not a
   process to wake: RUNBOOK 'Dead worker recovery'."
 fi
@@ -274,7 +282,7 @@ fi
 # composer as it receives input, and sending the submit key in the same batch has raced
 # that redraw and submitted an empty prompt.
 tmux send-keys -t "$WINDOW_T" -l "$NUDGE" \
-  || die "send-keys failed for window '$TASK'. The answer is committed and pushed; nudge the
+  || die "send-keys failed for window '$TASK'. $DURABLE Nudge the
   worker by hand:  tmux attach -t '$HIVE_TMUX_SESSION'"
 tmux send-keys -t "$WINDOW_T" Enter \
   || die "the nudge text reached window '$TASK' but the submit key did not. Attach and press

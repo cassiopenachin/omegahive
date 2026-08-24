@@ -619,11 +619,19 @@ if [ "$EXECUTABLE" = "sbx" ]; then
     # and the two-role split stops being build-ahead and becomes the actual boundary on this
     # path: what refuses a worker-role `execution.*` emit is the gateway role's policy, on
     # the far side of this DSN. Owner authority stays out of every worker environment.
-    GW_ENV="${OMEGAHIVE_SECRETS_DIR:-$HOME/.config/omegahive/secrets}/gateway.env"
-    [ -f "$GW_ENV" ] || die "a sandboxed route needs the gateway DSN to hand the worker's CLI,
+    # The launching environment wins over the deployment file, which is what lets a launch
+    # be pointed at a SCRATCH spine without editing the deployment's secrets — the same seam
+    # OMEGAHIVE_COMPOSE and HIVE_CLI_CMD are. With nothing set, the deployment's own
+    # gateway.env is the source, so an ordinary launch needs no environment at all.
+    if [ -n "${OMEGAHIVE_GATEWAY_DATABASE_URL:-}" ]; then
+      GW_DSN="$OMEGAHIVE_GATEWAY_DATABASE_URL"
+    else
+      GW_ENV="${OMEGAHIVE_SECRETS_DIR:-$HOME/.config/omegahive/secrets}/gateway.env"
+      [ -f "$GW_ENV" ] || die "a sandboxed route needs the gateway DSN to hand the worker's CLI,
   and there is no $GW_ENV on this host. The worker would have no write path to the spine."
-    GW_DSN=$(grep -m1 '^OMEGAHIVE_GATEWAY_DATABASE_URL=' "$GW_ENV" | cut -d= -f2-)
-    [ -n "$GW_DSN" ] || die "$GW_ENV names no OMEGAHIVE_GATEWAY_DATABASE_URL."
+      GW_DSN=$(grep -m1 '^OMEGAHIVE_GATEWAY_DATABASE_URL=' "$GW_ENV" | cut -d= -f2-)
+      [ -n "$GW_DSN" ] || die "$GW_ENV names no OMEGAHIVE_GATEWAY_DATABASE_URL."
+    fi
     GW_DSN_VM=${GW_DSN//@postgres:/@host.docker.internal:}
     GW_DSN_VM=${GW_DSN_VM//@127.0.0.1:/@host.docker.internal:}
     GW_DSN_VM=${GW_DSN_VM//@localhost:/@host.docker.internal:}
