@@ -7,12 +7,17 @@
 # clerical answer path collapsed to one SSH-friendly command —
 #   ssh beastie 'hive-answer port-sha "use event time"'
 #
-# It is also the ONLY command that continues a worker, in either sense. Landing an answer
-# and recovering a process that ended without one are the same mechanism — write the next
-# turn, wake the native session, open the window — so they are one command with two
-# modes rather than two commands that would drift apart. `--resume-only` appends nothing
-# to the order and asks for no `task.unblocked`; it records the operator's reason and
-# wakes the same session. That is recovery from a process outcome, never reassignment.
+# It is also the ONLY command that continues a worker, and since 2026-08-23 it does so the
+# way it originally did: `tmux send-keys` into the window that IS the task registry
+# (`2026-08-23-direction.md` §3). The worker is an interactive session that never ended, so
+# continuing it is a line of text, not a lifecycle — nothing is written, no turn is
+# prepared, no native session id is resolved, and the harness does not restart.
+#
+# `--resume-only` appends nothing to the order and asks for no `task.unblocked`; it names
+# the operator's reason and nudges the same live window. That is a prod, never reassignment.
+# Its old meaning — recovering a process that had EXITED — no longer exists here: a session
+# that exited is a seat to recover (RUNBOOK), and this refuses to type into a dead pane
+# rather than reporting a nudge that never arrived.
 #
 # The `<text...>` form appends the answer to the order's `## Answers` section
 # (append-only; the order body is never touched), commits + pushes, then nudges
@@ -47,13 +52,14 @@ source "$SCRIPT_DIR/hive-common.sh"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: hive-answer <task> <text...>              append an answer, then resume the worker
-       hive-answer <task> --sha <full-sha>       verify an already-pushed answer, then resume
-       hive-answer <task> --resume-only <reason> resume a worker whose turn ended without
-                                                 posting a result. Appends NO answer and
-                                                 emits no task.unblocked; use it after a
-                                                 budget, harness-failed or unclassified
-                                                 exit. The reason is recorded on the turn.
+usage: hive-answer <task> <text...>              append an answer, then nudge the worker
+       hive-answer <task> --sha <full-sha>       verify an already-pushed answer, then nudge
+       hive-answer <task> --resume-only <reason> nudge a live worker with no answer at all —
+                                                 appends nothing, asks for no task.unblocked,
+                                                 and says why in the line the worker reads.
+
+The nudge is one line of text typed into the task's tmux window. It requires that window
+to hold a LIVE session: a worker whose session exited is recovered per RUNBOOK, not woken.
 USAGE
   exit 2
 }
@@ -180,28 +186,29 @@ else
 fi
 
 # =====================================================================================
-# The resume half: wake this task's worker in a new turn of its own native session.
+# The nudge half: tell this task's worker, in its own window, that something changed.
 #
-# Before `worker-turns` this was `tmux send-keys` — typing a sentence into a live
-# interactive pane. That worked only while the pane was alive AND the harness was a TUI,
-# which is why the first Codex worker could not be resumed at all. A turn is the
-# replacement: `hive-answer` resolves the task's current worker, its most recent turn,
-# its adapter and its native session id, writes the NEXT turn directory, and opens the
-# named tmux window on `hive-launch --turn`. The same lifecycle, the same classifier, the
-# same record — a resume is never a second, weaker path.
+# A worker is an INTERACTIVE session again (2026-08-23-direction.md §3), so continuing one
+# is `tmux send-keys` into the window that IS the task registry — the wave-3 mechanism,
+# restored. It is not a resume in the harness's sense: nothing is written, no turn is
+# prepared, no native session id is looked up, and the harness never restarts. The worker
+# is alive in that window and simply receives a line of text.
 #
-# Everything below refuses rather than guesses. Not knowing which worker, which session
-# or which harness is a reason to stop and print the choices, never a reason to pick one:
-# a resume that wakes the wrong session is worse than no resume, because it looks like it
-# worked.
+# What that costs, said plainly: a window whose session has exited cannot be nudged, and
+# this refuses rather than typing into a dead pane. The answer is durable on the hub before
+# any of this runs, so a failed nudge never loses a decision — it costs a hand-nudge.
+#
+# Everything below refuses rather than guesses. Not knowing which worker or which window is
+# a reason to stop and print the choices, never a reason to pick one: a nudge that lands in
+# the wrong window is worse than no nudge, because it looks like it worked.
 # =====================================================================================
 
-# --- who owns this task, and where is their root -------------------------------------
+# --- who owns this task ---------------------------------------------------------------
 BOARD_NOW=$(board_json_strict "$RUN")
 STATUS=$(printf '%s' "$BOARD_NOW" | jq -r --arg t "$TASK" '.[] | select(.task == $t) | .status')
 OWNER=$(printf '%s' "$BOARD_NOW" | jq -r --arg t "$TASK" '.[] | select(.task == $t) | .owner // empty')
 
-[ -n "$STATUS" ] || die "task '$TASK' does not exist on run '$RUN' — nothing to resume."
+[ -n "$STATUS" ] || die "task '$TASK' does not exist on run '$RUN' — there is nobody to nudge."
 case "$STATUS" in
   in_review|done)
     die "task '$TASK' is '$STATUS' on run '$RUN'. A task awaiting close or already closed is
@@ -210,275 +217,69 @@ case "$STATUS" in
   If the result needs revision, that is a fresh launch decision (RUNBOOK)." ;;
 esac
 [ -n "$OWNER" ] || die "task '$TASK' is '$STATUS' but has no owner on run '$RUN' — there is no
-  worker to resume. Launch one with hive-launch, or recover per RUNBOOK."
+  worker to nudge. Launch one with hive-launch, or recover per RUNBOOK."
 
-WORKER="$OWNER"
-[[ "$WORKER" =~ ^[A-Za-z0-9._-]+$ ]] \
-  || die "the board names owner '$WORKER' for '$TASK', which is outside the safe id charset
-  (A-Za-z0-9._-). Refusing to build a path or a tmux target from it."
-TASK_ROOT="$WORK_ROOT/$WORKER"
-WORKER_RUN_DIR="$TASK_ROOT/run"
-[ -d "$WORKER_RUN_DIR/turns" ] || die "worker '$WORKER' owns '$TASK' but has no turn state at
-  $WORKER_RUN_DIR/turns. Its task root was removed, or it was launched by a pre-cutover
-  build whose panes are not resumable. Recover per RUNBOOK 'Dead worker recovery'; do not
-  relaunch onto an owned task."
-
-LAST_TURN=$(latest_turn "$WORKER_RUN_DIR")
-[ -n "$LAST_TURN" ] || die "worker '$WORKER' has no recorded turn under $WORKER_RUN_DIR/turns.
-  There is no session to wake. Recover per RUNBOOK 'Dead worker recovery'."
-
-# --- refuse a live turn ---------------------------------------------------------------
-# Two live turns of one worker would race for the same native session, and both would
-# write execution facts for turns nobody can tell apart afterwards. Refuse, and say what
-# the operator can see for themselves.
-if turn_is_live "$LAST_TURN"; then
-  die "worker '$WORKER' has a LIVE turn ($(basename "$LAST_TURN"), pid $(cat "$LAST_TURN/pid")).
-  A second turn would race it for the same native session.
-  Watch it:  tmux attach -t '$HIVE_TMUX_SESSION'   (window '$TASK')
-  The answer is already on the hub, so a worker that syncs will read it at HEAD anyway.
-  If that turn is wedged, kill it first, then re-run this command."
-fi
-
-# --- the session to wake ---------------------------------------------------------------
-# Read from the most recent turn that actually RECORDED one, walking backwards: a turn
-# whose harness died before its first structured record has no session, and that absence
-# must not hide a resumable session one turn further back.
-RESUME_SESSION=""
-SESSION_TURN=""
-SESSION_ADAPTER=""
-SESSION_HARNESS=""
-for d in $(ls -d "$WORKER_RUN_DIR"/turns/*/ 2>/dev/null | sort -r); do
-  d="${d%/}"
-  [ -f "$d/facts.json" ] || continue
-  s=$(jq -r '.session_id // empty' "$d/facts.json" 2>/dev/null || true)
-  if [ -n "$s" ]; then
-    RESUME_SESSION="$s"
-    SESSION_TURN="$d"
-    # WHICH harness minted this id, recorded alongside it. A session id is not a portable
-    # token: a Claude session uuid handed to `codex exec resume` names nothing, and the
-    # reverse is equally meaningless. Since the route is re-resolved from the CURRENT
-    # catalog below, an operator who re-pointed a route at another harness between turns
-    # would otherwise get a confident resume command built from the wrong vendor's id.
-    SESSION_ADAPTER=$(jq -r '.identity.adapter // empty' "$d/turn.json" 2>/dev/null || true)
-    SESSION_HARNESS=$(jq -r '.identity.harness // empty' "$d/turn.json" 2>/dev/null || true)
-    break
-  fi
-done
-if [ -z "$RESUME_SESSION" ]; then
-  {
-    echo "hive-answer: no turn of worker '$WORKER' recorded a native session id, so there is"
-    echo "  nothing to wake. This is an evidence gap, not a resumable state — a fresh session"
-    echo "  wearing the old one's turn number would look like continuity and be a new context."
-    echo "  Turns inspected:"
-    for d in "$WORKER_RUN_DIR"/turns/*/; do
-      [ -f "${d}turn.json" ] || continue
-      echo "    $(basename "${d%/}"): $(jq -r '.turn_kind' "${d}turn.json") — $(
-        [ -f "${d}exit.json" ] && jq -r '.classification + ": " + .classification_reason' "${d}exit.json" \
-          || echo 'no exit record')"
-    done
-    echo "  The answer is committed and pushed; it is not lost. Recover the SEAT per RUNBOOK"
-    echo "  'Dead worker recovery' (fresh worker id, then task.reassigned) — never a relaunch"
-    echo "  onto an owned task."
-  } >&2
-  exit 1
-fi
-
-# --- what the last turn actually did, and what that permits ------------------------------
-# `--resume-only` is recovery from a PROCESS outcome. A turn that ended `posted` or
-# `blocked` had its say — the worker spoke, the board moved, and the operator's next act is
-# a close or an answer, not a wake. Refusing here is what keeps the mode from quietly
-# becoming "start the worker again for any reason".
-LAST_EXIT=""
-LAST_TURN_CLASS=""
-if [ -f "$LAST_TURN/exit.json" ]; then
-  LAST_EXIT="$LAST_TURN/exit.json"
-  LAST_TURN_CLASS=$(jq -r '.classification // empty' "$LAST_EXIT" 2>/dev/null || true)
-fi
-if [ -n "$RESUME_ONLY" ]; then
-  case "$LAST_TURN_CLASS" in
-    budget|failed|unclassified) : ;;
-    posted|blocked)
-      die "worker '$WORKER''s most recent turn ($(basename "$LAST_TURN")) ended '$LAST_TURN_CLASS',
-  not a process outcome. --resume-only recovers a turn that ended budget, harness-failed or
-  unclassified; a worker that posted or blocked said what it meant to say.
-    posted  -> review and close it (hive-close), or relaunch deliberately per RUNBOOK
-    blocked -> answer it:  hive-answer '$TASK' \"<your answer>\"" ;;
-    "")
-      die "worker '$WORKER''s most recent turn ($(basename "$LAST_TURN")) recorded no exit
-  classification, so there is no process outcome to recover from. That turn may still be
-  finishing, or it died before it could classify itself — in which case replaying it is the
-  recovery, and it re-uses the evidence rather than the model:
-    hive-launch --turn '$LAST_TURN'" ;;
-    *)
-      die "worker '$WORKER''s most recent turn ended '$LAST_TURN_CLASS', which this build
-  does not recognize. Refusing to guess whether that is resumable." ;;
-  esac
-fi
-
-# --- the resume prompt ------------------------------------------------------------------
-# Two shapes, because the two modes mean different things to the worker. An ANSWER resume
-# names the commit that carries it and repeats the protocol's conditional-unblock rule
-# verbatim; a RECOVERY resume says only that the process ended and why, appends no answer,
-# and asks for no `task.unblocked` — there is nothing to consume.
+# --- the line the worker receives -------------------------------------------------------
+# ONE line, always. `send-keys` types into a live TUI and a newline inside the text would
+# submit half a sentence and leave the rest in the composer — so the two modes differ in
+# what they say, never in how many lines they are.
 #
-# Both open with the SAME stable token the launch kickoff issues, `../run/hive`, and never
-# a reconstructed absolute path. A resume preserves the initial turn's cwd — a clone root,
-# beside the task root's `run/` — so the relative form resolves, and one operator-approved
-# runner rule covers every task instead of one rule per historical task root.
-WORKER_BRIDGE="../run/hive"
+# An ANSWER nudge names the commit that carries it and repeats the protocol's conditional
+# unblock rule; a RECOVERY nudge says only that the operator woke it and why, and asks for
+# no `task.unblocked` — there is nothing to consume.
 if [ -n "$RESUME_ONLY" ]; then
-  read -r -d '' RESUME_PROMPT <<PROMPT || true
-Your previous turn ended without posting a result, and the operator is resuming you.
-Recorded reason: $RESUME_ONLY
-This is process recovery, not an answer: no new decision has landed on your order, and
-there is nothing here for you to consume. Do NOT emit task.unblocked.
-First: $WORKER_BRIDGE sync workspace
-Then re-read your order at HEAD, re-read your own report and question files to recover
-where you were, and continue from there. If you were blocked awaiting a decision, you are
-still blocked: say so and stop rather than proceeding without it.
-PROMPT
+  NUDGE="operator nudge (no answer landed): $RESUME_ONLY — ../run/hive sync workspace, re-read your order and your own report/question files at HEAD, and continue; do NOT emit task.unblocked, and if you are still blocked awaiting a decision, say so and stop"
 else
-  read -r -d '' RESUME_PROMPT <<PROMPT || true
-An answer landed on your order in commit ${ANSWER_SHA:-$(git -C "$OPS_WS" rev-parse HEAD)}.
-First: $WORKER_BRIDGE sync workspace
-Then re-read your order at HEAD — the answer is in its '## Answers' section — and emit
-task.unblocked ONLY if that answer actually resolves what you asked. If the order is
-unchanged, or the answer does not resolve the ambiguity, do NOT unblock: emit
-task.reported(kind=finding) saying so, stay blocked, and end your turn.
-PROMPT
+  NUDGE="an answer landed in commit ${ANSWER_SHA:-$(git -C "$OPS_WS" rev-parse HEAD)} — ../run/hive sync workspace, re-read your order at HEAD ('## Answers'), and emit task.unblocked ONLY if that answer resolves what you asked; if it does not, emit task.reported(kind=finding) saying so and stay blocked"
 fi
 
-# --- resolve the resume turn through the SAME resolver the launch used ------------------
-# Not a stored copy of the old argv: the catalog is the authorization, and a resume that
-# replayed a saved command line could wake a worker on a route the operator has since
-# disabled or changed. The route NAME comes from the recorded turn; everything else is
-# resolved fresh.
-[ -f "$HIVE_ROUTE_CATALOG" ] || die "route catalog not found: $HIVE_ROUTE_CATALOG — a resume
-  resolves through the same catalog a launch does, and cannot proceed without it."
-
-PREV="$LAST_TURN/turn.json"
-ROUTE_NAME=$(jq -r '.identity.route' "$PREV")
-TURN_ID=$(next_turn_id "$WORKER_RUN_DIR")
-TURN_DIR="$WORKER_RUN_DIR/turns/$TURN_ID"
-
-REQ=$(jq -n \
-  --arg c "$(b64 "$HIVE_ROUTE_CATALOG")" \
-  --arg route "$ROUTE_NAME" \
-  --slurpfile prev "$PREV" \
-  --arg kick "$RESUME_PROMPT" \
-  --arg run "$TURN_DIR" \
-  --arg sid "$RESUME_SESSION" \
-  --arg tid "$TURN_ID" \
-  --argjson env "$(jq -n 'env')" \
-  '$prev[0] as $p |
-   {catalog_b64:$c, route:$route,
-    task:$p.task, order_ref:$p.order_ref, purpose:$p.purpose, attempt:$p.attempt,
-    kickoff:$kick, task_root:$p.task_root, cwd:$p.cwd, code_root:$p.code_root,
-    run_dir:$run, session_id:$sid, env:$env,
-    turn_kind:"resume", turn_id:$tid, resume_session_id:$sid}')
-
-resume_err=$(mktemp "${TMPDIR:-/tmp}/hive-resume.XXXXXX") \
-  || die "cannot create a temporary file for resolver diagnostics"
-if ! PLAN_JSON=$(printf '%s' "$REQ" | hive harness-resolve 2>"$resume_err"); then
-  CODE=$(printf '%s' "$PLAN_JSON" | jq -r 'select(.ok == false) | .code // empty' 2>/dev/null || true)
-  MSG=$(printf '%s' "$PLAN_JSON" | jq -r '.message // empty' 2>/dev/null || true)
-  cat "$resume_err" >&2
-  rm -f "$resume_err"
-  if [ -n "$CODE" ]; then
-    die "cannot build a resume turn for '$TASK' [$CODE]
-
-  $MSG
-
-  The answer is on the hub and nothing was started. Fix the route (hive-routes), then
-  re-run this command — it is safe to repeat, because it writes the turn only after the
-  resolver accepts it."
-  fi
-  die "the resume turn could not be resolved (output above); nothing was started."
-fi
-rm -f "$resume_err"
-
-RESOLVED_ADAPTER=$(printf '%s' "$PLAN_JSON" | jq -r '.identity.adapter')
-RESOLVED_HARNESS=$(printf '%s' "$PLAN_JSON" | jq -r '.identity.harness')
-if [ -n "$SESSION_ADAPTER" ] && [ "$SESSION_ADAPTER" != "$RESOLVED_ADAPTER" ]; then
-  die "route '$ROUTE_NAME' now resolves to adapter '$RESOLVED_ADAPTER' (harness
-  '$RESOLVED_HARNESS'), but the session to be woken was minted by '$SESSION_ADAPTER'
-  (harness '$SESSION_HARNESS') in turn $(basename "$SESSION_TURN").
-  A session id is not portable between harnesses: '$RESUME_SESSION' names nothing to
-  '$RESOLVED_ADAPTER', and resuming on it would start a fresh session wearing an old one's
-  turn number. Point the route back at '$SESSION_HARNESS' to continue this worker, or
-  recover the seat per RUNBOOK 'Dead worker recovery'. The answer is already on the hub."
-fi
-
-EXECUTABLE=$(printf '%s' "$PLAN_JSON" | jq -r '.executable')
-require_executable "$EXECUTABLE" "$ROUTE_NAME"
-
-# The turn directory is created only now, after every refusal above has passed, so a
-# refused resume leaves no half-turn for the next one to trip over.
-#
-# Plain `mkdir`, not `mkdir -p`: creating a directory is atomic, and failing when it
-# already exists is what closes the last race two concurrent `hive-answer` invocations
-# have. Both could otherwise compute the same next turn number, write the same turn.json,
-# and respawn the pane — the second respawn killing the first turn mid-run. That is
-# recoverable (the runner re-classifies retained evidence rather than re-running the
-# model), but it should not happen, and one syscall prevents it.
-mkdir "$TURN_DIR" 2>/dev/null || die "turn $TURN_ID already exists at $TURN_DIR.
-  Another hive-answer is starting this worker's next turn, or a previous one left it
-  behind. Watch the pane:  tmux attach -t '$HIVE_TMUX_SESSION'   (window '$TASK')
-  Your answer is already committed and pushed; nothing is lost."
-printf '%s\n' "$PLAN_JSON" | jq \
-  --arg run "$RUN" --arg worker "$WORKER" \
-  --slurpfile prev "$PREV" \
-  --arg reason "${RESUME_ONLY:-}" \
-  '$prev[0] as $p |
-   . + {run_id: $run, worker: $worker, bridge: $p.bridge,
-        resume_reason: (if $reason == "" then null else $reason end)}' \
-  > "$TURN_DIR/turn.json"
-
-echo "hive-answer: turn $TURN_ID prepared for worker '$WORKER' on route '$ROUTE_NAME'"
-echo "  session:  $RESUME_SESSION  (recorded by turn $(basename "$SESSION_TURN"))"
-echo "  state:    $TURN_DIR"
-
-# --- open or reuse the named window ------------------------------------------------------
-# The pane may have exited or been killed, and that must not stop a resume: the durable
-# state is the turn directory and the native session, not the window. So the window is
-# recreated when it is gone, and reused when it is there.
-#
-# Every target is `=`-prefixed. Without it tmux falls back to a PREFIX match when no
-# session is named exactly `$HIVE_TMUX_SESSION` — so with that session gone or renamed, a
-# bare `hive` matches `hive-scratch`, and the resume opens in someone else's session,
-# silently, because tmux exits 0 either way.
-TURN_CMD="$SCRIPT_DIR/hive-launch --turn '$TURN_DIR'"
+# --- find the window, and refuse anything ambiguous or dead -----------------------------
+# Every target is `=`-prefixed. Without it tmux falls back to a PREFIX match when no session
+# is named exactly `$HIVE_TMUX_SESSION` — so with that session gone or renamed, a bare
+# `hive` matches `hive-scratch`, and the nudge types the answer into someone else's pane,
+# silently, because send-keys exits 0 either way.
 SESSION_T="=$HIVE_TMUX_SESSION"
-command -v tmux >/dev/null 2>&1 \
-  || die "tmux not found on PATH — the pane is the task registry, so a resume without tmux
-  cannot complete. The turn is prepared at $TURN_DIR and can be run in any terminal:
-    $SCRIPT_DIR/hive-launch --turn '$TURN_DIR'"
+WINDOW_T="=$HIVE_TMUX_SESSION:=$TASK"
 
-if ! tmux has-session -t "$SESSION_T" 2>/dev/null; then
-  PANE=$(tmux new-session -d -s "$HIVE_TMUX_SESSION" -n "$TASK" -c "$TASK_ROOT/hive" \
-    -P -F '#{session_name}:#{window_index}' "$TURN_CMD") \
-    || die "could not create tmux session '$HIVE_TMUX_SESSION'. The turn is prepared at
-  $TURN_DIR; run it in any terminal with:
-    $SCRIPT_DIR/hive-launch --turn '$TURN_DIR'"
-  tmux_keep_window "$HIVE_TMUX_SESSION" "$TASK"
-  echo "  pane:     $PANE  (session recreated)"
-elif tmux list-windows -t "$SESSION_T" -F '#{window_name}' 2>/dev/null | grep -qxF "$TASK"; then
-  # The window survived its last turn — which is the normal case, because the turn runner
-  # leaves the summary on screen rather than closing. `respawn-pane -k` reuses the SAME
-  # window (the pane name is the task registry, and a second window for one task would
-  # corrupt it) and replaces whatever is in it.
-  tmux respawn-pane -k -t "=$HIVE_TMUX_SESSION:=$TASK" -c "$TASK_ROOT/hive" "$TURN_CMD" \
-    || die "could not respawn the '$TASK' pane. The turn is prepared at $TURN_DIR; run it
-  in any terminal with:
-    $SCRIPT_DIR/hive-launch --turn '$TURN_DIR'"
-  echo "  pane:     $HIVE_TMUX_SESSION:$TASK  (existing window reused)"
-else
-  PANE=$(tmux new-window -a -t "$SESSION_T:{end}" -n "$TASK" -c "$TASK_ROOT/hive" \
-    -P -F '#{session_name}:#{window_index}' "$TURN_CMD") \
-    || die "could not create the '$TASK' window. The turn is prepared at $TURN_DIR; run it
-  in any terminal with:
-    $SCRIPT_DIR/hive-launch --turn '$TURN_DIR'"
-  tmux_keep_window "$HIVE_TMUX_SESSION" "$TASK"
-  echo "  pane:     $PANE  (window recreated after the previous turn's pane exited)"
+command -v tmux >/dev/null 2>&1 \
+  || die "tmux not found on PATH — the window is the task registry, so there is nothing to
+  nudge. The answer is committed and pushed; tell the worker by hand."
+
+tmux has-session -t "$SESSION_T" 2>/dev/null \
+  || die "no tmux session named '$HIVE_TMUX_SESSION' on this host, so worker '$OWNER' has no
+  window to nudge. Its session is gone.
+  The answer is committed and pushed — nothing is lost. Recover the SEAT per RUNBOOK
+  'Dead worker recovery' (fresh worker id, then task.reassigned) — never a relaunch onto
+  an owned task."
+
+tmux list-windows -t "$SESSION_T" -F '#{window_name}' 2>/dev/null | grep -qxF "$TASK" \
+  || die "session '$HIVE_TMUX_SESSION' has no window named '$TASK', so worker '$OWNER' is not
+  seated in it. Windows present: $(tmux list-windows -t "$SESSION_T" -F '#{window_name}' | tr '\n' ' ')
+  The answer is committed and pushed. Recover the seat per RUNBOOK 'Dead worker recovery'."
+
+# `remain-on-exit` keeps a window after its session exits, which is what leaves the last
+# screen readable — and it means a window's PRESENCE no longer proves a live process. A
+# dead pane accepts send-keys and swallows it, so this asks tmux directly.
+if [ "$(tmux display-message -p -t "$WINDOW_T" '#{pane_dead}' 2>/dev/null)" = "1" ]; then
+  die "the '$TASK' window exists but its session has EXITED (the pane is dead — its last
+  screen is still there to read: tmux attach -t '$HIVE_TMUX_SESSION').
+  Typing into it would go nowhere, so this refuses rather than reporting a nudge that
+  never arrived. The answer is committed and pushed.
+  A worker whose session ended without posting a result is a seat to recover, not a
+  process to wake: RUNBOOK 'Dead worker recovery'."
 fi
+
+# --- nudge -------------------------------------------------------------------------------
+# The text and the Enter go as separate `send-keys` calls: a harness TUI redraws its
+# composer as it receives input, and sending the submit key in the same batch has raced
+# that redraw and submitted an empty prompt.
+tmux send-keys -t "$WINDOW_T" -l "$NUDGE" \
+  || die "send-keys failed for window '$TASK'. The answer is committed and pushed; nudge the
+  worker by hand:  tmux attach -t '$HIVE_TMUX_SESSION'"
+tmux send-keys -t "$WINDOW_T" Enter \
+  || die "the nudge text reached window '$TASK' but the submit key did not. Attach and press
+  Enter yourself:  tmux attach -t '$HIVE_TMUX_SESSION'"
+
+echo "hive-answer: nudged $HIVE_TMUX_SESSION:$TASK (worker '$OWNER')"
+echo "  sent: $NUDGE"
 echo "hive-answer: done — watch it with  tmux attach -t $HIVE_TMUX_SESSION"
