@@ -907,6 +907,31 @@ sys.exit(1)
   docker-compose.yml's OMEGAHIVE_PG_TAILNET_BIND. Nothing was emitted."
   fi
 
+  # A route that supplies its own provider key gets that key PRE-APPROVED inside the VM.
+  # Claude Code asks "detected a custom API key in your environment — use it?" and defaults to
+  # No, which stops a launch dead on a prompt the operator must answer by hand for every task.
+  # The answer lives in `~/.claude.json` as the key's last 20 characters under
+  # `customApiKeyResponses.approved`, and the sandbox computes that from the key ALREADY in its
+  # own environment — so no fragment of the credential crosses the boundary on a command line.
+  if [ "$SBX_AGENT" = "claude" ]; then
+    # shellcheck disable=SC2016  # the inner script runs in the sandbox, against its own env
+    sbx exec "$SANDBOX" bash -lc 'python3 - <<PYEOF
+import json, os, pathlib
+key = os.environ.get("ANTHROPIC_API_KEY", "")
+if key:
+    p = pathlib.Path.home() / ".claude.json"
+    d = json.loads(p.read_text()) if p.exists() else {}
+    r = d.setdefault("customApiKeyResponses", {"approved": [], "rejected": []})
+    suffix = key[-20:]
+    if suffix not in r.setdefault("approved", []):
+        r["approved"].append(suffix)
+    if suffix in r.setdefault("rejected", []):
+        r["rejected"].remove(suffix)
+    p.write_text(json.dumps(d))
+PYEOF' >/dev/null 2>&1 \
+      || echo "  sandbox: WARNING could not pre-approve the provider key; the harness will ask" >&2
+  fi
+
   # The governed CLI, installed INSIDE the VM. The host's compose path is not available in
   # there (the image has no podman), and a venv built on the host would carry the host's
   # interpreter path, so it is built in the VM from source — about fifteen seconds, paid here
