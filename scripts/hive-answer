@@ -278,15 +278,42 @@ if [ "$(tmux display-message -p -t "$WINDOW_T" '#{pane_dead}' 2>/dev/null)" = "1
 fi
 
 # --- nudge -------------------------------------------------------------------------------
-# The text and the Enter go as separate `send-keys` calls: a harness TUI redraws its
-# composer as it receives input, and sending the submit key in the same batch has raced
-# that redraw and submitted an empty prompt.
+# The text and the Enter go as separate `send-keys` calls: a harness TUI redraws its composer
+# as it receives input, and sending the submit key in the same batch has raced that redraw and
+# submitted an empty prompt.
 tmux send-keys -t "$WINDOW_T" -l "$NUDGE" \
   || die "send-keys failed for window '$TASK'. $DURABLE Nudge the
   worker by hand:  tmux attach -t '$HIVE_TMUX_SESSION'"
-tmux send-keys -t "$WINDOW_T" Enter \
-  || die "the nudge text reached window '$TASK' but the submit key did not. Attach and press
-  Enter yourself:  tmux attach -t '$HIVE_TMUX_SESSION'"
+
+# And then Enter, more than once if it has to be. A harness that is MID-TURN does not submit
+# on Enter — Codex holds the line in its composer and offers to queue it, so the text arrives,
+# is visible, and never reaches the model (measured 2026-08-24: the first Enter did nothing,
+# the second, after the turn ended, submitted it). A nudge reported as delivered and sitting
+# unread in a composer is precisely the failure this half of the tool exists to avoid.
+#
+# So delivery is CHECKED rather than assumed: the composer region is the last few lines of the
+# pane, and the nudge is submitted when its opening no longer sits there. A spare Enter into an
+# idle composer does nothing in either harness, which makes retrying the safe direction to err.
+NEEDLE="${NUDGE:0:40}"
+DELIVERED=""
+for _ in 1 2 3 4 5 6; do
+  tmux send-keys -t "$WINDOW_T" Enter 2>/dev/null || true
+  sleep 2
+  if ! tmux capture-pane -p -t "$WINDOW_T" 2>/dev/null | tail -6 | grep -qF "$NEEDLE"; then
+    DELIVERED=1
+    break
+  fi
+done
+if [ -z "$DELIVERED" ]; then
+  {
+    echo "hive-answer: the nudge was TYPED into window '$TASK' and is still sitting in its"
+    echo "  composer — the session did not take it. That usually means it is mid-turn and long"
+    echo "  running. It is not lost: attach and press Enter when the turn ends."
+    echo "    tmux attach -t '$HIVE_TMUX_SESSION'   (window '$TASK')"
+    echo "  $DURABLE"
+  } >&2
+  exit 1
+fi
 
 echo "hive-answer: nudged $HIVE_TMUX_SESSION:$TASK (worker '$OWNER')"
 echo "  sent: $NUDGE"
