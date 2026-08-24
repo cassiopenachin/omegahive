@@ -863,8 +863,9 @@ def test_a_window_left_at_a_shell_is_refused_rather_than_executed(deployment):
     there hands operator prose to a shell as a command line."""
     block_the_worker(deployment)
     session = deployment["tmux_session"]
+    env = {**os.environ, **deployment["tmux_env"], "TMUX": "", "TMUX_PANE": ""}
     subprocess.run(["tmux", "new-session", "-d", "-s", session, "-n", TASK, "sh"],
-                   check=True, env={**os.environ, **deployment["tmux_env"], "TMUX": "", "TMUX_PANE": ""})
+                   check=True, env=env)
     time.sleep(1)
 
     proc = run_answer(deployment, "yes")
@@ -884,9 +885,10 @@ def test_a_nudge_refuses_when_the_session_is_gone(deployment):
 @pytest.mark.skipif(not shutil.which("tmux"), reason="tmux is the transport under test")
 def test_a_nudge_refuses_when_the_task_has_no_window_of_its_own(deployment):
     block_the_worker(deployment)
+    env = {**os.environ, **deployment["tmux_env"], "TMUX": "", "TMUX_PANE": ""}
     subprocess.run(["tmux", "new-session", "-d", "-s", deployment["tmux_session"],
                     "-n", "someone-else", "sleep", "600"],
-                   check=True, env={**os.environ, **deployment["tmux_env"], "TMUX": "", "TMUX_PANE": ""})
+                   check=True, env=env)
     proc = run_answer(deployment, "yes")
     assert proc.returncode != 0
     assert f"has no window named '{TASK}'" in proc.stderr, proc.stderr
