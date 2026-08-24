@@ -581,10 +581,10 @@ echo "  bridge: $BRIDGE  (sync workspace | publish workspace | publish code)"
 
 # --- the sandbox, when the route names one ---------------------------------------------
 # The one harness-specific thing this launcher knows, and only because it CANNOT be argv:
-# a microVM has to exist, with the right host paths mounted and the right environment
-# baked in, before anything can attach to it. `sbx create` takes those as flags at
-# creation time and `sbx run --name` re-attaches to whatever was created — so the route's
-# argv can express the attach and not the create.
+# a microVM has to exist, with the right host paths mounted, the right environment baked in
+# and a working path to the spine, before anything can attach to it. `sbx create` takes the
+# first two as flags at creation time and `sbx run --name` re-attaches to whatever was
+# created — so the route's argv can express the attach and not the create.
 #
 # What is mounted, and why exactly this set:
 #
@@ -604,70 +604,94 @@ echo "  bridge: $BRIDGE  (sync workspace | publish workspace | publish code)"
 # not another repo, not the operator's home, not the canonical checkout it installed from.
 # That is its legitimate write set, and it is a strictly smaller one than a bare route has.
 if [ "$EXECUTABLE" = "sbx" ]; then
-  if sbx ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qxF "$SANDBOX"; then
-    # Re-launching onto an existing sandbox is recovery, not a fresh seat, and it is the
-    # operator's call rather than this script's: a sandbox that already exists holds a
-    # previous worker's state.
-    echo "  sandbox: $SANDBOX (exists — re-attaching; 'sbx rm $SANDBOX' first for a clean VM)"
+  # Everything a sandbox needs is resolved for BOTH paths — a fresh create and a re-attach —
+  # because a re-attach that assumed the last create's work is still standing was shipping
+  # workers with no write path: the forwarder below is a process, a sandbox stop takes it,
+  # and the recovery case is exactly a sandbox that stopped. The create path died loudly for
+  # that condition while the recovery path printed success (review finding, 2026-08-24).
+
+  # The launching environment wins over the deployment file, which is what lets a launch
+  # be pointed at a SCRATCH spine without editing the deployment's secrets — the same seam
+  # OMEGAHIVE_COMPOSE and HIVE_CLI_CMD are. With nothing set, the deployment's own
+  # gateway.env is the source, so an ordinary launch needs no environment at all.
+  if [ -n "${OMEGAHIVE_GATEWAY_DATABASE_URL:-}" ]; then
+    GW_DSN="$OMEGAHIVE_GATEWAY_DATABASE_URL"
   else
-    # The gateway DSN, rewritten for the VM. `host.docker.internal` reaches the host's
-    # loopback-bound ports from inside, so the spine is reachable with no deployment change.
-    #
-    # It is the GATEWAY role's DSN and never the owner's. On the host a worker never held a
-    # DSN at all — it emitted through the containerized CLI, which held one. Inside the VM
-    # the CLI runs as the worker's own process, so the credential is in the worker's reach,
-    # and the two-role split stops being build-ahead and becomes the actual boundary on this
-    # path: what refuses a worker-role `execution.*` emit is the gateway role's policy, on
-    # the far side of this DSN. Owner authority stays out of every worker environment.
-    # The launching environment wins over the deployment file, which is what lets a launch
-    # be pointed at a SCRATCH spine without editing the deployment's secrets — the same seam
-    # OMEGAHIVE_COMPOSE and HIVE_CLI_CMD are. With nothing set, the deployment's own
-    # gateway.env is the source, so an ordinary launch needs no environment at all.
-    if [ -n "${OMEGAHIVE_GATEWAY_DATABASE_URL:-}" ]; then
-      GW_DSN="$OMEGAHIVE_GATEWAY_DATABASE_URL"
-    else
-      GW_ENV="${OMEGAHIVE_SECRETS_DIR:-$HOME/.config/omegahive/secrets}/gateway.env"
-      [ -f "$GW_ENV" ] || die "a sandboxed route needs the gateway DSN to hand the worker's CLI,
+    GW_ENV="${OMEGAHIVE_SECRETS_DIR:-$HOME/.config/omegahive/secrets}/gateway.env"
+    [ -f "$GW_ENV" ] || die "a sandboxed route needs the gateway DSN to hand the worker's CLI,
   and there is no $GW_ENV on this host. The worker would have no write path to the spine."
-      GW_DSN=$(grep -m1 '^OMEGAHIVE_GATEWAY_DATABASE_URL=' "$GW_ENV" | cut -d= -f2-)
-      [ -n "$GW_DSN" ] || die "$GW_ENV names no OMEGAHIVE_GATEWAY_DATABASE_URL."
-    fi
-    # --- how the DSN reaches the spine from inside a microVM ---------------------------
-    # Not by naming the host. A sandbox egresses through an HTTP/TLS proxy that terminates
-    # raw TCP and drops it, and refuses `host.docker.internal` outright — measured on
-    # Beastie 2026-08-24, where a direct connect appears to SUCCEED and the listener on the
-    # far side never sees it. Anything that trusts a TCP handshake here will report a
-    # working spine and have none.
-    #
-    # What the proxy does honour is HTTP CONNECT to an allowlisted host, and that carries an
-    # arbitrary byte stream. So the worker's CLI connects to 127.0.0.1 inside the VM (which
-    # the sandbox's own NO_PROXY excludes), and a forwarder started below tunnels that to the
-    # spine's ROUTABLE address through the proxy. The DSN the worker holds names neither the
-    # tunnel nor the proxy; it is an ordinary loopback DSN.
-    SPINE_ADDR="${HIVE_SANDBOX_SPINE:-}"
-    if [ -z "$SPINE_ADDR" ] && command -v tailscale >/dev/null 2>&1; then
-      SPINE_TS=$(tailscale ip -4 2>/dev/null | head -1)
-      [ -z "$SPINE_TS" ] || SPINE_ADDR="$SPINE_TS:5433"
-    fi
-    [ -n "$SPINE_ADDR" ] || die "a sandboxed route needs an address for the spine that is ROUTABLE
+    GW_DSN=$(grep -m1 '^OMEGAHIVE_GATEWAY_DATABASE_URL=' "$GW_ENV" | cut -d= -f2-)
+    [ -n "$GW_DSN" ] || die "$GW_ENV names no OMEGAHIVE_GATEWAY_DATABASE_URL."
+  fi
+
+  # --- how the DSN reaches the spine from inside a microVM ---------------------------
+  # Not by naming the host. A sandbox egresses through an HTTP/TLS proxy that terminates
+  # raw TCP and drops it, and refuses `host.docker.internal` outright — measured on
+  # Beastie 2026-08-24, where a direct connect appears to SUCCEED and the listener on the
+  # far side never sees it. Anything that trusts a TCP handshake here will report a
+  # working spine and have none.
+  #
+  # What the proxy does honour is HTTP CONNECT to an allowlisted host, and that carries an
+  # arbitrary byte stream. So the worker's CLI connects to 127.0.0.1 inside the VM (which
+  # the sandbox's own NO_PROXY excludes), and a forwarder started below tunnels that to the
+  # spine's ROUTABLE address through the proxy. The DSN the worker holds names neither the
+  # tunnel nor the proxy; it is an ordinary loopback DSN.
+  SPINE_ADDR="${HIVE_SANDBOX_SPINE:-}"
+  if [ -z "$SPINE_ADDR" ] && command -v tailscale >/dev/null 2>&1; then
+    SPINE_TS=$(tailscale ip -4 2>/dev/null | head -1)
+    [ -z "$SPINE_TS" ] || SPINE_ADDR="$SPINE_TS:5433"
+  fi
+  [ -n "$SPINE_ADDR" ] || die "a sandboxed route needs an address for the spine that is ROUTABLE
   from inside the microVM; a host-local one is refused by the sandbox's egress proxy.
   Publish Postgres on this host's tailnet address (docker-compose.yml's
   OMEGAHIVE_PG_TAILNET_BIND, host port 5433) and name it here:
     export HIVE_SANDBOX_SPINE=<host-or-ip>:5433
   Nothing was created, cloned or emitted."
-    SPINE_HOST="${SPINE_ADDR%:*}"
-    SPINE_PORT="${SPINE_ADDR##*:}"
-    # The DSN's own host:port is replaced wholesale rather than patched per spelling: the
-    # deployment writes `@postgres:5432`, an operator override may write `@localhost:5432`,
-    # and inside the VM both are the same loopback tunnel.
-    GW_DSN_VM=$(printf '%s' "$GW_DSN" | sed -E 's#@[^@/]+:[0-9]+/#@127.0.0.1:5432/#')
-    case "$GW_DSN_VM" in
-      *@127.0.0.1:5432/*) : ;;
-      *) die "could not rewrite the gateway DSN for the sandbox: it does not carry a
+  SPINE_HOST="${SPINE_ADDR%:*}"
+  SPINE_PORT="${SPINE_ADDR##*:}"
+  # The DSN's own host:port is replaced wholesale rather than patched per spelling: the
+  # deployment writes `@postgres:5432`, an operator override may write `@localhost:5432`,
+  # and inside the VM both are the same loopback tunnel.
+  GW_DSN_VM=$(printf '%s' "$GW_DSN" | sed -E 's#@[^@/]+:[0-9]+/#@127.0.0.1:5432/#')
+  case "$GW_DSN_VM" in
+    *@127.0.0.1:5432/*) : ;;
+    *) die "could not rewrite the gateway DSN for the sandbox: it does not carry a
   host:port before its database name. Refusing to hand a worker a DSN this build cannot
   reason about." ;;
-    esac
+  esac
 
+  # Which sbx agent image serves this harness. Named here rather than dug out of the
+  # argv by position: an agent read off `args[N]` would break the day a route gained a
+  # flag, and it would break silently, by creating a sandbox for the wrong harness.
+  case "$R_HARNESS" in
+    claude-code|claude) SBX_AGENT=claude ;;
+    codex)              SBX_AGENT=codex ;;
+    omp|shell)          SBX_AGENT=shell ;;
+    *) die "route '$ROUTE_NAME' runs under sbx with harness '$R_HARNESS', and this build
+  does not know which sbx agent image serves it. Add it to hive-launch's agent map, or
+  run this harness on a non-sandboxed route." ;;
+  esac
+
+  # A Codex SUBSCRIPTION cannot be carried into a sandbox at all: sbx's credential proxy
+  # forces API-key billing for OpenAI and its interception, not its allowlist, is the wall
+  # (probe, 2026-08-24). Turning injection off leaves the harness with nothing, so such a
+  # route would build a VM, open a tunnel, seed the board and open a window onto a session
+  # that cannot authenticate. Refuse it here, before any of that, and name the two routes
+  # that do work.
+  if [ "$SBX_AGENT" = "codex" ] && [ "$R_MARKET" = "subscription" ]; then
+    die "route '$ROUTE_NAME' runs Codex inside sbx on a subscription, which cannot work:
+  the sandbox's credential proxy forces API-key billing for OpenAI and blocks ChatGPT
+  auth passthrough (probe, 2026-08-24). Run Codex in its own landlock sandbox instead
+  (a non-sbx route), or make this an api-billed route. Nothing was created or emitted."
+  fi
+
+  if sbx ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qxF "$SANDBOX"; then
+    # Re-launching onto an existing sandbox is recovery, not a fresh seat, and it is the
+    # operator's call rather than this script's: a sandbox that already exists holds a
+    # previous worker's state. Its tunnel and CLI are re-established below, because a VM
+    # with the right name is not the same thing as a working worker.
+    echo "  sandbox: $SANDBOX (exists — re-attaching; 'sbx rm $SANDBOX' first for a clean VM)"
+  else
     # The environment file, not the command line: a DSN carries a password, and an argument
     # is visible in `ps` to every process on the host for as long as the create runs.
     SBX_ENV_FILE="$TASK_ROOT/.sandbox-env"
@@ -681,17 +705,7 @@ GIT_COMMITTER_NAME=$WORKER
 GIT_COMMITTER_EMAIL=$WORKER@hive.local
 SBXENV
     )
-    # Which sbx agent image serves this harness. Named here rather than dug out of the
-    # argv by position: an agent read off `args[N]` would break the day a route gained a
-    # flag, and it would break silently, by creating a sandbox for the wrong harness.
-    case "$R_HARNESS" in
-      claude-code|claude) SBX_AGENT=claude ;;
-      codex)              SBX_AGENT=codex ;;
-      omp|shell)          SBX_AGENT=shell ;;
-      *) die "route '$ROUTE_NAME' runs under sbx with harness '$R_HARNESS', and this build
-  does not know which sbx agent image serves it. Add it to hive-launch's agent map, or
-  run this harness on a non-sandboxed route." ;;
-    esac
+
     # --- which credential actually pays for this route ---------------------------------
     # sbx ships its agent templates wired for API billing: the claude template writes
     # `apiKeyHelper` into the sandbox's settings.json and sets SBX_CRED_ANTHROPIC_MODE=apikey,
@@ -708,11 +722,8 @@ SBXENV
     # that quietly satisfies itself from the wrong account produces a record that is false
     # about what paid for the work.
     SBX_CREATE_ENV=()
-    if [ "$R_MARKET" = "subscription" ]; then
-      case "$SBX_AGENT" in
-        claude) SBX_CREATE_ENV+=(--env SBX_CRED_ANTHROPIC_MODE=off) ;;
-        codex)  SBX_CREATE_ENV+=(--env SBX_CRED_OPENAI_MODE=off) ;;
-      esac
+    if [ "$R_MARKET" = "subscription" ] && [ "$SBX_AGENT" = "claude" ]; then
+      SBX_CREATE_ENV+=(--env SBX_CRED_ANTHROPIC_MODE=off)
     fi
     echo "  sandbox: creating $SANDBOX (agent $SBX_AGENT, billing $R_MARKET)"
     sbx create --quiet --name "$SANDBOX" --env-file "$SBX_ENV_FILE" \
@@ -740,31 +751,34 @@ SBXENV
   this subscription route on the proxy's API key."
       echo "  sandbox: subscription credential installed (proxy injection off, apiKeyHelper cleared)"
     fi
+  fi
 
-    # --- the spine tunnel ----------------------------------------------------------------
-    # Two pieces, both scoped to THIS sandbox: an allow rule for exactly the spine's address,
-    # and a forwarder inside the VM that carries loopback:5432 to it over the proxy's CONNECT.
-    #
-    # The allow rule is per-sandbox rather than global: every other sandbox on this host keeps
-    # its default deny, so authorizing one worker to reach the spine authorizes exactly one.
-    sbx policy allow network --sandbox "$SANDBOX" "$SPINE_ADDR" >/dev/null 2>&1 \
-      || die "could not allow '$SPINE_ADDR' for sandbox '$SANDBOX'; its worker would have no
+  # --- the spine tunnel, established on BOTH paths ---------------------------------------
+  # Two pieces, both scoped to THIS sandbox: an allow rule for exactly the spine's address,
+  # and a forwarder inside the VM that carries loopback:5432 to it over the proxy's CONNECT.
+  # Both are idempotent, which is what lets the re-attach path run them rather than assume
+  # them — the forwarder is a process, and a sandbox that stopped no longer has one.
+  #
+  # The allow rule is per-sandbox rather than global: every other sandbox on this host keeps
+  # its default deny, so authorizing one worker to reach the spine authorizes exactly one.
+  sbx policy allow network --sandbox "$SANDBOX" "$SPINE_ADDR" >/dev/null 2>&1 \
+    || die "could not allow '$SPINE_ADDR' for sandbox '$SANDBOX'; its worker would have no
   write path to the spine."
 
-    # `nohup … &` inside a login shell, wrapped in a restart loop: socat exits when a tunnelled
-    # connection is torn down abnormally, and one dead forwarder would silently end the
-    # worker's ability to emit for the rest of the task. A sandbox STOP still takes it, and
-    # that is honest — a stopped sandbox has no worker either.
-    sbx exec -d "$SANDBOX" bash -lc \
-      "nohup sh -c 'while true; do socat TCP-LISTEN:5432,fork,reuseaddr,bind=127.0.0.1 PROXY:gateway.docker.internal:$SPINE_HOST:$SPINE_PORT,proxyport=3128; sleep 1; done' >/tmp/spine-tunnel.log 2>&1 &" \
-      >/dev/null 2>&1 || true
-    # The return code above is deliberately ignored: `sbx exec -d` reports failure while
-    # having launched (omp-arm runner, 2026-08-24). What is trusted is the tunnel ANSWERING,
-    # which is checked here rather than assumed — a Postgres SSLRequest, whose reply proves
-    # the proxy tunnelled it AND that a real server is on the far side. A TCP handshake would
-    # prove neither, which is exactly how this seam was mis-measured the first time.
-    echo "  sandbox: opening the spine tunnel to $SPINE_ADDR"
-    if ! sbx exec "$SANDBOX" python3 -c "
+  # `nohup … &` inside a login shell, wrapped in a restart loop: socat exits when a tunnelled
+  # connection is torn down abnormally, and one dead forwarder would silently end the
+  # worker's ability to emit for the rest of the task. A sandbox STOP still takes it, which
+  # is why the probe below runs on every launch rather than only on a fresh create.
+  sbx exec -d "$SANDBOX" bash -lc \
+    "pgrep -f 'socat TCP-LISTEN:5432' >/dev/null || nohup sh -c 'while true; do socat TCP-LISTEN:5432,fork,reuseaddr,bind=127.0.0.1 PROXY:gateway.docker.internal:$SPINE_HOST:$SPINE_PORT,proxyport=3128; sleep 1; done' >/tmp/spine-tunnel.log 2>&1 &" \
+    >/dev/null 2>&1 || true
+  # The return code above is deliberately ignored: `sbx exec -d` reports failure while
+  # having launched (omp-arm runner, 2026-08-24). What is trusted is the tunnel ANSWERING,
+  # which is checked here rather than assumed — a Postgres SSLRequest, whose reply proves
+  # the proxy tunnelled it AND that a real server is on the far side. A TCP handshake would
+  # prove neither, which is exactly how this seam was mis-measured the first time.
+  echo "  sandbox: opening the spine tunnel to $SPINE_ADDR"
+  if ! sbx exec "$SANDBOX" python3 -c "
 import socket, sys, time
 for attempt in range(20):
     try:
@@ -777,22 +791,24 @@ for attempt in range(20):
     time.sleep(1)
 sys.exit(1)
 " >/dev/null 2>&1; then
-      die "the spine tunnel in '$SANDBOX' never answered. The worker would have no write path.
+    die "the spine tunnel in '$SANDBOX' never answered. The worker would have no write path.
   Check it by hand:
     sbx exec $SANDBOX cat /tmp/spine-tunnel.log
     sbx policy check network $SPINE_ADDR --sandbox $SANDBOX
   The commonest cause is that Postgres is not published on $SPINE_ADDR — see
   docker-compose.yml's OMEGAHIVE_PG_TAILNET_BIND. Nothing was emitted."
-    fi
+  fi
 
-    # The governed CLI, installed INSIDE the VM from the read-only canonical checkout. The
-    # host's compose path is not available in there (the image has no podman), and a venv
-    # built on the host would carry the host's interpreter path. `uv tool install` builds
-    # from a read-only source and takes about fifteen seconds, so the launcher pays it once
-    # here rather than letting the worker's first emit pay it.
-    #
-    # It installs a SNAPSHOT, deliberately: a worker doing omegahive work cannot break the
-    # CLI it emits through by editing source mid-task.
+  # The governed CLI, installed INSIDE the VM from the read-only canonical checkout. The
+  # host's compose path is not available in there (the image has no podman), and a venv
+  # built on the host would carry the host's interpreter path. `uv tool install` builds
+  # from a read-only source and takes about fifteen seconds, so the launcher pays it once
+  # here rather than letting the worker's first emit pay it.
+  #
+  # It installs a SNAPSHOT, deliberately: a worker doing omegahive work cannot break the
+  # CLI it emits through by editing source mid-task. Checked rather than assumed on every
+  # launch, for the same reason the tunnel is: a re-attached sandbox may predate it.
+  if ! sbx exec "$SANDBOX" bash -lc 'command -v omegahive >/dev/null' >/dev/null 2>&1; then
     echo "  sandbox: installing the governed CLI (uv tool install, from $OMEGA_DIR read-only)"
     sbx exec "$SANDBOX" bash -lc "uv tool install --quiet '$OMEGA_DIR'" \
       || die "could not install the omegahive CLI inside '$SANDBOX'. The worker would have no

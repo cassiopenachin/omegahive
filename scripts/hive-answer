@@ -268,6 +268,25 @@ tmux list-windows -t "$SESSION_T" -F '#{window_name}' 2>/dev/null | grep -qxF "$
 # `remain-on-exit` keeps a window after its session exits, which is what leaves the last
 # screen readable — and it means a window's PRESENCE no longer proves a live process. A
 # dead pane accepts send-keys and swallows it, so this asks tmux directly.
+# A LIVE pane is not a live harness. A window sitting at a shell — the harness exited under a
+# configuration without `remain-on-exit`, someone respawned the pane, the harness crashed back
+# to its parent — is not dead, so the nudge would be typed at a prompt and the Enter would
+# EXECUTE it. Answer text is operator prose; handed to a shell it is a command line, and one
+# carrying `$(...)`, a backtick or a `;` runs. So the shells are refused by name: this cannot
+# enumerate every harness (a route may add one tomorrow), but it can refuse the interpreters
+# that would execute what it types.
+PANE_CMD=$(tmux display-message -p -t "$WINDOW_T" '#{pane_current_command}' 2>/dev/null || true)
+case "$PANE_CMD" in
+  bash|zsh|sh|dash|fish|ksh|tcsh|csh|screen|tmux)
+    die "the '$TASK' window is alive but is running '$PANE_CMD', not a harness — its session
+  exited and left the pane at a shell. Typing an answer there would hand operator prose to a
+  shell as a command line, so this refuses.
+  Look:  tmux attach -t '$HIVE_TMUX_SESSION'   (window '$TASK')
+  $DURABLE
+  A worker whose session ended is a seat to recover, not a process to wake: RUNBOOK
+  'Dead worker recovery'." ;;
+esac
+
 if [ "$(tmux display-message -p -t "$WINDOW_T" '#{pane_dead}' 2>/dev/null)" = "1" ]; then
   die "the '$TASK' window exists but its session has EXITED (the pane is dead — its last
   screen is still there to read: tmux attach -t '$HIVE_TMUX_SESSION').
@@ -291,25 +310,41 @@ tmux send-keys -t "$WINDOW_T" -l "$NUDGE" \
 # the second, after the turn ended, submitted it). A nudge reported as delivered and sitting
 # unread in a composer is precisely the failure this half of the tool exists to avoid.
 #
-# So delivery is CHECKED rather than assumed: the composer region is the last few lines of the
-# pane, and the nudge is submitted when its opening no longer sits there. A spare Enter into an
-# idle composer does nothing in either harness, which makes retrying the safe direction to err.
-NEEDLE="${NUDGE:0:40}"
+# So delivery is CHECKED rather than assumed, and the check is stated for what it is: reading a
+# terminal's pixels back, which no harness promises anything about. Three things make it as
+# sharp as a screen-scrape can be, and none of them make it certain:
+#
+#   * the needle is the END of the nudge, not its start. A long nudge wraps to several visual
+#     lines and the START scrolls out of the composer region before anything is even sent —
+#     which would read as "delivered" for a line still sitting unsubmitted;
+#   * the pane is whitespace-collapsed before matching, because a composer wraps mid-phrase and
+#     draws border glyphs through it, and an exact-substring grep fails on both;
+#   * the region is the last lines only. Both harnesses echo a submitted message into the
+#     transcript ABOVE the composer, so a wider window would find the echo and report a
+#     successful submit as stuck.
+#
+# It can still be wrong in both directions. What follows from that is the exit code: a nudge
+# this cannot confirm is reported as unconfirmed and exits non-zero, never as delivered.
+NEEDLE=$(printf '%s' "${NUDGE: -32}" | tr -s '[:space:]' ' ')
 DELIVERED=""
 for _ in 1 2 3 4 5 6; do
   tmux send-keys -t "$WINDOW_T" Enter 2>/dev/null || true
   sleep 2
-  if ! tmux capture-pane -p -t "$WINDOW_T" 2>/dev/null | tail -6 | grep -qF "$NEEDLE"; then
+  if ! tmux capture-pane -p -t "$WINDOW_T" 2>/dev/null | tail -8 \
+       | tr -s '[:space:]' ' ' | grep -qF "$NEEDLE"; then
     DELIVERED=1
     break
   fi
 done
 if [ -z "$DELIVERED" ]; then
   {
-    echo "hive-answer: the nudge was TYPED into window '$TASK' and is still sitting in its"
-    echo "  composer — the session did not take it. That usually means it is mid-turn and long"
-    echo "  running. It is not lost: attach and press Enter when the turn ends."
+    echo "hive-answer: the nudge was TYPED into window '$TASK' and this could not confirm that"
+    echo "  the session took it — its opening words are still on screen where the composer is."
+    echo "  The usual cause is a harness mid-turn: it holds the line until the turn ends."
+    echo "  Attach and look; press Enter there if it is still unsent."
     echo "    tmux attach -t '$HIVE_TMUX_SESSION'   (window '$TASK')"
+    echo "  This check reads the terminal back and can be wrong in both directions, so treat it"
+    echo "  as 'unconfirmed', not as 'not delivered' — the line may well have been received."
     echo "  $DURABLE"
   } >&2
   exit 1
