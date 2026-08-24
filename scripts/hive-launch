@@ -956,13 +956,32 @@ half_launch_recovery() {  # half_launch_recovery <what-failed>
 # session the operator can type into, that reviews its own diff, repairs its own CI and
 # posts its own result without a supervisor in the middle.
 launch_cmd="$(printf '%q ' "${ARGV[@]}")\"\$HIVE_KICKOFF\""
+
+# The route's `inherit_env` NAMES, resolved to values here and handed to the window.
+#
+# A tmux window inherits the tmux SERVER's environment, not the launcher's, so a route that
+# names `CODEX_HOME` or `CLAUDE_CONFIG_DIR` got neither: the field was carried in the catalog,
+# printed by the preflight, and then dropped. Forwarding it is what makes the field mean what
+# it says. A name that is UNSET in this environment is skipped rather than forwarded empty —
+# "not set" and "set to nothing" are different to every harness that reads one.
+#
+# Names only ever come from the catalog, and the catalog may not name a Hive authority
+# credential (harness/records.py refuses one at load). So this cannot forward the spine's own
+# DSN into a worker's window, whatever an operator exports.
+TMUX_ENV=(-e "HIVE_KICKOFF=$KICKOFF")
+while IFS= read -r n; do
+  [ -n "$n" ] || continue
+  [ -n "${!n+set}" ] || continue
+  TMUX_ENV+=(-e "$n=${!n}")
+done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?')
+
 if tmux has-session -t "$SESSION_T" 2>/dev/null; then
   PANE=$(tmux new-window -a -t "$SESSION_T:{end}" -n "$TASK" -c "$WS_ROOT" \
-    -e HIVE_KICKOFF="$KICKOFF" -P -F '#{session_name}:#{window_index}' "$launch_cmd") \
+    "${TMUX_ENV[@]}" -P -F '#{session_name}:#{window_index}' "$launch_cmd") \
     || half_launch_recovery "tmux new-window"
 else
   PANE=$(tmux new-session -d -s "$HIVE_TMUX_SESSION" -n "$TASK" -c "$WS_ROOT" \
-    -e HIVE_KICKOFF="$KICKOFF" -P -F '#{session_name}:#{window_index}' "$launch_cmd") \
+    "${TMUX_ENV[@]}" -P -F '#{session_name}:#{window_index}' "$launch_cmd") \
     || half_launch_recovery "tmux new-session"
 fi
 # A session that exits would otherwise take its window — and the task registry entry with
