@@ -843,13 +843,25 @@ def test_a_dead_pane_is_refused_rather_than_typed_at(deployment):
     block_the_worker(deployment)
     session = deployment["tmux_session"]
     env = {**os.environ, **deployment["tmux_env"], "TMUX": "", "TMUX_PANE": ""}
-    subprocess.run(["tmux", "new-session", "-d", "-s", session, "-n", TASK, "true"],
+    # The window is opened on a LONG-LIVED command and killed afterwards, in that order. Open
+    # it on something that exits immediately and the window is already gone when the next
+    # command runs — the session dies with its last window — so this raced its own setup.
+    subprocess.run(["tmux", "new-session", "-d", "-s", session, "-n", TASK, "sleep", "600"],
                    check=True, env=env)
-    subprocess.run(["tmux", "set-option", "-t", f"={session}:={TASK}", "remain-on-exit", "on"],
-                   check=True, env=env)
+    # `-w`, exactly as `tmux_keep_window` in hive-common.sh does it: remain-on-exit is a
+    # WINDOW option, and older tmux refuses to infer that from the target.
+    subprocess.run(["tmux", "set-option", "-w", "-t", f"={session}:={TASK}",
+                    "remain-on-exit", "on"], check=True, env=env)
     subprocess.run(["tmux", "respawn-pane", "-k", "-t", f"={session}:={TASK}", "true"],
                    check=True, env=env)
-    time.sleep(1)
+    for _ in range(20):
+        dead = subprocess.run(["tmux", "display-message", "-p", "-t", f"={session}:={TASK}",
+                               "#{pane_dead}"], capture_output=True, text=True, env=env)
+        if dead.stdout.strip() == "1":
+            break
+        time.sleep(0.5)
+    else:
+        pytest.fail("the pane never reached pane_dead=1; the fixture, not the tool, is wrong")
 
     proc = run_answer(deployment, "yes")
     assert proc.returncode != 0
