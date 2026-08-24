@@ -89,9 +89,25 @@ services:
       POSTGRES_USER: omegahive
       POSTGRES_PASSWORD: omegahive
       POSTGRES_DB: omegahive
-    # Loopback-only: the log store is never exposed off-host (deployment spec §7).
+    # Loopback for everything on this host (deployment spec §7), plus ONE optional bind for
+    # sandboxed workers, which cannot reach a host-local address at all.
+    #
+    # Why the second line exists. A worker in a Docker Sandboxes microVM egresses through an
+    # HTTP/TLS proxy: raw TCP is terminated by the proxy and dropped, and `host.docker.internal`
+    # is refused whatever the sandbox policy says (measured, Beastie 2026-08-24 — a direct
+    # connect "succeeds" and a listener on the far side never sees it). What the proxy does
+    # honour is HTTP CONNECT to an allowlisted host, which carries an arbitrary byte stream —
+    # so the spine has to answer on an address that is ROUTABLE from the VM rather than
+    # host-local. `hive-launch` allowlists exactly this host:port for the sandbox it creates
+    # and forwards to it from inside; nothing else reaches this bind.
+    #
+    # OMEGAHIVE_PG_TAILNET_BIND is a DEPLOYMENT fact and belongs in this host's environment,
+    # never in this file: on deployment #0 it is Beastie's tailscale address, whose tailnet is
+    # two machines. Unset, this publishes a second loopback port and changes no exposure at
+    # all, which is the correct default for a host that runs no sandboxed workers.
     ports:
       - "127.0.0.1:5432:5432"
+      - "${OMEGAHIVE_PG_TAILNET_BIND:-127.0.0.1}:5433:5432"
     volumes:
       - omegahive-pgdata:/var/lib/postgresql/data
       # :ro,Z — SELinux relabel required for rootless Podman on Fedora/RHEL.

@@ -632,9 +632,41 @@ if [ "$EXECUTABLE" = "sbx" ]; then
       GW_DSN=$(grep -m1 '^OMEGAHIVE_GATEWAY_DATABASE_URL=' "$GW_ENV" | cut -d= -f2-)
       [ -n "$GW_DSN" ] || die "$GW_ENV names no OMEGAHIVE_GATEWAY_DATABASE_URL."
     fi
-    GW_DSN_VM=${GW_DSN//@postgres:/@host.docker.internal:}
-    GW_DSN_VM=${GW_DSN_VM//@127.0.0.1:/@host.docker.internal:}
-    GW_DSN_VM=${GW_DSN_VM//@localhost:/@host.docker.internal:}
+    # --- how the DSN reaches the spine from inside a microVM ---------------------------
+    # Not by naming the host. A sandbox egresses through an HTTP/TLS proxy that terminates
+    # raw TCP and drops it, and refuses `host.docker.internal` outright — measured on
+    # Beastie 2026-08-24, where a direct connect appears to SUCCEED and the listener on the
+    # far side never sees it. Anything that trusts a TCP handshake here will report a
+    # working spine and have none.
+    #
+    # What the proxy does honour is HTTP CONNECT to an allowlisted host, and that carries an
+    # arbitrary byte stream. So the worker's CLI connects to 127.0.0.1 inside the VM (which
+    # the sandbox's own NO_PROXY excludes), and a forwarder started below tunnels that to the
+    # spine's ROUTABLE address through the proxy. The DSN the worker holds names neither the
+    # tunnel nor the proxy; it is an ordinary loopback DSN.
+    SPINE_ADDR="${HIVE_SANDBOX_SPINE:-}"
+    if [ -z "$SPINE_ADDR" ] && command -v tailscale >/dev/null 2>&1; then
+      SPINE_TS=$(tailscale ip -4 2>/dev/null | head -1)
+      [ -z "$SPINE_TS" ] || SPINE_ADDR="$SPINE_TS:5433"
+    fi
+    [ -n "$SPINE_ADDR" ] || die "a sandboxed route needs an address for the spine that is ROUTABLE
+  from inside the microVM; a host-local one is refused by the sandbox's egress proxy.
+  Publish Postgres on this host's tailnet address (docker-compose.yml's
+  OMEGAHIVE_PG_TAILNET_BIND, host port 5433) and name it here:
+    export HIVE_SANDBOX_SPINE=<host-or-ip>:5433
+  Nothing was created, cloned or emitted."
+    SPINE_HOST="${SPINE_ADDR%:*}"
+    SPINE_PORT="${SPINE_ADDR##*:}"
+    # The DSN's own host:port is replaced wholesale rather than patched per spelling: the
+    # deployment writes `@postgres:5432`, an operator override may write `@localhost:5432`,
+    # and inside the VM both are the same loopback tunnel.
+    GW_DSN_VM=$(printf '%s' "$GW_DSN" | sed -E 's#@[^@/]+:[0-9]+/#@127.0.0.1:5432/#')
+    case "$GW_DSN_VM" in
+      *@127.0.0.1:5432/*) : ;;
+      *) die "could not rewrite the gateway DSN for the sandbox: it does not carry a
+  host:port before its database name. Refusing to hand a worker a DSN this build cannot
+  reason about." ;;
+    esac
 
     # The environment file, not the command line: a DSN carries a password, and an argument
     # is visible in `ps` to every process on the host for as long as the create runs.
@@ -707,6 +739,50 @@ SBXENV
         || die "could not clear the sandbox's apiKeyHelper in '$SANDBOX'. Leaving it would run
   this subscription route on the proxy's API key."
       echo "  sandbox: subscription credential installed (proxy injection off, apiKeyHelper cleared)"
+    fi
+
+    # --- the spine tunnel ----------------------------------------------------------------
+    # Two pieces, both scoped to THIS sandbox: an allow rule for exactly the spine's address,
+    # and a forwarder inside the VM that carries loopback:5432 to it over the proxy's CONNECT.
+    #
+    # The allow rule is per-sandbox rather than global: every other sandbox on this host keeps
+    # its default deny, so authorizing one worker to reach the spine authorizes exactly one.
+    sbx policy allow network --sandbox "$SANDBOX" "$SPINE_ADDR" >/dev/null 2>&1 \
+      || die "could not allow '$SPINE_ADDR' for sandbox '$SANDBOX'; its worker would have no
+  write path to the spine."
+
+    # `nohup … &` inside a login shell, wrapped in a restart loop: socat exits when a tunnelled
+    # connection is torn down abnormally, and one dead forwarder would silently end the
+    # worker's ability to emit for the rest of the task. A sandbox STOP still takes it, and
+    # that is honest — a stopped sandbox has no worker either.
+    sbx exec -d "$SANDBOX" bash -lc \
+      "nohup sh -c 'while true; do socat TCP-LISTEN:5432,fork,reuseaddr,bind=127.0.0.1 PROXY:gateway.docker.internal:$SPINE_HOST:$SPINE_PORT,proxyport=3128; sleep 1; done' >/tmp/spine-tunnel.log 2>&1 &" \
+      >/dev/null 2>&1 || true
+    # The return code above is deliberately ignored: `sbx exec -d` reports failure while
+    # having launched (omp-arm runner, 2026-08-24). What is trusted is the tunnel ANSWERING,
+    # which is checked here rather than assumed — a Postgres SSLRequest, whose reply proves
+    # the proxy tunnelled it AND that a real server is on the far side. A TCP handshake would
+    # prove neither, which is exactly how this seam was mis-measured the first time.
+    echo "  sandbox: opening the spine tunnel to $SPINE_ADDR"
+    if ! sbx exec "$SANDBOX" python3 -c "
+import socket, sys, time
+for attempt in range(20):
+    try:
+        s = socket.create_connection(('127.0.0.1', 5432), 2)
+        s.sendall((8).to_bytes(4, 'big') + (80877103).to_bytes(4, 'big'))
+        if s.recv(1) in (b'S', b'N'):
+            sys.exit(0)
+    except OSError:
+        pass
+    time.sleep(1)
+sys.exit(1)
+" >/dev/null 2>&1; then
+      die "the spine tunnel in '$SANDBOX' never answered. The worker would have no write path.
+  Check it by hand:
+    sbx exec $SANDBOX cat /tmp/spine-tunnel.log
+    sbx policy check network $SPINE_ADDR --sandbox $SANDBOX
+  The commonest cause is that Postgres is not published on $SPINE_ADDR — see
+  docker-compose.yml's OMEGAHIVE_PG_TAILNET_BIND. Nothing was emitted."
     fi
 
     # The governed CLI, installed INSIDE the VM from the read-only canonical checkout. The
