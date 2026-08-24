@@ -315,6 +315,28 @@ for f in harness:"$R_HARNESS" model:"$R_MODEL" adapter:"$R_ADAPTER" model_vendor
   required and none may be defaulted — fix the route in $HIVE_ROUTE_CATALOG."
 done
 
+# --- what a route may NOT ask the worker's window to inherit ----------------------------
+# `inherit_env` names variables the harness needs from the launching environment, and the
+# launcher forwards them into the window. Hive's OWN authority credentials are not among the
+# things an operator may hand a worker: the database and gateway DSNs are capability over the
+# durable record, and a worker holding one does not need to defeat the gateway's role policy
+# because it can write underneath it.
+#
+# `harness/records.py` refuses these at catalog load, and that used to be the only place a
+# catalog was ever read. It is not any more — this script parses the catalog itself — so the
+# rule is enforced here as well, in the same shape (the named set plus the DSN pattern that
+# catches the next one someone adds to the deployment).
+while IFS= read -r n; do
+  [ -n "$n" ] || continue
+  case "$n" in
+    OMEGAHIVE_*DATABASE_URL|POSTGRES_USER|POSTGRES_PASSWORD|POSTGRES_DB|TELEGRAM_BOT_TOKEN)
+      die "route '$ROUTE_NAME' asks to inherit '$n', which is one of Hive's own authority
+  credentials. A provider credential is deployment posture an operator may hand a worker;
+  Hive's authority over its own record is not inheritable under any configuration.
+  Remove it from runner.inherit_env in $HIVE_ROUTE_CATALOG." ;;
+  esac
+done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?')
+
 # --- the model: the route's default, or this launch's -----------------------------------
 # A route is a SHAPE — harness, sandbox, credential pool — and the model is a value inside
 # it. `--model` overrides the route's default for one launch and is what lands in the
@@ -690,6 +712,21 @@ if [ "$EXECUTABLE" = "sbx" ]; then
   (a non-sbx route), or make this an api-billed route. Nothing was created or emitted."
   fi
 
+  # The one credential prerequisite, checked BEFORE anything is built. It used to be checked
+  # after `sbx create`, which left a named half-configured VM behind on the one failure it
+  # exists to catch — and the next attempt then saw that VM as "existing" and skipped the
+  # credential setup entirely, while the ordinary launch could not be retried either because
+  # its clones were already there (cross-harness review, 2026-08-24).
+  SBX_SUBSCRIPTION_CLAUDE=""
+  if [ "$R_MARKET" = "subscription" ] && [ "$SBX_AGENT" = "claude" ]; then
+    SBX_SUBSCRIPTION_CLAUDE=1
+    [ -f "$HOME/.claude/.credentials.json" ] \
+      || die "route '$ROUTE_NAME' bills a subscription, and there is no
+  $HOME/.claude/.credentials.json to hand the sandbox. Log in on the host first — launching
+  would run this worker on whatever credential the sandbox proxy supplies, and bill an
+  account the spine fact does not name. Nothing was created or emitted."
+  fi
+
   if sbx ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qxF "$SANDBOX"; then
     # Re-launching onto an existing sandbox is recovery, not a fresh seat, and it is the
     # operator's call rather than this script's: a sandbox that already exists holds a
@@ -736,26 +773,36 @@ SBXENV
       "$SBX_AGENT" "$TASK_ROOT" "$WS_HUB" \
       || die "sbx create failed for '$SANDBOX'; nothing was emitted and the clones are at $TASK_ROOT."
 
-    # A subscription is OAuth, and the proxy does not carry it: the credential file is copied
-    # in, and the template's `apiKeyHelper` is removed because it takes PRECEDENCE over the
-    # copied login. Removing it is the half that actually changes which account pays —
-    # copying the credentials alone leaves the session on the API key, silently.
-    if [ "$R_MARKET" = "subscription" ] && [ "$SBX_AGENT" = "claude" ]; then
-      [ -f "$HOME/.claude/.credentials.json" ] \
-        || die "route '$ROUTE_NAME' bills a subscription, and there is no
-  $HOME/.claude/.credentials.json to hand the sandbox. Log in on the host first — launching
-  would run this worker on whatever credential the sandbox proxy supplies, and bill an
-  account the spine fact does not name."
-      sbx cp "$HOME/.claude/.credentials.json" "$SANDBOX:/home/agent/.claude/.credentials.json" \
-        >/dev/null 2>&1 \
-        || die "could not copy the Claude subscription credential into '$SANDBOX'."
-      # shellcheck disable=SC2016  # the inner script is for the sandbox's shell, not this one
-      sbx exec "$SANDBOX" bash -lc \
-        'f=~/.claude/settings.json; [ -f "$f" ] || exit 0; jq "del(.apiKeyHelper)" "$f" > "$f.tmp" && mv "$f.tmp" "$f"' \
-        || die "could not clear the sandbox's apiKeyHelper in '$SANDBOX'. Leaving it would run
+  fi
+
+  # --- the subscription credential posture, on BOTH paths --------------------------------
+  # A subscription is OAuth, and the proxy does not carry it: the credential file is copied in,
+  # and the template's `apiKeyHelper` is removed because it takes PRECEDENCE over the copied
+  # login. Removing it is the half that actually changes which account pays — copying the
+  # credentials alone leaves the session on the API key, silently.
+  #
+  # Both steps run on a re-attach too, and are idempotent. Skipping them there was the same
+  # defect in a second place: a sandbox that already existed could run with no OAuth credential,
+  # or on the proxy's API key, while the `execution.route_approved` this launcher emits said
+  # `subscription` (cross-harness review, 2026-08-24).
+  if [ -n "$SBX_SUBSCRIPTION_CLAUDE" ]; then
+    sbx cp "$HOME/.claude/.credentials.json" "$SANDBOX:/home/agent/.claude/.credentials.json" \
+      >/dev/null 2>&1 \
+      || die "could not copy the Claude subscription credential into '$SANDBOX'."
+    # shellcheck disable=SC2016  # the inner script is for the sandbox's shell, not this one
+    sbx exec "$SANDBOX" bash -lc \
+      'f=~/.claude/settings.json; [ -f "$f" ] || exit 0; jq "del(.apiKeyHelper)" "$f" > "$f.tmp" && mv "$f.tmp" "$f"' \
+      || die "could not clear the sandbox's apiKeyHelper in '$SANDBOX'. Leaving it would run
   this subscription route on the proxy's API key."
-      echo "  sandbox: subscription credential installed (proxy injection off, apiKeyHelper cleared)"
-    fi
+    # The one piece that CANNOT be re-applied after the fact: credential injection is baked at
+    # create time. So it is verified rather than assumed, and a sandbox whose posture does not
+    # match the route's billing is refused instead of quietly billing the other account.
+    SBX_CRED_MODE=$(sbx exec "$SANDBOX" printenv SBX_CRED_ANTHROPIC_MODE 2>/dev/null | tr -d '\r' || true)
+    [ "$SBX_CRED_MODE" = "off" ] || die "sandbox '$SANDBOX' has SBX_CRED_ANTHROPIC_MODE='${SBX_CRED_MODE:-unset}',
+  but route '$ROUTE_NAME' bills a subscription. Credential injection is fixed at create time,
+  so this VM would run the worker on the proxy's API key while the spine fact says
+  subscription. Remove it and launch again:  sbx rm $SANDBOX"
+    echo "  sandbox: subscription credential installed (proxy injection off, apiKeyHelper cleared)"
   fi
 
   # --- the spine tunnel, established on BOTH paths ---------------------------------------
@@ -999,9 +1046,11 @@ launch_cmd="$(printf '%q ' "${ARGV[@]}")\"\$HIVE_KICKOFF\""
 # it says. A name that is UNSET in this environment is skipped rather than forwarded empty —
 # "not set" and "set to nothing" are different to every harness that reads one.
 #
-# Names only ever come from the catalog, and the catalog may not name a Hive authority
-# credential (harness/records.py refuses one at load). So this cannot forward the spine's own
-# DSN into a worker's window, whatever an operator exports.
+# Names only ever come from the catalog, and the route read above has already refused any that
+# names a Hive authority credential — see `require_inheritable_env`. That rule used to be
+# enforced by `harness/records.py` at catalog load; reading the catalog here in the shell moved
+# it off the path, and a comment claiming the old guarantee is not the guarantee (cross-harness
+# review, 2026-08-24).
 TMUX_ENV=(-e "HIVE_KICKOFF=$KICKOFF")
 while IFS= read -r n; do
   [ -n "$n" ] || continue
