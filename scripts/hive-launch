@@ -374,14 +374,24 @@ if [ -n "$CHECK_ONLY" ]; then
   # truth and an automation the opposite.
   require_executable "$EXECUTABLE" "$ROUTE_NAME"
   printf '  harness:    '
+  # Two spellings, because they are both real: `claude --version` and `codex --version`
+  # answer a flag, `sbx version` answers a SUBCOMMAND and rejects the flag outright. A
+  # preflight that knew only one would call a healthy deployment incomplete — which it did,
+  # for every sandboxed route, the first time this was run.
+  VPROBE=""
   if VOUT=$("$EXECUTABLE" --version 2>&1); then
-    printf '%s\n' "$(printf '%s\n' "$VOUT" | harness_version_from)  (probe: $EXECUTABLE --version)"
+    VPROBE="$EXECUTABLE --version"
+  elif VOUT=$("$EXECUTABLE" version 2>&1); then
+    VPROBE="$EXECUTABLE version"
+  fi
+  if [ -n "$VPROBE" ]; then
+    printf '%s\n' "$(printf '%s\n' "$VOUT" | harness_version_from)  (probe: $VPROBE)"
   else
     # The executable exists and could not answer `--version`. Not a refusal to launch — the
     # doctrine's deterministic set is presence, not behaviour — but not a clean preflight
     # either, so it exits non-zero and says which of the two happened.
     # shellcheck disable=SC2016  # the backticks are prose, not a command substitution
-    printf 'PRESENT BUT DID NOT ANSWER `%s --version`:\n' "$EXECUTABLE"
+    printf 'PRESENT BUT ANSWERED NEITHER `%s --version` NOR `%s version`:\n' "$EXECUTABLE" "$EXECUTABLE"
     printf '%s\n' "$VOUT" | sed 's/^/    /'
     printf '  the route resolves and the executable exists; its version probe failed, so\n'
     printf '  this preflight is INCOMPLETE. Launching is still possible.\n'
@@ -642,20 +652,53 @@ SBXENV
   does not know which sbx agent image serves it. Add it to hive-launch's agent map, or
   run this harness on a non-sandboxed route." ;;
     esac
-    echo "  sandbox: creating $SANDBOX (agent $SBX_AGENT)"
+    # --- which credential actually pays for this route ---------------------------------
+    # sbx ships its agent templates wired for API billing: the claude template writes
+    # `apiKeyHelper` into the sandbox's settings.json and sets SBX_CRED_ANTHROPIC_MODE=apikey,
+    # and its host-side proxy then rewrites the Authorization header with a stored API key.
+    # That is exactly right for a route whose billing_market is `api` — the key never enters
+    # the VM — and exactly WRONG for a subscription route, because it works: the session
+    # runs, answers, and bills the API account while the catalog row (and the spine fact
+    # this launcher emits) says `subscription`. Measured on Beastie 2026-08-24: with the
+    # template untouched, Claude Code warns "ANTHROPIC_API_KEY or another auth source is set
+    # and takes precedence over your claude.ai login" and answers anyway.
+    #
+    # So the credential posture is keyed on the catalog's OWN field rather than guessed. It
+    # is the same class of defect PR #55 guarded against in the other direction: a harness
+    # that quietly satisfies itself from the wrong account produces a record that is false
+    # about what paid for the work.
+    SBX_CREATE_ENV=()
+    if [ "$R_MARKET" = "subscription" ]; then
+      case "$SBX_AGENT" in
+        claude) SBX_CREATE_ENV+=(--env SBX_CRED_ANTHROPIC_MODE=off) ;;
+        codex)  SBX_CREATE_ENV+=(--env SBX_CRED_OPENAI_MODE=off) ;;
+      esac
+    fi
+    echo "  sandbox: creating $SANDBOX (agent $SBX_AGENT, billing $R_MARKET)"
     sbx create --quiet --name "$SANDBOX" --env-file "$SBX_ENV_FILE" \
+      ${SBX_CREATE_ENV+"${SBX_CREATE_ENV[@]}"} \
       "$SBX_AGENT" "$TASK_ROOT" "$WS_HUB" "$OMEGA_DIR:ro" \
       || die "sbx create failed for '$SANDBOX'; nothing was emitted and the clones are at $TASK_ROOT."
 
-    # Provider credentials the sandbox cannot obtain for itself. sbx's own credential proxy
-    # injects API-provider tokens, but a Claude SUBSCRIPTION is OAuth and is not injected —
-    # copying the host's credential file is what the probe found makes it work (2026-08-24).
-    # Absent, the sandbox still comes up and the harness asks for a login in the window,
-    # which is a visible failure rather than a silent one, so this warns instead of dying.
-    if [ -f "$HOME/.claude/.credentials.json" ] && [ "$SBX_AGENT" = "claude" ]; then
+    # A subscription is OAuth, and the proxy does not carry it: the credential file is copied
+    # in, and the template's `apiKeyHelper` is removed because it takes PRECEDENCE over the
+    # copied login. Removing it is the half that actually changes which account pays —
+    # copying the credentials alone leaves the session on the API key, silently.
+    if [ "$R_MARKET" = "subscription" ] && [ "$SBX_AGENT" = "claude" ]; then
+      [ -f "$HOME/.claude/.credentials.json" ] \
+        || die "route '$ROUTE_NAME' bills a subscription, and there is no
+  $HOME/.claude/.credentials.json to hand the sandbox. Log in on the host first — launching
+  would run this worker on whatever credential the sandbox proxy supplies, and bill an
+  account the spine fact does not name."
       sbx cp "$HOME/.claude/.credentials.json" "$SANDBOX:/home/agent/.claude/.credentials.json" \
         >/dev/null 2>&1 \
-        || echo "  sandbox: WARNING could not copy Claude credentials; the harness will ask to log in" >&2
+        || die "could not copy the Claude subscription credential into '$SANDBOX'."
+      # shellcheck disable=SC2016  # the inner script is for the sandbox's shell, not this one
+      sbx exec "$SANDBOX" bash -lc \
+        'f=~/.claude/settings.json; [ -f "$f" ] || exit 0; jq "del(.apiKeyHelper)" "$f" > "$f.tmp" && mv "$f.tmp" "$f"' \
+        || die "could not clear the sandbox's apiKeyHelper in '$SANDBOX'. Leaving it would run
+  this subscription route on the proxy's API key."
+      echo "  sandbox: subscription credential installed (proxy injection off, apiKeyHelper cleared)"
     fi
 
     # The governed CLI, installed INSIDE the VM from the read-only canonical checkout. The
