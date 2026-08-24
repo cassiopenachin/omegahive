@@ -717,14 +717,25 @@ if [ "$EXECUTABLE" = "sbx" ]; then
   # exists to catch — and the next attempt then saw that VM as "existing" and skipped the
   # credential setup entirely, while the ordinary launch could not be retried either because
   # its clones were already there (cross-harness review, 2026-08-24).
-  SBX_SUBSCRIPTION_CLAUDE=""
-  if [ "$R_MARKET" = "subscription" ] && [ "$SBX_AGENT" = "claude" ]; then
-    SBX_SUBSCRIPTION_CLAUDE=1
-    [ -f "$HOME/.claude/.credentials.json" ] \
-      || die "route '$ROUTE_NAME' bills a subscription, and there is no
+  # The operator's Claude subscription credential goes into EVERY claude sandbox, not only into
+  # the sandboxes of subscription routes — because the worker is not the only thing in there
+  # that talks to a model. An OpenRouter worker's independent review runs on Opus, from inside
+  # the same VM, and that reviewer needs the operator's login. What the route's billing_market
+  # decides is whether the credential is REQUIRED (a subscription route cannot run without it)
+  # or merely available (an api-billed worker uses its provider; its reviewer uses this).
+  SBX_CLAUDE_CRED=""
+  if [ "$SBX_AGENT" = "claude" ]; then
+    if [ -f "$HOME/.claude/.credentials.json" ]; then
+      SBX_CLAUDE_CRED=1
+    elif [ "$R_MARKET" = "subscription" ]; then
+      die "route '$ROUTE_NAME' bills a subscription, and there is no
   $HOME/.claude/.credentials.json to hand the sandbox. Log in on the host first — launching
   would run this worker on whatever credential the sandbox proxy supplies, and bill an
   account the spine fact does not name. Nothing was created or emitted."
+    else
+      echo "  sandbox: WARNING no host Claude credential, so a review invoked inside the VM" >&2
+      echo "           on the subscription will have no login to use." >&2
+    fi
   fi
 
   if sbx ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qxF "$SANDBOX"; then
@@ -737,7 +748,12 @@ if [ "$EXECUTABLE" = "sbx" ]; then
     # The environment file, not the command line: a DSN carries a password, and an argument
     # is visible in `ps` to every process on the host for as long as the create runs.
     SBX_ENV_FILE="$TASK_ROOT/.sandbox-env"
-    ( umask 077; cat > "$SBX_ENV_FILE" <<SBXENV
+    # The redirection wraps the WHOLE group, not just the heredoc. With `cat > file` alone,
+    # everything appended after it went to this script's stdout instead — which printed a
+    # provider key to the operator's terminal and left the sandbox without it (2026-08-24).
+    ( umask 077
+      {
+        cat <<SBXENV
 OMEGAHIVE_GATEWAY_DATABASE_URL=$GW_DSN_VM
 OMEGAHIVE_DATABASE_URL=$GW_DSN_VM
 HIVE_CLI_CMD=omegahive
@@ -746,6 +762,18 @@ GIT_AUTHOR_EMAIL=$WORKER@hive.local
 GIT_COMMITTER_NAME=$WORKER
 GIT_COMMITTER_EMAIL=$WORKER@hive.local
 SBXENV
+      # The route's own `inherit_env` names, resolved from the launching environment into the
+      # same 0600 file. A host route's names reach the harness through the tmux window; a
+      # sandboxed one's have to reach it through the VM's environment, and this is the one
+      # place a value can travel without appearing on a command line that `ps` can read.
+      # `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` are how an OpenRouter route points Claude
+      # Code at its provider. Authority credential names were refused at the route read.
+      while IFS= read -r n; do
+        [ -n "$n" ] || continue
+        [ -n "${!n+set}" ] || continue
+        printf '%s=%s\n' "$n" "${!n}"
+      done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?')
+      } > "$SBX_ENV_FILE"
     )
 
     # --- which credential actually pays for this route ---------------------------------
@@ -764,7 +792,11 @@ SBXENV
     # that quietly satisfies itself from the wrong account produces a record that is false
     # about what paid for the work.
     SBX_CREATE_ENV=()
-    if [ "$R_MARKET" = "subscription" ] && [ "$SBX_AGENT" = "claude" ]; then
+    # Injection off for EVERY claude sandbox. The proxy substituting a stored Anthropic API key
+    # is what made a mis-billed run silent rather than loud, and there is no route here whose
+    # Claude traffic should be paid for that way: a subscription worker uses the copied login,
+    # and an OpenRouter worker's traffic never goes to Anthropic at all.
+    if [ "$SBX_AGENT" = "claude" ]; then
       SBX_CREATE_ENV+=(--env SBX_CRED_ANTHROPIC_MODE=off)
     fi
     echo "  sandbox: creating $SANDBOX (agent $SBX_AGENT, billing $R_MARKET)"
@@ -785,7 +817,7 @@ SBXENV
   # defect in a second place: a sandbox that already existed could run with no OAuth credential,
   # or on the proxy's API key, while the `execution.route_approved` this launcher emits said
   # `subscription` (cross-harness review, 2026-08-24).
-  if [ -n "$SBX_SUBSCRIPTION_CLAUDE" ]; then
+  if [ -n "$SBX_CLAUDE_CRED" ]; then
     sbx cp "$HOME/.claude/.credentials.json" "$SANDBOX:/home/agent/.claude/.credentials.json" \
       >/dev/null 2>&1 \
       || die "could not copy the Claude subscription credential into '$SANDBOX'."
@@ -816,6 +848,26 @@ SBXENV
   sbx policy allow network --sandbox "$SANDBOX" "$SPINE_ADDR" >/dev/null 2>&1 \
     || die "could not allow '$SPINE_ADDR' for sandbox '$SANDBOX'; its worker would have no
   write path to the spine."
+
+  # And the provider endpoint the route points its harness at, for the same reason and by the
+  # same rule: sbx egress is default-deny, and an agent template's allowlist covers the
+  # provider IT expects, not the one a route redirected the harness to. A route that names an
+  # endpoint in `inherit_env` gets exactly that host opened for its own sandbox — measured
+  # 2026-08-24, where an OpenRouter worker in a claude sandbox got
+  # `403 Blocked by network policy: domain openrouter.ai:443`.
+  while IFS= read -r v; do
+    case "$v" in
+      https://*|http://*) : ;;
+      *) continue ;;
+    esac
+    host="${v#*://}"; host="${host%%/*}"
+    [ -n "$host" ] || continue
+    sbx policy allow network --sandbox "$SANDBOX" "$host" >/dev/null 2>&1 \
+      || die "could not allow the provider endpoint '$host' for sandbox '$SANDBOX'; the
+  harness would be refused by the sandbox's egress policy on its first call."
+    echo "  sandbox: provider endpoint allowed ($host)"
+  done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?' | while IFS= read -r n; do
+             [ -n "${!n+set}" ] && printf '%s\n' "${!n}"; done)
 
   # `pgrep -x socat`, matching the EXECUTABLE name and not the command line: `pgrep -f` on the
   # forwarder's own argv matches the very shell that is asking, so the guard reported a running
