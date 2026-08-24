@@ -1037,9 +1037,17 @@ fi
 # session, kickoff never delivered), which on 2026-07-27 took WORKER.md plus the
 # launch output to reconstruct by hand. The launcher prints that reconstruction
 # itself, and externalizes the kickoff so it does not live only in a terminal.
+# The kickoff, externalized before the window is opened rather than only when opening one
+# fails. It is what the worker was actually told, and on 2026-07-27 a half-launch had to be
+# reconstructed by hand because that text lived only in a terminal. Writing it every time also
+# gives anyone — an operator reading back, a test asserting the contract — one artifact to read
+# instead of a screen to scrape.
+KICKOFF_FILE="$TASK_ROOT/kickoff.txt"
+printf '%s' "$KICKOFF" > "$KICKOFF_FILE" 2>/dev/null || KICKOFF_FILE=""
+[ -z "$KICKOFF_FILE" ] || echo "  kickoff: $KICKOFF_FILE"
+
 half_launch_recovery() {  # half_launch_recovery <what-failed>
-  local kf="$TASK_ROOT/kickoff.txt"
-  printf '%s' "$KICKOFF" > "$kf" 2>/dev/null || kf=""
+  local kf="$KICKOFF_FILE"
   {
     echo
     echo "hive-launch: HALF-LAUNCHED — $1 failed AFTER the board was seeded."
