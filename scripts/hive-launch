@@ -167,6 +167,7 @@ CODE_ROOT="$TASK_ROOT/$PROJECT"           # code clone named after the project (
 RUN_DIR="$TASK_ROOT/run"                  # run-local interface: wrappers + one dir per turn
 WRAPPER="$RUN_DIR/emit"                   # the worker's own emit command, inside its root
 BRIDGE="$RUN_DIR/hive"                    # the worker's sync/publish command
+CLI_SRC="$TASK_ROOT/cli"                  # sandboxed routes only: tracked-files-only clone the in-VM CLI is built from
 CODE_BRANCH="worker/$TASK"                # the publication branch, fixed by the plan
 
 # --- what the WORKER is told to type, as against where the files live -----------------
@@ -597,12 +598,16 @@ echo "  bridge: $BRIDGE  (sync workspace | publish workspace | publish code)"
 #                     needs the workspace clone, the code clone and the interface.
 #   $WS_HUB      rw   the local workspace hub, so `../run/hive publish workspace` pushes
 #                     from inside the VM instead of failing at the boundary.
-#   $OMEGA_DIR   ro   the canonical checkout, read-only, as the SOURCE of the CLI — see
-#                     the install below. Nothing in the VM writes to it.
+#
+# And nothing else — in particular NOT the canonical checkout. It was mounted read-only for a
+# while as the source of the `uv tool install` below, which also handed the VM every untracked
+# file sitting in the operator's working tree: `.env` and its DSNs among them. The CLI now
+# installs from a CLONE inside the task root, and a clone carries tracked files only. That was
+# never a decision, it was a side effect of needing an install source.
 #
 # The worker can therefore write its own clones and the hub, and nothing else on the host:
-# not another repo, not the operator's home, not the canonical checkout it installed from.
-# That is its legitimate write set, and it is a strictly smaller one than a bare route has.
+# not another repo, not the operator's home, not the checkout its CLI was built from. That is
+# its legitimate write set, and it is a strictly smaller one than a bare route has.
 if [ "$EXECUTABLE" = "sbx" ]; then
   # Everything a sandbox needs is resolved for BOTH paths — a fresh create and a re-attach —
   # because a re-attach that assumed the last create's work is still standing was shipping
@@ -728,7 +733,7 @@ SBXENV
     echo "  sandbox: creating $SANDBOX (agent $SBX_AGENT, billing $R_MARKET)"
     sbx create --quiet --name "$SANDBOX" --env-file "$SBX_ENV_FILE" \
       ${SBX_CREATE_ENV+"${SBX_CREATE_ENV[@]}"} \
-      "$SBX_AGENT" "$TASK_ROOT" "$WS_HUB" "$OMEGA_DIR:ro" \
+      "$SBX_AGENT" "$TASK_ROOT" "$WS_HUB" \
       || die "sbx create failed for '$SANDBOX'; nothing was emitted and the clones are at $TASK_ROOT."
 
     # A subscription is OAuth, and the proxy does not carry it: the credential file is copied
@@ -765,12 +770,16 @@ SBXENV
     || die "could not allow '$SPINE_ADDR' for sandbox '$SANDBOX'; its worker would have no
   write path to the spine."
 
+  # `pgrep -x socat`, matching the EXECUTABLE name and not the command line: `pgrep -f` on the
+  # forwarder's own argv matches the very shell that is asking, so the guard reported a running
+  # tunnel to itself and never started one.
+  #
   # `nohup … &` inside a login shell, wrapped in a restart loop: socat exits when a tunnelled
   # connection is torn down abnormally, and one dead forwarder would silently end the
   # worker's ability to emit for the rest of the task. A sandbox STOP still takes it, which
   # is why the probe below runs on every launch rather than only on a fresh create.
   sbx exec -d "$SANDBOX" bash -lc \
-    "pgrep -f 'socat TCP-LISTEN:5432' >/dev/null || nohup sh -c 'while true; do socat TCP-LISTEN:5432,fork,reuseaddr,bind=127.0.0.1 PROXY:gateway.docker.internal:$SPINE_HOST:$SPINE_PORT,proxyport=3128; sleep 1; done' >/tmp/spine-tunnel.log 2>&1 &" \
+    "pgrep -x socat >/dev/null || nohup sh -c 'while true; do socat TCP-LISTEN:5432,fork,reuseaddr,bind=127.0.0.1 PROXY:gateway.docker.internal:$SPINE_HOST:$SPINE_PORT,proxyport=3128; sleep 1; done' >/tmp/spine-tunnel.log 2>&1 &" \
     >/dev/null 2>&1 || true
   # The return code above is deliberately ignored: `sbx exec -d` reports failure while
   # having launched (omp-arm runner, 2026-08-24). What is trusted is the tunnel ANSWERING,
@@ -799,18 +808,27 @@ sys.exit(1)
   docker-compose.yml's OMEGAHIVE_PG_TAILNET_BIND. Nothing was emitted."
   fi
 
-  # The governed CLI, installed INSIDE the VM from the read-only canonical checkout. The
-  # host's compose path is not available in there (the image has no podman), and a venv
-  # built on the host would carry the host's interpreter path. `uv tool install` builds
-  # from a read-only source and takes about fifteen seconds, so the launcher pays it once
-  # here rather than letting the worker's first emit pay it.
+  # The governed CLI, installed INSIDE the VM. The host's compose path is not available in
+  # there (the image has no podman), and a venv built on the host would carry the host's
+  # interpreter path, so it is built in the VM from source — about fifteen seconds, paid here
+  # rather than by the worker's first emit.
   #
-  # It installs a SNAPSHOT, deliberately: a worker doing omegahive work cannot break the
-  # CLI it emits through by editing source mid-task. Checked rather than assumed on every
-  # launch, for the same reason the tunnel is: a re-attached sandbox may predate it.
+  # The source is a CLONE of the canonical checkout, made inside the task root. A clone
+  # carries tracked files only, which is the point: the operator's own working tree holds
+  # untracked deployment files, and mounting it to get an install source handed all of them
+  # to the worker. It also installs a SNAPSHOT, so a worker doing omegahive work cannot break
+  # the CLI it emits through by editing source mid-task.
+  #
+  # Checked rather than assumed on every launch, for the same reason the tunnel is: a
+  # re-attached sandbox may predate either.
   if ! sbx exec "$SANDBOX" bash -lc 'command -v omegahive >/dev/null' >/dev/null 2>&1; then
-    echo "  sandbox: installing the governed CLI (uv tool install, from $OMEGA_DIR read-only)"
-    sbx exec "$SANDBOX" bash -lc "uv tool install --quiet '$OMEGA_DIR'" \
+    if [ ! -d "$CLI_SRC" ]; then
+      git clone --quiet "$OMEGA_DIR" "$CLI_SRC" \
+        || die "could not clone the CLI source from $OMEGA_DIR to $CLI_SRC; the worker would
+  have no emit path."
+    fi
+    echo "  sandbox: installing the governed CLI (uv tool install, from $CLI_SRC)"
+    sbx exec "$SANDBOX" bash -lc "uv tool install --quiet '$CLI_SRC'" \
       || die "could not install the omegahive CLI inside '$SANDBOX'. The worker would have no
   emit path. Inspect it with:  sbx exec $SANDBOX bash -l"
   fi
