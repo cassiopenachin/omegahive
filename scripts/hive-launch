@@ -1,13 +1,27 @@
 #!/usr/bin/env bash
-# hive-launch <order-file> [--route <name>] [--worker <id>] [--check]
+# hive-launch <order-file> [--route <name>] [--model <id>] [--worker <id>] [--check]
 #
 # The launch bookend of the Phase 1 loop (OPERATIONS.md): one judgment — the
 # order is ready — collapsed to one command. It resolves a route from the
 # operator-owned deployment catalog, provisions the worker ONE task root, issues the
 # worker its run-local interface (an emit wrapper, an instrument wrapper and a
 # workspace-sync/publication wrapper), seeds the board (task.created +
-# worker.registered + task.assigned), and opens a named tmux pane running the worker's
-# FIRST TURN.
+# worker.registered + task.assigned), and opens a named tmux window running an
+# INTERACTIVE harness session with the kickoff delivered as its first message.
+#
+# The window is the point. A worker sits in a session the operator can type into; it
+# invokes its own cross-harness review, repairs its own CI and posts its own result from
+# inside that one session, and `hive-answer` nudges it with `send-keys`. Batch turns and
+# native resume left the production path on 2026-08-23 (`2026-08-23-direction.md` §3)
+# after they cost a wave: the machinery could describe a launch it could not perform.
+#
+# A route is a SHAPE — harness, sandbox, credential pool — and `runner.args` is the
+# argv template that shape needs, with `{{model}}`, `{{sandbox}}`, `{{task_root}}`,
+# `{{ws_root}}`, `{{code_root}}`, `{{ws_hub}}` and `{{canon}}` substituted here. That is
+# what lets one row describe `claude` on the host, `codex` under its own landlock
+# profile, and `sbx run` against a microVM, without this script knowing what any of them
+# are. The one thing it does know is `sbx`, and only to CREATE the sandbox a route names
+# before re-attaching to it — see the sandbox section below for why that cannot be argv.
 #
 # THE CATALOG IS THE AUTHORIZATION (runner-trust doctrine, 2026-08-20). With no
 # `--route`, the catalog's one `defaults.worker` route carries the launch; `--route`
@@ -42,22 +56,26 @@ source "$SCRIPT_DIR/hive-common.sh"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: hive-launch <order-file> [--route <name>] [--worker <id>] [--check] [--anyway]
-       hive-launch --turn <turn-dir>          (internal: the tmux pane's command)
+usage: hive-launch <order-file> [--route <name>] [--model <id>] [--worker <id>]
+                                [--check] [--anyway]
 
   --route <name>     run this launch on the named catalog route instead of the
                      catalog's defaults.worker. An operator override for ONE launch:
                      it creates and amends nothing.
-  --check            no-model preflight: resolve the route, adapter, argv, redacted
-                     environment and installed harness version, print them, and STOP.
-                     No clone, no spine write, no token spent.
-  --turn <dir>       run ONE prepared harness turn and record how it ended. This is
-                     what the tmux window executes, for the first turn and for every
-                     resume; `hive-answer` prepares later turn directories and opens
-                     the window on this same command. It is a mode of this script
-                     rather than a second installed command on purpose: the retired
-                     mediator it replaces was a separately installed binary, and a
-                     launch whose pane command was missing simply vanished (2026-08-21).
+  --model <id>       run this launch on a model other than the route's default. The
+                     route is the SHAPE (harness, sandbox, credential pool); the model
+                     is a value inside it, and the one that is recorded is the one that
+                     actually ran. For an OpenRouter route the provider pin travels
+                     inside this string: <model>@preset/<slug>.
+  --check            no-model preflight: resolve the route, print the identity, the
+                     argv, the inherited environment NAMES and the installed harness
+                     version, and STOP. No clone, no spine write, no token spent.
+  --anyway           override the review-WIP throttle and the predictions gate.
+
+hive-launch --turn <turn-dir> still runs one prepared batch turn, and nothing on this
+path writes one any more: the production lifecycle is an interactive window
+(2026-08-23-direction.md §3). It is retained, unused, for a turn directory an earlier
+build left behind; its deletion is a later cleanup, not this script's business.
 USAGE
   exit 2
 }
@@ -75,11 +93,13 @@ ORDER_ARG=""
 WORKER=""
 ANYWAY=""
 ROUTE_ARG=""
+MODEL_ARG=""
 CHECK_ONLY=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --worker) shift; [ $# -gt 0 ] || usage; WORKER="$1" ;;
     --route) shift; [ $# -gt 0 ] || usage; ROUTE_ARG="$1" ;;
+    --model) shift; [ $# -gt 0 ] || usage; MODEL_ARG="$1" ;;
     --check) CHECK_ONLY=1 ;;
     --anyway) ANYWAY=1 ;;
     -h|--help) usage ;;
@@ -147,6 +167,7 @@ CODE_ROOT="$TASK_ROOT/$PROJECT"           # code clone named after the project (
 RUN_DIR="$TASK_ROOT/run"                  # run-local interface: wrappers + one dir per turn
 WRAPPER="$RUN_DIR/emit"                   # the worker's own emit command, inside its root
 BRIDGE="$RUN_DIR/hive"                    # the worker's sync/publish command
+CLI_SRC="$TASK_ROOT/cli"                  # sandboxed routes only: tracked-files-only clone the in-VM CLI is built from
 CODE_BRANCH="worker/$TASK"                # the publication branch, fixed by the plan
 
 # --- what the WORKER is told to type, as against where the files live -----------------
@@ -209,117 +230,191 @@ writes 'hive emit --run-id \$RUN --role worker --actor \$WORKER ...', run '$WORK
 with only the remaining flags (--type/--task/--payload). Never use raw hive emit.
 Commit your code work on branch $CODE_BRANCH; the publication commands take the branch,
 the destination and the credentials from the launch and accept none from you.
-You run as a series of TURNS. This message starts turn 001; your process is expected to
-end, and the operator continues you in a new turn of the same session when an answer lands
-or when a turn ended without a result. Externalize your state to committed files before
-every exit, and follow WORKER.md's Finishing sequence in order — review the complete local
-diff before opening the PR, then wait out the first CI run, repair within your order's
-budget, integrate main once, and only then post the result.
+You run as ONE interactive session and you carry the task to its end inside it: follow
+WORKER.md's Finishing sequence in order — invoke your order's independent review against
+the complete local diff before opening the PR, then wait out the first CI run, repair
+within your order's budget, integrate main once, and only then post the result. Do not
+stop at the PR. The operator is watching this window and may type into it; an answer to a
+question you asked arrives that way, and re-reads your order at HEAD after a sync.
+Externalize your state to committed files as you go, so that a session lost to a crash
+loses no decision.
 Container tooling on this host is '$HIVE_COMPOSE' (resolved at launch; WORKER.md's
 setup block writes it as 'podman compose' because deployment #0 runs podman —
 use the command named here). Begin by reading both files, then emit
 task.accepted and start.
 KICK
 
-# --- resolve the route ---------------------------------------------------------------
-# Everything the resolver needs travels on stdin as ONE request. The catalog goes by
-# exact bytes (base64) because its digest is taken over those bytes and a JSON-string
-# round trip that normalized a line ending would silently change it. Nothing here reads
-# the catalog's contents: the CLI validates and digests them.
+# --- resolve the route, in this shell ------------------------------------------------
+# The catalog is read HERE, with jq, and not through `hive harness-resolve`. That resolver
+# builds a BATCH argv through the adapter layer, and the production path is an interactive
+# window again (2026-08-23-direction.md §3) — so a launch that went through it would resolve
+# a command nobody runs. What a window actually needs is the "few fields" form: which
+# harness, which model, which executable, which static arguments, which environment names.
+# The catalog already carries every one of them, so reading it is a handful of jq calls
+# rather than a second resolver that could disagree with the first.
+#
+# What still refuses is the cheap deterministic set the runner-trust doctrine leaves in
+# place: an absent or malformed catalog, an unknown, ambiguous or disabled route, an absent
+# default, a missing executable. Nothing here probes, qualifies or asks a model anything.
+command -v jq >/dev/null 2>&1 \
+  || die "jq is required to read the route catalog"
 [ -f "$HIVE_ROUTE_CATALOG" ] || die "route catalog not found: $HIVE_ROUTE_CATALOG
   This is a DEPLOYMENT fact and is never committed to a project. Create it from
   schemas/route-catalog.example.json, or point HIVE_ROUTE_CATALOG at this host's copy.
   A v1 catalog is migrated in place by 'hive-routes migrate', which backs it up first."
 
-# A pinned session id, derived from the pinned order and this attempt, so the turn runner
-# knows where the harness will write its own transcript. Derived rather than random:
-# re-checking the same launch must describe the same execution, not a new one. Only the
-# INITIAL turn pins one; every later turn resumes the native session this one creates.
-SESSION_UUID=$(printf '%s' "$REL@$SHA|$TASK|work|1" | sha256_hex \
-  | sed -E 's/^(.{8})(.{4})(.{3})(.{3})(.{12}).*/\1-\2-4\3-a\4-\5/')
+CATALOG_VERSION=$(jq -r '.schema_version // empty' "$HIVE_ROUTE_CATALOG" 2>/dev/null) \
+  || die "route catalog is not readable JSON: $HIVE_ROUTE_CATALOG"
+[ "$CATALOG_VERSION" = "2" ] \
+  || die "route catalog $HIVE_ROUTE_CATALOG is schema_version '${CATALOG_VERSION:-unknown}'; this build reads v2.
+  Migrate it — the original is backed up first:  hive-routes migrate"
 
-REQ=$(jq -n \
-  --arg c "$(b64 "$HIVE_ROUTE_CATALOG")" \
-  --arg route "$ROUTE_ARG" \
-  --arg task "$TASK" --arg order "$REL@$SHA" \
-  --arg kick "$KICKOFF" \
-  --arg troot "$TASK_ROOT" --arg cwd "$WS_ROOT" --arg code "$CODE_ROOT" --arg run "$RUN_DIR" \
-  --arg sid "$SESSION_UUID" \
-  --argjson env "$(jq -n 'env')" \
-  '{catalog_b64:$c, route:(if $route == "" then null else $route end),
-    task:$task, order_ref:$order, purpose:"work", attempt:1,
-    kickoff:$kick, task_root:$troot, cwd:$cwd, code_root:$code, run_dir:$run,
-    session_id:$sid, env:$env,
-    turn_kind:"initial", turn_id:"001", resume_session_id:""}')
-
-# Resolved ONCE and reused. `--check` and the real launch call the same resolver with the
-# same request, so a preflight cannot describe a launch that would not happen.
-#
-# The refusal is JSON on STDOUT — `{"ok": false, "code": ..., "message": ...}` — which a
-# plain command substitution captures and then throws away. That is how this line came to
-# say "see the code above" when there was no code above: the one thing an operator needs,
-# the stable code and the message naming what IS known, went into a variable and then into
-# the bin. Stderr is kept in its own file rather than merged, because compose writes its
-# provider banner there on SUCCESS and merging it would corrupt the plan — the same trap
-# `board_json_strict` documents one file over.
-resolve_err=$(mktemp "${TMPDIR:-/tmp}/hive-resolve.XXXXXX") \
-  || die "cannot create a temporary file for resolver diagnostics"
-if ! PLAN_JSON=$(printf '%s' "$REQ" | hive harness-resolve 2>"$resolve_err"); then
-  REFUSAL_CODE=$(printf '%s' "$PLAN_JSON" | jq -r 'select(.ok == false) | .code // empty' 2>/dev/null || true)
-  if [ -n "$REFUSAL_CODE" ]; then
-    REFUSAL_MSG=$(printf '%s' "$PLAN_JSON" | jq -r '.message // empty')
-    rm -f "$resolve_err"
-    die "route refused [$REFUSAL_CODE]
-
-  $REFUSAL_MSG
-
-  Nothing was created, nothing was cloned, and nothing was emitted."
-  fi
-  cat "$resolve_err" >&2
-  printf '%s\n' "$PLAN_JSON" >&2
-  rm -f "$resolve_err"
-  die "the route could not be resolved (output above); nothing was created or emitted."
+# The route NAME: the operator's --route for this one launch, or the catalog's single
+# worker default. An override writes nothing and amends nothing.
+if [ -n "$ROUTE_ARG" ]; then
+  ROUTE_NAME="$ROUTE_ARG"
+  ROUTE_SOURCE="override"
+else
+  ROUTE_NAME=$(jq -r '.defaults.worker // empty' "$HIVE_ROUTE_CATALOG")
+  ROUTE_SOURCE="default"
+  [ -n "$ROUTE_NAME" ] || die "the catalog names no 'defaults.worker' route, so an ordinary
+  launch has nothing to run on. Name one in $HIVE_ROUTE_CATALOG, or pass --route <name>."
 fi
-rm -f "$resolve_err"
-EXEC_ID=$(printf '%s' "$PLAN_JSON" | jq -r '.execution_id')
-ROUTE_NAME=$(printf '%s' "$PLAN_JSON" | jq -r '.identity.route')
-EXECUTABLE=$(printf '%s' "$PLAN_JSON" | jq -r '.executable')
+
+N_MATCH=$(jq --arg n "$ROUTE_NAME" '[.routes[]? | select(.name == $n)] | length' "$HIVE_ROUTE_CATALOG")
+case "$N_MATCH" in
+  0) die "no route named '$ROUTE_NAME' in $HIVE_ROUTE_CATALOG.
+  Enabled routes: $(jq -r '[.routes[]? | select(.enabled != false) | .name] | join(", ")' "$HIVE_ROUTE_CATALOG")
+  See them all with:  hive-routes" ;;
+  1) : ;;
+  *) die "route name '$ROUTE_NAME' appears $N_MATCH times in $HIVE_ROUTE_CATALOG.
+  A duplicate name makes 'which runner' unanswerable; fix the catalog." ;;
+esac
+ROUTE=$(jq -c --arg n "$ROUTE_NAME" 'first(.routes[] | select(.name == $n))' "$HIVE_ROUTE_CATALOG")
+[ "$(printf '%s' "$ROUTE" | jq -r '.enabled != false')" = "true" ] \
+  || die "route '$ROUTE_NAME' is present but disabled (enabled: false).
+  Disabling a route IS revocation under the runner-trust doctrine; re-enable it in
+  $HIVE_ROUTE_CATALOG, or launch on another route with --route <name>."
+
+route_field() { printf '%s' "$ROUTE" | jq -r --arg k "$1" '.[$k] // ""'; }
+R_HARNESS=$(route_field harness)
+R_MODEL=$(route_field model)
+R_ADAPTER=$(route_field adapter)
+R_VENDOR=$(route_field model_vendor)
+R_PROVIDER=$(route_field provider)
+R_MARKET=$(route_field billing_market)
+R_POOL=$(route_field credential_pool)
+EXECUTABLE=$(printf '%s' "$ROUTE" | jq -r '.runner.executable // ""')
+# Every field the spine's execution identity requires, checked before anything is created.
+# The identity block may not be synthesized or defaulted (events/types.py), so a route
+# missing one of them cannot carry a launch at all.
+for f in harness:"$R_HARNESS" model:"$R_MODEL" adapter:"$R_ADAPTER" model_vendor:"$R_VENDOR" \
+         provider:"$R_PROVIDER" billing_market:"$R_MARKET" credential_pool:"$R_POOL" \
+         runner.executable:"$EXECUTABLE"; do
+  [ -n "${f#*:}" ] || die "route '$ROUTE_NAME' has no '${f%%:*}'. Every execution-identity field is
+  required and none may be defaulted — fix the route in $HIVE_ROUTE_CATALOG."
+done
+
+# --- what a route may NOT ask the worker's window to inherit ----------------------------
+# `inherit_env` names variables the harness needs from the launching environment, and the
+# launcher forwards them into the window. Hive's OWN authority credentials are not among the
+# things an operator may hand a worker: the database and gateway DSNs are capability over the
+# durable record, and a worker holding one does not need to defeat the gateway's role policy
+# because it can write underneath it.
+#
+# `harness/records.py` refuses these at catalog load, and that used to be the only place a
+# catalog was ever read. It is not any more — this script parses the catalog itself — so the
+# rule is enforced here as well, in the same shape (the named set plus the DSN pattern that
+# catches the next one someone adds to the deployment).
+while IFS= read -r n; do
+  [ -n "$n" ] || continue
+  case "$n" in
+    OMEGAHIVE_*DATABASE_URL|POSTGRES_USER|POSTGRES_PASSWORD|POSTGRES_DB|TELEGRAM_BOT_TOKEN)
+      die "route '$ROUTE_NAME' asks to inherit '$n', which is one of Hive's own authority
+  credentials. A provider credential is deployment posture an operator may hand a worker;
+  Hive's authority over its own record is not inheritable under any configuration.
+  Remove it from runner.inherit_env in $HIVE_ROUTE_CATALOG." ;;
+  esac
+done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?')
+
+# --- the model: the route's default, or this launch's -----------------------------------
+# A route is a SHAPE — harness, sandbox, credential pool — and the model is a value inside
+# it. `--model` overrides the route's default for one launch and is what lands in the
+# execution identity, because recording the catalog's default while having run something
+# else is the one thing that would make that identity a lie.
+#
+# There is no allowlist of model ids, deliberately: a wrong one is refused by the harness on
+# startup, before a token is spent, which is cheaper and more honest than a gate this
+# catalog's schema cannot hold. For a provider-pinned OpenRouter route the pin travels
+# INSIDE the model string as an operator-owned preset (`<model>@preset/<slug>`), so this one
+# value carries both which model and which silicon serves it (taskbench/openrouter.py).
+MODEL="${MODEL_ARG:-$R_MODEL}"
+
+# The name a sandboxed route re-attaches by, derived from the task so that a recovery
+# re-attaches the worker's own VM instead of creating a second one. Underscores are legal in
+# a task id and illegal in a sandbox name, so they map to hyphens.
+SANDBOX="hive-${TASK//_/-}"
+
+# --- the argv, with this launch's own values substituted --------------------------------
+# `runner.args` is a template: the route says WHERE the model, the task root, the clones, the
+# hub and the sandbox name go, and this substitutes them. Substitution happens on the ARRAY,
+# element by element, so a value carrying a space or a quote stays exactly one argument and
+# there is no string a shell re-parses.
+subst() {  # subst <template>  -> prints the expanded value
+  local s="$1"
+  s="${s//\{\{model\}\}/$MODEL}"
+  s="${s//\{\{sandbox\}\}/$SANDBOX}"
+  s="${s//\{\{task_root\}\}/$TASK_ROOT}"
+  s="${s//\{\{ws_root\}\}/$WS_ROOT}"
+  s="${s//\{\{code_root\}\}/$CODE_ROOT}"
+  s="${s//\{\{ws_hub\}\}/$WS_HUB}"
+  s="${s//\{\{canon\}\}/$OMEGA_DIR}"
+  printf '%s' "$s"
+}
+ARGV=("$EXECUTABLE")
+while IFS= read -r -d '' a; do ARGV+=("$(subst "$a")"); done \
+  < <(printf '%s' "$ROUTE" | jq -j '.runner.args[]? | . + "\u0000"')
+# The kickoff is NOT in this vector. The pane command appends it as one argument expanded
+# from HIVE_KICKOFF, so no prompt is ever quoted onto a line a shell parses.
 
 if [ -n "$CHECK_ONLY" ]; then
   echo "hive-launch --check: task=$TASK worker=$WORKER project=$PROJECT (no side effects)"
-  echo "  order:   $REL@$SHA"
-  # Same shape as the launch path above, so the two read alike: on a refusal, name the
-  # stable code rather than leaving the operator to read it out of a JSON blob.
-  if ! CHECK_OUT=$(printf '%s' "$REQ" | hive harness-resolve --check 2>&1); then
-    printf '%s\n' "$CHECK_OUT" | sed 's/^/  /' >&2
-    CHECK_CODE=$(printf '%s' "$CHECK_OUT" | jq -r 'select(.ok == false) | .code // empty' 2>/dev/null || true)
-    [ -z "$CHECK_CODE" ] || echo "hive-launch --check: route refused [$CHECK_CODE]" >&2
-    exit 1
-  fi
-  printf '%s\n' "$CHECK_OUT" | sed 's/^/  /'
-  # The same host-side check the real launch makes, on the same helper, BEFORE the
-  # version probe below. A preflight that printed "NOT INSTALLED" and then exited 0
-  # would tell a human the truth and an automation the opposite, and the whole point of
-  # one resolver is that the two paths cannot disagree.
+  echo "  order:      $REL@$SHA"
+  echo "  route:      $ROUTE_NAME  ($ROUTE_SOURCE)"
+  echo "  identity:   $MODEL @ $R_HARNESS ($R_VENDOR/$R_PROVIDER, $R_MARKET, pool $R_POOL, adapter $R_ADAPTER)"
+  [ -z "$MODEL_ARG" ] || echo "              model overridden for this launch (route default: $R_MODEL)"
+  echo "  task root:  $TASK_ROOT"
+  printf '  argv:       '
+  # The kickoff is shown as its SHAPE, never its text: a preflight that printed the prompt
+  # would put the order's contents into every scrollback and paste that ever ran one.
+  printf '%q ' "${ARGV[@]}"
+  printf '<kickoff: %d chars>\n' "${#KICKOFF}"
+  ENV_NAMES=$(printf '%s' "$ROUTE" | jq -r '[.runner.inherit_env[]?] | join(" ")')
+  echo "  env names:  ${ENV_NAMES:-<none>}   (NAMES only; no value is read or printed here)"
+  [ "$EXECUTABLE" != "sbx" ] || echo "  sandbox:    $SANDBOX  (created at launch if absent, re-attached if present)"
+  # The same host-side check the real launch makes, on the same helper, BEFORE the version
+  # probe. A preflight that printed "NOT INSTALLED" and then exited 0 would tell a human the
+  # truth and an automation the opposite.
   require_executable "$EXECUTABLE" "$ROUTE_NAME"
-  # The version probe is the one thing the resolver cannot answer: it must ask the
-  # installed harness. Doing it here keeps `--check` a complete preflight — an operator
-  # learns that a harness is missing from the check, not from a dead pane.
-  # It is exec'd as a VECTOR, like every other command this launcher runs: joining it on
-  # spaces and handing it to `sh -c` is the one place the adapter contract's "no argv
-  # element is ever concatenated into a string a shell will parse" was violated.
-  VARGV=()
-  while IFS= read -r -d '' tok; do VARGV+=("$tok"); done \
-    < <(printf '%s' "$PLAN_JSON" | jq -j '.version_argv[] | . + "\u0000"')
-  printf '  harness: '
-  if VOUT=$("${VARGV[@]}" 2>&1); then
-    printf '%s\n' "$(printf '%s\n' "$VOUT" | harness_version_from)  (probe: ${VARGV[*]})"
+  printf '  harness:    '
+  # Two spellings, because they are both real: `claude --version` and `codex --version`
+  # answer a flag, `sbx version` answers a SUBCOMMAND and rejects the flag outright. A
+  # preflight that knew only one would call a healthy deployment incomplete — which it did,
+  # for every sandboxed route, the first time this was run.
+  VPROBE=""
+  if VOUT=$("$EXECUTABLE" --version 2>&1); then
+    VPROBE="$EXECUTABLE --version"
+  elif VOUT=$("$EXECUTABLE" version 2>&1); then
+    VPROBE="$EXECUTABLE version"
+  fi
+  if [ -n "$VPROBE" ]; then
+    printf '%s\n' "$(printf '%s\n' "$VOUT" | harness_version_from)  (probe: $VPROBE)"
   else
-    # The executable exists (checked above) and could not answer `--version`. That is not
-    # a refusal to launch — the doctrine's cheap deterministic set is presence, not
-    # behaviour — but it is not a clean preflight either, so it exits non-zero and says
-    # which of the two happened.
-    printf 'PRESENT BUT DID NOT ANSWER `%s`:\n' "${VARGV[*]}"
+    # The executable exists and could not answer `--version`. Not a refusal to launch — the
+    # doctrine's deterministic set is presence, not behaviour — but not a clean preflight
+    # either, so it exits non-zero and says which of the two happened.
+    # shellcheck disable=SC2016  # the backticks are prose, not a command substitution
+    printf 'PRESENT BUT ANSWERED NEITHER `%s --version` NOR `%s version`:\n' "$EXECUTABLE" "$EXECUTABLE"
     printf '%s\n' "$VOUT" | sed 's/^/    /'
     printf '  the route resolves and the executable exists; its version probe failed, so\n'
     printf '  this preflight is INCOMPLETE. Launching is still possible.\n'
@@ -507,22 +602,361 @@ issue_worker_interface "$RUN_DIR" "$WS_ROOT" "$CODE_ROOT" "$CODE_BRANCH" "$RUN" 
 echo "  emit:   $WRAPPER"
 echo "  bridge: $BRIDGE  (sync workspace | publish workspace | publish code)"
 
-# The first turn. Everything the runner needs is written HERE, once, so the pane's
-# command is a directory and nothing else: no kickoff on a command line, no interpolated
-# worker command, no environment carrying a prompt. `hive-answer` writes turn 002 the
-# same way, from the same resolver, which is what makes a resume the same lifecycle
-# rather than a second one.
-TURN_DIR="$RUN_DIR/turns/001"
-mkdir -p "$TURN_DIR"
-printf '%s\n' "$PLAN_JSON" | jq \
-  --arg run "$RUN" --arg worker "$WORKER" \
-  --arg ws_hub "$WS_HUB" --arg code_repo "$CODE_REPO" --arg branch "$CODE_BRANCH" \
-  --arg project "$PROJECT" --arg order "$REL@$SHA" --arg title "$TITLE" \
-  '. + {run_id: $run, worker: $worker,
-        bridge: {ws_hub: $ws_hub, code_repo: $code_repo, code_branch: $branch,
-                 project: $project, order_ref: $order, title: $title}}' \
-  > "$TURN_DIR/turn.json"
-echo "  execution: $EXEC_ID  (turn 001, state $TURN_DIR)"
+# --- the sandbox, when the route names one ---------------------------------------------
+# The one harness-specific thing this launcher knows, and only because it CANNOT be argv:
+# a microVM has to exist, with the right host paths mounted, the right environment baked in
+# and a working path to the spine, before anything can attach to it. `sbx create` takes the
+# first two as flags at creation time and `sbx run --name` re-attaches to whatever was
+# created — so the route's argv can express the attach and not the create.
+#
+# What is mounted, and why exactly this set:
+#
+#   $TASK_ROOT   rw   the worker's own root — both clones and its run-local interface.
+#                     sbx mounts a host path at the SAME absolute path inside the VM, so
+#                     `../run/emit` and `../run/hive` resolve in there byte-identically to
+#                     the host, and one operator-approved runner rule still covers every
+#                     task. This is the whole reason the task root is mounted rather than
+#                     `--clone`d: a clone would put ONE git repo in the VM, and a worker
+#                     needs the workspace clone, the code clone and the interface.
+#   $WS_HUB      rw   the local workspace hub, so `../run/hive publish workspace` pushes
+#                     from inside the VM instead of failing at the boundary.
+#
+# And nothing else — in particular NOT the canonical checkout. It was mounted read-only for a
+# while as the source of the `uv tool install` below, which also handed the VM every untracked
+# file sitting in the operator's working tree: `.env` and its DSNs among them. The CLI now
+# installs from a CLONE inside the task root, and a clone carries tracked files only. That was
+# never a decision, it was a side effect of needing an install source.
+#
+# The worker can therefore write its own clones and the hub, and nothing else on the host:
+# not another repo, not the operator's home, not the checkout its CLI was built from. That is
+# its legitimate write set, and it is a strictly smaller one than a bare route has.
+if [ "$EXECUTABLE" = "sbx" ]; then
+  # Everything a sandbox needs is resolved for BOTH paths — a fresh create and a re-attach —
+  # because a re-attach that assumed the last create's work is still standing was shipping
+  # workers with no write path: the forwarder below is a process, a sandbox stop takes it,
+  # and the recovery case is exactly a sandbox that stopped. The create path died loudly for
+  # that condition while the recovery path printed success (review finding, 2026-08-24).
+
+  # The launching environment wins over the deployment file, which is what lets a launch
+  # be pointed at a SCRATCH spine without editing the deployment's secrets — the same seam
+  # OMEGAHIVE_COMPOSE and HIVE_CLI_CMD are. With nothing set, the deployment's own
+  # gateway.env is the source, so an ordinary launch needs no environment at all.
+  if [ -n "${OMEGAHIVE_GATEWAY_DATABASE_URL:-}" ]; then
+    GW_DSN="$OMEGAHIVE_GATEWAY_DATABASE_URL"
+  else
+    GW_ENV="${OMEGAHIVE_SECRETS_DIR:-$HOME/.config/omegahive/secrets}/gateway.env"
+    [ -f "$GW_ENV" ] || die "a sandboxed route needs the gateway DSN to hand the worker's CLI,
+  and there is no $GW_ENV on this host. The worker would have no write path to the spine."
+    GW_DSN=$(grep -m1 '^OMEGAHIVE_GATEWAY_DATABASE_URL=' "$GW_ENV" | cut -d= -f2-)
+    [ -n "$GW_DSN" ] || die "$GW_ENV names no OMEGAHIVE_GATEWAY_DATABASE_URL."
+  fi
+
+  # --- how the DSN reaches the spine from inside a microVM ---------------------------
+  # Not by naming the host. A sandbox egresses through an HTTP/TLS proxy that terminates
+  # raw TCP and drops it, and refuses `host.docker.internal` outright — measured on
+  # Beastie 2026-08-24, where a direct connect appears to SUCCEED and the listener on the
+  # far side never sees it. Anything that trusts a TCP handshake here will report a
+  # working spine and have none.
+  #
+  # What the proxy does honour is HTTP CONNECT to an allowlisted host, and that carries an
+  # arbitrary byte stream. So the worker's CLI connects to 127.0.0.1 inside the VM (which
+  # the sandbox's own NO_PROXY excludes), and a forwarder started below tunnels that to the
+  # spine's ROUTABLE address through the proxy. The DSN the worker holds names neither the
+  # tunnel nor the proxy; it is an ordinary loopback DSN.
+  SPINE_ADDR="${HIVE_SANDBOX_SPINE:-}"
+  if [ -z "$SPINE_ADDR" ] && command -v tailscale >/dev/null 2>&1; then
+    SPINE_TS=$(tailscale ip -4 2>/dev/null | head -1)
+    [ -z "$SPINE_TS" ] || SPINE_ADDR="$SPINE_TS:5433"
+  fi
+  [ -n "$SPINE_ADDR" ] || die "a sandboxed route needs an address for the spine that is ROUTABLE
+  from inside the microVM; a host-local one is refused by the sandbox's egress proxy.
+  Publish Postgres on this host's tailnet address (docker-compose.yml's
+  OMEGAHIVE_PG_TAILNET_BIND, host port 5433) and name it here:
+    export HIVE_SANDBOX_SPINE=<host-or-ip>:5433
+  Nothing was created, cloned or emitted."
+  SPINE_HOST="${SPINE_ADDR%:*}"
+  SPINE_PORT="${SPINE_ADDR##*:}"
+  # The DSN's own host:port is replaced wholesale rather than patched per spelling: the
+  # deployment writes `@postgres:5432`, an operator override may write `@localhost:5432`,
+  # and inside the VM both are the same loopback tunnel.
+  GW_DSN_VM=$(printf '%s' "$GW_DSN" | sed -E 's#@[^@/]+:[0-9]+/#@127.0.0.1:5432/#')
+  case "$GW_DSN_VM" in
+    *@127.0.0.1:5432/*) : ;;
+    *) die "could not rewrite the gateway DSN for the sandbox: it does not carry a
+  host:port before its database name. Refusing to hand a worker a DSN this build cannot
+  reason about." ;;
+  esac
+
+  # Which sbx agent image serves this harness. Named here rather than dug out of the
+  # argv by position: an agent read off `args[N]` would break the day a route gained a
+  # flag, and it would break silently, by creating a sandbox for the wrong harness.
+  case "$R_HARNESS" in
+    claude-code|claude) SBX_AGENT=claude ;;
+    codex)              SBX_AGENT=codex ;;
+    omp|shell)          SBX_AGENT=shell ;;
+    *) die "route '$ROUTE_NAME' runs under sbx with harness '$R_HARNESS', and this build
+  does not know which sbx agent image serves it. Add it to hive-launch's agent map, or
+  run this harness on a non-sandboxed route." ;;
+  esac
+
+  # A Codex SUBSCRIPTION cannot be carried into a sandbox at all: sbx's credential proxy
+  # forces API-key billing for OpenAI and its interception, not its allowlist, is the wall
+  # (probe, 2026-08-24). Turning injection off leaves the harness with nothing, so such a
+  # route would build a VM, open a tunnel, seed the board and open a window onto a session
+  # that cannot authenticate. Refuse it here, before any of that, and name the two routes
+  # that do work.
+  if [ "$SBX_AGENT" = "codex" ] && [ "$R_MARKET" = "subscription" ]; then
+    die "route '$ROUTE_NAME' runs Codex inside sbx on a subscription, which cannot work:
+  the sandbox's credential proxy forces API-key billing for OpenAI and blocks ChatGPT
+  auth passthrough (probe, 2026-08-24). Run Codex in its own landlock sandbox instead
+  (a non-sbx route), or make this an api-billed route. Nothing was created or emitted."
+  fi
+
+  # The one credential prerequisite, checked BEFORE anything is built. It used to be checked
+  # after `sbx create`, which left a named half-configured VM behind on the one failure it
+  # exists to catch — and the next attempt then saw that VM as "existing" and skipped the
+  # credential setup entirely, while the ordinary launch could not be retried either because
+  # its clones were already there (cross-harness review, 2026-08-24).
+  # The operator's Claude subscription credential goes into EVERY claude sandbox, not only into
+  # the sandboxes of subscription routes — because the worker is not the only thing in there
+  # that talks to a model. An OpenRouter worker's independent review runs on Opus, from inside
+  # the same VM, and that reviewer needs the operator's login. What the route's billing_market
+  # decides is whether the credential is REQUIRED (a subscription route cannot run without it)
+  # or merely available (an api-billed worker uses its provider; its reviewer uses this).
+  SBX_CLAUDE_CRED=""
+  if [ "$SBX_AGENT" = "claude" ]; then
+    if [ -f "$HOME/.claude/.credentials.json" ]; then
+      SBX_CLAUDE_CRED=1
+    elif [ "$R_MARKET" = "subscription" ]; then
+      die "route '$ROUTE_NAME' bills a subscription, and there is no
+  $HOME/.claude/.credentials.json to hand the sandbox. Log in on the host first — launching
+  would run this worker on whatever credential the sandbox proxy supplies, and bill an
+  account the spine fact does not name. Nothing was created or emitted."
+    else
+      echo "  sandbox: WARNING no host Claude credential, so a review invoked inside the VM" >&2
+      echo "           on the subscription will have no login to use." >&2
+    fi
+  fi
+
+  if sbx ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qxF "$SANDBOX"; then
+    # Re-launching onto an existing sandbox is recovery, not a fresh seat, and it is the
+    # operator's call rather than this script's: a sandbox that already exists holds a
+    # previous worker's state. Its tunnel and CLI are re-established below, because a VM
+    # with the right name is not the same thing as a working worker.
+    echo "  sandbox: $SANDBOX (exists — re-attaching; 'sbx rm $SANDBOX' first for a clean VM)"
+  else
+    # The environment file, not the command line: a DSN carries a password, and an argument
+    # is visible in `ps` to every process on the host for as long as the create runs.
+    SBX_ENV_FILE="$TASK_ROOT/.sandbox-env"
+    # The redirection wraps the WHOLE group, not just the heredoc. With `cat > file` alone,
+    # everything appended after it went to this script's stdout instead — which printed a
+    # provider key to the operator's terminal and left the sandbox without it (2026-08-24).
+    ( umask 077
+      {
+        cat <<SBXENV
+OMEGAHIVE_GATEWAY_DATABASE_URL=$GW_DSN_VM
+OMEGAHIVE_DATABASE_URL=$GW_DSN_VM
+HIVE_CLI_CMD=omegahive
+GIT_AUTHOR_NAME=$WORKER
+GIT_AUTHOR_EMAIL=$WORKER@hive.local
+GIT_COMMITTER_NAME=$WORKER
+GIT_COMMITTER_EMAIL=$WORKER@hive.local
+SBXENV
+      # The route's own `inherit_env` names, resolved from the launching environment into the
+      # same 0600 file. A host route's names reach the harness through the tmux window; a
+      # sandboxed one's have to reach it through the VM's environment, and this is the one
+      # place a value can travel without appearing on a command line that `ps` can read.
+      # `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` are how an OpenRouter route points Claude
+      # Code at its provider. Authority credential names were refused at the route read.
+      while IFS= read -r n; do
+        [ -n "$n" ] || continue
+        [ -n "${!n+set}" ] || continue
+        printf '%s=%s\n' "$n" "${!n}"
+      done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?')
+      } > "$SBX_ENV_FILE"
+    )
+
+    # --- which credential actually pays for this route ---------------------------------
+    # sbx ships its agent templates wired for API billing: the claude template writes
+    # `apiKeyHelper` into the sandbox's settings.json and sets SBX_CRED_ANTHROPIC_MODE=apikey,
+    # and its host-side proxy then rewrites the Authorization header with a stored API key.
+    # That is exactly right for a route whose billing_market is `api` — the key never enters
+    # the VM — and exactly WRONG for a subscription route, because it works: the session
+    # runs, answers, and bills the API account while the catalog row (and the spine fact
+    # this launcher emits) says `subscription`. Measured on Beastie 2026-08-24: with the
+    # template untouched, Claude Code warns "ANTHROPIC_API_KEY or another auth source is set
+    # and takes precedence over your claude.ai login" and answers anyway.
+    #
+    # So the credential posture is keyed on the catalog's OWN field rather than guessed. It
+    # is the same class of defect PR #55 guarded against in the other direction: a harness
+    # that quietly satisfies itself from the wrong account produces a record that is false
+    # about what paid for the work.
+    SBX_CREATE_ENV=()
+    # Injection off for EVERY claude sandbox. The proxy substituting a stored Anthropic API key
+    # is what made a mis-billed run silent rather than loud, and there is no route here whose
+    # Claude traffic should be paid for that way: a subscription worker uses the copied login,
+    # and an OpenRouter worker's traffic never goes to Anthropic at all.
+    if [ "$SBX_AGENT" = "claude" ]; then
+      SBX_CREATE_ENV+=(--env SBX_CRED_ANTHROPIC_MODE=off)
+    fi
+    echo "  sandbox: creating $SANDBOX (agent $SBX_AGENT, billing $R_MARKET)"
+    sbx create --quiet --name "$SANDBOX" --env-file "$SBX_ENV_FILE" \
+      ${SBX_CREATE_ENV+"${SBX_CREATE_ENV[@]}"} \
+      "$SBX_AGENT" "$TASK_ROOT" "$WS_HUB" \
+      || die "sbx create failed for '$SANDBOX'; nothing was emitted and the clones are at $TASK_ROOT."
+
+  fi
+
+  # --- the subscription credential posture, on BOTH paths --------------------------------
+  # A subscription is OAuth, and the proxy does not carry it: the credential file is copied in,
+  # and the template's `apiKeyHelper` is removed because it takes PRECEDENCE over the copied
+  # login. Removing it is the half that actually changes which account pays — copying the
+  # credentials alone leaves the session on the API key, silently.
+  #
+  # Both steps run on a re-attach too, and are idempotent. Skipping them there was the same
+  # defect in a second place: a sandbox that already existed could run with no OAuth credential,
+  # or on the proxy's API key, while the `execution.route_approved` this launcher emits said
+  # `subscription` (cross-harness review, 2026-08-24).
+  if [ -n "$SBX_CLAUDE_CRED" ]; then
+    sbx cp "$HOME/.claude/.credentials.json" "$SANDBOX:/home/agent/.claude/.credentials.json" \
+      >/dev/null 2>&1 \
+      || die "could not copy the Claude subscription credential into '$SANDBOX'."
+    # shellcheck disable=SC2016  # the inner script is for the sandbox's shell, not this one
+    sbx exec "$SANDBOX" bash -lc \
+      'f=~/.claude/settings.json; [ -f "$f" ] || exit 0; jq "del(.apiKeyHelper)" "$f" > "$f.tmp" && mv "$f.tmp" "$f"' \
+      || die "could not clear the sandbox's apiKeyHelper in '$SANDBOX'. Leaving it would run
+  this subscription route on the proxy's API key."
+    # The one piece that CANNOT be re-applied after the fact: credential injection is baked at
+    # create time. So it is verified rather than assumed, and a sandbox whose posture does not
+    # match the route's billing is refused instead of quietly billing the other account.
+    SBX_CRED_MODE=$(sbx exec "$SANDBOX" printenv SBX_CRED_ANTHROPIC_MODE 2>/dev/null | tr -d '\r' || true)
+    [ "$SBX_CRED_MODE" = "off" ] || die "sandbox '$SANDBOX' has SBX_CRED_ANTHROPIC_MODE='${SBX_CRED_MODE:-unset}',
+  but route '$ROUTE_NAME' bills a subscription. Credential injection is fixed at create time,
+  so this VM would run the worker on the proxy's API key while the spine fact says
+  subscription. Remove it and launch again:  sbx rm $SANDBOX"
+    echo "  sandbox: subscription credential installed (proxy injection off, apiKeyHelper cleared)"
+  fi
+
+  # --- the spine tunnel, established on BOTH paths ---------------------------------------
+  # Two pieces, both scoped to THIS sandbox: an allow rule for exactly the spine's address,
+  # and a forwarder inside the VM that carries loopback:5432 to it over the proxy's CONNECT.
+  # Both are idempotent, which is what lets the re-attach path run them rather than assume
+  # them — the forwarder is a process, and a sandbox that stopped no longer has one.
+  #
+  # The allow rule is per-sandbox rather than global: every other sandbox on this host keeps
+  # its default deny, so authorizing one worker to reach the spine authorizes exactly one.
+  sbx policy allow network --sandbox "$SANDBOX" "$SPINE_ADDR" >/dev/null 2>&1 \
+    || die "could not allow '$SPINE_ADDR' for sandbox '$SANDBOX'; its worker would have no
+  write path to the spine."
+
+  # And the provider endpoint the route points its harness at, for the same reason and by the
+  # same rule: sbx egress is default-deny, and an agent template's allowlist covers the
+  # provider IT expects, not the one a route redirected the harness to. A route that names an
+  # endpoint in `inherit_env` gets exactly that host opened for its own sandbox — measured
+  # 2026-08-24, where an OpenRouter worker in a claude sandbox got
+  # `403 Blocked by network policy: domain openrouter.ai:443`.
+  while IFS= read -r v; do
+    case "$v" in
+      https://*|http://*) : ;;
+      *) continue ;;
+    esac
+    host="${v#*://}"; host="${host%%/*}"
+    [ -n "$host" ] || continue
+    sbx policy allow network --sandbox "$SANDBOX" "$host" >/dev/null 2>&1 \
+      || die "could not allow the provider endpoint '$host' for sandbox '$SANDBOX'; the
+  harness would be refused by the sandbox's egress policy on its first call."
+    echo "  sandbox: provider endpoint allowed ($host)"
+  done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?' | while IFS= read -r n; do
+             [ -n "${!n+set}" ] && printf '%s\n' "${!n}"; done)
+
+  # `pgrep -x socat`, matching the EXECUTABLE name and not the command line: `pgrep -f` on the
+  # forwarder's own argv matches the very shell that is asking, so the guard reported a running
+  # tunnel to itself and never started one.
+  #
+  # `nohup … &` inside a login shell, wrapped in a restart loop: socat exits when a tunnelled
+  # connection is torn down abnormally, and one dead forwarder would silently end the
+  # worker's ability to emit for the rest of the task. A sandbox STOP still takes it, which
+  # is why the probe below runs on every launch rather than only on a fresh create.
+  sbx exec -d "$SANDBOX" bash -lc \
+    "pgrep -x socat >/dev/null || nohup sh -c 'while true; do socat TCP-LISTEN:5432,fork,reuseaddr,bind=127.0.0.1 PROXY:gateway.docker.internal:$SPINE_HOST:$SPINE_PORT,proxyport=3128; sleep 1; done' >/tmp/spine-tunnel.log 2>&1 &" \
+    >/dev/null 2>&1 || true
+  # The return code above is deliberately ignored: `sbx exec -d` reports failure while
+  # having launched (omp-arm runner, 2026-08-24). What is trusted is the tunnel ANSWERING,
+  # which is checked here rather than assumed — a Postgres SSLRequest, whose reply proves
+  # the proxy tunnelled it AND that a real server is on the far side. A TCP handshake would
+  # prove neither, which is exactly how this seam was mis-measured the first time.
+  echo "  sandbox: opening the spine tunnel to $SPINE_ADDR"
+  if ! sbx exec "$SANDBOX" python3 -c "
+import socket, sys, time
+for attempt in range(20):
+    try:
+        s = socket.create_connection(('127.0.0.1', 5432), 2)
+        s.sendall((8).to_bytes(4, 'big') + (80877103).to_bytes(4, 'big'))
+        if s.recv(1) in (b'S', b'N'):
+            sys.exit(0)
+    except OSError:
+        pass
+    time.sleep(1)
+sys.exit(1)
+" >/dev/null 2>&1; then
+    die "the spine tunnel in '$SANDBOX' never answered. The worker would have no write path.
+  Check it by hand:
+    sbx exec $SANDBOX cat /tmp/spine-tunnel.log
+    sbx policy check network $SPINE_ADDR --sandbox $SANDBOX
+  The commonest cause is that Postgres is not published on $SPINE_ADDR — see
+  docker-compose.yml's OMEGAHIVE_PG_TAILNET_BIND. Nothing was emitted."
+  fi
+
+  # A route that supplies its own provider key gets that key PRE-APPROVED inside the VM.
+  # Claude Code asks "detected a custom API key in your environment — use it?" and defaults to
+  # No, which stops a launch dead on a prompt the operator must answer by hand for every task.
+  # The answer lives in `~/.claude.json` as the key's last 20 characters under
+  # `customApiKeyResponses.approved`, and the sandbox computes that from the key ALREADY in its
+  # own environment — so no fragment of the credential crosses the boundary on a command line.
+  if [ "$SBX_AGENT" = "claude" ]; then
+    # shellcheck disable=SC2016  # the inner script runs in the sandbox, against its own env
+    sbx exec "$SANDBOX" bash -lc 'python3 - <<PYEOF
+import json, os, pathlib
+key = os.environ.get("ANTHROPIC_API_KEY", "")
+if key:
+    p = pathlib.Path.home() / ".claude.json"
+    d = json.loads(p.read_text()) if p.exists() else {}
+    r = d.setdefault("customApiKeyResponses", {"approved": [], "rejected": []})
+    suffix = key[-20:]
+    if suffix not in r.setdefault("approved", []):
+        r["approved"].append(suffix)
+    if suffix in r.setdefault("rejected", []):
+        r["rejected"].remove(suffix)
+    p.write_text(json.dumps(d))
+PYEOF' >/dev/null 2>&1 \
+      || echo "  sandbox: WARNING could not pre-approve the provider key; the harness will ask" >&2
+  fi
+
+  # The governed CLI, installed INSIDE the VM. The host's compose path is not available in
+  # there (the image has no podman), and a venv built on the host would carry the host's
+  # interpreter path, so it is built in the VM from source — about fifteen seconds, paid here
+  # rather than by the worker's first emit.
+  #
+  # The source is a CLONE of the canonical checkout, made inside the task root. A clone
+  # carries tracked files only, which is the point: the operator's own working tree holds
+  # untracked deployment files, and mounting it to get an install source handed all of them
+  # to the worker. It also installs a SNAPSHOT, so a worker doing omegahive work cannot break
+  # the CLI it emits through by editing source mid-task.
+  #
+  # Checked rather than assumed on every launch, for the same reason the tunnel is: a
+  # re-attached sandbox may predate either.
+  if ! sbx exec "$SANDBOX" bash -lc 'command -v omegahive >/dev/null' >/dev/null 2>&1; then
+    if [ ! -d "$CLI_SRC" ]; then
+      git clone --quiet "$OMEGA_DIR" "$CLI_SRC" \
+        || die "could not clone the CLI source from $OMEGA_DIR to $CLI_SRC; the worker would
+  have no emit path."
+    fi
+    echo "  sandbox: installing the governed CLI (uv tool install, from $CLI_SRC)"
+    sbx exec "$SANDBOX" bash -lc "uv tool install --quiet '$CLI_SRC'" \
+      || die "could not install the omegahive CLI inside '$SANDBOX'. The worker would have no
+  emit path. Inspect it with:  sbx exec $SANDBOX bash -l"
+  fi
+fi
 
 assigned_payload=$(jq -cn --arg w "$WORKER" '{worker:$w}')
 registered_payload=$(jq -cn --arg w "$WORKER" '{worker_id:$w}')
@@ -533,19 +967,45 @@ registered_payload=$(jq -cn --arg w "$WORKER" '{worker_id:$w}')
 # to anyone — so that a task can never be found to have been worked without a recorded,
 # attributable decision about what would work it. It is emitted as `human`, by the
 # operator actor, because the launcher executes a signed intent and never signs one.
-# What is recorded, and what deliberately is not. The route, its provenance (operator
-# override or catalog default), the catalog digest, and a fingerprint of the resolved
-# NON-SECRET runner configuration. Not the argv, not an environment name's value, not a
-# posture verdict: the fingerprint answers "is this the same runner configuration as
-# last time", which a reader can check, and claims nothing about whether it is safe,
-# which nothing here can know.
-route_payload=$(printf '%s' "$PLAN_JSON" | jq -c \
-  '{execution_id, purpose, attempt, order_ref, catalog_digest, identity,
-    route_source, runner_fingerprint,
-    model_identity_evidence, usage_evidence, price_basis}')
+#
+# It is now built HERE rather than read out of a resolver plan, and it is the ONLY
+# execution fact this path emits. `execution.started` and `execution.finished` were
+# instrument observations made by the turn runner; with the turn runner off the production
+# path there is no instrument, and a launcher emitting them would be self-report wearing an
+# instrument's role. So they are not emitted, the executions projection shows no row for an
+# interactive launch, and that is the truthful record: nothing observed these runs. Cost
+# telemetry comes from the harness's own transcripts and the vendor dashboards
+# (2026-08-23-direction.md §3).
+#
+# Every value below is reproducible by hand from the catalog and the pinned order, on
+# purpose — the execution id and both digests use the same construction the Python resolver
+# used, so an id computed either way names the same execution.
+EXEC_ID="${TASK:0:100}-a1-$(printf '%s' "$REL@$SHA|$TASK|work|1" | sha256_hex | cut -c1-10)"
+CATALOG_DIGEST="sha256:$(sha256_hex < "$HIVE_ROUTE_CATALOG")"
+# Over the resolved NON-SECRET runner configuration — executable, static argument vector,
+# inherited environment NAMES — and over the catalog's template rather than this launch's
+# expansion of it, because the question it answers is "is this the same runner CONFIGURATION
+# as last time". Which model ran is a separate field, and it is recorded as such.
+RUNNER_FINGERPRINT="sha256:$(printf '%s' "$ROUTE" \
+  | jq -cS '{executable: .runner.executable, args: (.runner.args // []),
+             inherit_env: ((.runner.inherit_env // []) | sort)}' \
+  | tr -d '\n' | sha256_hex)"
+route_payload=$(jq -cn \
+  --arg eid "$EXEC_ID" --arg order "$REL@$SHA" \
+  --arg cd "$CATALOG_DIGEST" --arg rf "$RUNNER_FINGERPRINT" --arg src "$ROUTE_SOURCE" \
+  --arg route "$ROUTE_NAME" --arg vendor "$R_VENDOR" --arg provider "$R_PROVIDER" \
+  --arg model "$MODEL" --arg harness "$R_HARNESS" --arg market "$R_MARKET" \
+  --arg pool "$R_POOL" --arg adapter "$R_ADAPTER" \
+  '{execution_id: $eid, purpose: "work", attempt: 1, order_ref: $order,
+    catalog_digest: $cd, runner_fingerprint: $rf, route_source: $src,
+    identity: {route: $route, model_vendor: $vendor, provider: $provider, model: $model,
+               harness: $harness, billing_market: $market, credential_pool: $pool,
+               adapter: $adapter},
+    model_identity_evidence: "declared", usage_evidence: "unavailable"}')
 emit human "$OPERATOR_ACTOR" execution.route_approved --task "$TASK" \
   --payload "$route_payload" >/dev/null
-echo "  route:  $(printf '%s' "$PLAN_JSON" | jq -r '.identity.model + " @ " + .identity.harness + " (" + .identity.billing_market + ", pool " + .identity.credential_pool + ", " + .route_source + ")"')"
+echo "  route:  $MODEL @ $R_HARNESS ($R_MARKET, pool $R_POOL, $ROUTE_SOURCE)"
+echo "  exec:   $EXEC_ID"
 
 # Two seeding modes. Create: task.created -> ready, then register + assign.
 # Adopt: the task is ALREADY `ready` (unowned) from its seeded task.created —
@@ -577,9 +1037,17 @@ fi
 # session, kickoff never delivered), which on 2026-07-27 took WORKER.md plus the
 # launch output to reconstruct by hand. The launcher prints that reconstruction
 # itself, and externalizes the kickoff so it does not live only in a terminal.
+# The kickoff, externalized before the window is opened rather than only when opening one
+# fails. It is what the worker was actually told, and on 2026-07-27 a half-launch had to be
+# reconstructed by hand because that text lived only in a terminal. Writing it every time also
+# gives anyone — an operator reading back, a test asserting the contract — one artifact to read
+# instead of a screen to scrape.
+KICKOFF_FILE="$TASK_ROOT/kickoff.txt"
+printf '%s' "$KICKOFF" > "$KICKOFF_FILE" 2>/dev/null || KICKOFF_FILE=""
+[ -z "$KICKOFF_FILE" ] || echo "  kickoff: $KICKOFF_FILE"
+
 half_launch_recovery() {  # half_launch_recovery <what-failed>
-  local kf="$WORK_ROOT/$WORKER/kickoff.txt"
-  printf '%s' "$KICKOFF" > "$kf" 2>/dev/null || kf=""
+  local kf="$KICKOFF_FILE"
   {
     echo
     echo "hive-launch: HALF-LAUNCHED — $1 failed AFTER the board was seeded."
@@ -587,20 +1055,26 @@ half_launch_recovery() {  # half_launch_recovery <what-failed>
     echo "  Already done:  board seeded on run '$RUN' (task '$TASK' is owned by '$WORKER')"
     echo "                 clones   $WS_ROOT  +  $CODE_ROOT"
     echo "                 wrapper  $WRAPPER"
+    [ "$EXECUTABLE" != "sbx" ] || echo "                 sandbox  $SANDBOX"
     echo "  Still missing: the tmux window, and delivery of the kickoff below."
     echo
     echo "  Do NOT re-run hive-launch: the task is owned now, so it will refuse."
     echo "  Finish it by hand (WORKER.md section Launch) — either is complete:"
     echo
-    echo "  (a) retry just the pane:"
-    echo "        tmux new-window -a -t '$SESSION_T:{end}' -n '$TASK' -c '$WS_ROOT' \\"
-    echo "          '$SCRIPT_DIR/hive-launch --turn \"$TURN_DIR\"'"
-    echo "      If the session itself is gone ('can't find session'), create it instead:"
-    echo "        tmux new-session -d -s '$HIVE_TMUX_SESSION' -n '$TASK' -c '$WS_ROOT' \\"
-    echo "          '$SCRIPT_DIR/hive-launch --turn \"$TURN_DIR\"'"
-    echo "  (b) fallback if tmux itself is the problem — run the turn in any terminal:"
-    echo "        $SCRIPT_DIR/hive-launch --turn '$TURN_DIR'"
-    echo "      Prefer (a): the pane name is the task registry, and (b) leaves no pane."
+    if [ -n "$kf" ]; then
+      echo "  (a) retry just the window:"
+      echo "        tmux new-window -a -t '$SESSION_T:{end}' -n '$TASK' -c '$WS_ROOT' \\"
+      echo "          -e HIVE_KICKOFF=\"\$(cat '$kf')\" '$launch_cmd'"
+      echo "      If the session itself is gone ('can't find session'), create it instead:"
+      echo "        tmux new-session -d -s '$HIVE_TMUX_SESSION' -n '$TASK' -c '$WS_ROOT' \\"
+      echo "          -e HIVE_KICKOFF=\"\$(cat '$kf')\" '$launch_cmd'"
+    fi
+    echo "  (b) fallback if tmux itself is the problem — run the session in any terminal"
+    echo "      and paste the kickoff below as its first message:"
+    echo "        cd '$WS_ROOT' && $(printf '%q ' "${ARGV[@]}")"
+    if [ -n "$kf" ]; then
+      echo "      Prefer (a): the window name is the task registry, and (b) leaves no window."
+    fi
     echo
     echo "  If you would rather abandon this seat, recover per RUNBOOK 'Dead worker recovery'"
     echo "  (register a fresh worker id, then task.reassigned — never a relaunch)."
@@ -613,10 +1087,11 @@ half_launch_recovery() {  # half_launch_recovery <what-failed>
   exit 1
 }
 
-# Open the pane. The kickoff is one argv element inside plan.json, so no prompt, path
-# or model id is ever quoted onto a line a shell will parse, and nothing about the
-# worker's first message reaches the pane's environment. The pane NAME is the registry —
-# no registry file.
+# Open the window. The kickoff travels as an env var (HIVE_KICKOFF) and the command
+# expands it into ONE argument, so no multi-line prompt is ever quoted onto a command
+# line; every other element goes through `printf %q`, so no path, model id or route
+# argument is re-parsed by the shell that runs it either. The window NAME is the
+# registry — there is no registry file.
 #
 # Allocation is name-only: we supply the session and the window NAME, never an
 # index. `-t <name>` alone cannot express that — it is a target-WINDOW, so tmux
@@ -639,35 +1114,50 @@ half_launch_recovery() {  # half_launch_recovery <what-failed>
 #     current window) never renumbers an existing window. Verified on tmux 3.5a
 #     under the operator config (base-index 1, renumber-windows on) and under
 #     stock defaults (base-index 0, renumber off) — the result holds either way.
-# The pane runs ONE TURN of this script, not the harness directly — that is what makes
-# the execution facts instrument observations rather than self-report, and it is what
-# leaves an intelligible summary on the window after the process is gone. The turn runner
-# reads the turn dir, execs the adapter's argv VECTOR, retains and renders its structured
-# stream, and emits started/finished around it.
 #
-# Note what is not on this command line: no kickoff env var and no interpolated worker
-# command. The prompt is one argv element inside turn.json, so no prompt, path or model
-# id is ever quoted onto a line a shell will parse.
+# The window runs the HARNESS, directly, and there is no instrumented wrapper around it
+# any more. What that costs is stated plainly rather than hidden: nothing observes this
+# process, so no `execution.started` or `execution.finished` is emitted and the executions
+# projection stays empty for it. What it buys is the thing wave 4 could not deliver — a
+# session the operator can type into, that reviews its own diff, repairs its own CI and
+# posts its own result without a supervisor in the middle.
+launch_cmd="$(printf '%q ' "${ARGV[@]}")\"\$HIVE_KICKOFF\""
+
+# The route's `inherit_env` NAMES, resolved to values here and handed to the window.
 #
-# There is no second, uninstrumented branch. Every configured route goes through the
-# adapter and the turn runner — the legacy `HIVE_WORKER_CMD` path recorded no route, no
-# model identity and no consumption, and an easier way in that records nothing is how a
-# launch stops being a fact.
-launch_cmd="$SCRIPT_DIR/hive-launch --turn '$TURN_DIR'"
+# A tmux window inherits the tmux SERVER's environment, not the launcher's, so a route that
+# names `CODEX_HOME` or `CLAUDE_CONFIG_DIR` got neither: the field was carried in the catalog,
+# printed by the preflight, and then dropped. Forwarding it is what makes the field mean what
+# it says. A name that is UNSET in this environment is skipped rather than forwarded empty —
+# "not set" and "set to nothing" are different to every harness that reads one.
+#
+# Names only ever come from the catalog, and the route read above has already refused any that
+# names a Hive authority credential — see `require_inheritable_env`. That rule used to be
+# enforced by `harness/records.py` at catalog load; reading the catalog here in the shell moved
+# it off the path, and a comment claiming the old guarantee is not the guarantee (cross-harness
+# review, 2026-08-24).
+TMUX_ENV=(-e "HIVE_KICKOFF=$KICKOFF")
+while IFS= read -r n; do
+  [ -n "$n" ] || continue
+  [ -n "${!n+set}" ] || continue
+  TMUX_ENV+=(-e "$n=${!n}")
+done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?')
+
 if tmux has-session -t "$SESSION_T" 2>/dev/null; then
   PANE=$(tmux new-window -a -t "$SESSION_T:{end}" -n "$TASK" -c "$WS_ROOT" \
-    -P -F '#{session_name}:#{window_index}' "$launch_cmd") \
+    "${TMUX_ENV[@]}" -P -F '#{session_name}:#{window_index}' "$launch_cmd") \
     || half_launch_recovery "tmux new-window"
 else
   PANE=$(tmux new-session -d -s "$HIVE_TMUX_SESSION" -n "$TASK" -c "$WS_ROOT" \
-    -P -F '#{session_name}:#{window_index}' "$launch_cmd") \
+    "${TMUX_ENV[@]}" -P -F '#{session_name}:#{window_index}' "$launch_cmd") \
     || half_launch_recovery "tmux new-session"
 fi
-# A turn ENDS — that is the whole point of the lifecycle — and a window whose command
-# returns is closed by tmux, taking the turn's summary with it. `remain-on-exit` keeps
-# the pane and its last screen, which is what `hive-answer` then respawns into.
+# A session that exits would otherwise take its window — and the task registry entry with
+# it — leaving nothing on screen to read afterwards. `remain-on-exit` keeps the pane and
+# its last screen; `hive-answer` refuses to type into a dead one rather than nudging a
+# process that is gone.
 tmux_keep_window "$HIVE_TMUX_SESSION" "$TASK"
 # Report where it actually landed (-P), not where we assumed: the index is tmux's
 # to choose, so the launcher reads it back rather than predicting it.
-echo "  pane:   $PANE  window '$TASK'  (attach: tmux attach -t $HIVE_TMUX_SESSION)"
+echo "  window: $PANE  '$TASK'  (attach: tmux attach -t $HIVE_TMUX_SESSION)"
 echo "hive-launch: done."

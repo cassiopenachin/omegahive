@@ -29,6 +29,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -325,6 +326,31 @@ def set_child_env(dep, turn_dir=None, **pairs) -> None:
     doc = json.loads(path.read_text())
     doc["env"].update(pairs)
     path.write_text(json.dumps(doc))
+
+
+def make_resume_turn(dep, turn_id: str, *, session=None) -> Path:
+    """Build the next turn directory directly, for the runner tests in section 2.
+
+    Nothing prepares turns on the production path any more — a worker is one interactive
+    session — but `hive-launch --turn` is retained, and how the runner behaves on a second
+    turn is still worth asserting for as long as that code is in the tree.
+    """
+    prev = json.loads((dep["turn_dir"] / "turn.json").read_text())
+    turn_dir = dep["run_dir"] / "turns" / turn_id
+    catalog_doc = json.loads(dep["catalog"].read_text())
+    plan = resolve_turn(catalog_doc, {
+        "route": prev["identity"]["route"], "task": TASK, "order_ref": ORDER_REF,
+        "purpose": "work", "attempt": 1, "kickoff": "continue",
+        "task_root": prev["task_root"], "cwd": prev["cwd"], "code_root": prev["code_root"],
+        "run_dir": str(turn_dir),
+        "session_id": session or dep["session_id"], "env": prev["env"],
+        "turn_kind": "resume", "turn_id": turn_id,
+        "resume_session_id": session or dep["session_id"],
+    })
+    plan.update({"run_id": dep["run_id"], "worker": dep["worker"], "bridge": prev["bridge"]})
+    turn_dir.mkdir(parents=True, exist_ok=True)
+    (turn_dir / "turn.json").write_text(json.dumps(plan))
+    return turn_dir
 
 
 def out(dep) -> str:
@@ -683,27 +709,63 @@ def test_reclassifying_a_saved_turn_yields_byte_identical_evidence(deployment):
 
 
 # =====================================================================================
-# 3. Resume — hive-answer, both modes and every refusal it owes
+# 3. The nudge — hive-answer, both modes and every refusal it owes
+#
+# A worker is an interactive session that never ended (2026-08-23-direction.md §3), so
+# continuing one is a line of text typed into the window that already holds it. There is no
+# turn to prepare, no native session id to resolve and no adapter to re-check: what this
+# section asserts is that the answer lands durably FIRST, that the line reaches a live
+# harness, and that every state which is not a live harness is refused rather than typed at.
 # =====================================================================================
 
-def make_resume_turn(dep, turn_id: str, *, session=None) -> Path:
-    """Build the next turn directly, for tests that do not need hive-answer's checks."""
-    prev = json.loads((dep["turn_dir"] / "turn.json").read_text())
-    turn_dir = dep["run_dir"] / "turns" / turn_id
-    catalog_doc = json.loads(dep["catalog"].read_text())
-    plan = resolve_turn(catalog_doc, {
-        "route": prev["identity"]["route"], "task": TASK, "order_ref": ORDER_REF,
-        "purpose": "work", "attempt": 1, "kickoff": "continue",
-        "task_root": prev["task_root"], "cwd": prev["cwd"], "code_root": prev["code_root"],
-        "run_dir": str(turn_dir),
-        "session_id": session or dep["session_id"], "env": prev["env"],
-        "turn_kind": "resume", "turn_id": turn_id,
-        "resume_session_id": session or dep["session_id"],
-    })
-    plan.update({"run_id": dep["run_id"], "worker": dep["worker"], "bridge": prev["bridge"]})
-    turn_dir.mkdir(parents=True, exist_ok=True)
-    (turn_dir / "turn.json").write_text(json.dumps(plan))
-    return turn_dir
+FAKE_HARNESS = '''
+import pathlib, sys, time
+line = sys.stdin.readline()
+pathlib.Path(sys.argv[1]).write_text(line)
+# Scroll the tty's own echo of the typed line out of the composer region, the way a harness
+# redraws after accepting a message. Without this the caller cannot tell "submitted" from
+# "still sitting in the composer" — which is the distinction hive-answer checks.
+sys.stdout.write("\\n" * 60 + "received\\n")
+sys.stdout.flush()
+time.sleep(600)
+'''
+
+
+def fake_harness_window(dep, session: str, task: str = TASK) -> Path:
+    """Open a real tmux window running something that is NOT a shell and DOES consume a line.
+
+    `python3` rather than a shell script: `#{pane_current_command}` reports the interpreter,
+    so a bash one-liner would be indistinguishable from the abandoned-to-a-shell pane that
+    hive-answer must refuse — and the test would then assert the opposite of the contract.
+    """
+    script = dep["tmp"] / "fake-harness.py"
+    write(script, FAKE_HARNESS)
+    received = dep["tmp"] / f"received-{task}.txt"
+    subprocess.run(
+        ["tmux", "new-session", "-d", "-s", session, "-n", task,
+         "python3", str(script), str(received)],
+        check=True, env={**os.environ, **dep["tmux_env"], "TMUX": "", "TMUX_PANE": ""},
+    )
+    return received
+
+
+def emit_as(dep, role: str, actor: str, etype: str, *, task=None, payload=None) -> None:
+    """One raw event, for the board states this section needs to stand a task in."""
+    env = dict(os.environ)
+    env.update({"OMEGAHIVE_DATABASE_URL": dep["db"], "OMEGAHIVE_GATEWAY_DATABASE_URL": ""})
+    cmd = [*_omegahive_cmd(), "emit", "--run-id", dep["run_id"], "--role", role,
+           "--actor", actor, "--type", etype, "--payload", json.dumps(payload or {})]
+    if task:
+        cmd += ["--task", task]
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=str(REPO),
+                          timeout=120)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def tmux_kill(session: str, dep) -> None:
+    subprocess.run(["tmux", "kill-session", "-t", f"={session}"],
+                   env={**os.environ, **dep["tmux_env"], "TMUX": "", "TMUX_PANE": ""},
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def run_answer(dep, *args, timeout=300, env=None) -> subprocess.CompletedProcess:
@@ -712,6 +774,7 @@ def run_answer(dep, *args, timeout=300, env=None) -> subprocess.CompletedProcess
 
 
 def block_the_worker(dep) -> None:
+    """Put the task in the state an answer is FOR: owned, accepted, and blocked."""
     seed_board(dep)
     worker_script(dep, f'''
 "$EMIT" --type task.accepted --task {TASK} >/dev/null 2>&1
@@ -722,67 +785,48 @@ def block_the_worker(dep) -> None:
     assert finished(dep)["classification"] == "blocked"
 
 
-def test_hive_answer_appends_the_answer_and_prepares_a_resume_turn(deployment):
+@pytest.mark.skipif(not shutil.which("tmux"), reason="tmux is the transport under test")
+def test_the_answer_lands_and_the_nudge_reaches_a_live_harness(deployment):
     block_the_worker(deployment)
+    session = deployment["tmux_session"]
+    received = fake_harness_window(deployment, session)
+
     proc = run_answer(deployment, "use event time")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "appended to" in proc.stdout
-    assert "turn 002 prepared" in proc.stdout, proc.stdout
+    assert f"nudged {session}:{TASK}" in proc.stdout, proc.stdout
 
-    # The order really moved on the hub.
-    hub_order = subprocess.run(["git", "-C", str(deployment["hub"]), "show", f"main:{ORDER}"],
-                               capture_output=True, text=True)
-    assert "## Answers" in hub_order.stdout
-    assert "use event time" in hub_order.stdout
-
-    turn = json.loads((deployment["run_dir"] / "turns" / "002" / "turn.json").read_text())
-    assert turn["turn_kind"] == "resume"
-    assert turn["resume_session_id"] == deployment["session_id"]
-    prompt = turn["argv"][-1]
-    assert "sync workspace" in prompt
-    assert "task.unblocked ONLY if" in prompt, "the conditional-unblock rule, verbatim"
-    assert "re-read your order at HEAD" in prompt
-
-
-def test_a_resume_turn_wakes_the_same_native_session(deployment):
-    """Built here rather than through `hive-answer`, deliberately: `hive-answer` also
-    RUNS the turn it prepares, in the task's pane, and a test that then ran the same turn
-    directory itself would be racing the pane it just asked for — two runners writing one
-    turn's evidence. What `hive-answer` prepares is asserted in the tests above; what a
-    resume turn DOES is asserted here, on a turn nothing else is running."""
-    block_the_worker(deployment)
-    turn_dir = make_resume_turn(deployment, "002")
-    assert "--resume" in json.loads((turn_dir / "turn.json").read_text())["argv"]
-
-    set_child_env(deployment, turn_dir, HIVE_FAKE_BEHAVIOUR="success")
-    assert run_turn(deployment, turn_dir).returncode == 0
-    payload = finished(deployment)
-    assert payload["turn_kind"] == "resume"
-    assert payload["session_id"] == deployment["session_id"], (
-        "the fake echoes back the id it was resumed with, like both shipped harnesses"
+    # The line the WORKER received, read from the process that consumed it rather than from
+    # the screen: what matters is that it was submitted, not that it was drawn.
+    got = received.read_text()
+    assert "an answer landed in commit" in got
+    assert f"{RELATIVE_BRIDGE} sync workspace" in got, (
+        "the nudge must name the stable relative token, never a reconstructed absolute path"
     )
+    assert "task.unblocked ONLY if" in got
+    assert "\n" not in got.strip(), "one line: a newline mid-nudge submits half a sentence"
+
+    # And the answer is on the hub whatever the window did.
+    order = (deployment["ops_ws"] / ORDER).read_text()
+    assert "## Answers" in order and "use event time" in order
 
 
+@pytest.mark.skipif(not shutil.which("tmux"), reason="tmux is the transport under test")
 def test_resume_only_appends_no_answer_and_asks_for_no_unblock(deployment):
-    """Recovery from a process outcome, not an answer. A prompt that told a worker to
-    emit `task.unblocked` here would be asking it to consume an answer that does not
-    exist."""
-    seed_board(deployment)
-    set_child_env(deployment, HIVE_FAKE_BEHAVIOUR="budget")
-    assert run_turn(deployment).returncode == 0
-    assert finished(deployment)["classification"] == "budget"
-
+    block_the_worker(deployment)
     before = (deployment["ops_ws"] / ORDER).read_text()
+    received = fake_harness_window(deployment, deployment["tmux_session"])
+
     proc = run_answer(deployment, "--resume-only", "five hour window reset")
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "no answer appended" in proc.stdout
-    assert (deployment["ops_ws"] / ORDER).read_text() == before
 
-    turn = json.loads((deployment["run_dir"] / "turns" / "002" / "turn.json").read_text())
-    assert turn["resume_reason"] == "five hour window reset"
-    prompt = turn["argv"][-1]
-    assert "Do NOT emit task.unblocked" in prompt
-    assert "five hour window reset" in prompt
+    got = received.read_text()
+    assert "five hour window reset" in got, "the operator's reason is what explains the wake"
+    assert "do NOT emit task.unblocked" in got
+    assert f"{RELATIVE_BRIDGE} sync workspace" in got
+    assert (deployment["ops_ws"] / ORDER).read_text() == before, (
+        "--resume-only appends nothing; the order is untouched"
+    )
 
 
 def test_resume_only_without_a_reason_refuses(deployment):
@@ -792,236 +836,94 @@ def test_resume_only_without_a_reason_refuses(deployment):
     assert "needs a reason" in proc.stderr
 
 
-def test_a_resume_refuses_while_a_turn_is_still_live(deployment):
-    """Two live turns of one worker would race for the same native session, and their
-    execution facts would be indistinguishable afterwards."""
+@pytest.mark.skipif(not shutil.which("tmux"), reason="tmux is the transport under test")
+def test_a_dead_pane_is_refused_rather_than_typed_at(deployment):
+    """`remain-on-exit` keeps a window after its session exits, so a window's PRESENCE no
+    longer proves a live process — and a dead pane swallows send-keys silently."""
     block_the_worker(deployment)
-    live = make_resume_turn(deployment, "002")
-    (live / "claim").write_text(str(os.getpid()))
+    session = deployment["tmux_session"]
+    env = {**os.environ, **deployment["tmux_env"], "TMUX": "", "TMUX_PANE": ""}
+    # The window is opened on a LONG-LIVED command and killed afterwards, in that order. Open
+    # it on something that exits immediately and the window is already gone when the next
+    # command runs — the session dies with its last window — so this raced its own setup.
+    subprocess.run(["tmux", "new-session", "-d", "-s", session, "-n", TASK, "sleep", "600"],
+                   check=True, env=env)
+    # `-w`, exactly as `tmux_keep_window` in hive-common.sh does it: remain-on-exit is a
+    # WINDOW option, and older tmux refuses to infer that from the target.
+    subprocess.run(["tmux", "set-option", "-w", "-t", f"={session}:={TASK}",
+                    "remain-on-exit", "on"], check=True, env=env)
+    subprocess.run(["tmux", "respawn-pane", "-k", "-t", f"={session}:={TASK}", "true"],
+                   check=True, env=env)
+    for _ in range(20):
+        dead = subprocess.run(["tmux", "display-message", "-p", "-t", f"={session}:={TASK}",
+                               "#{pane_dead}"], capture_output=True, text=True, env=env)
+        if dead.stdout.strip() == "1":
+            break
+        time.sleep(0.5)
+    else:
+        pytest.fail("the pane never reached pane_dead=1; the fixture, not the tool, is wrong")
+
     proc = run_answer(deployment, "yes")
     assert proc.returncode != 0
-    assert "LIVE turn" in proc.stderr
-    assert "already on the hub" in proc.stderr, "the answer is not lost; say so"
+    assert "pane is dead" in proc.stderr, proc.stderr
+    assert "committed and pushed" in proc.stderr, "a failed nudge must say the answer is safe"
 
 
-def test_a_finished_turn_is_not_live_however_its_pid_file_reads(deployment):
-    """The pid-reuse window. A runner's pid is freed the instant it exits and the kernel
-    may hand the same number to something unrelated; a resume refused because a stranger
-    now holds that number is a refusal the operator cannot act on. The terminal fact
-    settles it: a turn that recorded one is over."""
+@pytest.mark.skipif(not shutil.which("tmux"), reason="tmux is the transport under test")
+def test_a_window_left_at_a_shell_is_refused_rather_than_executed(deployment):
+    """The dangerous case: the harness exited and left the pane at a prompt. Typing an answer
+    there hands operator prose to a shell as a command line."""
     block_the_worker(deployment)
-    assert (deployment["turn_dir"] / "finished.json").exists()
-    (deployment["turn_dir"] / "claim").write_text(str(os.getpid()))
+    session = deployment["tmux_session"]
+    env = {**os.environ, **deployment["tmux_env"], "TMUX": "", "TMUX_PANE": ""}
+    subprocess.run(["tmux", "new-session", "-d", "-s", session, "-n", TASK, "sh"],
+                   check=True, env=env)
+    time.sleep(1)
+
     proc = run_answer(deployment, "yes")
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "turn 002 prepared" in proc.stdout
+    assert proc.returncode != 0
+    assert "not a harness" in proc.stderr, proc.stderr
 
 
-def test_a_resume_refuses_from_a_terminal_board_state(deployment):
+def test_a_nudge_refuses_when_the_session_is_gone(deployment):
+    block_the_worker(deployment)
+    tmux_kill(deployment["tmux_session"], deployment)
+    proc = run_answer(deployment, "yes")
+    assert proc.returncode != 0
+    assert "no tmux session named" in proc.stderr
+    assert "Dead worker recovery" in proc.stderr, "the refusal must name the recovery path"
+
+
+@pytest.mark.skipif(not shutil.which("tmux"), reason="tmux is the transport under test")
+def test_a_nudge_refuses_when_the_task_has_no_window_of_its_own(deployment):
+    block_the_worker(deployment)
+    env = {**os.environ, **deployment["tmux_env"], "TMUX": "", "TMUX_PANE": ""}
+    subprocess.run(["tmux", "new-session", "-d", "-s", deployment["tmux_session"],
+                    "-n", "someone-else", "sleep", "600"],
+                   check=True, env=env)
+    proc = run_answer(deployment, "yes")
+    assert proc.returncode != 0
+    assert f"has no window named '{TASK}'" in proc.stderr, proc.stderr
+
+
+def test_a_nudge_refuses_from_a_terminal_board_state(deployment):
+    """Review and close are the operator's acts; waking a worker into a finished task would
+    produce work nobody asked for."""
     seed_board(deployment)
-    worker_script(deployment, f'''
-"$EMIT" --type task.accepted --task {TASK} >/dev/null 2>&1
-"$EMIT" --type task.result_posted --task {TASK} \\
-  --payload '{{"artifact_refs": [{{"ref": "r.md@{"a" * 40}", "quality": "ok"}}]}}' >/dev/null 2>&1
-''')
-    assert run_turn(deployment).returncode == 0
+    emit_as(deployment, "worker", deployment["worker"], "task.accepted", task=TASK)
+    emit_as(deployment, "worker", deployment["worker"], "task.result_posted", task=TASK,
+             payload={"artifact_refs": [{"ref": f"{ORDER}@{'0' * 40}", "quality": "ok"}]})
     proc = run_answer(deployment, "yes")
     assert proc.returncode != 0
     assert "in_review" in proc.stderr
-    assert "not resumable" in proc.stderr
 
 
-def test_a_resume_refuses_when_no_turn_recorded_a_session(deployment):
-    """The evidence gap the order asks to be named rather than papered over. A fresh
-    session wearing the old turn's number would look like continuity and be a new
-    context."""
-    block_the_worker(deployment)
-    facts = deployment["turn_dir"] / "facts.json"
-    doc = json.loads(facts.read_text())
-    doc["session_id"] = None
-    facts.write_text(json.dumps(doc))
-
+def test_a_nudge_refuses_an_unowned_task_rather_than_guessing_a_worker(deployment):
+    emit_as(deployment, "human", "operator", "task.created", task=TASK,
+             payload={"title": "t", "task_type": "task", "acceptance": "a"})
     proc = run_answer(deployment, "yes")
     assert proc.returncode != 0
-    assert "no turn of worker" in proc.stderr
-    assert "evidence gap" in proc.stderr
-    assert "committed and pushed; it is not lost" in proc.stderr
-
-
-def test_a_resume_refuses_when_the_adapter_cannot_resume_that_route(deployment):
-    """A codex route carrying `-s` launches and cannot be resumed on 0.147.0. The refusal
-    names the option and its `-c` equivalent instead of dropping it, because dropping it
-    would wake the worker under a sandbox the operator did not choose."""
-    block_the_worker(deployment)
-    doc = json.loads(deployment["catalog"].read_text())
-    doc["routes"][0].update({"adapter": "codex", "harness": "codex"})
-    doc["routes"][0]["runner"] = {
-        "executable": str(REPO / "tests" / "fixtures" / "fake_harness.sh"),
-        "args": ["exec", "-s", "workspace-write"],
-        "inherit_env": [],
-    }
-    deployment["catalog"].write_text(json.dumps(doc))
-    turn = json.loads((deployment["turn_dir"] / "turn.json").read_text())
-    turn["identity"]["route"] = doc["routes"][0]["name"]
-    (deployment["turn_dir"] / "turn.json").write_text(json.dumps(turn))
-
-    proc = run_answer(deployment, "yes")
-    assert proc.returncode != 0
-    assert "RESUME_ARGS_UNSUPPORTED" in proc.stderr
-    assert "sandbox_mode" in proc.stderr
-    assert not (deployment["run_dir"] / "turns" / "002").exists(), (
-        "a refused resume must leave no half-turn for the next one to trip over"
-    )
-
-
-def test_resume_only_refuses_a_turn_that_ended_blocked(deployment):
-    """`--resume-only` recovers a PROCESS outcome. A worker that blocked said what it
-    meant to say, and the operator's next act is an answer — waking it with no answer
-    would put it straight back where it was."""
-    block_the_worker(deployment)
-    proc = run_answer(deployment, "--resume-only", "just because")
-    assert proc.returncode != 0
-    assert "ended 'blocked'" in proc.stderr
-    assert f'hive-answer \'{TASK}\'' in proc.stderr, "the refusal names the right command"
-    assert not (deployment["run_dir"] / "turns" / "002").exists()
-
-
-def test_resume_only_refuses_a_turn_that_ended_posted(deployment):
-    seed_board(deployment)
-    worker_script(deployment, f'''
-"$EMIT" --type task.accepted --task {TASK} >/dev/null 2>&1
-"$EMIT" --type task.result_posted --task {TASK} \\
-  --payload '{{"artifact_refs": [{{"ref": "r.md@{"a" * 40}", "quality": "ok"}}]}}' >/dev/null 2>&1
-''')
-    assert run_turn(deployment).returncode == 0
-    proc = run_answer(deployment, "--resume-only", "just because")
-    assert proc.returncode != 0
-    # The board check fires first here, and that is the better message anyway.
-    assert "in_review" in proc.stderr or "ended 'posted'" in proc.stderr
-
-
-def test_a_resume_refuses_when_the_route_now_names_a_different_harness(deployment):
-    """A session id is not a portable token. The route is re-resolved from the CURRENT
-    catalog, so an operator who re-pointed it at another vendor between turns would
-    otherwise get a confident resume command built from the wrong vendor's id."""
-    block_the_worker(deployment)
-    doc = json.loads(deployment["catalog"].read_text())
-    doc["routes"][0].update({"adapter": "codex", "harness": "codex"})
-    doc["routes"][0]["runner"] = {
-        "executable": str(REPO / "tests" / "fixtures" / "fake_harness.sh"),
-        "args": ["exec"],
-        "inherit_env": [],
-    }
-    deployment["catalog"].write_text(json.dumps(doc))
-
-    proc = run_answer(deployment, "yes")
-    assert proc.returncode != 0
-    assert "minted by 'fake'" in proc.stderr
-    assert "not portable between harnesses" in proc.stderr
-    assert not (deployment["run_dir"] / "turns" / "002").exists()
-
-
-def test_a_resume_refuses_an_unowned_task_rather_than_guessing_a_worker(deployment):
-    env = dict(os.environ)
-    env.update({"OMEGAHIVE_DATABASE_URL": deployment["db"],
-                "OMEGAHIVE_GATEWAY_DATABASE_URL": ""})
-    subprocess.run([*_omegahive_cmd(), "emit", "--run-id", deployment["run_id"],
-                    "--role", "human", "--actor", "operator", "--type", "task.created",
-                    "--task", TASK, "--payload",
-                    json.dumps({"title": "Drill", "task_type": "task",
-                                "acceptance": f"per {ORDER_REF}"})],
-                   capture_output=True, text=True, env=env, cwd=str(REPO), timeout=120)
-    proc = run_answer(deployment, "yes")
-    assert proc.returncode != 0
-    assert "no owner" in proc.stderr
-
-
-# =====================================================================================
-# 3b. Real panes — the window is the registry, and it must survive its own worker
-# =====================================================================================
-
-def tmux_available() -> bool:
-    return shutil.which("tmux") is not None
-
-
-@pytest.fixture
-def tmux_session(deployment):
-    """The scratch session name this deployment's tooling will use, on the private
-    server. Torn down with the server itself by `tmux_isolation`."""
-    if not tmux_available():
-        pytest.skip("tmux is not installed")
-    return deployment["tmux_session"]
-
-
-def pane_command(dep, session, window) -> str:
-    """The command tmux has recorded for a window's pane, live or dead.
-
-    `#{pane_start_command}` survives the process exiting, which matters here: a turn is
-    expected to END, so by the time a test looks, the pane may already be dead with its
-    summary on screen. Asserting on a live `pane_current_command` would make these tests
-    race the very lifecycle they are checking.
-    """
-    proc = subprocess.run(
-        ["tmux", "list-panes", "-t", f"={session}:={window}", "-F",
-         "#{pane_start_command}"],
-        capture_output=True, text=True,
-        env={**os.environ, **dep["tmux_env"], "TMUX": "", "TMUX_PANE": ""})
-    return proc.stdout
-
-
-def pane_runs_turn(dep, session, turn_id) -> bool:
-    cmd = pane_command(dep, session, TASK)
-    return "--turn" in cmd and str(dep["run_dir"] / "turns" / turn_id) in cmd
-
-
-def tmux_windows(dep, session) -> list[str]:
-    proc = subprocess.run(
-        ["tmux", "list-windows", "-t", f"={session}", "-F", "#{window_name}"],
-        capture_output=True, text=True,
-        env={**os.environ, **dep["tmux_env"], "TMUX": "", "TMUX_PANE": ""})
-    return proc.stdout.split() if proc.returncode == 0 else []
-
-
-def test_a_resume_creates_the_window_when_the_previous_pane_is_gone(deployment, tmux_session):
-    """`hive-answer` must work when the old pane exited or disappeared: the durable state
-    is the turn directory and the native session, never the window."""
-    block_the_worker(deployment)
-    env = shell_env(deployment)
-    assert tmux_windows(deployment, tmux_session) == [], (
-        "no session yet — the pane really is gone"
-    )
-
-    proc = run_answer(deployment, "yes", env=env)
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "session recreated" in proc.stdout
-    assert TASK in tmux_windows(deployment, tmux_session)
-    # A window existing is not the claim. The claim is that THIS window is running THIS
-    # turn — a pane left over from anything else would satisfy the assertion above.
-    assert pane_runs_turn(deployment, tmux_session, "002"), (
-        "the recreated window must be running the prepared resume turn"
-    )
-
-
-def test_a_resume_reuses_the_existing_window_rather_than_opening_a_second(
-        deployment, tmux_session):
-    """The pane NAME is the task registry — there is no registry file — so a second
-    window for one task would corrupt it."""
-    block_the_worker(deployment)
-    subprocess.run(["tmux", "new-session", "-d", "-s", tmux_session, "-n", TASK,
-                    "sh", "-c", "sleep 300"], capture_output=True, check=True,
-                   env={**os.environ, **deployment["tmux_env"], "TMUX": "", "TMUX_PANE": ""})
-    proc = run_answer(deployment, "yes", env=shell_env(deployment))
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "existing window reused" in proc.stdout
-    assert tmux_windows(deployment, tmux_session).count(TASK) == 1
-    # The sleeping placeholder must be GONE and the turn running in its place: a respawn
-    # that quietly opened a second pane, or failed and left the sleeper, would otherwise
-    # read as success.
-    assert pane_runs_turn(deployment, tmux_session, "002"), (
-        "the reused window must be running the prepared resume turn, not the placeholder"
-    )
-
-
+    assert "no owner" in proc.stderr or "does not exist" in proc.stderr
 # =====================================================================================
 # 4. Worker function — the whole WORKER.md finish sequence, inside one turn
 # =====================================================================================
@@ -1434,15 +1336,22 @@ def launch_a_fresh_task(dep, task: str) -> dict:
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
     task_root = dep["work_root"] / worker
-    turn = json.loads((task_root / "run" / "turns" / "001" / "turn.json").read_text())
-    # The clone roots come out of the RESOLVED TURN, never reconstructed here. The relative
-    # tokens are only correct because the turn's own recorded cwd is a clone root beside
-    # `run/`; a test that rebuilt those paths itself would stay green if `hive-launch`
-    # started recording a different cwd, while every real worker's `../run/…` broke.
+    # Both facts come from what the launch ACTUALLY DID, never reconstructed here. The prompt
+    # is the kickoff file the launcher externalizes on every launch, and the working directory
+    # is the one it handed tmux (`-c <dir>`), captured by the stub. A test that rebuilt those
+    # paths itself would stay green if `hive-launch` started opening the window somewhere
+    # else, while every real worker's `../run/…` broke.
+    prompt = (task_root / "kickoff.txt").read_text()
+    calls = (dep["tmp"] / "tmux-calls.txt").read_text().splitlines()
+    opened = [c for c in calls if c.startswith(("new-session", "new-window"))]
+    assert len(opened) == 1, f"expected exactly one window to be opened, got: {opened}"
+    m = re.search(r"-c (\S+)", opened[0])
+    assert m, opened[0]
+    cwd = Path(m.group(1))
     return {
         "task": task, "worker": worker, "task_root": task_root,
-        "cwd": Path(turn["cwd"]), "code_root": Path(turn["code_root"]),
-        "prompt": turn["argv"][-1], "env": env, "turn": turn,
+        "cwd": cwd, "code_root": task_root / PROJECT,
+        "prompt": prompt, "env": env,
     }
 
 
@@ -1543,42 +1452,3 @@ def test_the_issued_interface_resolves_from_the_code_clone_root(deployment):
                             capture_output=True, text=True, env=env, timeout=120)
     assert synced.returncode == 0, synced.stdout + synced.stderr
 
-
-def assert_resume_prompt_is_relative_and_resolves(dep) -> None:
-    """The prompt `hive-answer` prepared, and the cwd it prepared it for.
-
-    A resume that stopped preserving the initial turn's cwd would break `../run/hive`
-    while leaving the prompt's text untouched, so the recorded cwd is read out of the
-    resume turn and the token is EXECUTED from it — the same round trip a woken worker
-    makes on its first line.
-    """
-    turn = json.loads((dep["run_dir"] / "turns" / "002" / "turn.json").read_text())
-    prompt = turn["argv"][-1]
-    assert f"First: {RELATIVE_BRIDGE} sync workspace" in prompt.splitlines()
-    no_absolute_worker_command(prompt, dep["task_root"])
-
-    cwd = Path(turn["cwd"])
-    assert cwd == dep["ws_root"], "a resume must wake the worker in its clone root"
-    synced = subprocess.run(
-        [RELATIVE_BRIDGE, "sync", "workspace"], cwd=str(cwd), capture_output=True, text=True,
-        timeout=120,
-        env={"PATH": os.environ["PATH"], "HOME": str(dep["tmp"] / "clean-home"),
-             "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"})
-    assert synced.returncode == 0, synced.stdout + synced.stderr
-    assert "workspace synced to" in synced.stdout
-
-
-def test_the_answer_resume_prompt_issues_the_stable_relative_sync(deployment):
-    block_the_worker(deployment)
-    assert run_answer(deployment, "use event time").returncode == 0
-    assert_resume_prompt_is_relative_and_resolves(deployment)
-
-
-def test_the_resume_only_prompt_issues_the_stable_relative_sync(deployment):
-    seed_board(deployment)
-    set_child_env(deployment, HIVE_FAKE_BEHAVIOUR="budget")
-    assert run_turn(deployment).returncode == 0
-    assert finished(deployment)["classification"] == "budget"
-
-    assert run_answer(deployment, "--resume-only", "five hour window reset").returncode == 0
-    assert_resume_prompt_is_relative_and_resolves(deployment)
