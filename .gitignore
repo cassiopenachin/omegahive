@@ -2,6 +2,11 @@ __pycache__/
 *.py[cod]
 .venv/
 .env
+# `.env` was ignored and its dated backups were not, so a `git add -A` could commit a
+# gateway DSN — password and all — into the repository. Caught by review on 2026-08-28.
+.env.*
+# Local harness state, including git worktrees that would be added as embedded repos.
+.claude/
 .pytest_cache/
 *.egg-info/
 dist/

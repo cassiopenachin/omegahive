@@ -289,6 +289,12 @@ def shell_env(dep, **over) -> dict:
         "HIVE_RUN_ID": dep["run_id"],
         "CANON_ROOT": str(dep["tmp"]),
     })
+    # Everything the deployment's route DECLARES it inherits. Since 2026-08-28 a declared
+    # name that is unset is a refusal rather than a silent skip, so a rig that names these in
+    # its catalog and does not export them is testing an incomplete deployment. Taken from
+    # the fixture's own env so the two cannot drift.
+    for name in ("HIVE_FAKE_BEHAVIOUR", "HIVE_FAKE_SCRIPT", "HIVE_FAKE_USAGE_FILE"):
+        env[name] = dep["env"][name]
     env.update(over)
     return env
 
@@ -1203,7 +1209,16 @@ def test_the_committed_schema_offers_no_retired_field_to_a_hand_author():
     schema = json.loads((REPO / "schemas" / "route-catalog.v2.json").read_text())
     runner_props = schema["$defs"]["RunnerSpec"]["properties"]
     assert "worker_io" not in runner_props
-    assert set(runner_props) == {"executable", "args", "inherit_env"}
+    assert set(runner_props) == {
+        "executable",
+        "args",
+        "inherit_env",
+        # The environment pair, added 2026-08-28 so a provider endpoint and a credential
+        # rename are route facts rather than things the operator's shell had better be
+        # holding. `executable` and `args` are still the whole command.
+        "inherit_env_as",
+        "env",
+    }
     assert schema["$defs"]["RunnerSpec"]["additionalProperties"] is False, (
         "a catalog carrying a retired field must refuse by name, not be quietly trimmed"
     )
@@ -1452,3 +1467,510 @@ def test_the_issued_interface_resolves_from_the_code_clone_root(deployment):
                             capture_output=True, text=True, env=env, timeout=120)
     assert synced.returncode == 0, synced.stdout + synced.stderr
 
+
+
+# =====================================================================================
+# 7. Refusing before anything is built, and recovering a seat that died
+#
+# The 2026-08-28 failure was not a bad model id. A route needed an endpoint the host did
+# not have, the launcher skipped the unset name in silence, the sandbox never opened
+# egress to the provider, and the worker answered from the wrong one — after four board
+# writes had already handed it the task. Two things follow, and this section owns both:
+# nothing knowable may be discovered after the first emit, and a task stranded that way
+# must be recoverable by tooling rather than by two hand-typed events.
+# =====================================================================================
+
+def order_for(dep, task: str) -> str:
+    """An order file, committed and pushed, exactly as a launch expects to find one."""
+    rel = f"projects/{PROJECT}/orders/2026-08-28-{task}.md"
+    write(dep["ops_ws"] / rel, f"# Order: {task}\n\nA fixture order.\n")
+    git(dep["ops_ws"], "add", "-A")
+    git(dep["ops_ws"], "commit", "--quiet", "-m", f"order: {task}")
+    git(dep["ops_ws"], "push", "--quiet", "origin", "HEAD:main")
+    return rel
+
+
+def set_catalog(dep, *routes, **over) -> None:
+    dep["catalog"].write_text(json.dumps(catalog(*routes, **over), indent=2))
+
+
+def stub_curl(bin_dir: Path, ids: list[str], *, mode: str = "ok") -> None:
+    """A provider that lists exactly these model ids.
+
+    A stub rather than the network, because a test suite that reaches a provider to decide
+    whether it passes is a test suite that fails when the provider has a bad afternoon.
+    `mode` covers the two answers that are not a list: unreachable, and not-JSON.
+    """
+    body = json.dumps({"data": [{"id": i} for i in ids]})
+    curl = bin_dir / "curl"
+    if mode == "unreachable":
+        curl.write_text("#!/usr/bin/env bash\nexit 7\n")
+    elif mode == "notjson":
+        curl.write_text("#!/usr/bin/env bash\necho 'gateway timeout'\n")
+    else:
+        curl.write_text("#!/usr/bin/env bash\n" + f"cat <<'BODY'\n{body}\nBODY\n")
+    curl.chmod(0o755)
+
+
+def launch(dep, order_rel, *args, env=None):
+    return subprocess.run([str(LAUNCH), order_rel, *args], capture_output=True, text=True,
+                          env=env, cwd=str(REPO), timeout=300)
+
+
+def launch_env(dep, bin_dir, **over):
+    return shell_env(
+        dep,
+        PATH=f"{bin_dir}:{os.environ['PATH']}",
+        CANON_CODE=str(dep["tmp"] / "code-seed"),
+        OMEGAHIVE_COMPOSE="compose-never-invoked-in-this-test",
+        **over,
+    )
+
+
+# --- nothing knowable may be discovered after the first emit -------------------------
+
+def test_a_declared_name_that_is_unset_refuses_before_anything_is_built(deployment):
+    """The defect itself. The route declares a name, the host does not have it, and the
+    launcher used to `continue` past it and build a worker that could not reach its
+    provider. Zero events and no task root is the whole assertion."""
+    dep = deployment
+    set_catalog(dep, route(runner=runner(inherit_env=["HIVE_FIXTURE_DEFINITELY_UNSET"])))
+    order_rel = order_for(dep, "unset-name")
+    before = len(events(dep))
+
+    bin_dir = stub_tmux(dep)
+    env = launch_env(dep, bin_dir)
+    env.pop("HIVE_FIXTURE_DEFINITELY_UNSET", None)
+    proc = launch(dep, order_rel, "--worker", "sess-unset-name-0828", env=env)
+
+    assert proc.returncode != 0
+    assert "HIVE_FIXTURE_DEFINITELY_UNSET" in proc.stdout + proc.stderr
+    assert len(events(dep)) == before, "a refusal must write nothing to the spine"
+    assert not (dep["work_root"] / "sess-unset-name-0828").exists()
+
+
+def test_an_unset_rename_source_refuses_and_names_the_host_variable(deployment):
+    """The second trap: the harness reads ANTHROPIC_API_KEY, the host holds the key under
+    another name, and the message has to name the one the operator must export."""
+    dep = deployment
+    set_catalog(dep, route(runner=runner(
+        inherit_env=[], inherit_env_as={"ANTHROPIC_API_KEY": "HIVE_FIXTURE_OR_KEY"})))
+    order_rel = order_for(dep, "unset-rename")
+    before = len(events(dep))
+
+    env = launch_env(dep, stub_tmux(dep))
+    env.pop("HIVE_FIXTURE_OR_KEY", None)
+    proc = launch(dep, order_rel, "--worker", "sess-unset-rename-0828", env=env)
+
+    assert proc.returncode != 0
+    out = proc.stdout + proc.stderr
+    assert "HIVE_FIXTURE_OR_KEY" in out and "ANTHROPIC_API_KEY" in out
+    assert len(events(dep)) == before
+
+
+def test_a_model_the_endpoint_does_not_serve_writes_no_board_event(deployment):
+    """Acceptance 2. The provider answers, and does not list the id."""
+    dep = deployment
+    set_catalog(dep, route(provider="openrouter", model="deepseek/deepseek-v4-flash-latest",
+                           runner=runner(env={"ANTHROPIC_BASE_URL": "https://openrouter.invalid/api"})))
+    order_rel = order_for(dep, "bad-model")
+    before = len(events(dep))
+
+    bin_dir = stub_tmux(dep)
+    stub_curl(bin_dir, ["deepseek/deepseek-v4-flash-0731", "z-ai/glm-5.3"])
+    proc = launch(dep, order_rel, "--worker", "sess-bad-model-0828",
+                  env=launch_env(dep, bin_dir))
+
+    assert proc.returncode != 0
+    out = proc.stdout + proc.stderr
+    assert "deepseek/deepseek-v4-flash-latest" in out
+    # The near-match line is the whole reason to list ids rather than probe one: the
+    # operator sees the id they meant, one line below the one they typed.
+    assert "near match: deepseek/deepseek-v4-flash-0731" in out
+    assert len(events(dep)) == before, "a bad model id must write nothing to the spine"
+    assert not (dep["work_root"] / "sess-bad-model-0828").exists()
+
+
+def test_a_model_the_endpoint_does_serve_proceeds(deployment):
+    """The positive control. Without it the assertion above passes for a launcher that
+    refuses everything."""
+    dep = deployment
+    set_catalog(dep, route(provider="openrouter", model="deepseek/deepseek-v4-flash-0731",
+                           runner=runner(env={"ANTHROPIC_BASE_URL": "https://openrouter.invalid/api"})))
+    order_rel = order_for(dep, "good-model")
+
+    bin_dir = stub_tmux(dep)
+    stub_curl(bin_dir, ["deepseek/deepseek-v4-flash-0731"])
+    proc = launch(dep, order_rel, "--worker", "sess-good-model-0828",
+                  env=launch_env(dep, bin_dir))
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    kinds = [e[0] for e in events(dep)]
+    assert "execution.route_approved" in kinds and "task.assigned" in kinds
+
+
+@pytest.mark.parametrize("mode", ["unreachable", "notjson"])
+def test_an_endpoint_that_cannot_answer_warns_and_launches(deployment, mode):
+    """Unreachable is not nonexistent.
+
+    A launcher that refused a good order because a provider's model list timed out would
+    be less reliable than the failure it is guarding against. The warning is the contract:
+    loud, on stderr, and not fatal.
+    """
+    dep = deployment
+    set_catalog(dep, route(provider="openrouter", model="deepseek/deepseek-v4-flash-0731",
+                           runner=runner(env={"ANTHROPIC_BASE_URL": "https://openrouter.invalid/api"})))
+    order_rel = order_for(dep, f"probe-{mode}")
+
+    bin_dir = stub_tmux(dep)
+    stub_curl(bin_dir, [], mode=mode)
+    proc = launch(dep, order_rel, "--worker", f"sess-probe-{mode}-0828",
+                  env=launch_env(dep, bin_dir))
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "UNVERIFIED" in proc.stderr
+    assert "task.assigned" in [e[0] for e in events(dep)]
+
+
+def test_the_endpoint_reaches_the_window_without_being_set_on_the_host(deployment):
+    """The point of moving the endpoint into the catalog: the host does not have it."""
+    dep = deployment
+    set_catalog(dep, route(runner=runner(
+        env={"HIVE_FIXTURE_BASE_URL": "https://provider.invalid/api"})))
+    order_rel = order_for(dep, "endpoint-fact")
+
+    bin_dir = stub_tmux(dep)
+    env = launch_env(dep, bin_dir)
+    env.pop("HIVE_FIXTURE_BASE_URL", None)
+    assert launch(dep, order_rel, "--worker", "sess-endpoint-fact-0828",
+                  env=env).returncode == 0
+
+    calls = (dep["tmp"] / "tmux-calls.txt").read_text()
+    assert "HIVE_FIXTURE_BASE_URL=https://provider.invalid/api" in calls
+
+
+# --- recovering a seat that died -----------------------------------------------------
+
+def strand_a_task(dep, task: str) -> dict:
+    """Launch a task normally, then walk away from it — the shape the 2026-08-28 failure
+    left behind: owned on the board, a fully provisioned task root, and no live window."""
+    order_rel = order_for(dep, task)
+    worker = f"sess-{task}-0828"
+    bin_dir = stub_tmux(dep)
+    proc = launch(dep, order_rel, "--worker", worker, env=launch_env(dep, bin_dir))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (dep["work_root"] / worker / "hive").is_dir()
+    return {"order_rel": order_rel, "worker": worker, "bin_dir": bin_dir}
+
+
+def board_owner(dep, task: str):
+    for etype, _role, _actor, payload in reversed(events(dep)):
+        if etype in ("task.assigned", "task.reassigned"):
+            return payload.get("worker") or payload.get("to")
+    return None
+
+
+@pytest.mark.skipif(not shutil.which("tmux"), reason="the window is the registry")
+def test_reassign_recovers_a_stranded_task_onto_a_fresh_worker(deployment):
+    """Acceptance 3, end to end and against a real tmux server.
+
+    The runbook this replaces was two hand-typed emits, which moved the board's idea of the
+    owner and left the new worker with no task root, no clones, no wrappers and no window.
+    What is asserted here is everything those two emits did not do.
+    """
+    dep = deployment
+    s = strand_a_task(dep, "stranded")
+    before = [e[0] for e in events(dep)]
+
+    # The recovery runs a harness that STAYS UP, because the thing being asserted is a live
+    # window and the default fixture harness exits the moment it starts. `tmux_keep_window`
+    # sets `remain-on-exit` only after the window is created, so a harness that exits first
+    # takes its own window with it — a race this test won locally and lost on CI. Keeping the
+    # pane alive tests the window rather than the scheduler. (The race itself is real and
+    # belongs to the launcher, not here: it is why a refusing harness leaves no last screen.)
+    sleeper = dep["tmp"] / "sleeping-harness.sh"
+    write(sleeper, "#!/usr/bin/env bash\nexec sleep 120\n")
+    sleeper.chmod(0o755)
+    # Same route NAME: --reassign carries the task's approved route forward by name.
+    set_catalog(dep, route(runner=runner(executable=str(sleeper), inherit_env=[])))
+
+    # A real tmux for the recovery, so "a live window" is a window and not a logged call.
+    env = shell_env(dep, CANON_CODE=str(dep["tmp"] / "code-seed"),
+                    OMEGAHIVE_COMPOSE="compose-never-invoked-in-this-test")
+    proc = launch(dep, s["order_rel"], "--reassign", "--reason", "seat died", env=env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    new_worker = board_owner(dep, "stranded")
+    assert new_worker and new_worker != s["worker"], f"owner is still {new_worker}"
+
+    # A populated task root, not just a renamed owner.
+    root = dep["work_root"] / new_worker
+    assert (root / "hive" / ".git").is_dir(), "the workspace clone must exist"
+    assert (root / PROJECT / ".git").is_dir(), "the code clone must exist"
+    assert os.access(root / "run" / "emit", os.X_OK), "the emit wrapper must be executable"
+    assert (root / "kickoff.txt").exists()
+    # The wrapper is baked with the NEW worker's identity, or its emits are attributed to
+    # a worker that is no longer on the task.
+    assert new_worker in (root / "run" / "emit").read_text()
+
+    # A live window on the isolated server, named for the task.
+    windows = subprocess.run(
+        ["tmux", "list-windows", "-t", f"={dep['tmux_session']}", "-F", "#{window_name}"],
+        capture_output=True, text=True,
+        env={**os.environ, **dep["tmux_env"], "TMUX": "", "TMUX_PANE": ""})
+    assert "stranded" in windows.stdout.split(), windows.stdout
+    tmux_kill(dep["tmux_session"], dep)
+
+    # The stranded root is evidence and survives; removing it is the operator's later act.
+    assert (dep["work_root"] / s["worker"] / "hive").is_dir()
+
+    # Exactly the three events, in the order legality requires: the target must be on the
+    # roster before the reassign names it.
+    added = [e[0] for e in events(dep)][len(before):]
+    assert added == ["execution.route_approved", "worker.registered", "task.reassigned"], added
+    payload = events(dep)[-1][3]
+    # Stored as `from_`: `from` is a Python keyword, so TaskReassigned exposes it under the
+    # alias on input and `model_dump(mode="json")` writes the field name. Asserted as it is
+    # actually persisted rather than as it is written, because that is what a reader sees.
+    assert payload["from_"] == s["worker"] and payload["to"] == new_worker
+    assert payload["reason"] == "seat died"
+    # And no second seeding: one task.created for the whole task, ever.
+    assert [e[0] for e in events(dep)].count("task.created") == 1
+
+
+@pytest.mark.skipif(not shutil.which("tmux"), reason="the window is the registry")
+def test_reassign_numbers_its_attempt_so_two_spend_decisions_stay_distinct(deployment):
+    """EXEC_ID is derived from the order pin, and a recovery usually runs against an
+    unchanged pin. With the attempt hardcoded to 1 the recovery minted the same execution
+    id as the launch that stranded the task — two spend decisions collapsing into one
+    identity, which is the one thing that construction exists to prevent."""
+    dep = deployment
+    s = strand_a_task(dep, "attempted")
+    env = shell_env(dep, CANON_CODE=str(dep["tmp"] / "code-seed"),
+                    OMEGAHIVE_COMPOSE="compose-never-invoked-in-this-test")
+    assert launch(dep, s["order_rel"], "--reassign", env=env).returncode == 0
+    tmux_kill(dep["tmux_session"], dep)
+
+    approvals = [p for t, _r, _a, p in events(dep) if t == "execution.route_approved"]
+    assert len(approvals) == 2, approvals
+    assert approvals[0]["execution_id"] != approvals[1]["execution_id"]
+    assert [a["attempt"] for a in approvals] == [1, 2]
+
+
+def test_reassign_refuses_a_task_that_is_not_owned(deployment):
+    """Every refusal writes nothing. `ready` is a launch, absent is a launch, and the
+    message has to say which of the two it is looking at rather than 'illegal'."""
+    dep = deployment
+    order_rel = order_for(dep, "never-launched")
+    before = len(events(dep))
+    env = launch_env(dep, stub_tmux(dep))
+
+    proc = launch(dep, order_rel, "--reassign", env=env)
+    assert proc.returncode != 0
+    assert "does not exist" in proc.stdout + proc.stderr
+    assert len(events(dep)) == before
+
+    emit_as(dep, "human", "operator", "task.created", task="never-launched",
+            payload={"title": "T", "task_type": "task", "acceptance": "a"})
+    before = len(events(dep))
+    proc = launch(dep, order_rel, "--reassign", env=env)
+    assert proc.returncode != 0
+    assert "is a launch, not a recovery" in proc.stdout + proc.stderr or \
+           "that is a launch" in proc.stdout + proc.stderr
+    assert len(events(dep)) == before
+
+
+@pytest.mark.skipif(not shutil.which("tmux"), reason="the window is the registry")
+def test_a_surviving_window_still_refuses_and_says_how_to_clear_it(deployment):
+    """The pane IS the registry, so a second window for one task would corrupt it. A
+    reassign is the operator asserting the seat is dead; this refuses to make that
+    assertion on their behalf while a window is still there."""
+    dep = deployment
+    s = strand_a_task(dep, "livewindow")
+    subprocess.run(["tmux", "new-session", "-d", "-s", dep["tmux_session"],
+                    "-n", "livewindow", "sleep", "60"], check=True,
+                   env={**os.environ, **dep["tmux_env"], "TMUX": "", "TMUX_PANE": ""})
+    before = len(events(dep))
+    env = shell_env(dep, CANON_CODE=str(dep["tmp"] / "code-seed"),
+                    OMEGAHIVE_COMPOSE="compose-never-invoked-in-this-test")
+    proc = launch(dep, s["order_rel"], "--reassign", env=env)
+    tmux_kill(dep["tmux_session"], dep)
+
+    assert proc.returncode != 0
+    assert "tmux kill-window" in proc.stdout + proc.stderr
+    assert len(events(dep)) == before
+
+
+def test_a_plain_relaunch_of_an_owned_task_names_the_recovery_command(deployment):
+    """The refusal an operator actually meets. It used to name a runbook section; now it
+    names the command, because the runbook step it named did not re-provision anything."""
+    dep = deployment
+    s = strand_a_task(dep, "relaunched")
+    proc = launch(dep, s["order_rel"], "--worker", "sess-relaunched-second",
+                  env=launch_env(dep, s["bin_dir"]))
+    assert proc.returncode != 0
+    assert "--reassign" in proc.stdout + proc.stderr
+
+
+# --- what the cross-harness review caught (2026-08-28) --------------------------------
+# All three are the same shape of mistake: a guarantee stated in one place and relied on
+# in another that cannot see it.
+
+def test_a_non_endpoint_in_runner_env_refuses_at_the_launcher_not_only_the_model(deployment):
+    """`hive-launch` parses the catalog with jq and never through `harness/records.py`, so
+    the URL-only rule has to hold on the launcher's own path too. Without this the value
+    would be printed by --check and forwarded into the worker's window."""
+    dep = deployment
+    # Written past the model, exactly as a hand-authored catalog would reach the launcher.
+    doc = catalog(route(runner=runner(inherit_env=[])))
+    doc["routes"][0]["runner"]["env"] = {"ANTHROPIC_API_KEY": "sk-ant-not-an-endpoint"}
+    dep["catalog"].write_text(json.dumps(doc, indent=2))
+    order_rel = order_for(dep, "bad-env-value")
+    before = len(events(dep))
+
+    proc = launch(dep, order_rel, "--worker", "sess-bad-env-value-0828",
+                  env=launch_env(dep, stub_tmux(dep)))
+    assert proc.returncode != 0
+    out = proc.stdout + proc.stderr
+    assert "endpoints only" in out
+    assert "sk-ant-not-an-endpoint" not in out, "the refusal must not echo the value it refused"
+    assert len(events(dep)) == before
+
+
+def test_the_committed_schema_states_the_endpoint_rule_too():
+    """A hand-authoring operator checks the schema, not the Python validator."""
+    schema = json.loads((REPO / "schemas" / "route-catalog.v2.json").read_text())
+    env = schema["$defs"]["RunnerSpec"]["properties"]["env"]
+    assert env["additionalProperties"]["pattern"].startswith("^https?://")
+    assert "propertyNames" in env
+    rename = schema["$defs"]["RunnerSpec"]["properties"]["inherit_env_as"]
+    assert "propertyNames" in rename
+
+
+def test_a_base_url_that_already_carries_v1_is_not_doubled(deployment):
+    """`https://host/v1` + `/v1/models` is a 404, and a 404 here is indistinguishable from
+    an outage — so the probe would warn and pass EVERY id on the most conventional base
+    URL shape there is. The example catalog ships one."""
+    dep = deployment
+    set_catalog(dep, route(provider="openrouter", model="vendor/absent-model",
+                           runner=runner(env={"ANTHROPIC_BASE_URL": "https://provider.invalid/v1"})))
+    order_rel = order_for(dep, "double-v1")
+    bin_dir = stub_tmux(dep)
+    # A curl that answers ONLY the correctly-formed URL; anything doubled 404s.
+    curl = bin_dir / "curl"
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        'for a in "$@"; do case "$a" in *//v1/v1/*|*/v1/v1/*) exit 22 ;; esac; done\n'
+        """for a in "$@"; do case "$a" in https://provider.invalid/v1/models)"""
+        """ echo '{"data":[{"id":"vendor/present-model"}]}'; exit 0 ;; esac; done\n"""
+        "exit 22\n"
+    )
+    curl.chmod(0o755)
+    before = len(events(dep))
+
+    proc = launch(dep, order_rel, "--worker", "sess-double-v1-0828",
+                  env=launch_env(dep, bin_dir))
+    # The probe REACHED the provider, so an absent id must refuse rather than warn.
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "UNVERIFIED" not in proc.stderr, "a reachable endpoint must not report unverified"
+    assert "vendor/absent-model" in proc.stdout + proc.stderr
+    assert len(events(dep)) == before
+
+
+@pytest.mark.skipif(not shutil.which("tmux"), reason="the window is the registry")
+def test_reassign_refuses_a_worker_id_the_roster_already_holds(deployment):
+    """The roster remembers every id ever registered, including a worker that was itself
+    reassigned away and therefore owns nothing. An owner-only scan waves that id through,
+    and the board's refusal then lands AFTER execution.route_approved — an orphan spend
+    fact and no way forward."""
+    dep = deployment
+    s = strand_a_task(dep, "rosterdup")
+    env = shell_env(dep, CANON_CODE=str(dep["tmp"] / "code-seed"),
+                    OMEGAHIVE_COMPOSE="compose-never-invoked-in-this-test")
+    # First recovery: the original worker is now registered AND owns nothing.
+    assert launch(dep, s["order_rel"], "--reassign", env=env).returncode == 0
+    tmux_kill(dep["tmux_session"], dep)
+    before = len(events(dep))
+
+    # Re-using it must refuse before the route is approved.
+    proc = launch(dep, s["order_rel"], "--reassign", "--worker", s["worker"], env=env)
+    assert proc.returncode != 0
+    assert "roster" in proc.stdout + proc.stderr
+    assert len(events(dep)) == before, "no spend fact may precede a rejected registration"
+
+
+@pytest.mark.skipif(not shutil.which("tmux"), reason="the window is the registry")
+def test_reassign_keeps_the_route_the_task_was_approved_on(deployment):
+    """A recovery is not the moment to change what pays for the work.
+
+    Without this, `--reassign` with no `--route` falls through to the catalog default, and
+    an API-billed sandboxed task comes back as a subscription worker on a different
+    harness, model and provider — with the sandbox guard silently skipped, because
+    EXECUTABLE is no longer `sbx`.
+    """
+    dep = deployment
+    other = route(name="other-route", model="other-model-1",
+                  runner=runner(inherit_env=["HIVE_FAKE_BEHAVIOUR", "HIVE_FAKE_SCRIPT",
+                                             "HIVE_FAKE_USAGE_FILE", "HIVE_CLI_CMD",
+                                             "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"]))
+    base = route(runner=runner(inherit_env=["HIVE_FAKE_BEHAVIOUR", "HIVE_FAKE_SCRIPT",
+                                            "HIVE_FAKE_USAGE_FILE", "HIVE_CLI_CMD",
+                                            "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"]))
+    set_catalog(dep, base, other)          # defaults.worker is `base`, not `other-route`
+    order_rel = order_for(dep, "keeproute")
+
+    bin_dir = stub_tmux(dep)
+    assert launch(dep, order_rel, "--worker", "sess-keeproute-0828", "--route", "other-route",
+                  env=launch_env(dep, bin_dir)).returncode == 0
+
+    env = shell_env(dep, CANON_CODE=str(dep["tmp"] / "code-seed"),
+                    OMEGAHIVE_COMPOSE="compose-never-invoked-in-this-test")
+    assert launch(dep, order_rel, "--reassign", env=env).returncode == 0
+    tmux_kill(dep["tmux_session"], dep)
+
+    approvals = [p for t, _r, _a, p in events(dep) if t == "execution.route_approved"]
+    assert [a["identity"]["route"] for a in approvals] == ["other-route", "other-route"], (
+        "the recovery must not fall through to the catalog default")
+    assert approvals[1]["identity"]["model"] == "other-model-1"
+
+    # And an explicit --route still wins over the carried-forward one.
+    assert launch(dep, order_rel, "--reassign", "--route", "fake-subscription",
+                  env=env).returncode == 0
+    tmux_kill(dep["tmux_session"], dep)
+    approvals = [p for t, _r, _a, p in events(dep) if t == "execution.route_approved"]
+    assert approvals[-1]["identity"]["route"] == "fake-subscription"
+
+
+def test_a_sandboxed_route_gets_an_https_code_remote():
+    """An SSH remote cannot work inside an sbx VM: no key, and SSH bypasses the forward
+    proxy that would otherwise authenticate. Handing a sandboxed worker one made
+    `hive publish code` structurally impossible — the worker does the work, gets its
+    review, and blocks at the push (2026-08-28, folio-score-seam).
+    """
+    # Asserted against the script's own text rather than by launching: a real `sbx create`
+    # is not hermetic, and this is a pure string transform. No deployment fixture, so it
+    # costs nothing and runs on a host with no database.
+    script = REPO / "scripts" / "hive-launch"
+    body = script.read_text()
+    assert 'git -C "$CODE_ROOT" remote set-url origin "$PUSH_REPO"' in body
+    probe = (
+        'CODE_REPO="%s"; EXECUTABLE="%s"; PUSH_REPO="$CODE_REPO"\n'
+        'if [ "$EXECUTABLE" = "sbx" ]; then\n'
+        '  case "$CODE_REPO" in\n'
+        '    git@*:*)      SCP_REST="${CODE_REPO#git@}"; PUSH_REPO="https://${SCP_REST/:/\\/}" ;;\n'
+        '    ssh://git@*)  PUSH_REPO="https://${CODE_REPO#ssh://git@}" ;;\n'
+        '  esac\n'
+        'fi\n'
+        'printf %%s "$PUSH_REPO"\n'
+    )
+    for repo, executable, expected in [
+        ("git@github.com:o/r.git", "sbx", "https://github.com/o/r.git"),
+        ("ssh://git@github.com/o/r.git", "sbx", "https://github.com/o/r.git"),
+        ("https://github.com/o/r.git", "sbx", "https://github.com/o/r.git"),
+        # A host route keeps SSH: the host HAS a key, and rewriting it would drop the
+        # operator's own agent-based auth in favour of a token they never configured.
+        ("git@github.com:o/r.git", "claude", "git@github.com:o/r.git"),
+    ]:
+        out = subprocess.run(["bash", "-c", probe % (repo, executable)],
+                             capture_output=True, text=True, timeout=30)
+        assert out.stdout == expected, f"{repo} on {executable} -> {out.stdout}"

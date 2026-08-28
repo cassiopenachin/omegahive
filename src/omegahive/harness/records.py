@@ -34,7 +34,15 @@ import json
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+from pydantic.json_schema import JsonDict
 
 from omegahive.events.types import ExecutionIdentity, PriceBasis
 
@@ -51,7 +59,32 @@ CATALOG_SCHEMA_VERSION = 2
 CATALOG_SCHEMA_VERSION_V1 = 1
 
 _NAME_SHAPE = re.compile(r"[A-Za-z0-9._-]{1,64}")
-_ENV_NAME_SHAPE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
+_ENV_NAME_SHAPE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
+# The only values `runner.env` may hold. A provider endpoint is a routing fact and
+# belongs in the catalog; a credential is not and must not be able to hide there. The
+# shape is the enforcement — see RunnerSpec.env.
+_ENDPOINT_SHAPE = re.compile(r"^https?://[^\s\x00]+$")
+
+# A model id with no internal whitespace. OpenRouter additionally requires `vendor/slug`
+# (see RouteEntry._model_shape): a bare `deepseek-v4-flash-0731` names nothing there, and
+# `deepseek/deepseek-v4-flash-latest` does not exist while the aliased
+# `~deepseek/deepseek-v4-flash-latest` does — the class of typo that cost a launch on
+# 2026-08-28 and was misread as a provider outage.
+_MODEL_SHAPE = re.compile(r"\S+\Z")
+
+_OPENROUTER_MODEL_SHAPE = re.compile(r"~?[^/\s]+/[^/\s]+\Z")
+
+# The same two shapes, expressed for the GENERATED JSON SCHEMA as well as for the validators
+# below. Both statements are needed and neither is redundant: `hive-launch` parses the catalog
+# with jq and never through this loader, so the schema is the only statement of shape a
+# non-Python reader of a hand-authored catalog can check against — and the validators are the
+# only ones that produce a message an operator can act on.
+_ENV_KEY_SCHEMA: JsonDict = {"propertyNames": {"pattern": _ENV_NAME_SHAPE.pattern}}
+_ENDPOINT_VALUE_SCHEMA: JsonDict = {
+    "propertyNames": {"pattern": _ENV_NAME_SHAPE.pattern},
+    "additionalProperties": {"type": "string", "pattern": _ENDPOINT_SHAPE.pattern},
+}
 
 # Hive's OWN authority credentials, by exact environment-variable name. These are the
 # database and gateway DSNs from `secrets-manifest.yaml` plus the notifier's bot token —
@@ -101,16 +134,35 @@ class RefusalError(Exception):
 class RunnerSpec(BaseModel):
     """How this deployment actually starts the harness. Argv, never a shell string.
 
-    Three fields and no fourth, because every additional field is a place a shell could
-    re-enter. `executable` plus `args` is the whole command; an operator who wants a
-    container, a VM, a sandbox wrapper or a bare binary writes exactly that here and
-    Hive runs it. The adapter appends the dynamic elements it knows the harness needs —
-    the model, the session id, the task-root paths, and the kickoff.
+    `executable` plus `args` is the whole command, and nothing else here may contribute a
+    word to it — every field that could would be a place a shell re-enters. An operator
+    who wants a container, a VM, a sandbox wrapper or a bare binary writes exactly that
+    in those two fields and Hive runs it. The adapter appends the dynamic elements it
+    knows the harness needs — the model, the session id, the task-root paths, and the
+    kickoff. The three remaining fields describe the ENVIRONMENT that command runs in,
+    and each is a closed shape validated below.
 
     `inherit_env` names variables this route needs from the launching environment. Names
-    only: no value ever appears in this file, in a plan, in a log line, in the preflight
+    only: no value ever appears in this field, in a plan, in a log line, in the preflight
     or on the spine. A provider credential name may be listed deliberately; a Hive
-    authority credential name refuses.
+    authority credential name refuses. A name listed here is a REQUIREMENT — the launcher
+    refuses when it is unset rather than skipping it, which is the 2026-08-28 defect.
+
+    `inherit_env_as` is `inherit_env` with a rename: target name inside the sandbox ->
+    source name on the host. It exists because a provider-compatible harness expects a
+    fixed variable name for a credential the host holds under a different one. Inheriting
+    the target name directly and trusting the operator to have overwritten it first ships
+    whatever the host happens to hold, under the right name, silently — which is how an
+    OpenRouter route came to carry the Anthropic key.
+
+    `env` is the one field here that holds VALUES, and it accepts only endpoint URLs.
+    That is what keeps the names-only doctrine intact rather than merely stated: a
+    provider endpoint is a fact about the ROUTE, and storing it in the operator's shell
+    instead is how it went missing and took a launch with it. A URL-only shape means no
+    credential can hide here, even by accident.
+
+    `inherit_env_as` and `env` are inside the fingerprint, because a worker pointed at a
+    different provider is not the same runner configuration.
 
     There is deliberately no `worker_io` field any more. It used to choose between the
     worker performing its own spine writes and git publication (`direct`) and a
@@ -128,6 +180,10 @@ class RunnerSpec(BaseModel):
     executable: str
     args: list[str] = Field(default_factory=list)
     inherit_env: list[str] = Field(default_factory=list)
+    inherit_env_as: dict[str, str] = Field(
+        default_factory=dict, json_schema_extra=_ENV_KEY_SCHEMA)
+    env: dict[str, str] = Field(
+        default_factory=dict, json_schema_extra=_ENDPOINT_VALUE_SCHEMA)
 
     @field_validator("executable")
     @classmethod
@@ -163,6 +219,47 @@ class RunnerSpec(BaseModel):
                 )
         return v
 
+    @field_validator("inherit_env_as")
+    @classmethod
+    def _rename_names_only(cls, v: dict[str, str]) -> dict[str, str]:
+        for target, source in v.items():
+            for name, side in ((target, "target"), (source, "source")):
+                if not _ENV_NAME_SHAPE.fullmatch(name):
+                    raise ValueError(
+                        f"inherit_env_as carries {name!r} as its {side}, which is not an "
+                        "environment variable NAME; this field never holds a value"
+                    )
+                if is_hive_authority_env(name):
+                    raise ValueError(
+                        f"inherit_env_as names {name!r}, a Hive authority credential. "
+                        "Renaming must not become a way to launder Hive's own database, "
+                        "gateway or reserved-role credentials into a worker"
+                    )
+        return v
+
+    @field_validator("env")
+    @classmethod
+    def _env_values_are_endpoints(cls, v: dict[str, str]) -> dict[str, str]:
+        for name, value in v.items():
+            if not _ENV_NAME_SHAPE.fullmatch(name):
+                raise ValueError(
+                    f"env carries {name!r} as a key, which is not an environment "
+                    "variable NAME"
+                )
+            if is_hive_authority_env(name):
+                raise ValueError(
+                    f"env names {name!r}, a Hive authority credential. Provider routing "
+                    "is deployment posture and may be stated here; Hive's own database, "
+                    "gateway and reserved-role credentials may not"
+                )
+            if not _ENDPOINT_SHAPE.fullmatch(value):
+                raise ValueError(
+                    f"env[{name!r}] is not an http(s) endpoint. This is the only field "
+                    "in the runner block that holds a value, and it accepts endpoints "
+                    "alone so that a credential cannot be placed here"
+                )
+        return v
+
     def fingerprint(self) -> str:
         """`sha256:<hex>` over the resolved, non-secret runner configuration.
 
@@ -178,12 +275,23 @@ class RunnerSpec(BaseModel):
         did change shape, and a fingerprint that pretended otherwise would answer its one
         question wrongly. Historical events keep the value they were emitted with; no
         event is rewritten.
+
+        The provider endpoint and the credential renames are inside it. A worker pointed
+        at a different provider is not the same runner configuration, so a fingerprint
+        that ignored `env` would answer its one question wrongly. Adding them moves every
+        route's fingerprint once, exactly as the `worker_io` removal did above; the same
+        reasoning applies, and no historical event is rewritten.
+
+        `scripts/hive-launch` recomputes this inline in jq. The two constructions must
+        stay identical — `tests/test_hive_common.py` pins them against each other.
         """
         canonical = json.dumps(
             {
                 "executable": self.executable,
                 "args": list(self.args),
                 "inherit_env": sorted(self.inherit_env),
+                "inherit_env_as": dict(sorted(self.inherit_env_as.items())),
+                "env": dict(sorted(self.env.items())),
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -194,7 +302,9 @@ class RunnerSpec(BaseModel):
 class RouteEntry(BaseModel):
     """One thing this deployment can currently run."""
 
-    model_config = ConfigDict(extra="forbid")
+    # `protected_namespaces=()` because `model_vendor` is a route fact, not a pydantic
+    # model attribute; without it pydantic warns about the `model_` prefix at import.
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
 
     name: str
     model_vendor: str
@@ -212,6 +322,16 @@ class RouteEntry(BaseModel):
     # Absent for subscription routes, which have no per-token list price. Absence is
     # recorded as absence; it never becomes a zero that reads as free.
     price_basis: PriceBasis | None = None
+    # Which harness reviews this route's work. It was prose inside `note` until
+    # 2026-08-28, which meant the one fact a launch needs in order to know whether a
+    # route can carry a review-requiring order was unreadable by anything but a human.
+    #   codex-plugin    - a native claude route, reviewed by Codex via the codex plugin
+    #   claude-skill    - a codex route, reviewed by Claude via the claude-review skill
+    #   opus-in-sandbox - a sandboxed route, reviewed by opus invoked routing-stripped
+    #                     inside the VM, because a sandbox cannot reach Codex
+    # Optional: a catalog predating the field still loads, and absence reads as unstated
+    # rather than as "no reviewer".
+    reviewer: Literal["codex-plugin", "claude-skill", "opus-in-sandbox"] | None = None
     note: str | None = None
 
     @field_validator("name")
@@ -220,6 +340,29 @@ class RouteEntry(BaseModel):
         if not _NAME_SHAPE.fullmatch(v):
             raise ValueError(f"must match [A-Za-z0-9._-]{{1,64}}, got {v!r}")
         return v
+
+    @model_validator(mode="after")
+    def _model_shape(self) -> RouteEntry:
+        """The model id gets a shape, at last.
+
+        It was a bare `str`, so `deepseek/deepseek-v4-flash-latest` — which does not
+        exist, while the aliased `~deepseek/...` does — loaded clean and failed at the
+        harness, after the board had been written to. The rule is deliberately thin:
+        providers name their models, Hive does not, and a catalog-side allowlist of ids
+        would be stale within a week. What is checkable without a network call is that
+        the id is a single token, and that an OpenRouter id names a vendor and a slug.
+        """
+        if not _MODEL_SHAPE.fullmatch(self.model):
+            raise ValueError(
+                f"model {self.model!r} must be a single non-empty token with no whitespace"
+            )
+        if self.provider == "openrouter" and not _OPENROUTER_MODEL_SHAPE.fullmatch(self.model):
+            raise ValueError(
+                f"model {self.model!r} is not an OpenRouter id: OpenRouter names a model "
+                "'<vendor>/<slug>' (for example 'deepseek/deepseek-v4-flash-0731'), and a "
+                "bare slug resolves to nothing there"
+            )
+        return self
 
     def identity(self) -> ExecutionIdentity:
         """The normalized identity block that goes on every lifecycle fact."""

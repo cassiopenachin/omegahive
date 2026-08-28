@@ -58,6 +58,7 @@ usage() {
   cat >&2 <<'USAGE'
 usage: hive-launch <order-file> [--route <name>] [--model <id>] [--worker <id>]
                                 [--check] [--anyway]
+       hive-launch <order-file> --reassign [--reason "<why>"] [--route <name>] ...
 
   --route <name>     run this launch on the named catalog route instead of the
                      catalog's defaults.worker. An operator override for ONE launch:
@@ -71,6 +72,15 @@ usage: hive-launch <order-file> [--route <name>] [--model <id>] [--worker <id>]
                      argv, the inherited environment NAMES and the installed harness
                      version, and STOP. No clone, no spine write, no token spent.
   --anyway           override the review-WIP throttle and the predictions gate.
+  --reassign         recover a task stranded at assigned|blocked|in_progress onto a
+                     fresh worker: provision a new task root, clones, wrappers, sandbox
+                     and window, then emit worker.registered + task.reassigned. It is
+                     NOT a relaunch — no task.created, no task.assigned — and the dead
+                     window must already be gone. Takes the same order file as a launch,
+                     because everything downstream (project, run, pin, kickoff, code
+                     repo) is resolved from it; a bare task id would need a second
+                     lookup that could disagree with the first.
+  --reason "<why>"   recorded on task.reassigned.
 
 hive-launch --turn <turn-dir> still runs one prepared batch turn, and nothing on this
 path writes one any more: the production lifecycle is an interactive window
@@ -95,6 +105,8 @@ ANYWAY=""
 ROUTE_ARG=""
 MODEL_ARG=""
 CHECK_ONLY=""
+REASSIGN=""
+REASSIGN_REASON=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --worker) shift; [ $# -gt 0 ] || usage; WORKER="$1" ;;
@@ -102,6 +114,8 @@ while [ $# -gt 0 ]; do
     --model) shift; [ $# -gt 0 ] || usage; MODEL_ARG="$1" ;;
     --check) CHECK_ONLY=1 ;;
     --anyway) ANYWAY=1 ;;
+    --reassign) REASSIGN=1 ;;
+    --reason) shift; [ $# -gt 0 ] || usage; REASSIGN_REASON="$1" ;;
     -h|--help) usage ;;
     -*) usage ;;
     *) [ -z "$ORDER_ARG" ] || usage; ORDER_ARG="$1" ;;
@@ -135,7 +149,14 @@ PROJECT=$(project_from_order "$REL")
 load_project_conf "$PROJECT"
 
 TASK=$(task_from_order "$REL")
-[ -n "$WORKER" ] || WORKER="sess-${TASK}-$(date +%m%d)"
+# A reassign needs an id the stranded worker cannot already own. Same-day recovery is the
+# common case — the seat died hours ago, not weeks — so the date alone would regenerate the
+# stranded worker's own id, collide with its task root at the clobber guard below, and (if it
+# somehow got past that) be refused by the board, which does not re-register a known worker.
+if [ -n "$WORKER" ]; then :
+elif [ -n "$REASSIGN" ]; then WORKER="sess-${TASK}-$(date +%m%d)-r$(date +%H%M%S)"
+else                          WORKER="sess-${TASK}-$(date +%m%d)"
+fi
 
 # Both ids flow into a generated shell wrapper (baked identity), tmux window
 # names, and filesystem paths. Constrain them to a safe charset so a stray
@@ -269,6 +290,34 @@ CATALOG_VERSION=$(jq -r '.schema_version // empty' "$HIVE_ROUTE_CATALOG" 2>/dev/
   || die "route catalog $HIVE_ROUTE_CATALOG is schema_version '${CATALOG_VERSION:-unknown}'; this build reads v2.
   Migrate it — the original is backed up first:  hive-routes migrate"
 
+# A recovery keeps the route the task was already approved on, unless the operator names
+# another. Without this, `--reassign` with no `--route` falls through to the catalog default
+# and silently reseats the task on a different harness, model, provider AND billing market —
+# an API-billed sandboxed task would come back as a subscription Claude worker, the sandbox
+# guard below would never fire because EXECUTABLE is no longer `sbx`, and the stranded VM
+# would be left behind. Recovering a seat is not the moment to change what pays for it; the
+# operator can still say so explicitly with --route.
+if [ -n "$REASSIGN" ] && [ -z "$ROUTE_ARG" ]; then
+  # Best effort, never fatal. A run with no events does not answer JSON here, and this is a
+  # convenience over the authoritative board read further down — which refuses with a message
+  # about the TASK rather than a jq parse error. Failing here would replace that message with
+  # this one and tell the operator nothing useful.
+  PRIOR_ROUTE=$(hive report "$RUN" --json 2>/dev/null \
+    | jq -r --arg t "$TASK" 'last(.[] | select(.event_type == "execution.route_approved"
+                                               and .task_id == $t) | .payload.identity.route) // ""' \
+      2>/dev/null) || PRIOR_ROUTE=""
+  if [ -n "$PRIOR_ROUTE" ]; then
+    ROUTE_ARG="$PRIOR_ROUTE"
+    echo "  route:  carrying forward '$PRIOR_ROUTE' from this task's last approval (--route overrides)"
+  else
+    # Not a refusal: the board gate below decides whether this task is recoverable at all,
+    # and says so far more precisely. This only warns that if it IS, the route will not be
+    # the one it ran on, because nothing on the spine records one.
+    echo "hive-launch: WARNING no recorded route approval for '$TASK' on run '$RUN'; a" >&2
+    echo "  recovery would use the catalog default. Name the route with --route." >&2
+  fi
+fi
+
 # The route NAME: the operator's --route for this one launch, or the catalog's single
 # worker default. An override writes nothing and amends nothing.
 if [ -n "$ROUTE_ARG" ]; then
@@ -335,7 +384,101 @@ while IFS= read -r n; do
   Hive's authority over its own record is not inheritable under any configuration.
   Remove it from runner.inherit_env in $HIVE_ROUTE_CATALOG." ;;
   esac
-done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?')
+done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?, (.runner.inherit_env_as // {} | to_entries[] | .key, .value), (.runner.env // {} | keys[])')
+
+# --- the route's own environment facts --------------------------------------------------
+# `runner.env` holds the provider ENDPOINT as a literal, and `runner.inherit_env_as` maps a
+# name the harness reads to the name the host actually holds it under. Both exist because
+# 2026-08-28 proved the alternative: an endpoint that lived only in the operator's shell went
+# missing, the launcher skipped the unset name without a word, the sandbox never opened egress
+# to the provider, and the worker answered from api.anthropic.com — which rejects every
+# deepseek id. The endpoint is a fact about the ROUTE, so it is carried by the route.
+#
+# The catalog model restricts runner.env VALUES to http(s) URLs — and this script never reads
+# the catalog through that model. It parses the file with jq, deliberately (see above), so a
+# rule enforced only in `harness/records.py` is a rule that does not hold on the path a launch
+# actually takes. The same shape is therefore checked here, against the same field, before any
+# of it is printed by --check or forwarded into a window: a value that is not an endpoint is
+# a value nobody has cleared for either.
+ENV_PAIRS=$(printf '%s' "$ROUTE" | jq -r '(.runner.env // {}) | to_entries[] | "\(.key)=\(.value)"')
+while IFS= read -r pair; do
+  [ -n "$pair" ] || continue
+  case "${pair%%=*}" in
+    ''|*[!A-Za-z0-9_]*|[0-9]*)
+      die "route '$ROUTE_NAME' has a runner.env key that is not an environment variable NAME:
+  '${pair%%=*}'. Fix the route in $HIVE_ROUTE_CATALOG." ;;
+  esac
+  case "${pair#*=}" in
+    http://*|https://*) : ;;
+    *)  die "route '$ROUTE_NAME' has runner.env['${pair%%=*}'] set to something that is not an
+  http(s) endpoint. This is the one field in the runner block that holds a VALUE, and it holds
+  endpoints only — precisely so that a credential cannot be placed in a field this launcher
+  prints in its preflight and forwards into the worker's environment.
+  Fix the route in $HIVE_ROUTE_CATALOG." ;;
+  esac
+done < <(printf '%s\n' "$ENV_PAIRS")
+
+# Every name a route DECLARES must be set. Skipping an unset one silently is the defect
+# itself: on a sandboxed route the value is written into the VM's 0600 env file and, when it
+# is an endpoint, opened in the VM's egress allowlist, so a skipped name builds a worker that
+# cannot reach its provider and discovers it only after four board writes and a microVM.
+# Every missing name is reported at once — one refusal per launch, not one per re-run.
+require_declared_env() {
+  local missing=() n src
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    [ -n "${!n+set}" ] || missing+=("$n")
+  done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?')
+  while IFS=$'\t' read -r n src; do
+    [ -n "${src:-}" ] || continue
+    [ -n "${!src+set}" ] || missing+=("$src (read by the runner as $n)")
+  done < <(printf '%s' "$ROUTE" | jq -r '(.runner.inherit_env_as // {}) | to_entries[] | "\(.key)\t\(.value)"')
+  [ "${#missing[@]}" -eq 0 ] || die "route '$ROUTE_NAME' declares environment names that are UNSET here:
+    ${missing[*]}
+  A declared name is a requirement, not a hint. Export them, or amend the route in
+  $HIVE_ROUTE_CATALOG. Nothing was created, cloned or emitted."
+}
+
+# One unauthenticated GET against the endpoint the harness will ACTUALLY use. It closes the
+# gap the no-allowlist rationale below leaves open on a sandboxed route, where the harness's
+# own refusal lands only after the board has been written to. It carries no credential, so it
+# can neither spend nor leak.
+#
+# Unreachable is NOT nonexistent. Only a successful response that does not list the id
+# refuses; a timeout warns and proceeds, because a launcher that turns a DNS hiccup into a
+# refused order is less reliable than the failure it is guarding against.
+require_model_served() {   # require_model_served <base-url> <model-id>
+  local base="${1%/}" model="$2" body ids near
+  # A provider pin travels inside the model string as an operator-owned preset; the part
+  # before it is the id the provider actually lists.
+  model="${model%%@preset/*}"
+  [ -z "${HIVE_SKIP_MODEL_PROBE:-}" ] || return 0
+  command -v curl >/dev/null 2>&1 || {
+    echo "  model:  WARNING no curl on PATH; '$model' NOT verified against $base" >&2; return 0; }
+  # A conventional base URL may or may not already carry the API version: OpenRouter's is
+  # `https://openrouter.ai/api`, while most OpenAI-compatible providers publish
+  # `https://host/v1`. Appending unconditionally produced `/v1/v1/models`, which 404s — and a
+  # 404 is indistinguishable here from an outage, so the probe warned and passed EVERY id on
+  # exactly the routes an operator is most likely to write. Normalize, then append once.
+  base="${base%/v1}"
+  body=$(curl -fsS --max-time "${HIVE_MODEL_PROBE_TIMEOUT:-10}" "$base/v1/models" 2>/dev/null) || {
+    echo "  model:  WARNING could not reach $base/v1/models; '$model' is UNVERIFIED for this launch" >&2
+    return 0; }
+  ids=$(printf '%s' "$body" | jq -r '.data[]?.id // empty' 2>/dev/null) || {
+    echo "  model:  WARNING $base/v1/models did not answer JSON; '$model' UNVERIFIED" >&2; return 0; }
+  [ -n "$ids" ] || {
+    echo "  model:  WARNING $base/v1/models listed no ids; '$model' UNVERIFIED" >&2; return 0; }
+  printf '%s\n' "$ids" | grep -qxF "$model" && return 0
+  case "$model" in
+    */*) near="${model%%/*}" ;;      # the vendor: what a mistyped id usually gets right
+    *)   near="${model%%-*}" ;;      # or the leading token of a bare slug
+  esac
+  die "model '$model' is not served by $base.
+$(printf '%s\n' "$ids" | grep -iF -- "$near" | head -5 | sed 's/^/    near match: /')
+  A route's model is a value inside a shape: fix it with --model <id>, or amend the route in
+  $HIVE_ROUTE_CATALOG. Nothing was created, cloned or emitted."
+}
+
 
 # --- the model: the route's default, or this launch's -----------------------------------
 # A route is a SHAPE — harness, sandbox, credential pool — and the model is a value inside
@@ -343,17 +486,42 @@ done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?')
 # execution identity, because recording the catalog's default while having run something
 # else is the one thing that would make that identity a lie.
 #
-# There is no allowlist of model ids, deliberately: a wrong one is refused by the harness on
-# startup, before a token is spent, which is cheaper and more honest than a gate this
-# catalog's schema cannot hold. For a provider-pinned OpenRouter route the pin travels
-# INSIDE the model string as an operator-owned preset (`<model>@preset/<slug>`), so this one
-# value carries both which model and which silicon serves it (taskbench/openrouter.py).
+# There is still no allowlist of model ids in the catalog, deliberately: providers name their
+# models, Hive does not, and a hand-maintained list would be stale within a week. What was
+# wrong with the older form of this note is the reason it gave — that a wrong id "is refused
+# by the harness on startup, before a token is spent". On a sandboxed route that is false.
+# The harness starts inside a microVM that this script has already built, after four board
+# writes, and its refusal is the most expensive way left to learn the id was wrong; on
+# 2026-08-28 it also arrived disguised as a provider outage. So the id is checked against the
+# provider that will serve it, above, by one unauthenticated GET — and the catalog still
+# holds no list.
+#
+# For a provider-pinned OpenRouter route the pin travels INSIDE the model string as an
+# operator-owned preset (`<model>@preset/<slug>`), so this one value carries both which model
+# and which silicon serves it (taskbench/openrouter.py); the preflight strips the preset and
+# checks the id.
 MODEL="${MODEL_ARG:-$R_MODEL}"
 
 # The name a sandboxed route re-attaches by, derived from the task so that a recovery
 # re-attaches the worker's own VM instead of creating a second one. Underscores are legal in
 # a task id and illegal in a sandbox name, so they map to hyphens.
 SANDBOX="hive-${TASK//_/-}"
+
+# --- preflight: prove what is knowable BEFORE anything is built -------------------------
+# Placement is the mechanism. Both checks sit above every side effect this script has —
+# 200-odd lines above `mkdir "$TASK_ROOT"`, 400 above `sbx create`, and further still above
+# the first board write — so a route whose environment is incomplete, or whose model the
+# provider does not serve, costs nothing but the refusal. That is cheaper and more honest
+# than an unwind, which would have to invent board events for a task that should never have
+# been seeded.
+#
+# --check reaches them by falling through to the same two calls, so the preflight an
+# operator reads can never disagree with the one a launch runs.
+require_declared_env
+ENDPOINT_URL=$(printf '%s\n' "$ENV_PAIRS" | sed -n 's/^[^=]*=\(https\{0,1\}:.*\)$/\1/p' | head -1)
+if [ -n "$ENDPOINT_URL" ] && [ -z "$ANYWAY" ]; then
+  require_model_served "$ENDPOINT_URL" "$MODEL"
+fi
 
 # --- the argv, with this launch's own values substituted --------------------------------
 # `runner.args` is a template: the route says WHERE the model, the task root, the clones, the
@@ -391,6 +559,17 @@ if [ -n "$CHECK_ONLY" ]; then
   printf '<kickoff: %d chars>\n' "${#KICKOFF}"
   ENV_NAMES=$(printf '%s' "$ROUTE" | jq -r '[.runner.inherit_env[]?] | join(" ")')
   echo "  env names:  ${ENV_NAMES:-<none>}   (NAMES only; no value is read or printed here)"
+  # The renames and the endpoint, in the same names-and-URLs-only spirit. The rename line
+  # answers the question that cost a launch on 2026-08-28 — which HOST variable actually
+  # feeds the name the harness reads — without reading either one's value.
+  AS_NAMES=$(printf '%s' "$ROUTE" \
+    | jq -r '[(.runner.inherit_env_as // {}) | to_entries[] | "\(.key)<-\(.value)"] | join(" ")')
+  [ -z "$AS_NAMES" ] || echo "  env renames: $AS_NAMES   (NAMES only)"
+  [ -z "$ENV_PAIRS" ] || echo "  endpoint:   $(printf '%s' "$ENV_PAIRS" | tr '\n' ' ')  (a route fact, not the shell's)"
+  # `require_declared_env` already ran above, so reaching this line means every declared name
+  # is set. Saying so is the point: a preflight that stays silent about the thing that broke
+  # the last launch has not preflighted it.
+  echo "  env state:  every declared name is set"
   [ "$EXECUTABLE" != "sbx" ] || echo "  sandbox:    $SANDBOX  (created at launch if absent, re-attached if present)"
   # The same host-side check the real launch makes, on the same helper, BEFORE the version
   # probe. A preflight that printed "NOT INSTALLED" and then exited 0 would tell a human the
@@ -433,7 +612,11 @@ require_executable "$EXECUTABLE" "$ROUTE_NAME"
 # tasks sit in_review, listing them so the operator knows what to drain. `blocked`
 # tasks are deliberately NOT counted — that is answer debt (a question awaiting a
 # decision), not review debt. `--anyway` overrides for the deliberate exception.
-if [ -z "$ANYWAY" ]; then
+# `--reassign` is exempt. The throttle paces NEW work against review debt, and a recovery
+# introduces none: the task is already in flight and already inside the operator's WIP, and
+# the count reads `in_review` only — which an assigned|blocked|in_progress task is not. A
+# throttle that blocked recoveries would be blocking its own drain.
+if [ -z "$ANYWAY" ] && [ -z "$REASSIGN" ]; then
   # Global across every project with a conf: the limit is the operator's review
   # bandwidth, not any single project's, so an in_review backlog anywhere throttles
   # launches everywhere (OPERATIONS.md; decisions.md 2026-07-21).
@@ -473,17 +656,58 @@ fi
 # than collapsing to the empty string and taking the "absent -> create" branch. That
 # collapse was real — `hive-launch` never checked for `jq`, and a missing one turned an
 # in_review task into a fresh `task.created` with every guard below bypassed.
+#
+# `--reassign` is the third mode, and it inverts the polarity of the same table: the three
+# owned states it refuses are exactly the three a reassign is legal FROM
+# (board/legality.py `_g_reassigned`), and everything else refuses. It exists because the
+# recovery it replaces was two hand-typed emits that re-pointed the board at a worker id with
+# no task root, no clones, no wrappers and no window behind it.
 ADOPT=""
+REASSIGN_FROM=""
 BOARD_NOW=$(board_json_strict "$RUN")
 EXISTING=$(printf '%s' "$BOARD_NOW" | jq -r --arg t "$TASK" '.[] | select(.task == $t) | .status')
-if [ -n "$EXISTING" ]; then
+if [ -n "$REASSIGN" ]; then
+  [ -n "$EXISTING" ] || die "--reassign names task '$TASK', which does not exist on run '$RUN'.
+  Reassign recovers a task the board already owns; there is nothing here to recover. Launch it."
+  case "$EXISTING" in
+    assigned|blocked|in_progress) : ;;
+    ready)
+      die "task '$TASK' is 'ready' and unowned on run '$RUN' — that is a launch, not a recovery.
+  Drop --reassign." ;;
+    *)
+      die "--reassign is legal only from assigned|blocked|in_progress; task '$TASK' is
+  '$EXISTING' on run '$RUN' (board/legality.py). Nothing was created or emitted." ;;
+  esac
+  REASSIGN_FROM=$(printf '%s' "$BOARD_NOW" | jq -r --arg t "$TASK" '.[] | select(.task == $t) | .owner // empty')
+  [ -n "$REASSIGN_FROM" ] || die "task '$TASK' is '$EXISTING' on run '$RUN' with no owner, so
+  task.reassigned has no 'from' to record. This is a board that needs repairing by hand, not a
+  seat that needs recovering."
+  [ "$REASSIGN_FROM" != "$WORKER" ] || die "the new worker id '$WORKER' is the one already on
+  task '$TASK'. Pick another with --worker."
+  # The board's roster never forgets a worker id, and `worker.registered` is refused for one
+  # it already holds — a rejection that would land AFTER execution.route_approved, leaving an
+  # orphan spend fact on the spine and no way forward. Checked against the ROSTER and not
+  # against current owners: a worker that was itself reassigned away owns nothing and is still
+  # registered, so an owner scan would wave through exactly the id most likely to be reused.
+  # The roster is what `worker.registered` built, so that is what is read.
+  ROSTER=$(hive report "$RUN" --json 2>/dev/null \
+    | jq -r '.[] | select(.event_type == "worker.registered") | .payload.worker_id') \
+    || die "could not read run '$RUN' to check the worker roster. Refusing rather than
+  registering blind: a rejected worker.registered lands after the route is approved."
+  printf '%s\n' "$ROSTER" | grep -qxF "$WORKER" \
+    && die "worker id '$WORKER' is already on run '$RUN' roster, and the board never
+  re-registers a known id — the refusal would land after this launch had already approved
+  (and recorded) its spend. Pick another with --worker."
+elif [ -n "$EXISTING" ]; then
   case "$EXISTING" in
     ready)
       OWNER=$(printf '%s' "$BOARD_NOW" | jq -r --arg t "$TASK" '.[] | select(.task == $t) | .owner // empty')
       [ -z "$OWNER" ] || die "task '$TASK' is 'ready' but owned by '$OWNER' on run '$RUN' — not adoptable; recover via task.reassigned (RUNBOOK)"
       ADOPT=1 ;;
     assigned|blocked|in_progress)
-      die "task '$TASK' is already owned/in-flight on run '$RUN' (status: $EXISTING); relaunch is not recovery — use task.reassigned (RUNBOOK)" ;;
+      die "task '$TASK' is already owned/in-flight on run '$RUN' (status: $EXISTING); relaunch is
+  not recovery. If that seat is dead, kill its window and recover it onto a fresh worker:
+    hive-launch $REL --reassign --reason '<why>'" ;;
     in_review)
       die "task '$TASK' is already awaiting close on run '$RUN' (status: in_review) — not launchable" ;;
     done)
@@ -508,6 +732,20 @@ command -v tmux >/dev/null 2>&1 \
   || die "tmux not found on PATH — the pane is the task registry, so a launch without tmux cannot complete"
 [ ! -e "$WS_ROOT" ]   || die "$WS_ROOT already exists; pick a fresh --worker id or clear it"
 [ ! -e "$CODE_ROOT" ] || die "$CODE_ROOT already exists; pick a fresh --worker id or clear it"
+# A sandbox is named after the TASK, not the worker, so a reassign of a sandboxed route meets
+# the stranded worker's VM. Re-attaching to it is wrong, and quietly so: its mount set is an
+# argument to `sbx create` and still names the OLD task root, so the new worker's wrappers,
+# clones and kickoff are not visible inside it at all; its 0600 env file carries the dead
+# worker's git identity; and the credential posture below cannot be re-applied after create.
+# The operator removes it, which also keeps the destruction of evidence an explicit act.
+if [ -n "$REASSIGN" ] && [ "$EXECUTABLE" = "sbx" ] \
+   && sbx ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qxF "$SANDBOX"; then
+  die "sandbox '$SANDBOX' still exists, and a reassign needs a fresh one: its mounts, its
+  environment file and its credential posture are all fixed at create time, so re-attaching
+  would seat '$WORKER' in a VM that cannot see its own task root. Remove it and re-run —
+  the stranded task root on disk is untouched by this and stays as evidence:
+    sbx rm $SANDBOX"
+fi
 # The one collision that still means something: a window already NAMED for this
 # task. The pane name is the registry (no registry file), so a second window for
 # one task would corrupt the registry — refuse, and name the recovery path.
@@ -515,7 +753,9 @@ if tmux has-session -t "$SESSION_T" 2>/dev/null \
    && tmux list-windows -t "$SESSION_T" -F '#{window_name}' 2>/dev/null | grep -qxF "$TASK"; then
   die "a tmux window named '$TASK' already exists in session '$HIVE_TMUX_SESSION' — the pane IS the registry, so this task already has a session.
   Look first: tmux attach -t '$HIVE_TMUX_SESSION', then select the '$TASK' window.
-  If that worker is dead, recover per RUNBOOK 'Dead worker recovery' — kill the pane, register a fresh worker id, emit task.reassigned.
+  If that worker is dead, kill the window and recover the task onto a fresh worker:
+    tmux kill-window -t '$HIVE_TMUX_SESSION:$TASK'
+    hive-launch $REL --reassign --reason '<why>'
   Never a second window for one task."
 fi
 
@@ -544,9 +784,17 @@ TASK_TYPE="task"   # advisory label only; not gated (events/types.py). Edit free
 # (hive-common.sh) is the SAME parser hive-score uses; a gate that can disagree
 # with the scorer is the defect this order exists to retire.
 predictions_classify "$OPS_WS/$REL"
+# Also exempt under --reassign, and for a sharper reason than convenience: the acceptance
+# pinned on the seeded task.created is fixed, so editing the order to satisfy this gate would
+# move $SHA and recover the task against a different pin than the board already carries. A
+# stranded task with an unparseable predictions section would otherwise be permanently
+# unrecoverable by tooling.
 case "$PRED_VERDICT" in
   unparsed)
-    if [ -z "$ANYWAY" ]; then
+    if [ -n "$REASSIGN" ]; then
+      echo "hive-launch: --reassign — recovering '$TASK' despite an unparseable '## Predictions'" >&2
+      echo "  section. The gate applies at LAUNCH; this task is already on the board." >&2
+    elif [ -z "$ANYWAY" ]; then
       {
         echo "hive-launch: refusing to launch '$TASK' — its '## Predictions' section does not parse (0 of 3 scored fields)."
         echo "  hive-score parses these bullet labels verbatim, case-insensitively, and nothing else"
@@ -572,7 +820,7 @@ case "$PRED_VERDICT" in
   absent|declared-unpredicted|full) : ;;   # nothing to say — a clean launch
 esac
 
-echo "hive-launch: task=$TASK worker=$WORKER  project=$PROJECT${ADOPT:+  (adopting existing ready task)}"
+echo "hive-launch: task=$TASK worker=$WORKER  project=$PROJECT${ADOPT:+  (adopting existing ready task)}${REASSIGN_FROM:+  (REASSIGN from $REASSIGN_FROM)}"
 echo "  order:  $REL@$SHA"
 echo "  run:    $RUN"
 
@@ -587,12 +835,28 @@ echo "  run:    $RUN"
 mkdir -p "$TASK_ROOT"
 git clone --quiet "$WS_HUB" "$WS_ROOT"       || die "failed to clone workspace from $WS_HUB"
 git clone --quiet "$CANON_CODE" "$CODE_ROOT" || die "failed to clone code from $CANON_CODE"
-git -C "$CODE_ROOT" remote set-url origin "$CODE_REPO"
+# A sandboxed route gets the HTTPS spelling of the same repository. An SSH remote cannot
+# work inside the VM at all: there is no key there, and SSH bypasses the sandbox's forward
+# proxy entirely, so nothing can authenticate it. The proxy DOES authenticate HTTPS — sbx
+# injects a sentinel GH_TOKEN and substitutes the host's stored `github` secret on the way
+# out, which is what keeps a real forge credential out of the VM's filesystem. Handing a
+# sandboxed worker an SSH remote made `hive publish code` structurally impossible on every
+# sbx route: the worker does the work, gets reviewed, and blocks at the push (2026-08-28).
+PUSH_REPO="$CODE_REPO"
+if [ "$EXECUTABLE" = "sbx" ]; then
+  case "$CODE_REPO" in
+    git@*:*)      SCP_REST="${CODE_REPO#git@}"; PUSH_REPO="https://${SCP_REST/:/\/}" ;;
+    ssh://git@*)  PUSH_REPO="https://${CODE_REPO#ssh://git@}" ;;
+  esac
+  [ "$PUSH_REPO" = "$CODE_REPO" ] \
+    || echo "  forge:  $CODE_REPO -> $PUSH_REPO (HTTPS: a sandbox has no SSH key, and the proxy authenticates HTTPS)"
+fi
+git -C "$CODE_ROOT" remote set-url origin "$PUSH_REPO"
 # The publication branch is created here, so the worker starts on it and the plan's
 # fixed `code_branch` is a branch that exists rather than one the worker must remember
 # to make. A publication never asks the worker which branch it meant.
 git -C "$CODE_ROOT" checkout --quiet -b "$CODE_BRANCH"
-echo "  clones: $WS_ROOT  +  $CODE_ROOT (origin -> $CODE_REPO, branch $CODE_BRANCH)"
+echo "  clones: $WS_ROOT  +  $CODE_ROOT (origin -> $PUSH_REPO, branch $CODE_BRANCH)"
 
 # --- the worker's run-local interface -------------------------------------------------
 # Issued by hive-common.sh so the tooling drill exercises the very wrappers a launch
@@ -738,16 +1002,14 @@ if [ "$EXECUTABLE" = "sbx" ]; then
     fi
   fi
 
-  if sbx ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qxF "$SANDBOX"; then
-    # Re-launching onto an existing sandbox is recovery, not a fresh seat, and it is the
-    # operator's call rather than this script's: a sandbox that already exists holds a
-    # previous worker's state. Its tunnel and CLI are re-established below, because a VM
-    # with the right name is not the same thing as a working worker.
-    echo "  sandbox: $SANDBOX (exists — re-attaching; 'sbx rm $SANDBOX' first for a clean VM)"
-  else
-    # The environment file, not the command line: a DSN carries a password, and an argument
-    # is visible in `ps` to every process on the host for as long as the create runs.
-    SBX_ENV_FILE="$TASK_ROOT/.sandbox-env"
+  # The VM's environment file. Written on BOTH paths, because the facts in it come from the
+  # route and the route can change between a create and a re-attach — an endpoint amended in
+  # the catalog that never reached an existing VM would leave the worker pointed at the old
+  # provider while the egress allowlist below, derived from the same facts, pointed at the new
+  # one. The file is 0600 and is never an argument: a DSN carries a password, and an argument
+  # is visible in `ps` to every process on the host for as long as the create runs.
+  SBX_ENV_FILE="$TASK_ROOT/.sandbox-env"
+  write_sandbox_env() {
     # The redirection wraps the WHOLE group, not just the heredoc. With `cat > file` alone,
     # everything appended after it went to this script's stdout instead — which printed a
     # provider key to the operator's terminal and left the sandbox without it (2026-08-24).
@@ -762,20 +1024,45 @@ GIT_AUTHOR_EMAIL=$WORKER@hive.local
 GIT_COMMITTER_NAME=$WORKER
 GIT_COMMITTER_EMAIL=$WORKER@hive.local
 SBXENV
-      # The route's own `inherit_env` names, resolved from the launching environment into the
-      # same 0600 file. A host route's names reach the harness through the tmux window; a
-      # sandboxed one's have to reach it through the VM's environment, and this is the one
-      # place a value can travel without appearing on a command line that `ps` can read.
-      # `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` are how an OpenRouter route points Claude
-      # Code at its provider. Authority credential names were refused at the route read.
+      # The route's own environment facts, in the one place a value can travel without
+      # appearing on a command line that `ps` can read.
+      #
+      # `runner.env` first: the provider endpoint, straight out of the catalog. This is the
+      # line whose absence cost the 2026-08-28 launch — it used to depend on the operator
+      # having exported ANTHROPIC_BASE_URL, and when they had not, the launcher skipped it in
+      # silence. There is nothing left to skip: the value is a route fact.
+      [ -z "$ENV_PAIRS" ] || printf '%s\n' "$ENV_PAIRS"
+      # Then the inherited names. Every one of them is set — require_declared_env proved that
+      # before anything was built — so there is no skip here, and a name that went missing
+      # between then and now is a genuine anomaly rather than a silent omission.
       while IFS= read -r n; do
         [ -n "$n" ] || continue
-        [ -n "${!n+set}" ] || continue
+        [ -n "${!n+set}" ] || die "'$n' became unset during the launch of '$TASK'; refusing to
+  build a sandbox environment that is missing a name the route declares."
         printf '%s=%s\n' "$n" "${!n}"
       done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?')
+      # And the renames: the harness reads NAME, the host holds it under SOURCE. An or-* route
+      # reads ANTHROPIC_API_KEY and the host holds OPENROUTER_API_KEY, so inheriting the
+      # target name directly would have shipped whatever ANTHROPIC_API_KEY happened to be —
+      # on this deployment, the real Anthropic key, under the right name, with no error.
+      while IFS=$'\t' read -r n src; do
+        [ -n "${src:-}" ] || continue
+        [ -n "${!src+set}" ] || die "'$src' became unset during the launch of '$TASK'; refusing to
+  build a sandbox environment that is missing a name the route declares."
+        printf '%s=%s\n' "$n" "${!src}"
+      done < <(printf '%s' "$ROUTE" | jq -r '(.runner.inherit_env_as // {}) | to_entries[] | "\(.key)\t\(.value)"')
       } > "$SBX_ENV_FILE"
     )
+  }
+  write_sandbox_env
 
+  if sbx ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qxF "$SANDBOX"; then
+    # Re-launching onto an existing sandbox is recovery, not a fresh seat, and it is the
+    # operator's call rather than this script's: a sandbox that already exists holds a
+    # previous worker's state. Its tunnel and CLI are re-established below, because a VM
+    # with the right name is not the same thing as a working worker.
+    echo "  sandbox: $SANDBOX (exists — re-attaching; 'sbx rm $SANDBOX' first for a clean VM)"
+  else
     # --- which credential actually pays for this route ---------------------------------
     # sbx ships its agent templates wired for API billing: the claude template writes
     # `apiKeyHelper` into the sandbox's settings.json and sets SBX_CRED_ANTHROPIC_MODE=apikey,
@@ -851,23 +1138,26 @@ SBXENV
 
   # And the provider endpoint the route points its harness at, for the same reason and by the
   # same rule: sbx egress is default-deny, and an agent template's allowlist covers the
-  # provider IT expects, not the one a route redirected the harness to. A route that names an
-  # endpoint in `inherit_env` gets exactly that host opened for its own sandbox — measured
-  # 2026-08-24, where an OpenRouter worker in a claude sandbox got
+  # provider IT expects, not the one a route redirected the harness to. Measured 2026-08-24,
+  # where an OpenRouter worker in a claude sandbox got
   # `403 Blocked by network policy: domain openrouter.ai:443`.
+  #
+  # Derived from `runner.env` — the route — and not, as it was until 2026-08-28, by scanning
+  # the launching environment for values that happened to look like URLs. That scan is how the
+  # rule went missing: the name it depended on was unset, the value it would have matched
+  # never existed, and a loop that finds nothing looks exactly like a route with no endpoint.
+  # The same catalog now produces the same allowlist on any host, which is the only version of
+  # this rule that can be reasoned about before a launch rather than after one.
   while IFS= read -r v; do
-    case "$v" in
-      https://*|http://*) : ;;
-      *) continue ;;
-    esac
+    [ -n "$v" ] || continue
     host="${v#*://}"; host="${host%%/*}"
-    [ -n "$host" ] || continue
+    [ -n "$host" ] || die "route '$ROUTE_NAME' declares the endpoint '$v', which carries no
+  host. Refusing to build a sandbox whose egress rule cannot be derived from its route."
     sbx policy allow network --sandbox "$SANDBOX" "$host" >/dev/null 2>&1 \
       || die "could not allow the provider endpoint '$host' for sandbox '$SANDBOX'; the
   harness would be refused by the sandbox's egress policy on its first call."
-    echo "  sandbox: provider endpoint allowed ($host)"
-  done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?' | while IFS= read -r n; do
-             [ -n "${!n+set}" ] && printf '%s\n' "${!n}"; done)
+    echo "  sandbox: provider endpoint allowed ($host, from the route)"
+  done < <(printf '%s\n' "$ENV_PAIRS" | sed -n 's/^[^=]*=\(https\{0,1\}:\/\/.*\)$/\1/p')
 
   # `pgrep -x socat`, matching the EXECUTABLE name and not the command line: `pgrep -f` on the
   # forwarder's own argv matches the very shell that is asking, so the guard reported a running
@@ -956,10 +1246,45 @@ PYEOF' >/dev/null 2>&1 \
       || die "could not install the omegahive CLI inside '$SANDBOX'. The worker would have no
   emit path. Inspect it with:  sbx exec $SANDBOX bash -l"
   fi
+
+  # --- can this sandbox actually publish? -----------------------------------------------
+  # Asked here, before the board is written to, because the alternative is what happened on
+  # 2026-08-28: the worker read its order, did the work, obtained its review, and only then
+  # discovered that nothing in the VM could authenticate to the forge. A whole session's
+  # spend to learn a deployment fact that one call answers.
+  #
+  # sbx injects a sentinel GH_TOKEN and its proxy substitutes the host's stored `github`
+  # secret on the way out; with no such secret stored, the sentinel reaches the forge
+  # unchanged and 401s. That is a host configuration gap, and the fix is one command, so the
+  # refusal names it.
+  #
+  # Unreachable is not unauthenticated, on the same reasoning as the model probe: a forge
+  # that does not answer warns and proceeds, and only a forge that answers "no" refuses.
+  if [ -z "${HIVE_SKIP_FORGE_CHECK:-}" ]; then
+    FORGE_OUT=$(sbx exec "$SANDBOX" bash -lc \
+      "timeout 45 git ls-remote --exit-code '$PUSH_REPO' HEAD >/dev/null 2>&1; echo \$?" 2>/dev/null) \
+      || FORGE_OUT=""
+    case "${FORGE_OUT//[$'\r\n']/}" in
+      0)  echo "  sandbox: forge reachable and authenticated ($PUSH_REPO)" ;;
+      '') echo "  sandbox: WARNING could not run the forge check inside '$SANDBOX'; publication is UNVERIFIED" >&2 ;;
+      *)  die "sandbox '$SANDBOX' cannot authenticate to the code forge:
+    $PUSH_REPO
+  The worker would do the whole order and block at 'hive publish code'. sbx gives the VM a
+  sentinel GH_TOKEN and its proxy swaps in the host's stored 'github' secret; if none is
+  stored, the sentinel is what reaches the forge. Store one — the dynamic form tracks your
+  gh login instead of going stale:
+    sbx secret set github --command 'gh auth token'
+  A secret is bound when a sandbox is CREATED, so remove this one and relaunch:
+    sbx rm $SANDBOX
+  Set HIVE_SKIP_FORGE_CHECK=1 to launch anyway." ;;
+    esac
+  fi
 fi
 
 assigned_payload=$(jq -cn --arg w "$WORKER" '{worker:$w}')
 registered_payload=$(jq -cn --arg w "$WORKER" '{worker_id:$w}')
+reassigned_payload=$(jq -cn --arg f "$REASSIGN_FROM" --arg t "$WORKER" --arg r "$REASSIGN_REASON" \
+  '{from:$f, to:$t} + (if $r == "" then {} else {reason:$r} end)')
 
 # --- the route fact, BEFORE task.assigned -------------------------------------
 # Ordering is the point, not a detail. `execution.route_approved` is the operator's
@@ -980,23 +1305,44 @@ registered_payload=$(jq -cn --arg w "$WORKER" '{worker_id:$w}')
 # Every value below is reproducible by hand from the catalog and the pinned order, on
 # purpose — the execution id and both digests use the same construction the Python resolver
 # used, so an id computed either way names the same execution.
-EXEC_ID="${TASK:0:100}-a1-$(printf '%s' "$REL@$SHA|$TASK|work|1" | sha256_hex | cut -c1-10)"
+# The attempt number, and not the constant 1 it used to be. EXEC_ID is derived from the order
+# pin, and a recovery usually runs against an UNCHANGED pin — so a hardcoded attempt would mint
+# the same execution id as the launch that stranded the task, collapsing two separate spend
+# decisions into one identity. That is precisely the lie the construction below exists to
+# prevent, and acceptance of this repair turns on being able to say which execution answered.
+ATTEMPT=1
+if [ -n "$REASSIGN_FROM" ]; then
+  PRIOR=$(hive report "$RUN" --json 2>/dev/null \
+    | jq --arg t "$TASK" '[.[] | select(.event_type == "execution.route_approved" and .task_id == $t)] | length' 2>/dev/null) \
+    || die "could not read run '$RUN' to number this recovery's attempt. Refusing rather than
+  defaulting to 1, which would reuse the stranded launch's execution id."
+  case "$PRIOR" in ''|*[!0-9]*) die "unexpected attempt count '$PRIOR' for task '$TASK' on run '$RUN'." ;; esac
+  ATTEMPT=$(( PRIOR + 1 ))
+fi
+EXEC_ID="${TASK:0:100}-a${ATTEMPT}-$(printf '%s' "$REL@$SHA|$TASK|work|$ATTEMPT" | sha256_hex | cut -c1-10)"
 CATALOG_DIGEST="sha256:$(sha256_hex < "$HIVE_ROUTE_CATALOG")"
 # Over the resolved NON-SECRET runner configuration — executable, static argument vector,
 # inherited environment NAMES — and over the catalog's template rather than this launch's
 # expansion of it, because the question it answers is "is this the same runner CONFIGURATION
 # as last time". Which model ran is a separate field, and it is recorded as such.
+# The key set and the sort order here reproduce `RunnerSpec.fingerprint()` byte for byte
+# (harness/records.py). Two constructions of one hash is a standing hazard: a field added to
+# the model and not to this jq would stamp every route_approved with a fingerprint no Python
+# reader can reproduce, and the drift would be invisible until someone compared them.
+# `tests/test_hive_common.py` pins the two against each other.
 RUNNER_FINGERPRINT="sha256:$(printf '%s' "$ROUTE" \
   | jq -cS '{executable: .runner.executable, args: (.runner.args // []),
-             inherit_env: ((.runner.inherit_env // []) | sort)}' \
+             inherit_env: ((.runner.inherit_env // []) | sort),
+             inherit_env_as: (.runner.inherit_env_as // {}),
+             env: (.runner.env // {})}' \
   | tr -d '\n' | sha256_hex)"
 route_payload=$(jq -cn \
   --arg eid "$EXEC_ID" --arg order "$REL@$SHA" \
   --arg cd "$CATALOG_DIGEST" --arg rf "$RUNNER_FINGERPRINT" --arg src "$ROUTE_SOURCE" \
   --arg route "$ROUTE_NAME" --arg vendor "$R_VENDOR" --arg provider "$R_PROVIDER" \
   --arg model "$MODEL" --arg harness "$R_HARNESS" --arg market "$R_MARKET" \
-  --arg pool "$R_POOL" --arg adapter "$R_ADAPTER" \
-  '{execution_id: $eid, purpose: "work", attempt: 1, order_ref: $order,
+  --arg pool "$R_POOL" --arg adapter "$R_ADAPTER" --argjson att "$ATTEMPT" \
+  '{execution_id: $eid, purpose: "work", attempt: $att, order_ref: $order,
     catalog_digest: $cd, runner_fingerprint: $rf, route_source: $src,
     identity: {route: $route, model_vendor: $vendor, provider: $provider, model: $model,
                harness: $harness, billing_market: $market, credential_pool: $pool,
@@ -1012,7 +1358,14 @@ echo "  exec:   $EXEC_ID"
 # re-emitting one would regress it, so we emit ONLY register + assign. Order
 # matters in both: registered -> roster (assign's target must be registered),
 # assigned -> owned.
-if [ -n "$ADOPT" ]; then
+if [ -n "$REASSIGN_FROM" ]; then
+  # Registered BEFORE reassigned: `_g_reassigned` checks the target against the roster, and
+  # the roster is populated only by worker.registered. Neither task.created nor task.assigned
+  # belongs here — the task exists and is owned; what changes is who owns it.
+  emit human "$OPERATOR_ACTOR" worker.registered --payload "$registered_payload" >/dev/null
+  emit coordinator "$OPERATOR_ACTOR" task.reassigned --task "$TASK" --payload "$reassigned_payload" >/dev/null
+  echo "  reassigned: $REASSIGN_FROM -> $WORKER (attempt $ATTEMPT; no task.created, no task.assigned)"
+elif [ -n "$ADOPT" ]; then
   emit human "$OPERATOR_ACTOR" worker.registered              --payload "$registered_payload" >/dev/null
   emit coordinator "$OPERATOR_ACTOR" task.assigned --task "$TASK" --payload "$assigned_payload" >/dev/null
   echo "  adopted: existing ready task -> worker.registered + task.assigned (no task.created)"
@@ -1076,8 +1429,9 @@ half_launch_recovery() {  # half_launch_recovery <what-failed>
       echo "      Prefer (a): the window name is the task registry, and (b) leaves no window."
     fi
     echo
-    echo "  If you would rather abandon this seat, recover per RUNBOOK 'Dead worker recovery'"
-    echo "  (register a fresh worker id, then task.reassigned — never a relaunch)."
+    echo "  If you would rather abandon this seat, recover it onto a fresh worker — never a"
+    echo "  relaunch, which the board will refuse now that the task is owned:"
+    echo "    hive-launch $REL --reassign --reason '<why>'"
     echo
     if [ -n "$kf" ]; then echo "  Kickoff (also written to $kf):"; else echo "  Kickoff:"; fi
     echo "  --------------------------------------------------------------------"
@@ -1142,6 +1496,18 @@ while IFS= read -r n; do
   [ -n "${!n+set}" ] || continue
   TMUX_ENV+=(-e "$n=${!n}")
 done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?')
+# The renames and the endpoint reach a NON-sandboxed route the same way. A host route gets
+# its environment through the window; without these two loops an or-* route run outside sbx
+# would inherit nothing and answer from the wrong provider — the 2026-08-28 failure again,
+# one layer out.
+while IFS=$'\t' read -r n src; do
+  [ -n "${src:-}" ] || continue
+  TMUX_ENV+=(-e "$n=${!src}")
+done < <(printf '%s' "$ROUTE" | jq -r '(.runner.inherit_env_as // {}) | to_entries[] | "\(.key)\t\(.value)"')
+while IFS= read -r pair; do
+  [ -n "$pair" ] || continue
+  TMUX_ENV+=(-e "$pair")
+done < <(printf '%s\n' "$ENV_PAIRS")
 
 if tmux has-session -t "$SESSION_T" 2>/dev/null; then
   PANE=$(tmux new-window -a -t "$SESSION_T:{end}" -n "$TASK" -c "$WS_ROOT" \
