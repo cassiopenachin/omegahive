@@ -42,6 +42,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic.json_schema import JsonDict
 
 from omegahive.events.types import ExecutionIdentity, PriceBasis
 
@@ -58,12 +59,12 @@ CATALOG_SCHEMA_VERSION = 2
 CATALOG_SCHEMA_VERSION_V1 = 1
 
 _NAME_SHAPE = re.compile(r"[A-Za-z0-9._-]{1,64}")
-_ENV_NAME_SHAPE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
+_ENV_NAME_SHAPE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
 # The only values `runner.env` may hold. A provider endpoint is a routing fact and
 # belongs in the catalog; a credential is not and must not be able to hide there. The
 # shape is the enforcement — see RunnerSpec.env.
-_ENDPOINT_SHAPE = re.compile(r"https?://[^\s\x00]+\Z")
+_ENDPOINT_SHAPE = re.compile(r"^https?://[^\s\x00]+$")
 
 # A model id with no internal whitespace. OpenRouter additionally requires `vendor/slug`
 # (see RouteEntry._model_shape): a bare `deepseek-v4-flash-0731` names nothing there, and
@@ -71,7 +72,19 @@ _ENDPOINT_SHAPE = re.compile(r"https?://[^\s\x00]+\Z")
 # `~deepseek/deepseek-v4-flash-latest` does — the class of typo that cost a launch on
 # 2026-08-28 and was misread as a provider outage.
 _MODEL_SHAPE = re.compile(r"\S+\Z")
+
 _OPENROUTER_MODEL_SHAPE = re.compile(r"~?[^/\s]+/[^/\s]+\Z")
+
+# The same two shapes, expressed for the GENERATED JSON SCHEMA as well as for the validators
+# below. Both statements are needed and neither is redundant: `hive-launch` parses the catalog
+# with jq and never through this loader, so the schema is the only statement of shape a
+# non-Python reader of a hand-authored catalog can check against — and the validators are the
+# only ones that produce a message an operator can act on.
+_ENV_KEY_SCHEMA: JsonDict = {"propertyNames": {"pattern": _ENV_NAME_SHAPE.pattern}}
+_ENDPOINT_VALUE_SCHEMA: JsonDict = {
+    "propertyNames": {"pattern": _ENV_NAME_SHAPE.pattern},
+    "additionalProperties": {"type": "string", "pattern": _ENDPOINT_SHAPE.pattern},
+}
 
 # Hive's OWN authority credentials, by exact environment-variable name. These are the
 # database and gateway DSNs from `secrets-manifest.yaml` plus the notifier's bot token —
@@ -167,8 +180,10 @@ class RunnerSpec(BaseModel):
     executable: str
     args: list[str] = Field(default_factory=list)
     inherit_env: list[str] = Field(default_factory=list)
-    inherit_env_as: dict[str, str] = Field(default_factory=dict)
-    env: dict[str, str] = Field(default_factory=dict)
+    inherit_env_as: dict[str, str] = Field(
+        default_factory=dict, json_schema_extra=_ENV_KEY_SCHEMA)
+    env: dict[str, str] = Field(
+        default_factory=dict, json_schema_extra=_ENDPOINT_VALUE_SCHEMA)
 
     @field_validator("executable")
     @classmethod

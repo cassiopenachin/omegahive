@@ -366,9 +366,29 @@ done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?, (.runner.inherit_
 # to the provider, and the worker answered from api.anthropic.com — which rejects every
 # deepseek id. The endpoint is a fact about the ROUTE, so it is carried by the route.
 #
-# The catalog model restricts runner.env VALUES to http(s) URLs, so nothing but an endpoint
-# can arrive here — which is what makes it safe for this script to print them.
+# The catalog model restricts runner.env VALUES to http(s) URLs — and this script never reads
+# the catalog through that model. It parses the file with jq, deliberately (see above), so a
+# rule enforced only in `harness/records.py` is a rule that does not hold on the path a launch
+# actually takes. The same shape is therefore checked here, against the same field, before any
+# of it is printed by --check or forwarded into a window: a value that is not an endpoint is
+# a value nobody has cleared for either.
 ENV_PAIRS=$(printf '%s' "$ROUTE" | jq -r '(.runner.env // {}) | to_entries[] | "\(.key)=\(.value)"')
+while IFS= read -r pair; do
+  [ -n "$pair" ] || continue
+  case "${pair%%=*}" in
+    ''|*[!A-Za-z0-9_]*|[0-9]*)
+      die "route '$ROUTE_NAME' has a runner.env key that is not an environment variable NAME:
+  '${pair%%=*}'. Fix the route in $HIVE_ROUTE_CATALOG." ;;
+  esac
+  case "${pair#*=}" in
+    http://*|https://*) : ;;
+    *)  die "route '$ROUTE_NAME' has runner.env['${pair%%=*}'] set to something that is not an
+  http(s) endpoint. This is the one field in the runner block that holds a VALUE, and it holds
+  endpoints only — precisely so that a credential cannot be placed in a field this launcher
+  prints in its preflight and forwards into the worker's environment.
+  Fix the route in $HIVE_ROUTE_CATALOG." ;;
+  esac
+done < <(printf '%s\n' "$ENV_PAIRS")
 
 # Every name a route DECLARES must be set. Skipping an unset one silently is the defect
 # itself: on a sandboxed route the value is written into the VM's 0600 env file and, when it
@@ -407,6 +427,12 @@ require_model_served() {   # require_model_served <base-url> <model-id>
   [ -z "${HIVE_SKIP_MODEL_PROBE:-}" ] || return 0
   command -v curl >/dev/null 2>&1 || {
     echo "  model:  WARNING no curl on PATH; '$model' NOT verified against $base" >&2; return 0; }
+  # A conventional base URL may or may not already carry the API version: OpenRouter's is
+  # `https://openrouter.ai/api`, while most OpenAI-compatible providers publish
+  # `https://host/v1`. Appending unconditionally produced `/v1/v1/models`, which 404s — and a
+  # 404 is indistinguishable here from an outage, so the probe warned and passed EVERY id on
+  # exactly the routes an operator is most likely to write. Normalize, then append once.
+  base="${base%/v1}"
   body=$(curl -fsS --max-time "${HIVE_MODEL_PROBE_TIMEOUT:-10}" "$base/v1/models" 2>/dev/null) || {
     echo "  model:  WARNING could not reach $base/v1/models; '$model' is UNVERIFIED for this launch" >&2
     return 0; }
@@ -632,9 +658,18 @@ if [ -n "$REASSIGN" ]; then
   task '$TASK'. Pick another with --worker."
   # The board's roster never forgets a worker id, and `worker.registered` is refused for one
   # it already holds — a rejection that would land AFTER execution.route_approved, leaving an
-  # orphan spend fact on the spine. Caught here instead, before anything is emitted.
-  printf '%s' "$BOARD_NOW" | jq -e --arg w "$WORKER" 'any(.[]; .owner == $w)' >/dev/null 2>&1 \
-    && die "worker id '$WORKER' already owns a task on run '$RUN'; pick another with --worker."
+  # orphan spend fact on the spine and no way forward. Checked against the ROSTER and not
+  # against current owners: a worker that was itself reassigned away owns nothing and is still
+  # registered, so an owner scan would wave through exactly the id most likely to be reused.
+  # The roster is what `worker.registered` built, so that is what is read.
+  ROSTER=$(hive report "$RUN" --json 2>/dev/null \
+    | jq -r '.[] | select(.event_type == "worker.registered") | .payload.worker_id') \
+    || die "could not read run '$RUN' to check the worker roster. Refusing rather than
+  registering blind: a rejected worker.registered lands after the route is approved."
+  printf '%s\n' "$ROSTER" | grep -qxF "$WORKER" \
+    && die "worker id '$WORKER' is already on run '$RUN' roster, and the board never
+  re-registers a known id — the refusal would land after this launch had already approved
+  (and recorded) its spend. Pick another with --worker."
 elif [ -n "$EXISTING" ]; then
   case "$EXISTING" in
     ready)

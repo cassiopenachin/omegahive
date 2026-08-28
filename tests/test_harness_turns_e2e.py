@@ -1798,3 +1798,90 @@ def test_a_plain_relaunch_of_an_owned_task_names_the_recovery_command(deployment
                   env=launch_env(dep, s["bin_dir"]))
     assert proc.returncode != 0
     assert "--reassign" in proc.stdout + proc.stderr
+
+
+# --- what the cross-harness review caught (2026-08-28) --------------------------------
+# All three are the same shape of mistake: a guarantee stated in one place and relied on
+# in another that cannot see it.
+
+def test_a_non_endpoint_in_runner_env_refuses_at_the_launcher_not_only_the_model(deployment):
+    """`hive-launch` parses the catalog with jq and never through `harness/records.py`, so
+    the URL-only rule has to hold on the launcher's own path too. Without this the value
+    would be printed by --check and forwarded into the worker's window."""
+    dep = deployment
+    # Written past the model, exactly as a hand-authored catalog would reach the launcher.
+    doc = catalog(route(runner=runner(inherit_env=[])))
+    doc["routes"][0]["runner"]["env"] = {"ANTHROPIC_API_KEY": "sk-ant-not-an-endpoint"}
+    dep["catalog"].write_text(json.dumps(doc, indent=2))
+    order_rel = order_for(dep, "bad-env-value")
+    before = len(events(dep))
+
+    proc = launch(dep, order_rel, "--worker", "sess-bad-env-value-0828",
+                  env=launch_env(dep, stub_tmux(dep)))
+    assert proc.returncode != 0
+    out = proc.stdout + proc.stderr
+    assert "endpoints only" in out
+    assert "sk-ant-not-an-endpoint" not in out, "the refusal must not echo the value it refused"
+    assert len(events(dep)) == before
+
+
+def test_the_committed_schema_states_the_endpoint_rule_too():
+    """A hand-authoring operator checks the schema, not the Python validator."""
+    schema = json.loads((REPO / "schemas" / "route-catalog.v2.json").read_text())
+    env = schema["$defs"]["RunnerSpec"]["properties"]["env"]
+    assert env["additionalProperties"]["pattern"].startswith("^https?://")
+    assert "propertyNames" in env
+    rename = schema["$defs"]["RunnerSpec"]["properties"]["inherit_env_as"]
+    assert "propertyNames" in rename
+
+
+def test_a_base_url_that_already_carries_v1_is_not_doubled(deployment):
+    """`https://host/v1` + `/v1/models` is a 404, and a 404 here is indistinguishable from
+    an outage — so the probe would warn and pass EVERY id on the most conventional base
+    URL shape there is. The example catalog ships one."""
+    dep = deployment
+    set_catalog(dep, route(provider="openrouter", model="vendor/absent-model",
+                           runner=runner(env={"ANTHROPIC_BASE_URL": "https://provider.invalid/v1"})))
+    order_rel = order_for(dep, "double-v1")
+    bin_dir = stub_tmux(dep)
+    # A curl that answers ONLY the correctly-formed URL; anything doubled 404s.
+    curl = bin_dir / "curl"
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        'for a in "$@"; do case "$a" in *//v1/v1/*|*/v1/v1/*) exit 22 ;; esac; done\n'
+        """for a in "$@"; do case "$a" in https://provider.invalid/v1/models)"""
+        """ echo '{"data":[{"id":"vendor/present-model"}]}'; exit 0 ;; esac; done\n"""
+        "exit 22\n"
+    )
+    curl.chmod(0o755)
+    before = len(events(dep))
+
+    proc = launch(dep, order_rel, "--worker", "sess-double-v1-0828",
+                  env=launch_env(dep, bin_dir))
+    # The probe REACHED the provider, so an absent id must refuse rather than warn.
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "UNVERIFIED" not in proc.stderr, "a reachable endpoint must not report unverified"
+    assert "vendor/absent-model" in proc.stdout + proc.stderr
+    assert len(events(dep)) == before
+
+
+@pytest.mark.skipif(not shutil.which("tmux"), reason="the window is the registry")
+def test_reassign_refuses_a_worker_id_the_roster_already_holds(deployment):
+    """The roster remembers every id ever registered, including a worker that was itself
+    reassigned away and therefore owns nothing. An owner-only scan waves that id through,
+    and the board's refusal then lands AFTER execution.route_approved — an orphan spend
+    fact and no way forward."""
+    dep = deployment
+    s = strand_a_task(dep, "rosterdup")
+    env = shell_env(dep, CANON_CODE=str(dep["tmp"] / "code-seed"),
+                    OMEGAHIVE_COMPOSE="compose-never-invoked-in-this-test")
+    # First recovery: the original worker is now registered AND owns nothing.
+    assert launch(dep, s["order_rel"], "--reassign", env=env).returncode == 0
+    tmux_kill(dep["tmux_session"], dep)
+    before = len(events(dep))
+
+    # Re-using it must refuse before the route is approved.
+    proc = launch(dep, s["order_rel"], "--reassign", "--worker", s["worker"], env=env)
+    assert proc.returncode != 0
+    assert "roster" in proc.stdout + proc.stderr
+    assert len(events(dep)) == before, "no spend fact may precede a rejected registration"
