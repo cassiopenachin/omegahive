@@ -58,6 +58,7 @@ usage() {
   cat >&2 <<'USAGE'
 usage: hive-launch <order-file> [--route <name>] [--model <id>] [--worker <id>]
                                 [--check] [--anyway]
+       hive-launch <order-file> --reassign [--reason "<why>"] [--route <name>] ...
 
   --route <name>     run this launch on the named catalog route instead of the
                      catalog's defaults.worker. An operator override for ONE launch:
@@ -71,6 +72,15 @@ usage: hive-launch <order-file> [--route <name>] [--model <id>] [--worker <id>]
                      argv, the inherited environment NAMES and the installed harness
                      version, and STOP. No clone, no spine write, no token spent.
   --anyway           override the review-WIP throttle and the predictions gate.
+  --reassign         recover a task stranded at assigned|blocked|in_progress onto a
+                     fresh worker: provision a new task root, clones, wrappers, sandbox
+                     and window, then emit worker.registered + task.reassigned. It is
+                     NOT a relaunch — no task.created, no task.assigned — and the dead
+                     window must already be gone. Takes the same order file as a launch,
+                     because everything downstream (project, run, pin, kickoff, code
+                     repo) is resolved from it; a bare task id would need a second
+                     lookup that could disagree with the first.
+  --reason "<why>"   recorded on task.reassigned.
 
 hive-launch --turn <turn-dir> still runs one prepared batch turn, and nothing on this
 path writes one any more: the production lifecycle is an interactive window
@@ -95,6 +105,8 @@ ANYWAY=""
 ROUTE_ARG=""
 MODEL_ARG=""
 CHECK_ONLY=""
+REASSIGN=""
+REASSIGN_REASON=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --worker) shift; [ $# -gt 0 ] || usage; WORKER="$1" ;;
@@ -102,6 +114,8 @@ while [ $# -gt 0 ]; do
     --model) shift; [ $# -gt 0 ] || usage; MODEL_ARG="$1" ;;
     --check) CHECK_ONLY=1 ;;
     --anyway) ANYWAY=1 ;;
+    --reassign) REASSIGN=1 ;;
+    --reason) shift; [ $# -gt 0 ] || usage; REASSIGN_REASON="$1" ;;
     -h|--help) usage ;;
     -*) usage ;;
     *) [ -z "$ORDER_ARG" ] || usage; ORDER_ARG="$1" ;;
@@ -135,7 +149,14 @@ PROJECT=$(project_from_order "$REL")
 load_project_conf "$PROJECT"
 
 TASK=$(task_from_order "$REL")
-[ -n "$WORKER" ] || WORKER="sess-${TASK}-$(date +%m%d)"
+# A reassign needs an id the stranded worker cannot already own. Same-day recovery is the
+# common case — the seat died hours ago, not weeks — so the date alone would regenerate the
+# stranded worker's own id, collide with its task root at the clobber guard below, and (if it
+# somehow got past that) be refused by the board, which does not re-register a known worker.
+if [ -n "$WORKER" ]; then :
+elif [ -n "$REASSIGN" ]; then WORKER="sess-${TASK}-$(date +%m%d)-r$(date +%H%M%S)"
+else                          WORKER="sess-${TASK}-$(date +%m%d)"
+fi
 
 # Both ids flow into a generated shell wrapper (baked identity), tmux window
 # names, and filesystem paths. Constrain them to a safe charset so a stray
@@ -360,7 +381,7 @@ require_declared_env() {
     [ -n "$n" ] || continue
     [ -n "${!n+set}" ] || missing+=("$n")
   done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?')
-  while IFS="	" read -r n src; do
+  while IFS=$'\t' read -r n src; do
     [ -n "${src:-}" ] || continue
     [ -n "${!src+set}" ] || missing+=("$src (read by the runner as $n)")
   done < <(printf '%s' "$ROUTE" | jq -r '(.runner.inherit_env_as // {}) | to_entries[] | "\(.key)\t\(.value)"')
@@ -379,7 +400,7 @@ require_declared_env() {
 # refuses; a timeout warns and proceeds, because a launcher that turns a DNS hiccup into a
 # refused order is less reliable than the failure it is guarding against.
 require_model_served() {   # require_model_served <base-url> <model-id>
-  local base="${1%/}" model="$2" body ids
+  local base="${1%/}" model="$2" body ids near
   # A provider pin travels inside the model string as an operator-owned preset; the part
   # before it is the id the provider actually lists.
   model="${model%%@preset/*}"
@@ -394,8 +415,12 @@ require_model_served() {   # require_model_served <base-url> <model-id>
   [ -n "$ids" ] || {
     echo "  model:  WARNING $base/v1/models listed no ids; '$model' UNVERIFIED" >&2; return 0; }
   printf '%s\n' "$ids" | grep -qxF "$model" && return 0
+  case "$model" in
+    */*) near="${model%%/*}" ;;      # the vendor: what a mistyped id usually gets right
+    *)   near="${model%%-*}" ;;      # or the leading token of a bare slug
+  esac
   die "model '$model' is not served by $base.
-$(printf '%s\n' "$ids" | grep -iF -- "${model##*/}" | head -5 | sed 's/^/    near match: /')
+$(printf '%s\n' "$ids" | grep -iF -- "$near" | head -5 | sed 's/^/    near match: /')
   A route's model is a value inside a shape: fix it with --model <id>, or amend the route in
   $HIVE_ROUTE_CATALOG. Nothing was created, cloned or emitted."
 }
@@ -439,7 +464,7 @@ SANDBOX="hive-${TASK//_/-}"
 # --check reaches them by falling through to the same two calls, so the preflight an
 # operator reads can never disagree with the one a launch runs.
 require_declared_env
-ENDPOINT_URL=$(printf '%s' "$ENV_PAIRS" | sed -n 's/^[^=]*=\(https\{0,1\}:.*\)$/\1/p' | head -1)
+ENDPOINT_URL=$(printf '%s\n' "$ENV_PAIRS" | sed -n 's/^[^=]*=\(https\{0,1\}:.*\)$/\1/p' | head -1)
 if [ -n "$ENDPOINT_URL" ] && [ -z "$ANYWAY" ]; then
   require_model_served "$ENDPOINT_URL" "$MODEL"
 fi
@@ -533,7 +558,11 @@ require_executable "$EXECUTABLE" "$ROUTE_NAME"
 # tasks sit in_review, listing them so the operator knows what to drain. `blocked`
 # tasks are deliberately NOT counted — that is answer debt (a question awaiting a
 # decision), not review debt. `--anyway` overrides for the deliberate exception.
-if [ -z "$ANYWAY" ]; then
+# `--reassign` is exempt. The throttle paces NEW work against review debt, and a recovery
+# introduces none: the task is already in flight and already inside the operator's WIP, and
+# the count reads `in_review` only — which an assigned|blocked|in_progress task is not. A
+# throttle that blocked recoveries would be blocking its own drain.
+if [ -z "$ANYWAY" ] && [ -z "$REASSIGN" ]; then
   # Global across every project with a conf: the limit is the operator's review
   # bandwidth, not any single project's, so an in_review backlog anywhere throttles
   # launches everywhere (OPERATIONS.md; decisions.md 2026-07-21).
@@ -573,17 +602,49 @@ fi
 # than collapsing to the empty string and taking the "absent -> create" branch. That
 # collapse was real — `hive-launch` never checked for `jq`, and a missing one turned an
 # in_review task into a fresh `task.created` with every guard below bypassed.
+#
+# `--reassign` is the third mode, and it inverts the polarity of the same table: the three
+# owned states it refuses are exactly the three a reassign is legal FROM
+# (board/legality.py `_g_reassigned`), and everything else refuses. It exists because the
+# recovery it replaces was two hand-typed emits that re-pointed the board at a worker id with
+# no task root, no clones, no wrappers and no window behind it.
 ADOPT=""
+REASSIGN_FROM=""
 BOARD_NOW=$(board_json_strict "$RUN")
 EXISTING=$(printf '%s' "$BOARD_NOW" | jq -r --arg t "$TASK" '.[] | select(.task == $t) | .status')
-if [ -n "$EXISTING" ]; then
+if [ -n "$REASSIGN" ]; then
+  [ -n "$EXISTING" ] || die "--reassign names task '$TASK', which does not exist on run '$RUN'.
+  Reassign recovers a task the board already owns; there is nothing here to recover. Launch it."
+  case "$EXISTING" in
+    assigned|blocked|in_progress) : ;;
+    ready)
+      die "task '$TASK' is 'ready' and unowned on run '$RUN' — that is a launch, not a recovery.
+  Drop --reassign." ;;
+    *)
+      die "--reassign is legal only from assigned|blocked|in_progress; task '$TASK' is
+  '$EXISTING' on run '$RUN' (board/legality.py). Nothing was created or emitted." ;;
+  esac
+  REASSIGN_FROM=$(printf '%s' "$BOARD_NOW" | jq -r --arg t "$TASK" '.[] | select(.task == $t) | .owner // empty')
+  [ -n "$REASSIGN_FROM" ] || die "task '$TASK' is '$EXISTING' on run '$RUN' with no owner, so
+  task.reassigned has no 'from' to record. This is a board that needs repairing by hand, not a
+  seat that needs recovering."
+  [ "$REASSIGN_FROM" != "$WORKER" ] || die "the new worker id '$WORKER' is the one already on
+  task '$TASK'. Pick another with --worker."
+  # The board's roster never forgets a worker id, and `worker.registered` is refused for one
+  # it already holds — a rejection that would land AFTER execution.route_approved, leaving an
+  # orphan spend fact on the spine. Caught here instead, before anything is emitted.
+  printf '%s' "$BOARD_NOW" | jq -e --arg w "$WORKER" 'any(.[]; .owner == $w)' >/dev/null 2>&1 \
+    && die "worker id '$WORKER' already owns a task on run '$RUN'; pick another with --worker."
+elif [ -n "$EXISTING" ]; then
   case "$EXISTING" in
     ready)
       OWNER=$(printf '%s' "$BOARD_NOW" | jq -r --arg t "$TASK" '.[] | select(.task == $t) | .owner // empty')
       [ -z "$OWNER" ] || die "task '$TASK' is 'ready' but owned by '$OWNER' on run '$RUN' — not adoptable; recover via task.reassigned (RUNBOOK)"
       ADOPT=1 ;;
     assigned|blocked|in_progress)
-      die "task '$TASK' is already owned/in-flight on run '$RUN' (status: $EXISTING); relaunch is not recovery — use task.reassigned (RUNBOOK)" ;;
+      die "task '$TASK' is already owned/in-flight on run '$RUN' (status: $EXISTING); relaunch is
+  not recovery. If that seat is dead, kill its window and recover it onto a fresh worker:
+    hive-launch $REL --reassign --reason '<why>'" ;;
     in_review)
       die "task '$TASK' is already awaiting close on run '$RUN' (status: in_review) — not launchable" ;;
     done)
@@ -608,6 +669,20 @@ command -v tmux >/dev/null 2>&1 \
   || die "tmux not found on PATH — the pane is the task registry, so a launch without tmux cannot complete"
 [ ! -e "$WS_ROOT" ]   || die "$WS_ROOT already exists; pick a fresh --worker id or clear it"
 [ ! -e "$CODE_ROOT" ] || die "$CODE_ROOT already exists; pick a fresh --worker id or clear it"
+# A sandbox is named after the TASK, not the worker, so a reassign of a sandboxed route meets
+# the stranded worker's VM. Re-attaching to it is wrong, and quietly so: its mount set is an
+# argument to `sbx create` and still names the OLD task root, so the new worker's wrappers,
+# clones and kickoff are not visible inside it at all; its 0600 env file carries the dead
+# worker's git identity; and the credential posture below cannot be re-applied after create.
+# The operator removes it, which also keeps the destruction of evidence an explicit act.
+if [ -n "$REASSIGN" ] && [ "$EXECUTABLE" = "sbx" ] \
+   && sbx ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qxF "$SANDBOX"; then
+  die "sandbox '$SANDBOX' still exists, and a reassign needs a fresh one: its mounts, its
+  environment file and its credential posture are all fixed at create time, so re-attaching
+  would seat '$WORKER' in a VM that cannot see its own task root. Remove it and re-run —
+  the stranded task root on disk is untouched by this and stays as evidence:
+    sbx rm $SANDBOX"
+fi
 # The one collision that still means something: a window already NAMED for this
 # task. The pane name is the registry (no registry file), so a second window for
 # one task would corrupt the registry — refuse, and name the recovery path.
@@ -615,7 +690,9 @@ if tmux has-session -t "$SESSION_T" 2>/dev/null \
    && tmux list-windows -t "$SESSION_T" -F '#{window_name}' 2>/dev/null | grep -qxF "$TASK"; then
   die "a tmux window named '$TASK' already exists in session '$HIVE_TMUX_SESSION' — the pane IS the registry, so this task already has a session.
   Look first: tmux attach -t '$HIVE_TMUX_SESSION', then select the '$TASK' window.
-  If that worker is dead, recover per RUNBOOK 'Dead worker recovery' — kill the pane, register a fresh worker id, emit task.reassigned.
+  If that worker is dead, kill the window and recover the task onto a fresh worker:
+    tmux kill-window -t '$HIVE_TMUX_SESSION:$TASK'
+    hive-launch $REL --reassign --reason '<why>'
   Never a second window for one task."
 fi
 
@@ -644,9 +721,17 @@ TASK_TYPE="task"   # advisory label only; not gated (events/types.py). Edit free
 # (hive-common.sh) is the SAME parser hive-score uses; a gate that can disagree
 # with the scorer is the defect this order exists to retire.
 predictions_classify "$OPS_WS/$REL"
+# Also exempt under --reassign, and for a sharper reason than convenience: the acceptance
+# pinned on the seeded task.created is fixed, so editing the order to satisfy this gate would
+# move $SHA and recover the task against a different pin than the board already carries. A
+# stranded task with an unparseable predictions section would otherwise be permanently
+# unrecoverable by tooling.
 case "$PRED_VERDICT" in
   unparsed)
-    if [ -z "$ANYWAY" ]; then
+    if [ -n "$REASSIGN" ]; then
+      echo "hive-launch: --reassign — recovering '$TASK' despite an unparseable '## Predictions'" >&2
+      echo "  section. The gate applies at LAUNCH; this task is already on the board." >&2
+    elif [ -z "$ANYWAY" ]; then
       {
         echo "hive-launch: refusing to launch '$TASK' — its '## Predictions' section does not parse (0 of 3 scored fields)."
         echo "  hive-score parses these bullet labels verbatim, case-insensitively, and nothing else"
@@ -672,7 +757,7 @@ case "$PRED_VERDICT" in
   absent|declared-unpredicted|full) : ;;   # nothing to say — a clean launch
 esac
 
-echo "hive-launch: task=$TASK worker=$WORKER  project=$PROJECT${ADOPT:+  (adopting existing ready task)}"
+echo "hive-launch: task=$TASK worker=$WORKER  project=$PROJECT${ADOPT:+  (adopting existing ready task)}${REASSIGN_FROM:+  (REASSIGN from $REASSIGN_FROM)}"
 echo "  order:  $REL@$SHA"
 echo "  run:    $RUN"
 
@@ -881,7 +966,7 @@ SBXENV
       # reads ANTHROPIC_API_KEY and the host holds OPENROUTER_API_KEY, so inheriting the
       # target name directly would have shipped whatever ANTHROPIC_API_KEY happened to be —
       # on this deployment, the real Anthropic key, under the right name, with no error.
-      while IFS="\t" read -r n src; do
+      while IFS=$'\t' read -r n src; do
         [ -n "${src:-}" ] || continue
         [ -n "${!src+set}" ] || die "'$src' became unset during the launch of '$TASK'; refusing to
   build a sandbox environment that is missing a name the route declares."
@@ -993,7 +1078,7 @@ SBXENV
       || die "could not allow the provider endpoint '$host' for sandbox '$SANDBOX'; the
   harness would be refused by the sandbox's egress policy on its first call."
     echo "  sandbox: provider endpoint allowed ($host, from the route)"
-  done < <(printf '%s' "$ENV_PAIRS" | sed -n 's/^[^=]*=\(https\{0,1\}:\/\/.*\)$/\1/p')
+  done < <(printf '%s\n' "$ENV_PAIRS" | sed -n 's/^[^=]*=\(https\{0,1\}:\/\/.*\)$/\1/p')
 
   # `pgrep -x socat`, matching the EXECUTABLE name and not the command line: `pgrep -f` on the
   # forwarder's own argv matches the very shell that is asking, so the guard reported a running
@@ -1086,6 +1171,8 @@ fi
 
 assigned_payload=$(jq -cn --arg w "$WORKER" '{worker:$w}')
 registered_payload=$(jq -cn --arg w "$WORKER" '{worker_id:$w}')
+reassigned_payload=$(jq -cn --arg f "$REASSIGN_FROM" --arg t "$WORKER" --arg r "$REASSIGN_REASON" \
+  '{from:$f, to:$t} + (if $r == "" then {} else {reason:$r} end)')
 
 # --- the route fact, BEFORE task.assigned -------------------------------------
 # Ordering is the point, not a detail. `execution.route_approved` is the operator's
@@ -1106,7 +1193,21 @@ registered_payload=$(jq -cn --arg w "$WORKER" '{worker_id:$w}')
 # Every value below is reproducible by hand from the catalog and the pinned order, on
 # purpose — the execution id and both digests use the same construction the Python resolver
 # used, so an id computed either way names the same execution.
-EXEC_ID="${TASK:0:100}-a1-$(printf '%s' "$REL@$SHA|$TASK|work|1" | sha256_hex | cut -c1-10)"
+# The attempt number, and not the constant 1 it used to be. EXEC_ID is derived from the order
+# pin, and a recovery usually runs against an UNCHANGED pin — so a hardcoded attempt would mint
+# the same execution id as the launch that stranded the task, collapsing two separate spend
+# decisions into one identity. That is precisely the lie the construction below exists to
+# prevent, and acceptance of this repair turns on being able to say which execution answered.
+ATTEMPT=1
+if [ -n "$REASSIGN_FROM" ]; then
+  PRIOR=$(hive report "$RUN" --json 2>/dev/null \
+    | jq --arg t "$TASK" '[.[] | select(.event_type == "execution.route_approved" and .task_id == $t)] | length' 2>/dev/null) \
+    || die "could not read run '$RUN' to number this recovery's attempt. Refusing rather than
+  defaulting to 1, which would reuse the stranded launch's execution id."
+  case "$PRIOR" in ''|*[!0-9]*) die "unexpected attempt count '$PRIOR' for task '$TASK' on run '$RUN'." ;; esac
+  ATTEMPT=$(( PRIOR + 1 ))
+fi
+EXEC_ID="${TASK:0:100}-a${ATTEMPT}-$(printf '%s' "$REL@$SHA|$TASK|work|$ATTEMPT" | sha256_hex | cut -c1-10)"
 CATALOG_DIGEST="sha256:$(sha256_hex < "$HIVE_ROUTE_CATALOG")"
 # Over the resolved NON-SECRET runner configuration — executable, static argument vector,
 # inherited environment NAMES — and over the catalog's template rather than this launch's
@@ -1128,8 +1229,8 @@ route_payload=$(jq -cn \
   --arg cd "$CATALOG_DIGEST" --arg rf "$RUNNER_FINGERPRINT" --arg src "$ROUTE_SOURCE" \
   --arg route "$ROUTE_NAME" --arg vendor "$R_VENDOR" --arg provider "$R_PROVIDER" \
   --arg model "$MODEL" --arg harness "$R_HARNESS" --arg market "$R_MARKET" \
-  --arg pool "$R_POOL" --arg adapter "$R_ADAPTER" \
-  '{execution_id: $eid, purpose: "work", attempt: 1, order_ref: $order,
+  --arg pool "$R_POOL" --arg adapter "$R_ADAPTER" --argjson att "$ATTEMPT" \
+  '{execution_id: $eid, purpose: "work", attempt: $att, order_ref: $order,
     catalog_digest: $cd, runner_fingerprint: $rf, route_source: $src,
     identity: {route: $route, model_vendor: $vendor, provider: $provider, model: $model,
                harness: $harness, billing_market: $market, credential_pool: $pool,
@@ -1145,7 +1246,14 @@ echo "  exec:   $EXEC_ID"
 # re-emitting one would regress it, so we emit ONLY register + assign. Order
 # matters in both: registered -> roster (assign's target must be registered),
 # assigned -> owned.
-if [ -n "$ADOPT" ]; then
+if [ -n "$REASSIGN_FROM" ]; then
+  # Registered BEFORE reassigned: `_g_reassigned` checks the target against the roster, and
+  # the roster is populated only by worker.registered. Neither task.created nor task.assigned
+  # belongs here — the task exists and is owned; what changes is who owns it.
+  emit human "$OPERATOR_ACTOR" worker.registered --payload "$registered_payload" >/dev/null
+  emit coordinator "$OPERATOR_ACTOR" task.reassigned --task "$TASK" --payload "$reassigned_payload" >/dev/null
+  echo "  reassigned: $REASSIGN_FROM -> $WORKER (attempt $ATTEMPT; no task.created, no task.assigned)"
+elif [ -n "$ADOPT" ]; then
   emit human "$OPERATOR_ACTOR" worker.registered              --payload "$registered_payload" >/dev/null
   emit coordinator "$OPERATOR_ACTOR" task.assigned --task "$TASK" --payload "$assigned_payload" >/dev/null
   echo "  adopted: existing ready task -> worker.registered + task.assigned (no task.created)"
@@ -1209,8 +1317,9 @@ half_launch_recovery() {  # half_launch_recovery <what-failed>
       echo "      Prefer (a): the window name is the task registry, and (b) leaves no window."
     fi
     echo
-    echo "  If you would rather abandon this seat, recover per RUNBOOK 'Dead worker recovery'"
-    echo "  (register a fresh worker id, then task.reassigned — never a relaunch)."
+    echo "  If you would rather abandon this seat, recover it onto a fresh worker — never a"
+    echo "  relaunch, which the board will refuse now that the task is owned:"
+    echo "    hive-launch $REL --reassign --reason '<why>'"
     echo
     if [ -n "$kf" ]; then echo "  Kickoff (also written to $kf):"; else echo "  Kickoff:"; fi
     echo "  --------------------------------------------------------------------"
@@ -1279,14 +1388,14 @@ done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?')
 # its environment through the window; without these two loops an or-* route run outside sbx
 # would inherit nothing and answer from the wrong provider — the 2026-08-28 failure again,
 # one layer out.
-while IFS="\t" read -r n src; do
+while IFS=$'\t' read -r n src; do
   [ -n "${src:-}" ] || continue
   TMUX_ENV+=(-e "$n=${!src}")
 done < <(printf '%s' "$ROUTE" | jq -r '(.runner.inherit_env_as // {}) | to_entries[] | "\(.key)\t\(.value)"')
 while IFS= read -r pair; do
   [ -n "$pair" ] || continue
   TMUX_ENV+=(-e "$pair")
-done < <(printf '%s' "$ENV_PAIRS")
+done < <(printf '%s\n' "$ENV_PAIRS")
 
 if tmux has-session -t "$SESSION_T" 2>/dev/null; then
   PANE=$(tmux new-window -a -t "$SESSION_T:{end}" -n "$TASK" -c "$WS_ROOT" \
