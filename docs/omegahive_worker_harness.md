@@ -156,6 +156,60 @@ again. The rollback is the `cp` the command prints.
 under the old regime ("available when the shared Codex harness binding is proven") is now
 false. Nothing depends on them; correcting them is a two-minute edit.
 
+### Sandboxed routes: the forge credential this host must have stored
+
+A route whose `runner.executable` is `sbx` (`hive-launch`'s `EXECUTABLE`, read straight off
+`.runner.executable`) does not run the harness in the launching tmux window at all — it
+runs inside a Docker Sandboxes microVM. The launch creates that VM, mounts the worker's
+task root and the workspace hub into it, opens a tunnel to the spine, and installs the
+governed CLI inside it, all before the harness starts (`scripts/hive-launch`'s `sbx`
+branch). `scripts/hive-routes` names which of this host's catalog entries currently resolve
+to `sbx` — ask it rather than trusting a list here, because the catalog can change and a
+list in a doc cannot.
+
+Every sandbox `sbx` creates is handed a *sentinel* `GH_TOKEN` — it reads `gho_sbxprox…`,
+never a real token — and sbx's own forward proxy rewrites outbound calls to GitHub to carry
+this host's stored `github` service secret instead. A real credential never touches the
+VM's filesystem. If this host has no `github` secret stored, the sentinel is what actually
+reaches GitHub, and GitHub 401s it — on `gh auth status`/`gh api`, and on an HTTPS git push,
+alike. Store one, in a form that tracks the host's own `gh` login instead of going stale:
+
+```
+sbx secret set github --command 'gh auth token'
+```
+
+**The secret binds when a sandbox is *created*, not when it is read.** Storing it after a
+sandbox already exists does not repair that sandbox — remove it and let the next launch
+build a fresh one:
+
+```
+sbx rm <sandbox-name>
+```
+
+This is worth saying plainly because the symptom points nowhere near the cause: a worker
+launched onto a sandbox that predates the secret will read its order, write its code, pass
+review, and only fail once it tries to publish — which looks like a git or network problem,
+not a one-time setup step missed on the host.
+
+**Check before you launch anything:**
+
+```
+sbx exec <sandbox> bash -lc 'gh api user --jq .login'
+```
+
+A correctly configured sandbox prints the operator's own GitHub login, produced by the
+sentinel-to-real substitution above rather than by any credential inside the VM. Verified
+2026-08-28 against this task's own sandbox (`hive-sbx-forge-prereq`): `GH_TOKEN` held the
+`gho_sbxproxymanaged…` sentinel, and `gh api user --jq .login` returned the operator's real
+account through it. A stale or never-stored secret 401s here first, before any worker does.
+
+**SSH is not a substitute.** A sandboxed worker holds no SSH key, and sbx's forward proxy
+only rewrites outbound HTTP(S) traffic, so an SSH connection passes straight past it with
+nothing to substitute — confirmed from inside a sandbox, where a bare SSH connection to
+`github.com:22` reaches the host and is closed with no credential ever offered. That is why
+the credential path above is HTTPS-shaped end to end: HTTPS is the only protocol the proxy
+can rewrite.
+
 ## 3. The no-model preflight — run this before every launch
 
 ```bash
@@ -631,3 +685,7 @@ Named here so the next reader does not go looking:
   vendor table. `hive-answer` resumes either harness from its native session and gains
   `--resume-only`. Sections 5 and 6 are the ones to re-read; a pre-cutover event still
   replays unchanged and is described in §5.
+- **2026-08-28** — §2 gains the sandboxed-route forge credential: the `github` secret a
+  sandboxed route's host must store before launch, why an unstored one 401s only at
+  publish time rather than at launch, how to check it, and why SSH cannot substitute for
+  it. Written after a worker lost a full session to this exact gap.
