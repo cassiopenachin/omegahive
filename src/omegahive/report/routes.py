@@ -60,6 +60,13 @@ def _row(route: RouteEntry, *, default: bool, present: bool | None,
         "executable_present": present,
         "runner_args": list(route.runner.args),
         "inherit_env": list(route.runner.inherit_env),
+        # Renames and endpoints, both NAMES-and-URLs only. `inherit_env_as` is printed
+        # target<-source so an operator can see which host variable actually feeds the
+        # name the harness reads; `env` is printed with its values, because the only
+        # values it may hold are endpoints.
+        "inherit_env_as": dict(sorted(route.runner.inherit_env_as.items())),
+        "provider_env": dict(sorted(route.runner.env.items())),
+        "reviewer": route.reviewer,
         "runner_fingerprint": route.runner.fingerprint(),
         # Resolved through the adapter, not guessed: `codex exec resume` refuses several
         # options `codex exec` accepts, so "can this route be resumed" is a property of
@@ -185,6 +192,16 @@ def routes_to_text(rows: list[dict[str, Any]]) -> str:
             out.append(f"      args: {r['runner_args']}")
         if r["inherit_env"]:
             out.append(f"      inherits (names only): {' '.join(r['inherit_env'])}")
+        if r["inherit_env_as"]:
+            pairs = " ".join(f"{k}<-{v}" for k, v in r["inherit_env_as"].items())
+            out.append(f"      inherits renamed (names only): {pairs}")
+        if r["provider_env"]:
+            pairs = " ".join(f"{k}={v}" for k, v in r["provider_env"].items())
+            out.append(f"      endpoint: {pairs}")
+        # Which harness reviews this route's work. It was prose inside `note` until
+        # 2026-08-28, so the operator question "can this route carry an order that
+        # requires a review" had no answer a tool could give.
+        out.append(f"      reviewer: {r['reviewer'] or 'unstated'}")
         out.append(f"      fingerprint: {r['runner_fingerprint']}")
         if r["reason"]:
             out.append(f"    reason: {r['reason']}")
