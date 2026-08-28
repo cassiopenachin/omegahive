@@ -1929,15 +1929,15 @@ def test_reassign_keeps_the_route_the_task_was_approved_on(deployment):
     assert approvals[-1]["identity"]["route"] == "fake-subscription"
 
 
-def test_a_sandboxed_route_gets_an_https_code_remote(deployment):
+def test_a_sandboxed_route_gets_an_https_code_remote():
     """An SSH remote cannot work inside an sbx VM: no key, and SSH bypasses the forward
     proxy that would otherwise authenticate. Handing a sandboxed worker one made
     `hive publish code` structurally impossible — the worker does the work, gets its
     review, and blocks at the push (2026-08-28, folio-score-seam).
     """
-    dep = deployment
-    # A route whose executable is the sandbox wrapper. The launch itself is not run here;
-    # the transform is asserted directly, because a real `sbx create` is not hermetic.
+    # Asserted against the script's own text rather than by launching: a real `sbx create`
+    # is not hermetic, and this is a pure string transform. No deployment fixture, so it
+    # costs nothing and runs on a host with no database.
     script = REPO / "scripts" / "hive-launch"
     body = script.read_text()
     assert 'git -C "$CODE_ROOT" remote set-url origin "$PUSH_REPO"' in body
