@@ -178,6 +178,11 @@ alike. Store one, in a form that tracks the host's own `gh` login instead of goi
 sbx secret set github --command 'gh auth token'
 ```
 
+`sbx` is host-side tooling with no binary reachable from inside any sandbox (confirmed:
+`command -v sbx` finds nothing in this task's own VM), so this exact flag could not be run
+and re-checked from in here. If it rejects, `sbx secret set --help` on the host is
+authoritative over this doc.
+
 **The secret binds when a sandbox is *created*, not when it is read.** Storing it after a
 sandbox already exists does not repair that sandbox — remove it and let the next launch
 build a fresh one:
@@ -191,7 +196,7 @@ launched onto a sandbox that predates the secret will read its order, write its 
 review, and only fail once it tries to publish — which looks like a git or network problem,
 not a one-time setup step missed on the host.
 
-**Check before you launch anything:**
+**Check an existing sandbox before trusting it with a task, without launching one:**
 
 ```
 sbx exec <sandbox> bash -lc 'gh api user --jq .login'
