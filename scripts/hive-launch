@@ -1246,6 +1246,39 @@ PYEOF' >/dev/null 2>&1 \
       || die "could not install the omegahive CLI inside '$SANDBOX'. The worker would have no
   emit path. Inspect it with:  sbx exec $SANDBOX bash -l"
   fi
+
+  # --- can this sandbox actually publish? -----------------------------------------------
+  # Asked here, before the board is written to, because the alternative is what happened on
+  # 2026-08-28: the worker read its order, did the work, obtained its review, and only then
+  # discovered that nothing in the VM could authenticate to the forge. A whole session's
+  # spend to learn a deployment fact that one call answers.
+  #
+  # sbx injects a sentinel GH_TOKEN and its proxy substitutes the host's stored `github`
+  # secret on the way out; with no such secret stored, the sentinel reaches the forge
+  # unchanged and 401s. That is a host configuration gap, and the fix is one command, so the
+  # refusal names it.
+  #
+  # Unreachable is not unauthenticated, on the same reasoning as the model probe: a forge
+  # that does not answer warns and proceeds, and only a forge that answers "no" refuses.
+  if [ -z "${HIVE_SKIP_FORGE_CHECK:-}" ]; then
+    FORGE_OUT=$(sbx exec "$SANDBOX" bash -lc \
+      "timeout 45 git ls-remote --exit-code '$PUSH_REPO' HEAD >/dev/null 2>&1; echo \$?" 2>/dev/null) \
+      || FORGE_OUT=""
+    case "${FORGE_OUT//[$'\r\n']/}" in
+      0)  echo "  sandbox: forge reachable and authenticated ($PUSH_REPO)" ;;
+      '') echo "  sandbox: WARNING could not run the forge check inside '$SANDBOX'; publication is UNVERIFIED" >&2 ;;
+      *)  die "sandbox '$SANDBOX' cannot authenticate to the code forge:
+    $PUSH_REPO
+  The worker would do the whole order and block at 'hive publish code'. sbx gives the VM a
+  sentinel GH_TOKEN and its proxy swaps in the host's stored 'github' secret; if none is
+  stored, the sentinel is what reaches the forge. Store one — the dynamic form tracks your
+  gh login instead of going stale:
+    sbx secret set github --command 'gh auth token'
+  A secret is bound when a sandbox is CREATED, so remove this one and relaunch:
+    sbx rm $SANDBOX
+  Set HIVE_SKIP_FORGE_CHECK=1 to launch anyway." ;;
+    esac
+  fi
 fi
 
 assigned_payload=$(jq -cn --arg w "$WORKER" '{worker:$w}')
