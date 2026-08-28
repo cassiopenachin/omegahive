@@ -297,5 +297,31 @@ case "$SCAN_RC" in
      fi ;;
 esac
 
+# --- 8. the deployed image can read THIS HOST's route catalog --------------------------
+# The catalog is a DEPLOYMENT fact and the model that validates it is CODE, so the two
+# drift independently: a new field lands the moment an operator edits the catalog, and the
+# model that accepts it only arrives when the image is rebuilt. On 2026-08-28 the catalog
+# gained `reviewer` some hours before the image did, and every `hive-routes` in between
+# answered CATALOG_MALFORMED — while launches kept working throughout, because hive-launch
+# parses the catalog with jq and never through the model. No other check here looks at the
+# catalog at all, so nothing caught it; the operator did, by running the command.
+#
+# HIVE_CLI_CMD is dropped deliberately. It routes the CLI to the HOST, which is the one
+# configuration in which this check cannot see the deployed image — and is exactly how the
+# drift stayed invisible for as long as it did.
+CATALOG="${HIVE_ROUTE_CATALOG:-$HOME/.config/omegahive/routes.json}"
+if [ ! -f "$CATALOG" ]; then
+  echo "[SKIP] 8. route catalog: none at $CATALOG — this host configures no worker routes."
+elif ROUTES_OUT=$(env -u HIVE_CLI_CMD OMEGAHIVE_COMPOSE="${DC[*]}" ./scripts/hive-routes 2>&1); then
+  ok "8. route catalog: the deployed image loads it ($(printf '%s' "$ROUTES_OUT" | grep -cE '^(OK|REFUSED) ') route(s) resolved)"
+else
+  printf '%s\n' "$ROUTES_OUT" | sed 's/^/       /'
+  bad "8. route catalog: the deployed image REFUSES $CATALOG (above).
+       The catalog and the image disagree about the schema. Rebuild and recreate:
+         podman compose build && podman compose up -d
+       A launch will keep working meanwhile — hive-launch reads the catalog with jq — so
+       this is the only check that sees it."
+fi
+
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]
