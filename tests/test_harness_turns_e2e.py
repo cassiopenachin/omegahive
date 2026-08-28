@@ -1682,6 +1682,18 @@ def test_reassign_recovers_a_stranded_task_onto_a_fresh_worker(deployment):
     s = strand_a_task(dep, "stranded")
     before = [e[0] for e in events(dep)]
 
+    # The recovery runs a harness that STAYS UP, because the thing being asserted is a live
+    # window and the default fixture harness exits the moment it starts. `tmux_keep_window`
+    # sets `remain-on-exit` only after the window is created, so a harness that exits first
+    # takes its own window with it — a race this test won locally and lost on CI. Keeping the
+    # pane alive tests the window rather than the scheduler. (The race itself is real and
+    # belongs to the launcher, not here: it is why a refusing harness leaves no last screen.)
+    sleeper = dep["tmp"] / "sleeping-harness.sh"
+    write(sleeper, "#!/usr/bin/env bash\nexec sleep 120\n")
+    sleeper.chmod(0o755)
+    # Same route NAME: --reassign carries the task's approved route forward by name.
+    set_catalog(dep, route(runner=runner(executable=str(sleeper), inherit_env=[])))
+
     # A real tmux for the recovery, so "a live window" is a window and not a logged call.
     env = shell_env(dep, CANON_CODE=str(dep["tmp"] / "code-seed"),
                     OMEGAHIVE_COMPOSE="compose-never-invoked-in-this-test")
