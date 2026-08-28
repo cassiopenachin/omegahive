@@ -1203,7 +1203,16 @@ def test_the_committed_schema_offers_no_retired_field_to_a_hand_author():
     schema = json.loads((REPO / "schemas" / "route-catalog.v2.json").read_text())
     runner_props = schema["$defs"]["RunnerSpec"]["properties"]
     assert "worker_io" not in runner_props
-    assert set(runner_props) == {"executable", "args", "inherit_env"}
+    assert set(runner_props) == {
+        "executable",
+        "args",
+        "inherit_env",
+        # The environment pair, added 2026-08-28 so a provider endpoint and a credential
+        # rename are route facts rather than things the operator's shell had better be
+        # holding. `executable` and `args` are still the whole command.
+        "inherit_env_as",
+        "env",
+    }
     assert schema["$defs"]["RunnerSpec"]["additionalProperties"] is False, (
         "a catalog carrying a retired field must refuse by name, not be quietly trimmed"
     )

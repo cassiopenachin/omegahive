@@ -17,6 +17,7 @@
       "credential_pool": "pool-a",
       "enabled": true,
       "note": "the incumbent worker tier and this example's worker default; no per-token list price applies to a subscription route, so price_basis is absent rather than zero",
+      "reviewer": "codex-plugin",
       "runner": {
         "executable": "claude",
         "args": [
@@ -39,6 +40,7 @@
       "credential_pool": "pool-a",
       "enabled": true,
       "note": "cheap-tier candidate, subscription-billed, same runner as the tier above",
+      "reviewer": "codex-plugin",
       "runner": {
         "executable": "claude",
         "args": [
@@ -61,6 +63,7 @@
       "credential_pool": "pool-b",
       "enabled": true,
       "note": "A NATIVE-SANDBOX ROUTE. Everything in `args` is the OPERATOR's: the `exec` subcommand this adapter requires, plus whatever sandbox, permission profile or feature flags this deployment chose. Hive resolves it, records its fingerprint, appends only --json, the pinned model and the prompt, and inserts `resume <thread-id>` after `exec` on a resume turn. Hive does NOT widen it. Before the worker-turns cutover the launcher merged each worker root and both clones' .git directories into this table so a worker could commit, which made the launcher the author of a deployment's posture; now the grant is written here, by the operator, where it is visible. Note the shape: this profile grants write under the parent of every worker root because a worker that can edit but not `git commit` is not a worker, and Codex marks .git read-only inside a workspace-write root by default. Egress stays OFF. Finally, `codex exec resume` on 0.147.0 rejects -s/--sandbox, -C/--cd, --add-dir and -p/--profile: a route carrying one of those can be launched and cannot be resumed, and hive-answer refuses by name rather than dropping it. This route uses only -c overrides, so it stays resumable.",
+      "reviewer": "claude-skill",
       "runner": {
         "executable": "codex",
         "args": [
@@ -94,15 +97,20 @@
         "source": "example vendor list prices, first-party pricing page",
         "captured_at": "2026-08-13"
       },
-      "note": "TWO THINGS AT ONCE. It is a harness this build has never heard of, launching on the built-in 'generic' adapter from configuration alone - so a new CLI, a wrapper script, a container invocation or a VM entry point needs no code change to become runnable, at the honest cost that its model identity is recorded as declared and its usage as unavailable. And it bills against the api market with a provider credential inherited BY NAME: provider access is deployment posture and the operator's to decide. What may never be inherited under any configuration is a Hive authority credential - the database, gateway and reserved-role DSNs - which refuses at catalog load. The price_basis is what makes a historical cost derivable later without consulting a catalog that has since changed.",
+      "note": "TWO THINGS AT ONCE. It is a harness this build has never heard of, launching on the built-in 'generic' adapter from configuration alone - so a new CLI, a wrapper script, a container invocation or a VM entry point needs no code change to become runnable, at the honest cost that its model identity is recorded as declared and its usage as unavailable. And it bills against the api market with a provider credential inherited BY NAME: provider access is deployment posture and the operator's to decide. What may never be inherited under any configuration is a Hive authority credential - the database, gateway and reserved-role DSNs - which refuses at catalog load. The price_basis is what makes a historical cost derivable later without consulting a catalog that has since changed. It also shows the two environment facts a route owns rather than borrowing from the operator's shell. `runner.env` states the provider ENDPOINT: it is the one field here that holds values, and it accepts only http(s) URLs, so a credential cannot be placed in it. `runner.inherit_env_as` inherits a host variable under a DIFFERENT name inside the runner, for a harness that expects a fixed credential name the host holds under another. A name in `inherit_env` or on either side of `inherit_env_as` is a requirement: the launcher refuses when it is unset rather than skipping it silently.",
+      "reviewer": "opus-in-sandbox",
       "runner": {
         "executable": "example-harness",
         "args": [
           "--headless"
         ],
-        "inherit_env": [
-          "EXAMPLE_PROVIDER_CREDENTIAL_NAME"
-        ]
+        "inherit_env": [],
+        "env": {
+          "EXAMPLE_PROVIDER_BASE_URL": "https://api.example-provider.invalid/v1"
+        },
+        "inherit_env_as": {
+          "EXAMPLE_PROVIDER_CREDENTIAL_NAME": "EXAMPLE_HOST_CREDENTIAL_NAME"
+        }
       }
     },
     {

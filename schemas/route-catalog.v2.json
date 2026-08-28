@@ -156,6 +156,23 @@
           "title": "Provider",
           "type": "string"
         },
+        "reviewer": {
+          "anyOf": [
+            {
+              "enum": [
+                "codex-plugin",
+                "claude-skill",
+                "opus-in-sandbox"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reviewer"
+        },
         "runner": {
           "$ref": "#/$defs/RunnerSpec"
         }
@@ -176,7 +193,7 @@
     },
     "RunnerSpec": {
       "additionalProperties": false,
-      "description": "How this deployment actually starts the harness. Argv, never a shell string.\n\nThree fields and no fourth, because every additional field is a place a shell could\nre-enter. `executable` plus `args` is the whole command; an operator who wants a\ncontainer, a VM, a sandbox wrapper or a bare binary writes exactly that here and\nHive runs it. The adapter appends the dynamic elements it knows the harness needs \u2014\nthe model, the session id, the task-root paths, and the kickoff.\n\n`inherit_env` names variables this route needs from the launching environment. Names\nonly: no value ever appears in this file, in a plan, in a log line, in the preflight\nor on the spine. A provider credential name may be listed deliberately; a Hive\nauthority credential name refuses.\n\nThere is deliberately no `worker_io` field any more. It used to choose between the\nworker performing its own spine writes and git publication (`direct`) and a\nprivileged resident mediator performing them on its behalf (`supervised`). The\nmediator is retired: under the accepted runner doctrine a configured full-worker\nrunner must itself supply ordinary worker function \u2014 read/edit/test/commit, governed\nemit, workspace sync and publication, code push and PR \u2014 and a runner that withholds\nthem is a runner the operator must change, not a hole for Hive to keep a trusted\nprocess patching. A route that cannot emit, sync or publish now produces an honest\nblock from the worker rather than a second transport.",
+      "description": "How this deployment actually starts the harness. Argv, never a shell string.\n\n`executable` plus `args` is the whole command, and nothing else here may contribute a\nword to it \u2014 every field that could would be a place a shell re-enters. An operator\nwho wants a container, a VM, a sandbox wrapper or a bare binary writes exactly that\nin those two fields and Hive runs it. The adapter appends the dynamic elements it\nknows the harness needs \u2014 the model, the session id, the task-root paths, and the\nkickoff. The three remaining fields describe the ENVIRONMENT that command runs in,\nand each is a closed shape validated below.\n\n`inherit_env` names variables this route needs from the launching environment. Names\nonly: no value ever appears in this field, in a plan, in a log line, in the preflight\nor on the spine. A provider credential name may be listed deliberately; a Hive\nauthority credential name refuses. A name listed here is a REQUIREMENT \u2014 the launcher\nrefuses when it is unset rather than skipping it, which is the 2026-08-28 defect.\n\n`inherit_env_as` is `inherit_env` with a rename: target name inside the sandbox ->\nsource name on the host. It exists because a provider-compatible harness expects a\nfixed variable name for a credential the host holds under a different one. Inheriting\nthe target name directly and trusting the operator to have overwritten it first ships\nwhatever the host happens to hold, under the right name, silently \u2014 which is how an\nOpenRouter route came to carry the Anthropic key.\n\n`env` is the one field here that holds VALUES, and it accepts only endpoint URLs.\nThat is what keeps the names-only doctrine intact rather than merely stated: a\nprovider endpoint is a fact about the ROUTE, and storing it in the operator's shell\ninstead is how it went missing and took a launch with it. A URL-only shape means no\ncredential can hide here, even by accident.\n\n`inherit_env_as` and `env` are inside the fingerprint, because a worker pointed at a\ndifferent provider is not the same runner configuration.\n\nThere is deliberately no `worker_io` field any more. It used to choose between the\nworker performing its own spine writes and git publication (`direct`) and a\nprivileged resident mediator performing them on its behalf (`supervised`). The\nmediator is retired: under the accepted runner doctrine a configured full-worker\nrunner must itself supply ordinary worker function \u2014 read/edit/test/commit, governed\nemit, workspace sync and publication, code push and PR \u2014 and a runner that withholds\nthem is a runner the operator must change, not a hole for Hive to keep a trusted\nprocess patching. A route that cannot emit, sync or publish now produces an honest\nblock from the worker rather than a second transport.",
       "properties": {
         "args": {
           "items": {
@@ -184,6 +201,13 @@
           },
           "title": "Args",
           "type": "array"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Env",
+          "type": "object"
         },
         "executable": {
           "title": "Executable",
@@ -195,6 +219,13 @@
           },
           "title": "Inherit Env",
           "type": "array"
+        },
+        "inherit_env_as": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Inherit Env As",
+          "type": "object"
         }
       },
       "required": [
