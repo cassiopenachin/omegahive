@@ -335,7 +335,71 @@ while IFS= read -r n; do
   Hive's authority over its own record is not inheritable under any configuration.
   Remove it from runner.inherit_env in $HIVE_ROUTE_CATALOG." ;;
   esac
-done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?')
+done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?, (.runner.inherit_env_as // {} | to_entries[] | .key, .value), (.runner.env // {} | keys[])')
+
+# --- the route's own environment facts --------------------------------------------------
+# `runner.env` holds the provider ENDPOINT as a literal, and `runner.inherit_env_as` maps a
+# name the harness reads to the name the host actually holds it under. Both exist because
+# 2026-08-28 proved the alternative: an endpoint that lived only in the operator's shell went
+# missing, the launcher skipped the unset name without a word, the sandbox never opened egress
+# to the provider, and the worker answered from api.anthropic.com — which rejects every
+# deepseek id. The endpoint is a fact about the ROUTE, so it is carried by the route.
+#
+# The catalog model restricts runner.env VALUES to http(s) URLs, so nothing but an endpoint
+# can arrive here — which is what makes it safe for this script to print them.
+ENV_PAIRS=$(printf '%s' "$ROUTE" | jq -r '(.runner.env // {}) | to_entries[] | "\(.key)=\(.value)"')
+
+# Every name a route DECLARES must be set. Skipping an unset one silently is the defect
+# itself: on a sandboxed route the value is written into the VM's 0600 env file and, when it
+# is an endpoint, opened in the VM's egress allowlist, so a skipped name builds a worker that
+# cannot reach its provider and discovers it only after four board writes and a microVM.
+# Every missing name is reported at once — one refusal per launch, not one per re-run.
+require_declared_env() {
+  local missing=() n src
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    [ -n "${!n+set}" ] || missing+=("$n")
+  done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?')
+  while IFS="	" read -r n src; do
+    [ -n "${src:-}" ] || continue
+    [ -n "${!src+set}" ] || missing+=("$src (read by the runner as $n)")
+  done < <(printf '%s' "$ROUTE" | jq -r '(.runner.inherit_env_as // {}) | to_entries[] | "\(.key)\t\(.value)"')
+  [ "${#missing[@]}" -eq 0 ] || die "route '$ROUTE_NAME' declares environment names that are UNSET here:
+    ${missing[*]}
+  A declared name is a requirement, not a hint. Export them, or amend the route in
+  $HIVE_ROUTE_CATALOG. Nothing was created, cloned or emitted."
+}
+
+# One unauthenticated GET against the endpoint the harness will ACTUALLY use. It closes the
+# gap the no-allowlist rationale below leaves open on a sandboxed route, where the harness's
+# own refusal lands only after the board has been written to. It carries no credential, so it
+# can neither spend nor leak.
+#
+# Unreachable is NOT nonexistent. Only a successful response that does not list the id
+# refuses; a timeout warns and proceeds, because a launcher that turns a DNS hiccup into a
+# refused order is less reliable than the failure it is guarding against.
+require_model_served() {   # require_model_served <base-url> <model-id>
+  local base="${1%/}" model="$2" body ids
+  # A provider pin travels inside the model string as an operator-owned preset; the part
+  # before it is the id the provider actually lists.
+  model="${model%%@preset/*}"
+  [ -z "${HIVE_SKIP_MODEL_PROBE:-}" ] || return 0
+  command -v curl >/dev/null 2>&1 || {
+    echo "  model:  WARNING no curl on PATH; '$model' NOT verified against $base" >&2; return 0; }
+  body=$(curl -fsS --max-time "${HIVE_MODEL_PROBE_TIMEOUT:-10}" "$base/v1/models" 2>/dev/null) || {
+    echo "  model:  WARNING could not reach $base/v1/models; '$model' is UNVERIFIED for this launch" >&2
+    return 0; }
+  ids=$(printf '%s' "$body" | jq -r '.data[]?.id // empty' 2>/dev/null) || {
+    echo "  model:  WARNING $base/v1/models did not answer JSON; '$model' UNVERIFIED" >&2; return 0; }
+  [ -n "$ids" ] || {
+    echo "  model:  WARNING $base/v1/models listed no ids; '$model' UNVERIFIED" >&2; return 0; }
+  printf '%s\n' "$ids" | grep -qxF "$model" && return 0
+  die "model '$model' is not served by $base.
+$(printf '%s\n' "$ids" | grep -iF -- "${model##*/}" | head -5 | sed 's/^/    near match: /')
+  A route's model is a value inside a shape: fix it with --model <id>, or amend the route in
+  $HIVE_ROUTE_CATALOG. Nothing was created, cloned or emitted."
+}
+
 
 # --- the model: the route's default, or this launch's -----------------------------------
 # A route is a SHAPE — harness, sandbox, credential pool — and the model is a value inside
@@ -343,17 +407,42 @@ done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?')
 # execution identity, because recording the catalog's default while having run something
 # else is the one thing that would make that identity a lie.
 #
-# There is no allowlist of model ids, deliberately: a wrong one is refused by the harness on
-# startup, before a token is spent, which is cheaper and more honest than a gate this
-# catalog's schema cannot hold. For a provider-pinned OpenRouter route the pin travels
-# INSIDE the model string as an operator-owned preset (`<model>@preset/<slug>`), so this one
-# value carries both which model and which silicon serves it (taskbench/openrouter.py).
+# There is still no allowlist of model ids in the catalog, deliberately: providers name their
+# models, Hive does not, and a hand-maintained list would be stale within a week. What was
+# wrong with the older form of this note is the reason it gave — that a wrong id "is refused
+# by the harness on startup, before a token is spent". On a sandboxed route that is false.
+# The harness starts inside a microVM that this script has already built, after four board
+# writes, and its refusal is the most expensive way left to learn the id was wrong; on
+# 2026-08-28 it also arrived disguised as a provider outage. So the id is checked against the
+# provider that will serve it, above, by one unauthenticated GET — and the catalog still
+# holds no list.
+#
+# For a provider-pinned OpenRouter route the pin travels INSIDE the model string as an
+# operator-owned preset (`<model>@preset/<slug>`), so this one value carries both which model
+# and which silicon serves it (taskbench/openrouter.py); the preflight strips the preset and
+# checks the id.
 MODEL="${MODEL_ARG:-$R_MODEL}"
 
 # The name a sandboxed route re-attaches by, derived from the task so that a recovery
 # re-attaches the worker's own VM instead of creating a second one. Underscores are legal in
 # a task id and illegal in a sandbox name, so they map to hyphens.
 SANDBOX="hive-${TASK//_/-}"
+
+# --- preflight: prove what is knowable BEFORE anything is built -------------------------
+# Placement is the mechanism. Both checks sit above every side effect this script has —
+# 200-odd lines above `mkdir "$TASK_ROOT"`, 400 above `sbx create`, and further still above
+# the first board write — so a route whose environment is incomplete, or whose model the
+# provider does not serve, costs nothing but the refusal. That is cheaper and more honest
+# than an unwind, which would have to invent board events for a task that should never have
+# been seeded.
+#
+# --check reaches them by falling through to the same two calls, so the preflight an
+# operator reads can never disagree with the one a launch runs.
+require_declared_env
+ENDPOINT_URL=$(printf '%s' "$ENV_PAIRS" | sed -n 's/^[^=]*=\(https\{0,1\}:.*\)$/\1/p' | head -1)
+if [ -n "$ENDPOINT_URL" ] && [ -z "$ANYWAY" ]; then
+  require_model_served "$ENDPOINT_URL" "$MODEL"
+fi
 
 # --- the argv, with this launch's own values substituted --------------------------------
 # `runner.args` is a template: the route says WHERE the model, the task root, the clones, the
@@ -391,6 +480,17 @@ if [ -n "$CHECK_ONLY" ]; then
   printf '<kickoff: %d chars>\n' "${#KICKOFF}"
   ENV_NAMES=$(printf '%s' "$ROUTE" | jq -r '[.runner.inherit_env[]?] | join(" ")')
   echo "  env names:  ${ENV_NAMES:-<none>}   (NAMES only; no value is read or printed here)"
+  # The renames and the endpoint, in the same names-and-URLs-only spirit. The rename line
+  # answers the question that cost a launch on 2026-08-28 — which HOST variable actually
+  # feeds the name the harness reads — without reading either one's value.
+  AS_NAMES=$(printf '%s' "$ROUTE" \
+    | jq -r '[(.runner.inherit_env_as // {}) | to_entries[] | "\(.key)<-\(.value)"] | join(" ")')
+  [ -z "$AS_NAMES" ] || echo "  env renames: $AS_NAMES   (NAMES only)"
+  [ -z "$ENV_PAIRS" ] || echo "  endpoint:   $(printf '%s' "$ENV_PAIRS" | tr '\n' ' ')  (a route fact, not the shell's)"
+  # `require_declared_env` already ran above, so reaching this line means every declared name
+  # is set. Saying so is the point: a preflight that stays silent about the thing that broke
+  # the last launch has not preflighted it.
+  echo "  env state:  every declared name is set"
   [ "$EXECUTABLE" != "sbx" ] || echo "  sandbox:    $SANDBOX  (created at launch if absent, re-attached if present)"
   # The same host-side check the real launch makes, on the same helper, BEFORE the version
   # probe. A preflight that printed "NOT INSTALLED" and then exited 0 would tell a human the
@@ -738,16 +838,14 @@ if [ "$EXECUTABLE" = "sbx" ]; then
     fi
   fi
 
-  if sbx ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qxF "$SANDBOX"; then
-    # Re-launching onto an existing sandbox is recovery, not a fresh seat, and it is the
-    # operator's call rather than this script's: a sandbox that already exists holds a
-    # previous worker's state. Its tunnel and CLI are re-established below, because a VM
-    # with the right name is not the same thing as a working worker.
-    echo "  sandbox: $SANDBOX (exists — re-attaching; 'sbx rm $SANDBOX' first for a clean VM)"
-  else
-    # The environment file, not the command line: a DSN carries a password, and an argument
-    # is visible in `ps` to every process on the host for as long as the create runs.
-    SBX_ENV_FILE="$TASK_ROOT/.sandbox-env"
+  # The VM's environment file. Written on BOTH paths, because the facts in it come from the
+  # route and the route can change between a create and a re-attach — an endpoint amended in
+  # the catalog that never reached an existing VM would leave the worker pointed at the old
+  # provider while the egress allowlist below, derived from the same facts, pointed at the new
+  # one. The file is 0600 and is never an argument: a DSN carries a password, and an argument
+  # is visible in `ps` to every process on the host for as long as the create runs.
+  SBX_ENV_FILE="$TASK_ROOT/.sandbox-env"
+  write_sandbox_env() {
     # The redirection wraps the WHOLE group, not just the heredoc. With `cat > file` alone,
     # everything appended after it went to this script's stdout instead — which printed a
     # provider key to the operator's terminal and left the sandbox without it (2026-08-24).
@@ -762,20 +860,45 @@ GIT_AUTHOR_EMAIL=$WORKER@hive.local
 GIT_COMMITTER_NAME=$WORKER
 GIT_COMMITTER_EMAIL=$WORKER@hive.local
 SBXENV
-      # The route's own `inherit_env` names, resolved from the launching environment into the
-      # same 0600 file. A host route's names reach the harness through the tmux window; a
-      # sandboxed one's have to reach it through the VM's environment, and this is the one
-      # place a value can travel without appearing on a command line that `ps` can read.
-      # `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` are how an OpenRouter route points Claude
-      # Code at its provider. Authority credential names were refused at the route read.
+      # The route's own environment facts, in the one place a value can travel without
+      # appearing on a command line that `ps` can read.
+      #
+      # `runner.env` first: the provider endpoint, straight out of the catalog. This is the
+      # line whose absence cost the 2026-08-28 launch — it used to depend on the operator
+      # having exported ANTHROPIC_BASE_URL, and when they had not, the launcher skipped it in
+      # silence. There is nothing left to skip: the value is a route fact.
+      [ -z "$ENV_PAIRS" ] || printf '%s\n' "$ENV_PAIRS"
+      # Then the inherited names. Every one of them is set — require_declared_env proved that
+      # before anything was built — so there is no skip here, and a name that went missing
+      # between then and now is a genuine anomaly rather than a silent omission.
       while IFS= read -r n; do
         [ -n "$n" ] || continue
-        [ -n "${!n+set}" ] || continue
+        [ -n "${!n+set}" ] || die "'$n' became unset during the launch of '$TASK'; refusing to
+  build a sandbox environment that is missing a name the route declares."
         printf '%s=%s\n' "$n" "${!n}"
       done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?')
+      # And the renames: the harness reads NAME, the host holds it under SOURCE. An or-* route
+      # reads ANTHROPIC_API_KEY and the host holds OPENROUTER_API_KEY, so inheriting the
+      # target name directly would have shipped whatever ANTHROPIC_API_KEY happened to be —
+      # on this deployment, the real Anthropic key, under the right name, with no error.
+      while IFS="\t" read -r n src; do
+        [ -n "${src:-}" ] || continue
+        [ -n "${!src+set}" ] || die "'$src' became unset during the launch of '$TASK'; refusing to
+  build a sandbox environment that is missing a name the route declares."
+        printf '%s=%s\n' "$n" "${!src}"
+      done < <(printf '%s' "$ROUTE" | jq -r '(.runner.inherit_env_as // {}) | to_entries[] | "\(.key)\t\(.value)"')
       } > "$SBX_ENV_FILE"
     )
+  }
+  write_sandbox_env
 
+  if sbx ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qxF "$SANDBOX"; then
+    # Re-launching onto an existing sandbox is recovery, not a fresh seat, and it is the
+    # operator's call rather than this script's: a sandbox that already exists holds a
+    # previous worker's state. Its tunnel and CLI are re-established below, because a VM
+    # with the right name is not the same thing as a working worker.
+    echo "  sandbox: $SANDBOX (exists — re-attaching; 'sbx rm $SANDBOX' first for a clean VM)"
+  else
     # --- which credential actually pays for this route ---------------------------------
     # sbx ships its agent templates wired for API billing: the claude template writes
     # `apiKeyHelper` into the sandbox's settings.json and sets SBX_CRED_ANTHROPIC_MODE=apikey,
@@ -851,23 +974,26 @@ SBXENV
 
   # And the provider endpoint the route points its harness at, for the same reason and by the
   # same rule: sbx egress is default-deny, and an agent template's allowlist covers the
-  # provider IT expects, not the one a route redirected the harness to. A route that names an
-  # endpoint in `inherit_env` gets exactly that host opened for its own sandbox — measured
-  # 2026-08-24, where an OpenRouter worker in a claude sandbox got
+  # provider IT expects, not the one a route redirected the harness to. Measured 2026-08-24,
+  # where an OpenRouter worker in a claude sandbox got
   # `403 Blocked by network policy: domain openrouter.ai:443`.
+  #
+  # Derived from `runner.env` — the route — and not, as it was until 2026-08-28, by scanning
+  # the launching environment for values that happened to look like URLs. That scan is how the
+  # rule went missing: the name it depended on was unset, the value it would have matched
+  # never existed, and a loop that finds nothing looks exactly like a route with no endpoint.
+  # The same catalog now produces the same allowlist on any host, which is the only version of
+  # this rule that can be reasoned about before a launch rather than after one.
   while IFS= read -r v; do
-    case "$v" in
-      https://*|http://*) : ;;
-      *) continue ;;
-    esac
+    [ -n "$v" ] || continue
     host="${v#*://}"; host="${host%%/*}"
-    [ -n "$host" ] || continue
+    [ -n "$host" ] || die "route '$ROUTE_NAME' declares the endpoint '$v', which carries no
+  host. Refusing to build a sandbox whose egress rule cannot be derived from its route."
     sbx policy allow network --sandbox "$SANDBOX" "$host" >/dev/null 2>&1 \
       || die "could not allow the provider endpoint '$host' for sandbox '$SANDBOX'; the
   harness would be refused by the sandbox's egress policy on its first call."
-    echo "  sandbox: provider endpoint allowed ($host)"
-  done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?' | while IFS= read -r n; do
-             [ -n "${!n+set}" ] && printf '%s\n' "${!n}"; done)
+    echo "  sandbox: provider endpoint allowed ($host, from the route)"
+  done < <(printf '%s' "$ENV_PAIRS" | sed -n 's/^[^=]*=\(https\{0,1\}:\/\/.*\)$/\1/p')
 
   # `pgrep -x socat`, matching the EXECUTABLE name and not the command line: `pgrep -f` on the
   # forwarder's own argv matches the very shell that is asking, so the guard reported a running
@@ -986,9 +1112,16 @@ CATALOG_DIGEST="sha256:$(sha256_hex < "$HIVE_ROUTE_CATALOG")"
 # inherited environment NAMES — and over the catalog's template rather than this launch's
 # expansion of it, because the question it answers is "is this the same runner CONFIGURATION
 # as last time". Which model ran is a separate field, and it is recorded as such.
+# The key set and the sort order here reproduce `RunnerSpec.fingerprint()` byte for byte
+# (harness/records.py). Two constructions of one hash is a standing hazard: a field added to
+# the model and not to this jq would stamp every route_approved with a fingerprint no Python
+# reader can reproduce, and the drift would be invisible until someone compared them.
+# `tests/test_hive_common.py` pins the two against each other.
 RUNNER_FINGERPRINT="sha256:$(printf '%s' "$ROUTE" \
   | jq -cS '{executable: .runner.executable, args: (.runner.args // []),
-             inherit_env: ((.runner.inherit_env // []) | sort)}' \
+             inherit_env: ((.runner.inherit_env // []) | sort),
+             inherit_env_as: (.runner.inherit_env_as // {}),
+             env: (.runner.env // {})}' \
   | tr -d '\n' | sha256_hex)"
 route_payload=$(jq -cn \
   --arg eid "$EXEC_ID" --arg order "$REL@$SHA" \
@@ -1142,6 +1275,18 @@ while IFS= read -r n; do
   [ -n "${!n+set}" ] || continue
   TMUX_ENV+=(-e "$n=${!n}")
 done < <(printf '%s' "$ROUTE" | jq -r '.runner.inherit_env[]?')
+# The renames and the endpoint reach a NON-sandboxed route the same way. A host route gets
+# its environment through the window; without these two loops an or-* route run outside sbx
+# would inherit nothing and answer from the wrong provider — the 2026-08-28 failure again,
+# one layer out.
+while IFS="\t" read -r n src; do
+  [ -n "${src:-}" ] || continue
+  TMUX_ENV+=(-e "$n=${!src}")
+done < <(printf '%s' "$ROUTE" | jq -r '(.runner.inherit_env_as // {}) | to_entries[] | "\(.key)\t\(.value)"')
+while IFS= read -r pair; do
+  [ -n "$pair" ] || continue
+  TMUX_ENV+=(-e "$pair")
+done < <(printf '%s' "$ENV_PAIRS")
 
 if tmux has-session -t "$SESSION_T" 2>/dev/null; then
   PANE=$(tmux new-window -a -t "$SESSION_T:{end}" -n "$TASK" -c "$WS_ROOT" \

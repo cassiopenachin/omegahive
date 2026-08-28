@@ -289,6 +289,12 @@ def shell_env(dep, **over) -> dict:
         "HIVE_RUN_ID": dep["run_id"],
         "CANON_ROOT": str(dep["tmp"]),
     })
+    # Everything the deployment's route DECLARES it inherits. Since 2026-08-28 a declared
+    # name that is unset is a refusal rather than a silent skip, so a rig that names these in
+    # its catalog and does not export them is testing an incomplete deployment. Taken from
+    # the fixture's own env so the two cannot drift.
+    for name in ("HIVE_FAKE_BEHAVIOUR", "HIVE_FAKE_SCRIPT", "HIVE_FAKE_USAGE_FILE"):
+        env[name] = dep["env"][name]
     env.update(over)
     return env
 

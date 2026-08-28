@@ -190,3 +190,56 @@ def test_the_drill_names_no_wrapper_outside_a_task_root():
         "a stale wrapper path aborts the drill at that line and every section after it "
         "silently does not run"
     )
+
+
+# --- the runner fingerprint is built twice, in two languages ---------------------------
+
+def _jq_fingerprint(route: dict) -> str:
+    """Exactly what `hive-launch` computes, extracted from the script itself.
+
+    Read out of the source rather than restated here: a copy would let the launcher and
+    this test drift together and still agree, which is the one failure this pins against.
+    """
+    launch = (REPO / "scripts" / "hive-launch").read_text()
+    marker = 'RUNNER_FINGERPRINT="sha256:$(printf'
+    start = launch.index(marker)
+    end = launch.index('sha256_hex)"', start) + len('sha256_hex)"')
+    snippet = launch[start:end]
+    script = (
+        f'set -euo pipefail; source "{COMMON}"; '
+        f'ROUTE=$(cat); {snippet}; printf "%s" "$RUNNER_FINGERPRINT"'
+    )
+    out = subprocess.run(
+        ["bash", "-c", script], input=json.dumps(route), capture_output=True,
+        text=True, cwd=REPO, timeout=30,
+    )
+    assert out.returncode == 0, out.stderr
+    return out.stdout
+
+
+def _py_fingerprint(route: dict) -> str:
+    from omegahive.harness.records import RunnerSpec
+    return RunnerSpec(**route["runner"]).fingerprint()
+
+
+def test_the_launcher_and_the_model_compute_the_same_runner_fingerprint():
+    """`hive-launch` recomputes the fingerprint in jq rather than calling Python, so the
+    two constructions must agree. A field added to RunnerSpec and not to that jq would
+    stamp every execution.route_approved with a hash no Python reader reproduces, and
+    nothing would notice until someone compared a spine record to a catalog by hand.
+    """
+    cases = [
+        {"executable": "claude", "args": ["--model", "{{model}}"], "inherit_env": []},
+        {"executable": "sbx", "args": ["run", "--name", "{{sandbox}}"],
+         "inherit_env": ["B_KEY", "A_KEY"]},
+        # The 2026-08-28 shape: an endpoint and a rename, which is what the two
+        # constructions most recently had to be taught about at the same time.
+        {"executable": "sbx", "args": ["run"], "inherit_env": [],
+         "inherit_env_as": {"ANTHROPIC_API_KEY": "OPENROUTER_API_KEY"},
+         "env": {"ANTHROPIC_BASE_URL": "https://openrouter.ai/api"}},
+        {"executable": "sbx", "args": [], "inherit_env": [],
+         "env": {"Z_URL": "https://z.invalid", "A_URL": "https://a.invalid"}},
+    ]
+    for runner in cases:
+        route = {"runner": runner}
+        assert _jq_fingerprint(route) == _py_fingerprint(route), runner
