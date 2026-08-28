@@ -1885,3 +1885,45 @@ def test_reassign_refuses_a_worker_id_the_roster_already_holds(deployment):
     assert proc.returncode != 0
     assert "roster" in proc.stdout + proc.stderr
     assert len(events(dep)) == before, "no spend fact may precede a rejected registration"
+
+
+@pytest.mark.skipif(not shutil.which("tmux"), reason="the window is the registry")
+def test_reassign_keeps_the_route_the_task_was_approved_on(deployment):
+    """A recovery is not the moment to change what pays for the work.
+
+    Without this, `--reassign` with no `--route` falls through to the catalog default, and
+    an API-billed sandboxed task comes back as a subscription worker on a different
+    harness, model and provider — with the sandbox guard silently skipped, because
+    EXECUTABLE is no longer `sbx`.
+    """
+    dep = deployment
+    other = route(name="other-route", model="other-model-1",
+                  runner=runner(inherit_env=["HIVE_FAKE_BEHAVIOUR", "HIVE_FAKE_SCRIPT",
+                                             "HIVE_FAKE_USAGE_FILE", "HIVE_CLI_CMD",
+                                             "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"]))
+    base = route(runner=runner(inherit_env=["HIVE_FAKE_BEHAVIOUR", "HIVE_FAKE_SCRIPT",
+                                            "HIVE_FAKE_USAGE_FILE", "HIVE_CLI_CMD",
+                                            "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"]))
+    set_catalog(dep, base, other)          # defaults.worker is `base`, not `other-route`
+    order_rel = order_for(dep, "keeproute")
+
+    bin_dir = stub_tmux(dep)
+    assert launch(dep, order_rel, "--worker", "sess-keeproute-0828", "--route", "other-route",
+                  env=launch_env(dep, bin_dir)).returncode == 0
+
+    env = shell_env(dep, CANON_CODE=str(dep["tmp"] / "code-seed"),
+                    OMEGAHIVE_COMPOSE="compose-never-invoked-in-this-test")
+    assert launch(dep, order_rel, "--reassign", env=env).returncode == 0
+    tmux_kill(dep["tmux_session"], dep)
+
+    approvals = [p for t, _r, _a, p in events(dep) if t == "execution.route_approved"]
+    assert [a["identity"]["route"] for a in approvals] == ["other-route", "other-route"], (
+        "the recovery must not fall through to the catalog default")
+    assert approvals[1]["identity"]["model"] == "other-model-1"
+
+    # And an explicit --route still wins over the carried-forward one.
+    assert launch(dep, order_rel, "--reassign", "--route", "fake-subscription",
+                  env=env).returncode == 0
+    tmux_kill(dep["tmux_session"], dep)
+    approvals = [p for t, _r, _a, p in events(dep) if t == "execution.route_approved"]
+    assert approvals[-1]["identity"]["route"] == "fake-subscription"

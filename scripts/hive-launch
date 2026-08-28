@@ -290,6 +290,34 @@ CATALOG_VERSION=$(jq -r '.schema_version // empty' "$HIVE_ROUTE_CATALOG" 2>/dev/
   || die "route catalog $HIVE_ROUTE_CATALOG is schema_version '${CATALOG_VERSION:-unknown}'; this build reads v2.
   Migrate it — the original is backed up first:  hive-routes migrate"
 
+# A recovery keeps the route the task was already approved on, unless the operator names
+# another. Without this, `--reassign` with no `--route` falls through to the catalog default
+# and silently reseats the task on a different harness, model, provider AND billing market —
+# an API-billed sandboxed task would come back as a subscription Claude worker, the sandbox
+# guard below would never fire because EXECUTABLE is no longer `sbx`, and the stranded VM
+# would be left behind. Recovering a seat is not the moment to change what pays for it; the
+# operator can still say so explicitly with --route.
+if [ -n "$REASSIGN" ] && [ -z "$ROUTE_ARG" ]; then
+  # Best effort, never fatal. A run with no events does not answer JSON here, and this is a
+  # convenience over the authoritative board read further down — which refuses with a message
+  # about the TASK rather than a jq parse error. Failing here would replace that message with
+  # this one and tell the operator nothing useful.
+  PRIOR_ROUTE=$(hive report "$RUN" --json 2>/dev/null \
+    | jq -r --arg t "$TASK" 'last(.[] | select(.event_type == "execution.route_approved"
+                                               and .task_id == $t) | .payload.identity.route) // ""' \
+      2>/dev/null) || PRIOR_ROUTE=""
+  if [ -n "$PRIOR_ROUTE" ]; then
+    ROUTE_ARG="$PRIOR_ROUTE"
+    echo "  route:  carrying forward '$PRIOR_ROUTE' from this task's last approval (--route overrides)"
+  else
+    # Not a refusal: the board gate below decides whether this task is recoverable at all,
+    # and says so far more precisely. This only warns that if it IS, the route will not be
+    # the one it ran on, because nothing on the spine records one.
+    echo "hive-launch: WARNING no recorded route approval for '$TASK' on run '$RUN'; a" >&2
+    echo "  recovery would use the catalog default. Name the route with --route." >&2
+  fi
+fi
+
 # The route NAME: the operator's --route for this one launch, or the catalog's single
 # worker default. An override writes nothing and amends nothing.
 if [ -n "$ROUTE_ARG" ]; then
