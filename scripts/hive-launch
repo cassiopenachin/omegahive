@@ -835,12 +835,28 @@ echo "  run:    $RUN"
 mkdir -p "$TASK_ROOT"
 git clone --quiet "$WS_HUB" "$WS_ROOT"       || die "failed to clone workspace from $WS_HUB"
 git clone --quiet "$CANON_CODE" "$CODE_ROOT" || die "failed to clone code from $CANON_CODE"
-git -C "$CODE_ROOT" remote set-url origin "$CODE_REPO"
+# A sandboxed route gets the HTTPS spelling of the same repository. An SSH remote cannot
+# work inside the VM at all: there is no key there, and SSH bypasses the sandbox's forward
+# proxy entirely, so nothing can authenticate it. The proxy DOES authenticate HTTPS — sbx
+# injects a sentinel GH_TOKEN and substitutes the host's stored `github` secret on the way
+# out, which is what keeps a real forge credential out of the VM's filesystem. Handing a
+# sandboxed worker an SSH remote made `hive publish code` structurally impossible on every
+# sbx route: the worker does the work, gets reviewed, and blocks at the push (2026-08-28).
+PUSH_REPO="$CODE_REPO"
+if [ "$EXECUTABLE" = "sbx" ]; then
+  case "$CODE_REPO" in
+    git@*:*)      SCP_REST="${CODE_REPO#git@}"; PUSH_REPO="https://${SCP_REST/:/\/}" ;;
+    ssh://git@*)  PUSH_REPO="https://${CODE_REPO#ssh://git@}" ;;
+  esac
+  [ "$PUSH_REPO" = "$CODE_REPO" ] \
+    || echo "  forge:  $CODE_REPO -> $PUSH_REPO (HTTPS: a sandbox has no SSH key, and the proxy authenticates HTTPS)"
+fi
+git -C "$CODE_ROOT" remote set-url origin "$PUSH_REPO"
 # The publication branch is created here, so the worker starts on it and the plan's
 # fixed `code_branch` is a branch that exists rather than one the worker must remember
 # to make. A publication never asks the worker which branch it meant.
 git -C "$CODE_ROOT" checkout --quiet -b "$CODE_BRANCH"
-echo "  clones: $WS_ROOT  +  $CODE_ROOT (origin -> $CODE_REPO, branch $CODE_BRANCH)"
+echo "  clones: $WS_ROOT  +  $CODE_ROOT (origin -> $PUSH_REPO, branch $CODE_BRANCH)"
 
 # --- the worker's run-local interface -------------------------------------------------
 # Issued by hive-common.sh so the tooling drill exercises the very wrappers a launch

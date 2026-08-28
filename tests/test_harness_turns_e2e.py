@@ -1927,3 +1927,38 @@ def test_reassign_keeps_the_route_the_task_was_approved_on(deployment):
     tmux_kill(dep["tmux_session"], dep)
     approvals = [p for t, _r, _a, p in events(dep) if t == "execution.route_approved"]
     assert approvals[-1]["identity"]["route"] == "fake-subscription"
+
+
+def test_a_sandboxed_route_gets_an_https_code_remote(deployment):
+    """An SSH remote cannot work inside an sbx VM: no key, and SSH bypasses the forward
+    proxy that would otherwise authenticate. Handing a sandboxed worker one made
+    `hive publish code` structurally impossible — the worker does the work, gets its
+    review, and blocks at the push (2026-08-28, folio-score-seam).
+    """
+    dep = deployment
+    # A route whose executable is the sandbox wrapper. The launch itself is not run here;
+    # the transform is asserted directly, because a real `sbx create` is not hermetic.
+    script = REPO / "scripts" / "hive-launch"
+    body = script.read_text()
+    assert 'git -C "$CODE_ROOT" remote set-url origin "$PUSH_REPO"' in body
+    probe = (
+        'CODE_REPO="%s"; EXECUTABLE="%s"; PUSH_REPO="$CODE_REPO"\n'
+        'if [ "$EXECUTABLE" = "sbx" ]; then\n'
+        '  case "$CODE_REPO" in\n'
+        '    git@*:*)      SCP_REST="${CODE_REPO#git@}"; PUSH_REPO="https://${SCP_REST/:/\\/}" ;;\n'
+        '    ssh://git@*)  PUSH_REPO="https://${CODE_REPO#ssh://git@}" ;;\n'
+        '  esac\n'
+        'fi\n'
+        'printf %%s "$PUSH_REPO"\n'
+    )
+    for repo, executable, expected in [
+        ("git@github.com:o/r.git", "sbx", "https://github.com/o/r.git"),
+        ("ssh://git@github.com/o/r.git", "sbx", "https://github.com/o/r.git"),
+        ("https://github.com/o/r.git", "sbx", "https://github.com/o/r.git"),
+        # A host route keeps SSH: the host HAS a key, and rewriting it would drop the
+        # operator's own agent-based auth in favour of a token they never configured.
+        ("git@github.com:o/r.git", "claude", "git@github.com:o/r.git"),
+    ]:
+        out = subprocess.run(["bash", "-c", probe % (repo, executable)],
+                             capture_output=True, text=True, timeout=30)
+        assert out.stdout == expected, f"{repo} on {executable} -> {out.stdout}"
