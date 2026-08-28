@@ -842,14 +842,28 @@ git clone --quiet "$CANON_CODE" "$CODE_ROOT" || die "failed to clone code from $
 # out, which is what keeps a real forge credential out of the VM's filesystem. Handing a
 # sandboxed worker an SSH remote made `hive publish code` structurally impossible on every
 # sbx route: the worker does the work, gets reviewed, and blocks at the push (2026-08-28).
+# Which routes cannot use an SSH remote: the ones whose harness runs inside a sandbox.
+# Two different sandboxes, one consequence, and neither is about credentials.
+#   sbx   - a microVM holding no key of its own, and SSH bypasses the forward proxy that
+#           would otherwise authenticate it.
+#   codex - a user-namespace sandbox in which root-owned files appear owned by an unmapped
+#           uid, so OpenSSH refuses its OWN system config with "Bad owner or permissions"
+#           and never reaches the forge at all (measured 2026-08-28:
+#           `codex sandbox -- ssh -G github.com` fails on this host while the same command
+#           outside it is clean, and the file is a correct 0644 root:root).
+# Both authenticate HTTPS: the proxy inside sbx, gh's credential helper inside codex.
 PUSH_REPO="$CODE_REPO"
-if [ "$EXECUTABLE" = "sbx" ]; then
+FORGE_NEEDS_HTTPS=""
+case "$EXECUTABLE:$R_HARNESS" in
+  sbx:*|*:codex) FORGE_NEEDS_HTTPS=1 ;;
+esac
+if [ -n "$FORGE_NEEDS_HTTPS" ]; then
   case "$CODE_REPO" in
     git@*:*)      SCP_REST="${CODE_REPO#git@}"; PUSH_REPO="https://${SCP_REST/:/\/}" ;;
     ssh://git@*)  PUSH_REPO="https://${CODE_REPO#ssh://git@}" ;;
   esac
   [ "$PUSH_REPO" = "$CODE_REPO" ] \
-    || echo "  forge:  $CODE_REPO -> $PUSH_REPO (HTTPS: a sandbox has no SSH key, and the proxy authenticates HTTPS)"
+    || echo "  forge:  $CODE_REPO -> $PUSH_REPO (HTTPS: this harness runs sandboxed and SSH cannot work there)"
 fi
 git -C "$CODE_ROOT" remote set-url origin "$PUSH_REPO"
 # The publication branch is created here, so the worker starts on it and the plan's
