@@ -1954,8 +1954,10 @@ def test_a_sandboxed_route_gets_an_https_code_remote():
     body = script.read_text()
     assert 'git -C "$CODE_ROOT" remote set-url origin "$PUSH_REPO"' in body
     probe = (
-        'CODE_REPO="%s"; EXECUTABLE="%s"; PUSH_REPO="$CODE_REPO"\n'
-        'if [ "$EXECUTABLE" = "sbx" ]; then\n'
+        'CODE_REPO="%s"; EXECUTABLE="%s"; R_HARNESS="%s"; PUSH_REPO="$CODE_REPO"\n'
+        'FORGE_NEEDS_HTTPS=""\n'
+        'case "$EXECUTABLE:$R_HARNESS" in sbx:*|*:codex) FORGE_NEEDS_HTTPS=1 ;; esac\n'
+        'if [ -n "$FORGE_NEEDS_HTTPS" ]; then\n'
         '  case "$CODE_REPO" in\n'
         '    git@*:*)      SCP_REST="${CODE_REPO#git@}"; PUSH_REPO="https://${SCP_REST/:/\\/}" ;;\n'
         '    ssh://git@*)  PUSH_REPO="https://${CODE_REPO#ssh://git@}" ;;\n'
@@ -1963,14 +1965,18 @@ def test_a_sandboxed_route_gets_an_https_code_remote():
         'fi\n'
         'printf %%s "$PUSH_REPO"\n'
     )
-    for repo, executable, expected in [
-        ("git@github.com:o/r.git", "sbx", "https://github.com/o/r.git"),
-        ("ssh://git@github.com/o/r.git", "sbx", "https://github.com/o/r.git"),
-        ("https://github.com/o/r.git", "sbx", "https://github.com/o/r.git"),
-        # A host route keeps SSH: the host HAS a key, and rewriting it would drop the
-        # operator's own agent-based auth in favour of a token they never configured.
-        ("git@github.com:o/r.git", "claude", "git@github.com:o/r.git"),
+    for repo, executable, harness, expected in [
+        ("git@github.com:o/r.git", "sbx", "claude-code", "https://github.com/o/r.git"),
+        ("ssh://git@github.com/o/r.git", "sbx", "claude-code", "https://github.com/o/r.git"),
+        ("https://github.com/o/r.git", "sbx", "claude-code", "https://github.com/o/r.git"),
+        # codex is sandboxed too, by a different mechanism: its user namespace makes
+        # root-owned files look unowned, so OpenSSH refuses its own system config before
+        # reaching the forge. Same consequence, so the same remote.
+        ("git@github.com:o/r.git", "codex", "codex", "https://github.com/o/r.git"),
+        # A route that is NOT sandboxed keeps SSH: the host has a key, and rewriting it
+        # would drop the operator's own agent auth for a token they never configured.
+        ("git@github.com:o/r.git", "claude", "claude-code", "git@github.com:o/r.git"),
     ]:
-        out = subprocess.run(["bash", "-c", probe % (repo, executable)],
+        out = subprocess.run(["bash", "-c", probe % (repo, executable, harness)],
                              capture_output=True, text=True, timeout=30)
-        assert out.stdout == expected, f"{repo} on {executable} -> {out.stdout}"
+        assert out.stdout == expected, f"{repo} on {executable}/{harness} -> {out.stdout}"
