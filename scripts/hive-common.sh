@@ -196,10 +196,11 @@ require_executable() {  # require_executable <executable> <route-name>
 
 issue_worker_interface() {
   # issue_worker_interface <run-dir> <ws-root> <code-root> <code-branch> <run> <worker>
+  #                        [<reviewer>]
   local RUN_DIR="$1" WS_ROOT="$2" CODE_ROOT="$3" CODE_BRANCH="$4"
-  local RUN="$5" WORKER="$6"
+  local RUN="$5" WORKER="$6" REVIEWER="${7:-}"
   local WRAPPER="$RUN_DIR/emit" BRIDGE="$RUN_DIR/hive"
-  local INSTRUMENT="$RUN_DIR/emit-instrument"
+  local INSTRUMENT="$RUN_DIR/emit-instrument" REVIEW="$RUN_DIR/review"
   resolve_compose
 
   # Everything the worker and the turn runner need, inside the ONE writable root, so a
@@ -347,6 +348,49 @@ case "${1:-}${2:+ $2}" in
 esac
 BRIDGEBODY
   chmod +x "$BRIDGE"
+
+  # --- the review command, for a route whose reviewer runs inside the sandbox ----------
+  #
+  # Issued for `opus-in-sandbox` and for nothing else. The other two reviewers are host
+  # harnesses the worker already reaches (the codex plugin, the claude skill); this one is
+  # a second model invoked from inside the worker's own VM, which is the only case where
+  # HOW it is invoked is not obvious from the harness the worker is running.
+  #
+  # And it is not obvious, because getting it wrong is silent. A sandboxed provider route
+  # points Claude Code at its provider through ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY in
+  # the VM's environment file. Those names are process-wide: a review invoked as plain
+  # `claude` inherits the WORKER's routing, so the review is another call to the account
+  # under test, billed to it, and independent of nothing. Measured 2026-08-28 — an
+  # OpenRouter worker's Opus review arrived as ~20 Opus calls on the OpenRouter bill.
+  #
+  # The strip used to live in a catalog note, which is prose, which was purged when
+  # `reviewer` became a schema field. It lives here now because a wrapper is the one form
+  # of instruction a worker cannot read and then not follow.
+  if [ "$REVIEWER" = "opus-in-sandbox" ]; then
+    cat > "$REVIEW" <<'REVIEWWRAP'
+#!/usr/bin/env bash
+# Independent review for one hive worker on a sandboxed route.
+#
+#   ../run/review "<prompt>"     one-shot review, prompt as an argument
+#   ... | ../run/review          prompt on stdin
+#
+# Runs Opus on the OPERATOR'S subscription rather than on this worker's provider, by
+# dropping the two names that route this VM's Claude Code at that provider. hive-launch
+# copied the subscription login into this sandbox for exactly this call. Do not invoke
+# `claude` directly for a review: it would inherit the worker's routing, bill the account
+# under test, and produce a review that is not independent of it.
+set -euo pipefail
+if [ ! -f "$HOME/.claude/.credentials.json" ]; then
+  echo "review: this sandbox has no $HOME/.claude/.credentials.json, so a routing-stripped" >&2
+  echo "        review has no login to use. Block and tell the operator. Do NOT fall back" >&2
+  echo "        to plain 'claude' -- that reviews this worker on its own provider." >&2
+  exit 1
+fi
+exec env -u ANTHROPIC_BASE_URL -u ANTHROPIC_API_KEY \
+  claude -p --model "${HIVE_REVIEW_MODEL:-opus}" "$@"
+REVIEWWRAP
+    chmod +x "$REVIEW"
+  fi
 }
 
 # Read a harness version out of a `--version` probe's combined output.
