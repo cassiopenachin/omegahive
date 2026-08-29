@@ -2002,10 +2002,14 @@ def launch_with_reviewer(dep, task: str, **route_over) -> dict:
     proc = launch(dep, order_rel, "--worker", worker, env=launch_env(dep, bin_dir))
     assert proc.returncode == 0, proc.stdout + proc.stderr
     task_root = dep["work_root"] / worker
+    prompt = (task_root / "kickoff.txt").read_text()
+    # The line is substituted into the kickoff at a marker, so a substitution that silently
+    # did not happen would ship the marker to the worker instead of the reviewer.
+    assert "@@REVIEW@@" not in prompt, "the reviewer line was never substituted in"
     return {
         "task_root": task_root,
         "review": task_root / "run" / "review",
-        "prompt": (task_root / "kickoff.txt").read_text(),
+        "prompt": prompt,
     }
 
 
