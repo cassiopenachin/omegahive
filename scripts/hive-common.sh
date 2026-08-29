@@ -198,7 +198,7 @@ issue_worker_interface() {
   # issue_worker_interface <run-dir> <ws-root> <code-root> <code-branch> <run> <worker>
   #                        [<reviewer>]
   local RUN_DIR="$1" WS_ROOT="$2" CODE_ROOT="$3" CODE_BRANCH="$4"
-  local RUN="$5" WORKER="$6" REVIEWER="${7:-}"
+  local RUN="$5" WORKER="$6" REVIEWER="${7:-}" ROUTE_ENV_NAMES="${8:-}"
   local WRAPPER="$RUN_DIR/emit" BRIDGE="$RUN_DIR/hive"
   local INSTRUMENT="$RUN_DIR/emit-instrument" REVIEW="$RUN_DIR/review"
   resolve_compose
@@ -357,38 +357,70 @@ BRIDGEBODY
   # HOW it is invoked is not obvious from the harness the worker is running.
   #
   # And it is not obvious, because getting it wrong is silent. A sandboxed provider route
-  # points Claude Code at its provider through ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY in
-  # the VM's environment file. Those names are process-wide: a review invoked as plain
-  # `claude` inherits the WORKER's routing, so the review is another call to the account
-  # under test, billed to it, and independent of nothing. Measured 2026-08-28 — an
-  # OpenRouter worker's Opus review arrived as ~20 Opus calls on the OpenRouter bill.
+  # points Claude Code at its provider through names in the VM's environment file. Those
+  # names are process-wide: a review invoked as plain `claude` inherits the WORKER's
+  # routing, so the review is another call to the account under test, billed to it, and
+  # independent of nothing. Measured 2026-08-28 — an OpenRouter worker's Opus review
+  # arrived as ~20 Opus calls on the OpenRouter bill.
   #
   # The strip used to live in a catalog note, which is prose, which was purged when
   # `reviewer` became a schema field. It lives here now because a wrapper is the one form
   # of instruction a worker cannot read and then not follow.
+  #
+  # WHICH names are stripped is the caller's to say, and that is the point. A hardcoded
+  # pair (ANTHROPIC_BASE_URL, ANTHROPIC_API_KEY) would be a list to maintain against a
+  # catalog that decides what the VM's environment contains: a route naming
+  # ANTHROPIC_AUTH_TOKEN, CLAUDE_CONFIG_DIR or a Bedrock pair would walk straight past it
+  # and re-open the same defect silently. The launcher passes the names the ROUTE
+  # contributes to that environment, which is complete by construction — everything else
+  # in the file is written by the launcher itself and none of it routes a model.
   if [ "$REVIEWER" = "opus-in-sandbox" ]; then
-    cat > "$REVIEW" <<'REVIEWWRAP'
+    local unset_flags="" n
+    for n in $ROUTE_ENV_NAMES; do
+      unset_flags="$unset_flags -u $n"
+    done
+    cat > "$REVIEW" <<REVIEWHEAD
 #!/usr/bin/env bash
 # Independent review for one hive worker on a sandboxed route.
 #
-#   ../run/review "<prompt>"     one-shot review, prompt as an argument
-#   ... | ../run/review          prompt on stdin
+#   git -C <code-clone> diff main... | ../run/review "review this diff: ..."
+#   ../run/review "<prompt>"
 #
 # Runs Opus on the OPERATOR'S subscription rather than on this worker's provider, by
-# dropping the two names that route this VM's Claude Code at that provider. hive-launch
-# copied the subscription login into this sandbox for exactly this call. Do not invoke
-# `claude` directly for a review: it would inherit the worker's routing, bill the account
-# under test, and produce a review that is not independent of it.
+# dropping every name this route puts into the VM's environment to route a model.
+# hive-launch copied the subscription login into this sandbox for exactly this call. Do
+# not invoke \`claude\` directly for a review: it would inherit the worker's routing, bill
+# the account under test, and produce a review that is not independent of it.
 set -euo pipefail
+HIVE_REVIEW_STRIP="${unset_flags# }"
+REVIEWHEAD
+    cat >> "$REVIEW" <<'REVIEWBODY'
+# Phase one: drop the routing and re-enter. The check below has to run in the environment
+# the HARNESS will see, not in the one this script was called in — a route that renames
+# Claude Code's config directory would otherwise leave the check reading one login while
+# the review used another. Re-exec is the only way to test the environment you are about
+# to hand over rather than the one you have.
+if [ -z "${HIVE_REVIEW_STRIPPED:-}" ]; then
+  export HIVE_REVIEW_STRIPPED=1
+  # shellcheck disable=SC2086  # HIVE_REVIEW_STRIP is a list of -u flags, and must split
+  exec env $HIVE_REVIEW_STRIP "$0" "$@"
+fi
+
+# Phase two: this environment is the reviewer's.
 if [ ! -f "$HOME/.claude/.credentials.json" ]; then
   echo "review: this sandbox has no $HOME/.claude/.credentials.json, so a routing-stripped" >&2
   echo "        review has no login to use. Block and tell the operator. Do NOT fall back" >&2
   echo "        to plain 'claude' -- that reviews this worker on its own provider." >&2
   exit 1
 fi
-exec env -u ANTHROPIC_BASE_URL -u ANTHROPIC_API_KEY \
-  claude -p --model "${HIVE_REVIEW_MODEL:-opus}" "$@"
-REVIEWWRAP
+
+# The review reads the tree it is reviewing. In print mode an unpermitted tool call is
+# denied rather than asked about, so a reviewer with no permission posture answers from
+# its prompt alone and exits 0 -- a clean-looking review of nothing. The posture is the
+# same one the worker runs under here, and the boundary is the same: this is a microVM.
+exec claude -p --model "${HIVE_REVIEW_MODEL:-opus}" \
+  --permission-mode bypassPermissions "$@"
+REVIEWBODY
     chmod +x "$REVIEW"
   fi
 }
