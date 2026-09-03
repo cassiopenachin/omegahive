@@ -492,6 +492,11 @@ That is Opus on the operator's subscription, invoked with this route's provider 
 stripped. Do NOT invoke 'claude' directly for the review: this sandbox's environment points
 Claude Code at the worker's own provider, so a bare invocation reviews the account under
 test, on the account under test, and says nothing about either." ;;
+  claude-cli)
+    REVIEW_LINE="Your independent review command:  $WORKER_REVIEW \"<prompt>\"   (or pipe the prompt in)
+That is Opus on the operator's subscription, read-only, running as a subprocess of your
+session. Your harness has no review plugin or skill of its own, so this command is the
+review: there is no other one to find, and inventing one is not in your scope." ;;
   "")
     REVIEW_LINE="Your route names no reviewer. Follow WORKER.md, and state in your report which
 harness reviewed you and exactly how you invoked it." ;;

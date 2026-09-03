@@ -2225,3 +2225,54 @@ def test_a_sandboxed_route_with_no_provider_routing_still_needs_no_reviewer(depl
     bin_dir = stub_tmux(dep)
     proc = launch(dep, order_rel, "--check", env=launch_env(dep, bin_dir))
     assert "reviewer" not in (proc.stdout + proc.stderr), proc.stdout + proc.stderr
+
+
+# --- a harness with no review integration of its own ---------------------------------
+#
+# `codex-plugin` and `claude-skill` name integrations reached from inside a session that
+# already has them. A third harness has neither, and the Antigravity route is the first:
+# no plugin, no skill, and unsandboxed, so its review is Opus invoked as a subprocess on
+# the host's own login. The wrapper that already exists for the sandbox case is the same
+# answer, with two differences that matter.
+
+def test_a_host_cli_reviewer_is_issued_the_same_command(deployment):
+    got = launch_with_reviewer(deployment, "review-host-cli", reviewer="claude-cli")
+    assert got["review"].is_file() and os.access(got["review"], os.X_OK)
+    assert f"{RELATIVE_REVIEW} \"<prompt>\"" in got["prompt"]
+    assert "no review plugin or skill of its own" in got["prompt"]
+
+
+def test_a_host_review_is_read_only_and_a_sandboxed_one_is_not(deployment, tmp_path):
+    """The posture is not copied between them, because the boundary is not the same.
+
+    In a microVM the worker itself runs bypassed and the VM is the wall, so the reviewer
+    may run its tests. On the host there is no wall -- a bypassed reviewer there is a
+    bypassed session on the operator's own machine -- and a reviewer that only reads needs
+    nothing more than reading.
+    """
+    host = launch_with_reviewer(deployment, "posture-host", reviewer="claude-cli")
+    vm = launch_with_reviewer(deployment, "posture-vm", reviewer="opus-in-sandbox")
+
+    reached = run_the_review(host, tmp_path, "posture-host", {})
+    assert "--allowedTools" in reached and "bypassPermissions" not in reached, reached
+    assert "Bash(git diff:*)" in reached, "the reviewer must be able to read the diff"
+    for writing in ("Edit", "Write", "Bash(git commit", "Bash(git push"):
+        assert writing not in reached, f"a reviewer was allowed to {writing}: {reached}"
+
+    reached = run_the_review(vm, tmp_path, "posture-vm", {})
+    assert "bypassPermissions" in reached and "--allowedTools" not in reached, reached
+
+
+def test_a_route_with_no_provider_routing_still_re_execs_before_checking(
+    deployment, tmp_path
+):
+    """The strip is a no-op on a host route, and the re-exec still has to happen: the login
+    check must see the environment the harness gets. A wrapper that skipped phase one when
+    there was nothing to strip would check the caller's HOME and hand over another."""
+    got = launch_with_reviewer(deployment, "host-reexec", reviewer="claude-cli",
+                               runner=runner(inherit_env=[]))
+    body = got["review"].read_text()
+    assert 'HIVE_REVIEW_STRIP=""' in body, "a route declaring nothing strips nothing"
+    assert "HIVE_REVIEW_STRIPPED" in body, "and re-execs anyway"
+    reached = run_the_review(got, tmp_path, "host-reexec", {})
+    assert "review this diff" in reached
