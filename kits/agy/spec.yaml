@@ -1,0 +1,102 @@
+# Antigravity CLI (agy) as an sbx agent, for the hive's `antigravity` harness.
+#
+# PROVENANCE. Adapted from github.com/shelajev/agy-sbx-kit @ 3e7016f (Apache-2.0), which
+# solved the two hard parts: forcing agy's copy/paste OAuth flow inside a VM that has no
+# browser, and wiring the Google session through sbx's credential proxy so the real token
+# never lands in the sandbox filesystem. Vendored rather than referenced, because a kit is
+# a deployment input — an upstream that can change under us is not an input we authorized.
+#
+# WHAT WE CHANGED, and why:
+#   image     shell-docker -> claude-code-docker. The worker is agy, but the worker is not
+#             the only thing in this VM that talks to a model: a sandboxed route's review
+#             runs on Opus in here (`reviewer: opus-in-sandbox`), and it needs a `claude`
+#             binary. The claude template already carries one, so the reviewer costs an
+#             image choice rather than a second install step that could fail at setup.
+#   network   + api.anthropic.com, for that reviewer. Everything else is upstream's list.
+#   command   dropped. hive-launch creates the sandbox and the ROUTE's argv template runs
+#             the session, so a default command here would describe a launch nobody makes.
+schemaVersion: "2"
+kind: sandbox
+name: agy
+displayName: Antigravity CLI (agy)
+description: Google's Antigravity CLI in a Docker Sandbox, with a claude binary for the in-VM reviewer.
+
+sandbox:
+  image: "docker/sandbox-templates:claude-code-docker"
+  entrypoint: [agy]
+
+permissions:
+  network:
+    allow:
+    # CLI installer + self-update manifests and binaries
+    - "antigravity.google:443"
+    - "antigravity-unleash.goog:443"
+    - "antigravity-cli-auto-updater-974169037036.us-central1.run.app:443"
+    # Google OAuth (sign-in + token exchange)
+    - "accounts.google.com:443"
+    - "oauth2.googleapis.com:443"
+    - "www.googleapis.com:443"
+    # Antigravity / Gemini Code Assist model + agent APIs
+    - "cloudaicompanion.googleapis.com:443"
+    - "cloudcode-pa.googleapis.com:443"
+    - "generativelanguage.googleapis.com:443"
+    # The in-VM reviewer. Opus on the operator's subscription, invoked by ../run/review.
+    - "api.anthropic.com:443"
+
+credentials:
+  - service: antigravity
+    description: Google OAuth session used by Antigravity CLI
+    oauth:
+      tokenEndpoint:
+        host: oauth2.googleapis.com
+        path: /token
+      resourceHosts:
+        - cloudaicompanion.googleapis.com
+        - cloudcode-pa.googleapis.com
+        - generativelanguage.googleapis.com
+        - www.googleapis.com
+      sentinels:
+        accessToken: agy-oauth-access-proxy-managed
+        refreshToken: agy-oauth-refresh-proxy-managed
+      credentialFile:
+        path: "~/.gemini/antigravity-cli/antigravity-oauth-token"
+        template: '{"token":{"access_token":"{{.AccessToken}}","token_type":"Bearer","refresh_token":"{{.RefreshToken}}","expiry":"9999-12-31T23:59:59Z"},"auth_method":"consumer"}'
+
+environment:
+  variables:
+    # agy detects SSH/remote environments and switches to a copy/paste OAuth flow (prints a
+    # URL, you paste the callback back). Force that path so it never tries to spawn a
+    # browser inside a VM that has none.
+    SSH_CONNECTION: "sandbox 0 sandbox 0"
+
+setup:
+  install:
+    - command: "curl -fsSL https://antigravity.google/cli/install.sh | bash"
+      user: "1000"
+      description: Install the Antigravity CLI (agy) into ~/.local/bin
+  files:
+    - path: /home/agent/.gemini/antigravity-cli/settings.json
+      content: |
+        {
+          "agentMode": "accept-edits",
+          "artifactReviewMode": "always-proceed",
+          "fileAccessPolicy": "allow",
+          "internetAccessPolicy": "allow",
+          "nonWorkspaceFileAccess": "allow",
+          "permissions": {
+            "allow": [
+              "command(*)",
+              "execute_url(*)",
+              "mcp(*)",
+              "read_file(*)",
+              "read_url(*)",
+              "unsandboxed(*)",
+              "write_file(*)"
+            ]
+          },
+          "toolExecutionPolicy": "always-proceed",
+          "trustedWorkspaces": ["${WORKDIR}"]
+        }
+      mode: "0600"
+      onlyIfMissing: true
+      description: Permissive inside the VM, because the microVM is the boundary — the same posture every other sandboxed route runs under

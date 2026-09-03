@@ -2276,3 +2276,72 @@ def test_a_route_with_no_provider_routing_still_re_execs_before_checking(
     assert "HIVE_REVIEW_STRIPPED" in body, "and re-execs anyway"
     reached = run_the_review(got, tmp_path, "host-reexec", {})
     assert "review this diff" in reached
+
+
+# --- a sandbox serves two model callers, and they are not the same caller ------------
+
+def test_the_subscription_credential_follows_the_reviewer_not_only_the_worker():
+    """Until 2026-09-03 both were tested as `SBX_AGENT = claude`, and the comment above the
+    condition described the reviewer while the condition read the worker. Nothing exposed it
+    because every sandboxed route ran the claude agent, so the two were the same set.
+
+    Asserted on the script's own text rather than by launching: the sbx block has no stub in
+    this suite, and this is a pure predicate. What must hold is that an in-VM reviewer gets a
+    login whatever the worker's harness is, and that only a subscription WORKER refuses
+    without one -- a reviewer with no login is a review that refuses later, loudly.
+    """
+    body = (REPO / "scripts" / "hive-launch").read_text()
+    assert 'CRED_FOR_REVIEWER=1' in body and 'CRED_FOR_WORKER=1' in body
+    probe = (
+        'SBX_AGENT="%s"; R_REVIEWER="%s"; R_MARKET="%s"; HAVE="%s"\n'
+        'CRED_FOR_WORKER=""; [ "$SBX_AGENT" != "claude" ] || CRED_FOR_WORKER=1\n'
+        'CRED_FOR_REVIEWER=""; [ "$R_REVIEWER" != "opus-in-sandbox" ] || CRED_FOR_REVIEWER=1\n'
+        'OUT=none\n'
+        'if [ -n "$CRED_FOR_WORKER$CRED_FOR_REVIEWER" ]; then\n'
+        '  if [ -n "$HAVE" ]; then OUT=copied\n'
+        '  elif [ -n "$CRED_FOR_WORKER" ] && [ "$R_MARKET" = "subscription" ]; then OUT=refused\n'
+        '  else OUT=warned; fi\n'
+        'fi\n'
+        'printf %%s "$OUT"\n'
+    )
+    cases = [
+        # The defect. An agy worker whose review runs on Opus in the same VM.
+        ("agy", "opus-in-sandbox", "subscription", "yes", "copied"),
+        ("agy", "opus-in-sandbox", "subscription", "",    "warned"),
+        # A non-claude worker with no in-VM reviewer needs nothing, and must not be refused
+        # for lacking a login it would never use.
+        ("agy", "claude-cli", "subscription", "", "none"),
+        ("agy", "",           "subscription", "", "none"),
+        # Everything that worked before must still behave identically.
+        ("claude", "opus-in-sandbox", "subscription", "yes", "copied"),
+        ("claude", "opus-in-sandbox", "subscription", "",    "refused"),
+        ("claude", "opus-in-sandbox", "api",          "",    "warned"),
+        ("claude", "opus-in-sandbox", "api",          "yes", "copied"),
+    ]
+    for agent, reviewer, market, have, expected in cases:
+        out = subprocess.run(["bash", "-c", probe % (agent, reviewer, market, have)],
+                             capture_output=True, text=True, timeout=30)
+        assert out.stdout == expected, (
+            f"agent={agent} reviewer={reviewer} market={market} login={have or 'no'} "
+            f"-> {out.stdout}, expected {expected}"
+        )
+
+
+def test_the_antigravity_kit_ships_with_the_launcher_that_names_it():
+    """The launcher resolves the kit beside itself rather than under CANON_ROOT, so the kit a
+    launch uses is the one that shipped with it. A map entry pointing at a directory this
+    repository does not carry would build nothing and say so only at `sbx create`."""
+    body = (REPO / "scripts" / "hive-launch").read_text()
+    assert 'antigravity)        SBX_AGENT=agy; SBX_KIT="$SCRIPT_DIR/../kits/agy"' in body
+    spec = REPO / "kits" / "agy" / "spec.yaml"
+    assert spec.is_file(), "the kit the agent map names must be in the tree"
+    text = spec.read_text()
+    assert "api.anthropic.com:443" in text, (
+        "the in-VM reviewer runs Opus from inside this sandbox; without that host in the "
+        "kit's allowlist the review cannot reach anything"
+    )
+    assert "claude-code-docker" in text, (
+        "the reviewer needs a claude binary, which is why this kit does not use the "
+        "upstream shell image"
+    )
+    assert "shelajev/agy-sbx-kit" in text, "vendored code states where it came from"

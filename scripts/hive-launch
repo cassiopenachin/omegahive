@@ -1064,13 +1064,26 @@ if [ "$EXECUTABLE" = "sbx" ]; then
   reason about." ;;
   esac
 
-  # Which sbx agent image serves this harness. Named here rather than dug out of the
-  # argv by position: an agent read off `args[N]` would break the day a route gained a
-  # flag, and it would break silently, by creating a sandbox for the wrong harness.
+  # Which sbx agent image serves this harness, and which kit (if any) defines it. Named here
+  # rather than dug out of the argv by position: an agent read off `args[N]` would break the
+  # day a route gained a flag, and it would break silently, by creating a sandbox for the
+  # wrong harness. It is also not a catalog field, and that is deliberate — the agent name
+  # gates credential posture below, so a route that could choose it could ask for the
+  # operator's Claude login to be copied into any VM it liked. This map is an allowlist.
+  #
+  # A KIT is the same decision one level up: a declarative spec that supplies an agent sbx
+  # does not ship, including its image, its network allowlist and its credential wiring. Same
+  # reasoning, so the same place — and the kit is a directory in THIS repository, resolved
+  # beside the running script rather than under CANON_ROOT, so the kit a launch uses is always
+  # the one that shipped with the launcher it is running. Vendored rather than referenced at
+  # somebody's HEAD, because a deployment input that can change under us is not an input we
+  # have authorized.
+  SBX_KIT=""
   case "$R_HARNESS" in
     claude-code|claude) SBX_AGENT=claude ;;
     codex)              SBX_AGENT=codex ;;
     omp|shell)          SBX_AGENT=shell ;;
+    antigravity)        SBX_AGENT=agy; SBX_KIT="$SCRIPT_DIR/../kits/agy" ;;
     *) die "route '$ROUTE_NAME' runs under sbx with harness '$R_HARNESS', and this build
   does not know which sbx agent image serves it. Add it to hive-launch's agent map, or
   run this harness on a non-sandboxed route." ;;
@@ -1094,17 +1107,30 @@ if [ "$EXECUTABLE" = "sbx" ]; then
   # exists to catch — and the next attempt then saw that VM as "existing" and skipped the
   # credential setup entirely, while the ordinary launch could not be retried either because
   # its clones were already there (cross-harness review, 2026-08-24).
-  # The operator's Claude subscription credential goes into EVERY claude sandbox, not only into
-  # the sandboxes of subscription routes — because the worker is not the only thing in there
-  # that talks to a model. An OpenRouter worker's independent review runs on Opus, from inside
-  # the same VM, and that reviewer needs the operator's login. What the route's billing_market
-  # decides is whether the credential is REQUIRED (a subscription route cannot run without it)
-  # or merely available (an api-billed worker uses its provider; its reviewer uses this).
+  # The operator's Claude subscription credential goes into a sandbox for either of two
+  # reasons, and they are not the same reason. The WORKER needs it when the harness in there
+  # is Claude Code. The REVIEWER needs it when the route's review runs inside the VM, whatever
+  # the worker is — that is what `reviewer: opus-in-sandbox` says, and an OpenRouter worker's
+  # Opus review has always depended on it.
+  #
+  # Until 2026-09-03 both were tested as `SBX_AGENT = claude`, and the comment here described
+  # the reviewer while the condition read the worker. Nothing exposed it, because every
+  # sandboxed route in the catalog ran the claude agent, so the two were the same set. A
+  # sandbox running some other agent breaks the coincidence: its in-VM reviewer would need the
+  # login and silently not get one, and the worker would discover that at review time, having
+  # done all the work. Read the two facts separately, because they are two facts.
+  CRED_FOR_WORKER=""
+  [ "$SBX_AGENT" != "claude" ] || CRED_FOR_WORKER=1
+  CRED_FOR_REVIEWER=""
+  [ "$R_REVIEWER" != "opus-in-sandbox" ] || CRED_FOR_REVIEWER=1
+
   SBX_CLAUDE_CRED=""
-  if [ "$SBX_AGENT" = "claude" ]; then
+  if [ -n "$CRED_FOR_WORKER$CRED_FOR_REVIEWER" ]; then
     if [ -f "$HOME/.claude/.credentials.json" ]; then
       SBX_CLAUDE_CRED=1
-    elif [ "$R_MARKET" = "subscription" ]; then
+    elif [ -n "$CRED_FOR_WORKER" ] && [ "$R_MARKET" = "subscription" ]; then
+      # Only a subscription WORKER cannot start without it. A reviewer that has no login is a
+      # review that refuses later, loudly, which is a worse outcome but not an unstartable one.
       die "route '$ROUTE_NAME' bills a subscription, and there is no
   $HOME/.claude/.credentials.json to hand the sandbox. Log in on the host first — launching
   would run this worker on whatever credential the sandbox proxy supplies, and bill an
@@ -1199,8 +1225,16 @@ SBXENV
     if [ "$SBX_AGENT" = "claude" ]; then
       SBX_CREATE_ENV+=(--env SBX_CRED_ANTHROPIC_MODE=off)
     fi
-    echo "  sandbox: creating $SANDBOX (agent $SBX_AGENT, billing $R_MARKET)"
+    SBX_KIT_ARG=()
+    if [ -n "$SBX_KIT" ]; then
+      [ -d "$SBX_KIT" ] || die "route '$ROUTE_NAME' runs the '$R_HARNESS' harness, which is
+  defined by the kit at $SBX_KIT, and that directory does not exist. The kit ships with this
+  repository; a checkout missing it cannot build this sandbox. Nothing was created or emitted."
+      SBX_KIT_ARG=(--kit "$SBX_KIT")
+    fi
+    echo "  sandbox: creating $SANDBOX (agent $SBX_AGENT${SBX_KIT:+ via kit $SBX_KIT}, billing $R_MARKET)"
     sbx create --quiet --name "$SANDBOX" --env-file "$SBX_ENV_FILE" \
+      ${SBX_KIT_ARG+"${SBX_KIT_ARG[@]}"} \
       ${SBX_CREATE_ENV+"${SBX_CREATE_ENV[@]}"} \
       "$SBX_AGENT" "$TASK_ROOT" "$WS_HUB" \
       || die "sbx create failed for '$SANDBOX'; nothing was emitted and the clones are at $TASK_ROOT."
@@ -1229,8 +1263,12 @@ SBXENV
     # The one piece that CANNOT be re-applied after the fact: credential injection is baked at
     # create time. So it is verified rather than assumed, and a sandbox whose posture does not
     # match the route's billing is refused instead of quietly billing the other account.
-    SBX_CRED_MODE=$(sbx exec "$SANDBOX" printenv SBX_CRED_ANTHROPIC_MODE 2>/dev/null | tr -d '\r' || true)
-    [ "$SBX_CRED_MODE" = "off" ] || die "sandbox '$SANDBOX' has SBX_CRED_ANTHROPIC_MODE='${SBX_CRED_MODE:-unset}',
+    # Only for the claude agent template: it is that template which sets the variable and whose
+    # proxy would otherwise substitute an API key. A sandbox built from another agent never has
+    # it, and demanding it there would refuse every such route for a posture it cannot hold.
+    SBX_CRED_MODE=""
+    [ -z "$CRED_FOR_WORKER" ] || SBX_CRED_MODE=$(sbx exec "$SANDBOX" printenv SBX_CRED_ANTHROPIC_MODE 2>/dev/null | tr -d '\r' || true)
+    [ -z "$CRED_FOR_WORKER" ] || [ "$SBX_CRED_MODE" = "off" ] || die "sandbox '$SANDBOX' has SBX_CRED_ANTHROPIC_MODE='${SBX_CRED_MODE:-unset}',
   but route '$ROUTE_NAME' bills a subscription. Credential injection is fixed at create time,
   so this VM would run the worker on the proxy's API key while the spine fact says
   subscription. Remove it and launch again:  sbx rm $SANDBOX"
