@@ -210,6 +210,7 @@ CODE_BRANCH="worker/$TASK"                # the publication branch, fixed by the
 # files, because those are instructions for a human standing on this host.
 WORKER_EMIT="../run/emit"                 # what the worker types, from either clone root
 WORKER_BRIDGE="../run/hive"
+WORKER_REVIEW="../run/review"             # issued only for a reviewer that runs in the VM
 
 # --- the order pin, the kickoff, and the route ---------------------------------------
 # All three are resolved HERE, before any decision that mutates something, because
@@ -257,6 +258,7 @@ the complete local diff before opening the PR, then wait out the first CI run, r
 within your order's budget, integrate main once, and only then post the result. Do not
 stop at the PR. The operator is watching this window and may type into it; an answer to a
 question you asked arrives that way, and re-reads your order at HEAD after a sync.
+@@REVIEW@@
 Externalize your state to committed files as you go, so that a session lost to a crash
 loses no decision.
 Container tooling on this host is '$HIVE_COMPOSE' (resolved at launch; WORKER.md's
@@ -353,6 +355,10 @@ R_VENDOR=$(route_field model_vendor)
 R_PROVIDER=$(route_field provider)
 R_MARKET=$(route_field billing_market)
 R_POOL=$(route_field credential_pool)
+# Optional, unlike everything above it: a catalog predating the field still loads, and
+# absence reads as unstated rather than as "no reviewer". It is not an execution-identity
+# field and so is not in the required loop below.
+R_REVIEWER=$(route_field reviewer)
 EXECUTABLE=$(printf '%s' "$ROUTE" | jq -r '.runner.executable // ""')
 # Every field the spine's execution identity requires, checked before anything is created.
 # The identity block may not be synthesized or defaulted (events/types.py), so a route
@@ -363,6 +369,7 @@ for f in harness:"$R_HARNESS" model:"$R_MODEL" adapter:"$R_ADAPTER" model_vendor
   [ -n "${f#*:}" ] || die "route '$ROUTE_NAME' has no '${f%%:*}'. Every execution-identity field is
   required and none may be defaulted — fix the route in $HIVE_ROUTE_CATALOG."
 done
+
 
 # --- what a route may NOT ask the worker's window to inherit ----------------------------
 # `inherit_env` names variables the harness needs from the launching environment, and the
@@ -417,6 +424,84 @@ while IFS= read -r pair; do
   Fix the route in $HIVE_ROUTE_CATALOG." ;;
   esac
 done < <(printf '%s\n' "$ENV_PAIRS")
+
+# Every name the ROUTE puts into the worker's environment: the endpoint literals, the
+# inherited names, and the targets of the renames. Computed here, beside the field that
+# validates them, because two things downstream need exactly this set and neither may
+# maintain its own copy of it — the reviewer's wrapper strips these names to get off the
+# worker's routing, and the refusal below asks whether the route routes a model at all.
+ROUTE_ENV_NAMES=$(printf '%s' "$ROUTE" | jq -r '
+  ((.runner.env // {}) | keys[]),
+  (.runner.inherit_env[]?),
+  ((.runner.inherit_env_as // {}) | keys[])' | sort -u | tr '\n' ' ')
+ROUTE_ENV_NAMES="${ROUTE_ENV_NAMES% }"
+
+# A narrower set, and a different question. ROUTE_ENV_NAMES is everything to STRIP from a
+# review, and being generous there costs nothing. This is what makes a route one that ROUTES
+# A MODEL: an endpoint literal, or a rename, which exists for no other purpose than handing
+# a harness a provider credential under the name it reads. A plainly inherited name is
+# neither — it is whatever the operator's harness needs — so a route that only inherits must
+# not be treated as carrying provider routing.
+ROUTE_ROUTING_NAMES=$(printf '%s' "$ROUTE" | jq -r '
+  ((.runner.env // {}) | keys[]),
+  ((.runner.inherit_env_as // {}) | keys[])' | sort -u | tr '\n' ' ')
+ROUTE_ROUTING_NAMES="${ROUTE_ROUTING_NAMES% }"
+
+# --- naming the reviewer to the worker -------------------------------------------------
+# The kickoff above is built before the route is resolved, so this paragraph is substituted
+# in here, where R_REVIEWER and ROUTE_ENV_NAMES both exist and nothing has yet consumed
+# KICKOFF (the argv display at --check and the window's HIVE_KICKOFF both come later).
+#
+# It is appended at all because `reviewer` was, until now, a field nothing read. The
+# catalog recorded which harness reviews a route and the worker was never told: WORKER.md
+# names two reviewers by harness ("Claude Code: the Codex review plugin"), which is right
+# on a host and impossible inside a microVM, where there is no plugin cache and no codex
+# binary. A sandboxed worker therefore had to invent something, and what it invented on
+# 2026-08-28 was a bare `claude`, inheriting its own provider routing.
+#
+# Absence stays absence: a route with no reviewer says so rather than defaulting to one.
+# A sandboxed route that routes a model MUST name the in-VM reviewer. This is not style:
+# the review is a second model invoked from inside a VM whose environment points Claude
+# Code at the worker's provider, so a reviewer that is absent, or that names a host harness
+# the VM cannot reach, leaves the worker with the same nothing the 2026-08-28 worker had —
+# and what it improvised then was a bare `claude`, which reviewed the account under test on
+# the account under test. A fourth `or-*` route copied from a third with the field dropped
+# is the exact shape this catches, and the copy would otherwise launch clean.
+#
+# Narrow on purpose. A sandboxed route with no provider routing (claude-*-sbx) has nothing
+# to strip and no wrong account to fall onto, and a non-sandboxed route reaches its host
+# reviewer, so neither is refused here.
+if [ "$EXECUTABLE" = "sbx" ] && [ -n "$ROUTE_ROUTING_NAMES" ] \
+   && [ "$R_REVIEWER" != "opus-in-sandbox" ]; then
+  die "route '$ROUTE_NAME' runs in a sandbox and puts its own provider routing into it
+  ($ROUTE_ROUTING_NAMES), but its reviewer is '${R_REVIEWER:-unstated}'. A review invoked inside
+  that VM inherits the worker's routing unless it is stripped, and only the 'opus-in-sandbox'
+  reviewer strips it — so this route would bill its review to the account under test and
+  call it independent. Set \"reviewer\": \"opus-in-sandbox\" on the route in
+  $HIVE_ROUTE_CATALOG. Nothing was created, cloned or emitted."
+fi
+
+case "$R_REVIEWER" in
+  codex-plugin)
+    REVIEW_LINE="Your independent review: Codex, via the codex-review skill, from inside this session." ;;
+  claude-skill)
+    REVIEW_LINE="Your independent review: Claude, via the claude-review skill, from inside this session." ;;
+  opus-in-sandbox)
+    REVIEW_LINE="Your independent review command:  $WORKER_REVIEW \"<prompt>\"   (or pipe the prompt in)
+That is Opus on the operator's subscription, invoked with this route's provider routing
+stripped. Do NOT invoke 'claude' directly for the review: this sandbox's environment points
+Claude Code at the worker's own provider, so a bare invocation reviews the account under
+test, on the account under test, and says nothing about either." ;;
+  "")
+    REVIEW_LINE="Your route names no reviewer. Follow WORKER.md, and state in your report which
+harness reviewed you and exactly how you invoked it." ;;
+  *)
+    REVIEW_LINE="Your route names the reviewer '$R_REVIEWER', which this launcher does not know how to
+invoke. Follow WORKER.md, and state in your report which harness reviewed you and how." ;;
+esac
+# Substituted rather than appended: the sentence belongs beside the Finishing sequence that
+# demands a review, not tacked on after "begin".
+KICKOFF="${KICKOFF/@@REVIEW@@/$REVIEW_LINE}"
 
 # Every name a route DECLARES must be set. Skipping an unset one silently is the defect
 # itself: on a sandboxed route the value is written into the VM's 0600 env file and, when it
@@ -876,9 +961,18 @@ echo "  clones: $WS_ROOT  +  $CODE_ROOT (origin -> $PUSH_REPO, branch $CODE_BRAN
 # Issued by hive-common.sh so the tooling drill exercises the very wrappers a launch
 # writes, rather than a second copy of them that could drift. Everything they need is a
 # parameter; nothing is read back out of the worker's root.
-issue_worker_interface "$RUN_DIR" "$WS_ROOT" "$CODE_ROOT" "$CODE_BRANCH" "$RUN" "$WORKER"
+issue_worker_interface "$RUN_DIR" "$WS_ROOT" "$CODE_ROOT" "$CODE_BRANCH" "$RUN" "$WORKER" \
+  "$R_REVIEWER" "$ROUTE_ENV_NAMES"
 echo "  emit:   $WRAPPER"
 echo "  bridge: $BRIDGE  (sync workspace | publish workspace | publish code)"
+# Which reviewer a launch issued is now a per-route fact, so it belongs in the launch
+# record rather than only in the worker's prompt: an operator reading back a session needs
+# to be able to see whether an in-VM reviewer existed for it.
+if [ -f "$RUN_DIR/review" ]; then
+  echo "  review: $RUN_DIR/review  (opus on the subscription, this route's routing stripped)"
+else
+  echo "  review: ${R_REVIEWER:-unstated} (no in-VM command; the worker reaches its reviewer itself)"
+fi
 
 # --- the sandbox, when the route names one ---------------------------------------------
 # The one harness-specific thing this launcher knows, and only because it CANNOT be argv:
@@ -1422,6 +1516,7 @@ half_launch_recovery() {  # half_launch_recovery <what-failed>
     echo "  Already done:  board seeded on run '$RUN' (task '$TASK' is owned by '$WORKER')"
     echo "                 clones   $WS_ROOT  +  $CODE_ROOT"
     echo "                 wrapper  $WRAPPER"
+    [ ! -f "$RUN_DIR/review" ] || echo "                 review   $RUN_DIR/review"
     [ "$EXECUTABLE" != "sbx" ] || echo "                 sandbox  $SANDBOX"
     echo "  Still missing: the tmux window, and delivery of the kickoff below."
     echo

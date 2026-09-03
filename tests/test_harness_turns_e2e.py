@@ -1262,6 +1262,7 @@ def test_the_supervisor_and_its_spool_are_gone_from_the_tree():
 
 RELATIVE_EMIT = "../run/emit"
 RELATIVE_BRIDGE = "../run/hive"
+RELATIVE_REVIEW = "../run/review"
 
 
 def no_absolute_worker_command(prompt: str, task_root) -> None:
@@ -1269,12 +1270,12 @@ def no_absolute_worker_command(prompt: str, task_root) -> None:
 
     Deliberately not "the task root never appears": the informational header still names
     the task root and both clones, and should. What must not appear is that root followed
-    by `/run/emit` or `/run/hive` in command position — the exact shape a runner rule
+    by `/run/emit`, `/run/hive` or `/run/review` in command position — the exact shape a runner rule
     cannot generalize over.
     """
     offenders = [
         line for line in prompt.splitlines()
-        if re.search(rf"{re.escape(str(task_root))}/run/(emit|hive)\b", line)
+        if re.search(rf"{re.escape(str(task_root))}/run/(emit|hive|review)\b", line)
     ]
     assert not offenders, (
         "the prompt issues a task-specific absolute worker command:\n" + "\n".join(offenders)
@@ -1980,3 +1981,247 @@ def test_a_sandboxed_route_gets_an_https_code_remote():
         out = subprocess.run(["bash", "-c", probe % (repo, executable, harness)],
                              capture_output=True, text=True, timeout=30)
         assert out.stdout == expected, f"{repo} on {executable}/{harness} -> {out.stdout}"
+
+
+# --- the reviewer is a fact the worker is told, and a command it runs -----------------
+#
+# `reviewer` entered the schema on 2026-08-28 and nothing read it. The catalog knew which
+# harness reviews a route; the worker did not, because the kickoff never carried it and
+# WORKER.md names reviewers by harness ("Claude Code: the Codex review plugin") — right on
+# a host, impossible inside a microVM with no plugin cache and no codex binary. A sandboxed
+# worker had to invent a review, and what it invented was a bare `claude`, which inherits
+# the provider routing its own VM is configured with: the review of an OpenRouter worker
+# ran on Opus, billed to OpenRouter, independent of nothing.
+
+def launch_with_reviewer(dep, task: str, host_env=None, **route_over) -> dict:
+    """A real launch on a route with a given `reviewer`, returning what the worker got."""
+    set_catalog(dep, route(**route_over))
+    order_rel = order_for(dep, task)
+    worker = f"sess-{task}-0828"
+    bin_dir = stub_tmux(dep)
+    env = launch_env(dep, bin_dir, **(host_env or {}))
+    proc = launch(dep, order_rel, "--worker", worker, env=env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    task_root = dep["work_root"] / worker
+    prompt = (task_root / "kickoff.txt").read_text()
+    # The line is substituted into the kickoff at a marker, so a substitution that silently
+    # did not happen would ship the marker to the worker instead of the reviewer.
+    assert "@@REVIEW@@" not in prompt, "the reviewer line was never substituted in"
+    return {
+        "task_root": task_root,
+        "review": task_root / "run" / "review",
+        "prompt": prompt,
+    }
+
+
+def fake_claude_dir(tmp_path: Path, tag: str) -> tuple[Path, Path]:
+    """A `claude` on PATH that records that it was reached, and what it was reached with."""
+    bin_dir = tmp_path / f"{tag}-bin"
+    bin_dir.mkdir()
+    marker = tmp_path / f"{tag}-claude-was-reached.txt"
+    claude = bin_dir / "claude"
+    claude.write_text(
+        "#!/usr/bin/env bash\n"
+        f'{{ echo "argv: $*"; '
+        'echo "BASE=${ANTHROPIC_BASE_URL-<unset>}"; '
+        'echo "KEY=${ANTHROPIC_API_KEY-<unset>}"; '
+        'echo "TOKEN=${ANTHROPIC_AUTH_TOKEN-<unset>}"; '
+        'echo "CFG=${CLAUDE_CONFIG_DIR-<unset>}"; }'
+        f' > "{marker}"\n'
+    )
+    claude.chmod(0o755)
+    return bin_dir, marker
+
+
+def run_the_review(got, tmp_path: Path, tag: str, worker_routing: dict) -> str:
+    """Run the issued wrapper in an environment carrying the worker's routing, with a
+    subscription login present, and return what the harness was reached with."""
+    bin_dir, marker = fake_claude_dir(tmp_path, tag)
+    home = tmp_path / f"{tag}-home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / ".credentials.json").write_text("{}")
+    out = subprocess.run(
+        [str(got["review"]), "review this diff"], capture_output=True, text=True, timeout=60,
+        env={"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(home), **worker_routing},
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    return marker.read_text()
+
+
+def test_an_in_sandbox_reviewer_is_issued_as_a_command_rather_than_described(deployment):
+    """A wrapper is the one form of instruction a worker cannot read and then not follow."""
+    got = launch_with_reviewer(deployment, "review-issued", reviewer="opus-in-sandbox")
+    assert got["review"].is_file() and os.access(got["review"], os.X_OK)
+    assert f"{RELATIVE_REVIEW} \"<prompt>\"" in got["prompt"], (
+        "the kickoff must name the command, as the stable relative token"
+    )
+    no_absolute_worker_command(got["prompt"], got["task_root"])
+
+
+def test_the_review_command_drops_the_worker_routing_before_it_reaches_the_harness(
+    deployment, tmp_path
+):
+    """The defect itself, asserted on the shipped wrapper rather than on its comment.
+
+    The route is shaped like a real sandboxed provider route -- an endpoint literal and a
+    renamed credential -- because those two names are exactly what the launcher writes into
+    the VM's environment, and what the harness is reached with is what decides who pays.
+    """
+    got = launch_with_reviewer(
+        deployment, "review-strip", reviewer="opus-in-sandbox",
+        host_env={"HIVE_FIXTURE_OR_KEY": "the-worker-provider-key"},
+        runner=runner(env={"ANTHROPIC_BASE_URL": "https://provider.invalid/api"},
+                      inherit_env_as={"ANTHROPIC_API_KEY": "HIVE_FIXTURE_OR_KEY"}),
+    )
+    reached = run_the_review(got, tmp_path, "strip", {
+        "ANTHROPIC_BASE_URL": "https://provider.invalid/api",
+        "ANTHROPIC_API_KEY": "the-worker-provider-key",
+    })
+    assert "BASE=<unset>" in reached and "KEY=<unset>" in reached, (
+        f"the review inherited the worker's routing: {reached}"
+    )
+    assert "--model opus" in reached and "review this diff" in reached
+
+
+def test_the_strip_follows_the_catalog_rather_than_a_pair_of_remembered_names(
+    deployment, tmp_path
+):
+    """What the VM's environment contains is the CATALOG's decision, so what the review
+    drops has to be too.
+
+    A wrapper hardcoding ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY would be a list to
+    maintain against a file it never reads: this route routes its model with two other
+    names Claude Code honours -- a bearer token, and a config directory carrying its own
+    login -- and a remembered pair walks straight past both, silently, which is the whole
+    defect again.
+    """
+    cfg = tmp_path / "worker-config-dir"
+    (cfg / ".claude").mkdir(parents=True)
+    got = launch_with_reviewer(
+        deployment, "review-strip-catalog", reviewer="opus-in-sandbox",
+        host_env={"HIVE_FIXTURE_OR_TOKEN": "the-worker-bearer-token",
+                  "HIVE_FIXTURE_CFG_DIR": str(cfg / ".claude")},
+        runner=runner(env={"ANTHROPIC_BASE_URL": "https://provider.invalid/api"},
+                      inherit_env_as={"ANTHROPIC_AUTH_TOKEN": "HIVE_FIXTURE_OR_TOKEN",
+                                      "CLAUDE_CONFIG_DIR": "HIVE_FIXTURE_CFG_DIR"}),
+    )
+    reached = run_the_review(got, tmp_path, "catalog", {
+        "ANTHROPIC_BASE_URL": "https://provider.invalid/api",
+        "ANTHROPIC_AUTH_TOKEN": "the-worker-bearer-token",
+        "CLAUDE_CONFIG_DIR": str(cfg / ".claude"),
+    })
+    for name in ("BASE", "TOKEN", "CFG"):
+        assert f"{name}=<unset>" in reached, f"{name} survived the strip: {reached}"
+
+
+def test_the_login_check_reads_the_environment_the_harness_will_actually_get(
+    deployment, tmp_path
+):
+    """A route may rename Claude Code's config directory, and then the login the review
+    would use is not the one at $HOME/.claude. Checking before the strip would pass on a
+    file the review never opens -- so the check runs after it, in the stripped process."""
+    cfg = tmp_path / "decoy-config"
+    cfg.mkdir()
+    (cfg / ".credentials.json").write_text("{}")
+    got = launch_with_reviewer(
+        deployment, "review-check-after", reviewer="opus-in-sandbox",
+        host_env={"HIVE_FIXTURE_CFG_DIR2": str(cfg)},
+        runner=runner(inherit_env_as={"CLAUDE_CONFIG_DIR": "HIVE_FIXTURE_CFG_DIR2"}),
+    )
+    bin_dir, marker = fake_claude_dir(tmp_path, "after")
+    home = tmp_path / "after-home"          # no login here
+    home.mkdir()
+    out = subprocess.run(
+        [str(got["review"]), "review this diff"], capture_output=True, text=True, timeout=60,
+        env={"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(home),
+             "CLAUDE_CONFIG_DIR": str(cfg)},
+    )
+    assert out.returncode != 0, "a decoy login in a stripped config dir must not satisfy it"
+    assert not marker.exists()
+
+
+def test_the_review_command_blocks_rather_than_reviewing_on_the_worker_credential(
+    deployment, tmp_path
+):
+    """With the subscription login absent, falling back to plain `claude` would produce a
+    review that runs on the account under test and reads as clean. Refusing is the only
+    honest answer, and the harness must not be reached at all."""
+    got = launch_with_reviewer(deployment, "review-nocred", reviewer="opus-in-sandbox")
+    bin_dir, marker = fake_claude_dir(tmp_path, "nocred")
+    home = tmp_path / "nocred-home"
+    home.mkdir()
+
+    out = subprocess.run(
+        [str(got["review"]), "review this diff"], capture_output=True, text=True, timeout=60,
+        env={"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(home)},
+    )
+    assert out.returncode != 0
+    assert ".credentials.json" in out.stderr
+    assert not marker.exists(), "a review with no login must not reach the harness at all"
+
+
+def test_a_host_reviewer_is_named_and_gets_no_in_vm_command(deployment):
+    """The two host reviewers are harnesses the worker already reaches. Issuing a
+    routing-stripped Opus wrapper for them would offer a second, wrong reviewer."""
+    for task, reviewer, expected in [
+        ("review-codex", "codex-plugin", "Codex, via the codex-review skill"),
+        ("review-skill", "claude-skill", "Claude, via the claude-review skill"),
+    ]:
+        got = launch_with_reviewer(deployment, task, reviewer=reviewer)
+        assert not got["review"].exists()
+        assert expected in got["prompt"]
+        assert RELATIVE_REVIEW not in got["prompt"]
+
+
+def test_a_route_that_names_no_reviewer_says_so_rather_than_defaulting_to_one(deployment):
+    """Absence stays absence. A catalog predating the field still loads, and a launch on
+    such a route must not invent a reviewer for the worker — it must say the route names
+    none, so the report has to state what actually reviewed the work."""
+    got = launch_with_reviewer(deployment, "review-absent")
+    assert not got["review"].exists()
+    assert "Your route names no reviewer" in got["prompt"]
+    assert RELATIVE_REVIEW not in got["prompt"]
+
+
+def test_a_sandboxed_route_that_routes_a_model_must_name_the_in_vm_reviewer(deployment):
+    """The copy-paste case. A fourth `or-*` route made from a third with `reviewer` dropped
+    would launch clean today, into a VM whose environment points Claude Code at a provider,
+    with nothing telling its worker how to review — which is precisely the state the
+    2026-08-28 worker was in when it improvised a bare `claude`.
+
+    Narrow on purpose: a sandboxed route with no provider routing has nothing to strip, and
+    a non-sandboxed route reaches its host reviewer. Both still launch.
+    """
+    dep = deployment
+    routed = runner(executable="sbx", args=["run", "--name", "{{sandbox}}", "claude"],
+                    env={"ANTHROPIC_BASE_URL": "https://provider.invalid/api"})
+    for reviewer, refused in [(None, True), ("codex-plugin", True), ("opus-in-sandbox", False)]:
+        over = {} if reviewer is None else {"reviewer": reviewer}
+        set_catalog(dep, route(runner=routed, **over))
+        order_rel = order_for(dep, f"sbx-reviewer-{reviewer or 'absent'}")
+        bin_dir = stub_tmux(dep)
+        before = len(events(dep))
+        proc = launch(dep, order_rel, "--check", env=launch_env(dep, bin_dir))
+        if refused:
+            assert proc.returncode != 0, proc.stdout + proc.stderr
+            assert "reviewer" in (proc.stdout + proc.stderr)
+            assert "ANTHROPIC_BASE_URL" in (proc.stdout + proc.stderr), (
+                "the refusal must name the routing that makes it a refusal"
+            )
+        else:
+            assert "does not know how to invoke" not in proc.stdout + proc.stderr
+        assert len(events(dep)) == before, "a preflight refusal must write nothing"
+
+
+def test_a_sandboxed_route_with_no_provider_routing_still_needs_no_reviewer(deployment):
+    """claude-*-sbx carries no endpoint and no rename, so its review runs on the same
+    subscription either way and there is nothing for a strip to do. The guard must not
+    spread to it — a refusal that fires where there is no defect teaches operators to
+    silence refusals."""
+    dep = deployment
+    set_catalog(dep, route(runner=runner(
+        executable="sbx", args=["run", "--name", "{{sandbox}}", "claude"])))
+    order_rel = order_for(dep, "sbx-no-routing")
+    bin_dir = stub_tmux(dep)
+    proc = launch(dep, order_rel, "--check", env=launch_env(dep, bin_dir))
+    assert "reviewer" not in (proc.stdout + proc.stderr), proc.stdout + proc.stderr
