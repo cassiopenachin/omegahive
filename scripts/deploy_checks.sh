@@ -360,5 +360,47 @@ else
   fi
 fi
 
+# --- 10. the installed systemd units still say what the repository says ---------------
+#
+# The units in deploy/systemd are COPIED into ~/.config/systemd/user, not symlinked, so an
+# edit here reaches a host only when somebody remembers to copy it. Found drifted on
+# 2026-09-08: the installed backup and bundle services were five weeks behind. That time it
+# was comments only and nothing was broken, which is precisely why it went unnoticed — the
+# same silence would have covered a changed ExecStart.
+#
+# DIRECTIVE lines only, not bytes. Comment churn is not drift, and more importantly these
+# units carry deployment-#0 values that a second host is told to adjust (WorkingDirectory,
+# ExecStart, the podman lines). A byte comparison would hold such a host permanently red
+# and teach it to ignore this check; a directive comparison still catches a real divergence
+# and names it, and a host that diverges on purpose records that in its deployments row.
+UNIT_DIR="${OMEGAHIVE_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
+directives() { grep -vE '^[[:space:]]*(#|;|$)' "$1" | sed 's/[[:space:]]*$//'; }
+UNIT_DRIFT=""
+UNIT_SEEN=0
+for _u in deploy/systemd/*.service deploy/systemd/*.timer; do
+  [ -e "$_u" ] || continue
+  _name=$(basename "$_u")
+  # Only units this host has installed. The repo ships units a given host need not run.
+  [ -f "$UNIT_DIR/$_name" ] || continue
+  UNIT_SEEN=$((UNIT_SEEN + 1))
+  if ! diff -q <(directives "$UNIT_DIR/$_name") <(directives "$_u") >/dev/null 2>&1; then
+    UNIT_DRIFT="$UNIT_DRIFT $_name"
+  fi
+done
+if [ "$UNIT_SEEN" -eq 0 ]; then
+  echo "[SKIP] 10. systemd units: none of deploy/systemd/ is installed in $UNIT_DIR."
+elif [ -z "$UNIT_DRIFT" ]; then
+  ok "10. systemd units: $UNIT_SEEN installed unit(s) match deploy/systemd/"
+else
+  for _name in $UNIT_DRIFT; do
+    diff -u <(directives "$UNIT_DIR/$_name") <(directives "deploy/systemd/$_name") \
+      | sed "s|^|       $_name: |" | head -20
+  done
+  bad "10. systemd units: installed unit(s) differ from deploy/systemd/ (above):$UNIT_DRIFT
+       These are copies, so a repository edit does not reach the host by itself. Sync:
+         cp deploy/systemd/<unit> $UNIT_DIR/ && systemctl --user daemon-reload
+       If this host diverges deliberately, record that in its docs/deployments/ row."
+fi
+
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]
