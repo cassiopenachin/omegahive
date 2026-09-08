@@ -215,6 +215,14 @@ nothing to substitute — confirmed from inside a sandbox, where a bare SSH conn
 the credential path above is HTTPS-shaped end to end: HTTPS is the only protocol the proxy
 can rewrite.
 
+### Antigravity routes: the login token prerequisite
+
+For routes running the Antigravity harness,
+`~/.gemini/antigravity-cli/antigravity-oauth-token` must exist on the host, because
+`hive-launch` copies it into the sandbox and refuses the launch if it is missing. Run
+`agy` in an interactive terminal on the host to complete authentication and create the
+token file.
+
 ## 3. The no-model preflight — run this before every launch
 
 ```bash
@@ -503,19 +511,29 @@ honest than a manufactured value.
 ## 6. What each installed harness can prove
 
 The honest state on deployment #0, **measured against the installed binaries on
-2026-08-21** by free no-work probes — not read from vendor documentation and not inferred.
+2026-08-21** (Claude Code and Codex) and **2026-09-08** (Antigravity CLI) by free
+no-work probes — not read from vendor documentation and not inferred.
 
-| | Claude Code 2.1.238 | Codex 0.147.0 |
-|---|---|---|
-| Batch interface | `-p --output-format stream-json --verbose` | `codex exec --json` |
-| Native resume | `--resume <id>`, and the session id **stays the same** | `codex exec resume <id>` |
-| Session identity in the stream | `system/init.session_id`, repeated on every record | `thread.started.thread_id` |
-| Resolved model readable | **yes** — `system/init.model`, and `message.model` per assistant record | **no** — the stream never names it |
-| Harness version in the stream | **yes** — `system/init.claude_code_version` | no |
-| Usage readable | **yes** — provider counts on the terminal `result` record, and per message in the transcript | **yes** — `turn.completed.usage`, per turn |
-| Terminal reason | `result.terminal_reason` + `subtype` | `turn.completed` / `turn.failed` |
-| Structured budget signal | **yes** — `terminal_reason: "budget_exhausted"`, and `rate_limit_event.rate_limit_info.status == "rejected"` | **none** |
-| Costs an extra call | **no** — both streams are written anyway | no |
+| | Claude Code 2.1.238 | Codex 0.147.0 | Antigravity CLI 1.1.27 (`agy`) |
+|---|---|---|---|
+| Batch interface | `-p --output-format stream-json --verbose` | `codex exec --json` | `-p --output-format stream-json` |
+| Native resume | `--resume <id>`, and the session id **stays the same** | `codex exec resume <id>` | `--conversation <id>`, and the session id **stays the same** |
+| Session identity in the stream | `system/init.session_id`, repeated on every record | `thread.started.thread_id` | `conversation_id` — top level on `init`, nested in payload elsewhere |
+| Resolved model readable | **yes** — `system/init.model`, and `message.model` per assistant record | **no** — the stream never names it | **yes** — `init.model` on the `init` record |
+| Harness version in the stream | **yes** — `system/init.claude_code_version` | no | no |
+| Usage readable | **yes** — provider counts on the terminal `result` record, and per message in the transcript | **yes** — `turn.completed.usage`, per turn | **yes** — `result.usage` on the terminal `result` record, and per step in `step_update.usage` |
+| Terminal reason | `result.terminal_reason` + `subtype` | `turn.completed` / `turn.failed` | `result.status` (`SUCCESS` / `ERROR`) + `result.error` |
+| Structured budget signal | **yes** — `terminal_reason: "budget_exhausted"`, and `rate_limit_event.rate_limit_info.status == "rejected"` | **none** | **none** |
+| Costs an extra call | **no** — both streams are written anyway | no | no |
+
+Today, the Antigravity route runs on `adapter: generic`, which reads none of this back.
+`generic` builds an initial argv and executes the process, discarding every capability
+the harness exposes: native session resume (`--conversation <id>`), streamed session
+identity (`conversation_id`), resolved model verification (`init.model`), token usage
+accounting (`result.usage` and `step_update.usage`), and terminal execution status
+(`result.status` / `result.error`). Because `generic` assumes no structured stream or
+native resume command, route identity remains declared rather than observed, usage is
+reported as unavailable, and turn resumption is refused by name.
 
 Two entries in that table are load-bearing refusals rather than features.
 
@@ -694,3 +712,5 @@ Named here so the next reader does not go looking:
   sandboxed route's host must store before launch, why an unstored one 401s only at
   publish time rather than at launch, how to check it, and why SSH cannot substitute for
   it. Written after a worker lost a full session to this exact gap.
+- **2026-09-08** — §6 gains the Antigravity CLI (`agy`) measured probe column and notes on
+  capabilities discarded by the generic adapter; §2 gains the host login token prerequisite.
