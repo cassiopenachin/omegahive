@@ -384,7 +384,11 @@ BRIDGEBODY
   local review_posture=""
   case "$REVIEWER" in
     opus-in-sandbox) review_posture='--permission-mode bypassPermissions' ;;
-    claude-cli)      review_posture='--allowedTools Read Grep Glob "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)" "Bash(git status:*)"' ;;
+    # Comma-separated, deliberately. `--allowedTools` is variadic (<tools...>), and the
+    # prompt is the positional argument immediately after it — a space-separated list would
+    # put the review's own prompt in tool position and depend on the parser being lenient
+    # about where the list ends. One argument cannot be misread.
+    claude-cli)      review_posture='--allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*)"' ;;
   esac
 
   if [ -n "$review_posture" ]; then

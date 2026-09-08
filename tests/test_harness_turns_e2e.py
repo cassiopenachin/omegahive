@@ -2281,6 +2281,9 @@ def test_a_host_review_is_read_only_and_a_sandboxed_one_is_not(deployment, tmp_p
     reached = run_the_review(host, tmp_path, "posture-host", {})
     assert "--allowedTools" in reached and "bypassPermissions" not in reached, reached
     assert "Bash(git diff:*)" in reached, "the reviewer must be able to read the diff"
+    # One argument, not a space-separated list: --allowedTools is variadic and the prompt
+    # is the positional right after it, so a list would risk being read as tool names.
+    assert "--allowedTools" in reached and "Read,Grep,Glob," in reached, reached
     for writing in ("Edit", "Write", "Bash(git commit", "Bash(git push"):
         assert writing not in reached, f"a reviewer was allowed to {writing}: {reached}"
 
