@@ -51,6 +51,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Where this script REALLY lives, symlinks resolved. SCRIPT_DIR above is deliberately not
+# resolved — it is how the sibling library is sourced, and on this deployment `~/bin` holds a
+# symlink per script, so both names work there. Repository ASSETS are different: they are not
+# symlinked one by one, so `$SCRIPT_DIR/../kits` becomes `~/kits` when the launcher is invoked
+# by its PATH name, which is how OPS.md tells an operator to invoke it. Measured 2026-09-08,
+# on the first reassign: the kit refusal fired naming `/home/cassio/bin/../kits/agy`. Every
+# test until then had run `./scripts/hive-launch` directly, where the two agree.
+REPO_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 # shellcheck source=scripts/hive-common.sh
 source "$SCRIPT_DIR/hive-common.sh"
 
@@ -1113,8 +1121,9 @@ if [ "$EXECUTABLE" = "sbx" ]; then
   # A KIT is the same decision one level up: a declarative spec that supplies an agent sbx
   # does not ship, including its image, its network allowlist and its credential wiring. Same
   # reasoning, so the same place — and the kit is a directory in THIS repository, resolved
-  # beside the running script rather than under CANON_ROOT, so the kit a launch uses is always
-  # the one that shipped with the launcher it is running. Vendored rather than referenced at
+  # from REPO_ROOT (the launcher's own location with symlinks followed) rather than under
+  # CANON_ROOT, so the kit a launch uses is always the one that shipped with the launcher it
+  # is running, however that launcher was named. Vendored rather than referenced at
   # somebody's HEAD, because a deployment input that can change under us is not an input we
   # have authorized.
   SBX_KIT=""
@@ -1122,7 +1131,7 @@ if [ "$EXECUTABLE" = "sbx" ]; then
     claude-code|claude) SBX_AGENT=claude ;;
     codex)              SBX_AGENT=codex ;;
     omp|shell)          SBX_AGENT=shell ;;
-    antigravity)        SBX_AGENT=agy; SBX_KIT="$SCRIPT_DIR/../kits/agy" ;;
+    antigravity)        SBX_AGENT=agy; SBX_KIT="$REPO_ROOT/kits/agy" ;;
     *) die "route '$ROUTE_NAME' runs under sbx with harness '$R_HARNESS', and this build
   does not know which sbx agent image serves it. Add it to hive-launch's agent map, or
   run this harness on a non-sandboxed route." ;;

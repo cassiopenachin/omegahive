@@ -2360,7 +2360,7 @@ def test_the_antigravity_kit_ships_with_the_launcher_that_names_it():
     launch uses is the one that shipped with it. A map entry pointing at a directory this
     repository does not carry would build nothing and say so only at `sbx create`."""
     body = (REPO / "scripts" / "hive-launch").read_text()
-    assert 'antigravity)        SBX_AGENT=agy; SBX_KIT="$SCRIPT_DIR/../kits/agy"' in body
+    assert 'antigravity)        SBX_AGENT=agy; SBX_KIT="$REPO_ROOT/kits/agy"' in body
     spec = REPO / "kits" / "agy" / "spec.yaml"
     assert spec.is_file(), "the kit the agent map names must be in the tree"
     text = spec.read_text()
@@ -2404,3 +2404,34 @@ def test_the_antigravity_login_travels_as_a_file_because_the_proxy_will_not_carr
         "values to the very path the launcher copies the real token to"
     )
     assert "PER SANDBOX" in spec, "and the kit must say why, so nobody restores it"
+
+
+def test_repo_assets_resolve_when_the_launcher_is_invoked_by_its_path_name():
+    """OPS.md puts `scripts/` on PATH, and this host does that with a symlink per script.
+    `$SCRIPT_DIR` is the symlink's directory, not the checkout's -- which is fine for
+    sourcing the sibling library, because that is symlinked too, and wrong for anything the
+    repository ships as a directory. The kit refusal fired naming `~/bin/../kits/agy` on the
+    first reassign (2026-09-08). Every test before this one ran ./scripts/hive-launch
+    directly, where the two paths agree, so none of them could see it.
+    """
+    body = (REPO / "scripts" / "hive-launch").read_text()
+    assert 'REPO_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"' in body
+    assert '$REPO_ROOT/kits/agy' in body
+    code = "\n".join(ln for ln in body.splitlines() if not ln.lstrip().startswith("#"))
+    assert '$SCRIPT_DIR/../kits' not in code, (
+        "a repo asset must not hang off the unresolved script dir"
+    )
+
+    # Exercised, not just asserted: a symlink in a scratch dir, resolved the way the script
+    # resolves it. A string check alone would pass on a readlink that silently did nothing.
+    with tempfile.TemporaryDirectory() as tmp:
+        link = Path(tmp) / "hive-launch"
+        link.symlink_to(REPO / "scripts" / "hive-launch")
+        out = subprocess.run(
+            ["bash", "-c",
+             'REPO_ROOT="$(cd "$(dirname "$(readlink -f "$1")")/.." && pwd)"; '
+             'printf %s "$REPO_ROOT/kits/agy"',
+             "bash", str(link)],
+            capture_output=True, text=True, timeout=30)
+        assert out.stdout == str(REPO / "kits" / "agy"), out.stdout
+        assert Path(out.stdout).is_dir(), "and the kit is actually there"
