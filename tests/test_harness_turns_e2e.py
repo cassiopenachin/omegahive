@@ -2213,6 +2213,31 @@ def test_a_sandboxed_route_that_routes_a_model_must_name_the_in_vm_reviewer(depl
         assert len(events(dep)) == before, "a preflight refusal must write nothing"
 
 
+def test_a_host_reviewer_on_a_sandboxed_route_is_refused_at_the_launch(deployment):
+    """The gap the provider-routing test leaves. A sandboxed route that routes no model has
+    no routing names, so that guard cannot see it -- and `claude-cli` there is a review
+    invoked on a "host" that is really the VM: no login is copied in for it, because
+    CRED_FOR_REVIEWER keys on `opus-in-sandbox` alone. Such a route builds, runs, and
+    refuses at review time with the whole task already done."""
+    dep = deployment
+    plain = runner(executable="sbx", args=["run", "--name", "{{sandbox}}", "agy"])
+    set_catalog(dep, route(runner=plain, reviewer="claude-cli"))
+    order_rel = order_for(dep, "sbx-host-reviewer")
+    bin_dir = stub_tmux(dep)
+    before = len(events(dep))
+    proc = launch(dep, order_rel, "--check", env=launch_env(dep, bin_dir))
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    out = proc.stdout + proc.stderr
+    assert "claude-cli" in out and "opus-in-sandbox" in out, out
+    assert len(events(dep)) == before
+
+    # And the same route with the right reviewer launches.
+    set_catalog(dep, route(runner=plain, reviewer="opus-in-sandbox"))
+    proc = launch(dep, order_for(dep, "sbx-vm-reviewer"), "--check",
+                  env=launch_env(dep, stub_tmux(dep)))
+    assert "claude-cli" not in (proc.stdout + proc.stderr)
+
+
 def test_a_sandboxed_route_with_no_provider_routing_still_needs_no_reviewer(deployment):
     """claude-*-sbx carries no endpoint and no rename, so its review runs on the same
     subscription either way and there is nothing for a strip to do. The guard must not

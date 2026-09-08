@@ -471,6 +471,22 @@ ROUTE_ROUTING_NAMES="${ROUTE_ROUTING_NAMES% }"
 # Narrow on purpose. A sandboxed route with no provider routing (claude-*-sbx) has nothing
 # to strip and no wrong account to fall onto, and a non-sandboxed route reaches its host
 # reviewer, so neither is refused here.
+# `claude-cli` means a review invoked as a subprocess on the HOST, with the operator's own
+# login and a read-only posture. Inside a microVM "the host" is the VM, and the two things
+# that make the value work are both absent there: the login is not in the VM unless the
+# reviewer asks for it (CRED_FOR_REVIEWER keys on `opus-in-sandbox` and on nothing else),
+# and the read-only posture is the wrong one where the VM is already the boundary. Such a
+# route preflights clean, builds, works, and refuses at review time with the task done —
+# so it is refused here instead. The provider-routing test below does not catch it: a
+# sandboxed route that routes no model has no routing names at all.
+if [ "$EXECUTABLE" = "sbx" ] && [ "$R_REVIEWER" = "claude-cli" ]; then
+  die "route '$ROUTE_NAME' runs in a sandbox and names the reviewer 'claude-cli', which is a
+  review invoked on the host. Inside a VM that is not a reviewer: no Claude login is copied
+  in for it, so the review would refuse at the end of the task rather than at this launch.
+  Set \"reviewer\": \"opus-in-sandbox\" on the route in $HIVE_ROUTE_CATALOG.
+  Nothing was created, cloned or emitted."
+fi
+
 if [ "$EXECUTABLE" = "sbx" ] && [ -n "$ROUTE_ROUTING_NAMES" ] \
    && [ "$R_REVIEWER" != "opus-in-sandbox" ]; then
   die "route '$ROUTE_NAME' runs in a sandbox and puts its own provider routing into it
