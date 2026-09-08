@@ -2345,3 +2345,27 @@ def test_the_antigravity_kit_ships_with_the_launcher_that_names_it():
         "upstream shell image"
     )
     assert "shelajev/agy-sbx-kit" in text, "vendored code states where it came from"
+
+
+def test_the_antigravity_login_travels_as_a_file_because_the_proxy_will_not_carry_it():
+    """sbx's credential proxy is the better posture -- the real token never enters the VM --
+    and it is unusable for a per-task launcher: the binding is per sandbox, so a freshly
+    created VM is signed out and every launch would stop for an operator at a browser
+    (measured 2026-09-08). The host's token is copied in instead, which is exactly what the
+    Claude subscription already does, for exactly the same reason.
+
+    Asserted on the script and the kit rather than by launching: the sbx block has no stub.
+    """
+    body = (REPO / "scripts" / "hive-launch").read_text()
+    assert 'SBX_AGY_CRED' in body
+    assert 'antigravity-oauth-token' in body
+    # A missing login must refuse before anything is built, not produce a worker that
+    # discovers at its first turn that it cannot reach a model.
+    assert 'Nothing was created or emitted.' in body.split('SBX_AGY_CRED=""')[1][:1200]
+
+    spec = (REPO / "kits" / "agy" / "spec.yaml").read_text()
+    assert "\ncredentials:" not in spec, (
+        "the kit's OAuth block must stay out: its credentialFile template writes sentinel "
+        "values to the very path the launcher copies the real token to"
+    )
+    assert "PER SANDBOX" in spec, "and the kit must say why, so nobody restores it"

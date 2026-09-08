@@ -1141,6 +1141,29 @@ if [ "$EXECUTABLE" = "sbx" ]; then
     fi
   fi
 
+  # The same problem for the Antigravity harness, and the same answer. The kit that defines
+  # the `agy` agent can wire its Google session through sbx's credential proxy, which is the
+  # better posture — the real token never enters the VM. It cannot be used here: that binding
+  # is PER SANDBOX (measured 2026-09-08, a freshly created second VM reports "no binding
+  # authorizes antigravity" and its agy is signed out), and this launcher builds one VM per
+  # task, so every launch would stop for an operator at a browser.
+  #
+  # So the host's own token is copied in, exactly as the Claude subscription credential is
+  # a few lines below. The trade is identical and is accepted for the identical reason: an
+  # OAuth session the proxy will not carry has to travel as a file or not at all.
+  SBX_AGY_CRED=""
+  AGY_TOKEN="$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+  if [ "$SBX_AGENT" = "agy" ]; then
+    if [ -f "$AGY_TOKEN" ]; then
+      SBX_AGY_CRED=1
+    else
+      die "route '$ROUTE_NAME' runs the Antigravity harness, and there is no
+  $AGY_TOKEN to hand the sandbox. Log in on the host first — run 'agy' in a terminal and
+  complete the sign-in. Without it the worker would start, read its order, and find it
+  cannot reach a model. Nothing was created or emitted."
+    fi
+  fi
+
   # The VM's environment file. Written on BOTH paths, because the facts in it come from the
   # route and the route can change between a create and a re-attach — an endpoint amended in
   # the catalog that never reached an existing VM would leave the worker pointed at the old
@@ -1251,6 +1274,16 @@ SBXENV
   # defect in a second place: a sandbox that already existed could run with no OAuth credential,
   # or on the proxy's API key, while the `execution.route_approved` this launcher emits said
   # `subscription` (cross-harness review, 2026-08-24).
+  # Antigravity first, because it is the worker's own credential and a worker that cannot
+  # reach its model has nothing to review. Idempotent, and on both paths for the reason the
+  # Claude copy is: a sandbox that already existed may predate the token it needs.
+  if [ -n "$SBX_AGY_CRED" ]; then
+    sbx cp "$AGY_TOKEN" "$SANDBOX:/home/agent/.gemini/antigravity-cli/antigravity-oauth-token" \
+      >/dev/null 2>&1 \
+      || die "could not copy the Antigravity login into '$SANDBOX'."
+    echo "  sandbox: antigravity login installed"
+  fi
+
   if [ -n "$SBX_CLAUDE_CRED" ]; then
     sbx cp "$HOME/.claude/.credentials.json" "$SANDBOX:/home/agent/.claude/.credentials.json" \
       >/dev/null 2>&1 \
