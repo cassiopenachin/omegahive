@@ -351,10 +351,10 @@ BRIDGEBODY
 
   # --- the review command, for a route whose reviewer runs inside the sandbox ----------
   #
-  # Issued for `opus-in-sandbox` and for nothing else. The other two reviewers are host
-  # harnesses the worker already reaches (the codex plugin, the claude skill); this one is
-  # a second model invoked from inside the worker's own VM, which is the only case where
-  # HOW it is invoked is not obvious from the harness the worker is running.
+  # Issued for the two reviewers that are a COMMAND rather than an integration. The codex
+  # plugin and the claude skill are reached from inside a session that already has them;
+  # `opus-in-sandbox` and `claude-cli` are a second model the worker has to invoke itself,
+  # which is the only case where HOW it is invoked is not obvious from the harness it runs.
   #
   # And it is not obvious, because getting it wrong is silent. A sandboxed provider route
   # points Claude Code at its provider through names in the VM's environment file. Those
@@ -374,32 +374,48 @@ BRIDGEBODY
   # and re-open the same defect silently. The launcher passes the names the ROUTE
   # contributes to that environment, which is complete by construction — everything else
   # in the file is written by the launcher itself and none of it routes a model.
-  if [ "$REVIEWER" = "opus-in-sandbox" ]; then
+  # Where the review RUNS decides its permission posture, and the two cases are not alike.
+  # In a microVM the boundary is the VM and the worker itself runs bypassed, so the reviewer
+  # does too. On the host there is no such boundary: a bypassed session there is a bypassed
+  # session on the operator's own machine. A reviewer needs to READ the tree and nothing
+  # more, so the host case gets an explicit read-only allowance instead — which is the
+  # stronger posture anyway, and the reason it is not simply copied into the sandbox case is
+  # that a sandboxed reviewer may need to run the tests it is reviewing.
+  local review_posture=""
+  case "$REVIEWER" in
+    opus-in-sandbox) review_posture='--permission-mode bypassPermissions' ;;
+    # Comma-separated, deliberately. `--allowedTools` is variadic (<tools...>), and the
+    # prompt is the positional argument immediately after it — a space-separated list would
+    # put the review's own prompt in tool position and depend on the parser being lenient
+    # about where the list ends. One argument cannot be misread.
+    claude-cli)      review_posture='--allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*)"' ;;
+  esac
+
+  if [ -n "$review_posture" ]; then
     local unset_flags="" n
     for n in $ROUTE_ENV_NAMES; do
       unset_flags="$unset_flags -u $n"
     done
     cat > "$REVIEW" <<REVIEWHEAD
 #!/usr/bin/env bash
-# Independent review for one hive worker on a sandboxed route.
+# Independent review for one hive worker.
 #
 #   git -C <code-clone> diff main... | ../run/review "review this diff: ..."
 #   ../run/review "<prompt>"
 #
-# Runs Opus on the OPERATOR'S subscription rather than on this worker's provider, by
-# dropping every name this route puts into the VM's environment to route a model.
-# hive-launch copied the subscription login into this sandbox for exactly this call. Do
-# not invoke \`claude\` directly for a review: it would inherit the worker's routing, bill
-# the account under test, and produce a review that is not independent of it.
+# Runs Opus on the OPERATOR'S subscription rather than on this worker's account, by
+# dropping every name this route sets to route a model. Do not invoke \`claude\` directly
+# for a review: it would inherit the worker's routing, bill the account under test, and
+# produce a review that is not independent of it.
 set -euo pipefail
 HIVE_REVIEW_STRIP="${unset_flags# }"
+HIVE_REVIEW_POSTURE=($review_posture)
 REVIEWHEAD
     cat >> "$REVIEW" <<'REVIEWBODY'
-# Phase one: drop the routing and re-enter. The check below has to run in the environment
-# the HARNESS will see, not in the one this script was called in — a route that renames
-# Claude Code's config directory would otherwise leave the check reading one login while
-# the review used another. Re-exec is the only way to test the environment you are about
-# to hand over rather than the one you have.
+# Phase one: drop the routing and re-enter. On a route that sets none this is a no-op, and
+# it still runs, because the check below has to see the environment the HARNESS will get
+# rather than the one this script was called in — a route that renames Claude Code's config
+# directory would otherwise leave the check reading one login while the review used another.
 if [ -z "${HIVE_REVIEW_STRIPPED:-}" ]; then
   export HIVE_REVIEW_STRIPPED=1
   # shellcheck disable=SC2086  # HIVE_REVIEW_STRIP is a list of -u flags, and must split
@@ -408,18 +424,20 @@ fi
 
 # Phase two: this environment is the reviewer's.
 if [ ! -f "$HOME/.claude/.credentials.json" ]; then
-  echo "review: this sandbox has no $HOME/.claude/.credentials.json, so a routing-stripped" >&2
-  echo "        review has no login to use. Block and tell the operator. Do NOT fall back" >&2
-  echo "        to plain 'claude' -- that reviews this worker on its own provider." >&2
+  echo "review: there is no $HOME/.claude/.credentials.json here, so this review has no" >&2
+  echo "        login to use. Block and tell the operator. Do NOT fall back to plain" >&2
+  echo "        'claude' -- that reviews this worker on the account under test." >&2
   exit 1
 fi
 
 # The review reads the tree it is reviewing. In print mode an unpermitted tool call is
 # denied rather than asked about, so a reviewer with no permission posture answers from
-# its prompt alone and exits 0 -- a clean-looking review of nothing. The posture is the
-# same one the worker runs under here, and the boundary is the same: this is a microVM.
+# its prompt alone and exits 0 -- a clean-looking review of nothing. Which posture is set
+# by the launch, and differs by where this runs: bypassed inside a microVM, whose boundary
+# is the VM, and read-only on the host, where there is no boundary but a reviewer has no
+# business writing anything either.
 exec claude -p --model "${HIVE_REVIEW_MODEL:-opus}" \
-  --permission-mode bypassPermissions "$@"
+  "${HIVE_REVIEW_POSTURE[@]}" "$@"
 REVIEWBODY
     chmod +x "$REVIEW"
   fi

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deployment checks 1–7 (deployment spec §7 step 5 / test plan T1), fully
+# Deployment checks (deployment spec §7 step 5 / test plan T1), fully
 # containerized — a scripted, cognition-free harness runnable against a fresh
 # `compose up`. Hard-fails on any check. Re-run on any environment change (§5).
 #
@@ -321,6 +321,105 @@ else
          podman compose build && podman compose up -d
        A launch will keep working meanwhile — hive-launch reads the catalog with jq — so
        this is the only check that sees it."
+fi
+
+# --- 9. the sandbox runtime the sandboxed routes depend on --------------------------
+#
+# The sandboxed routes — every route whose `runner.executable` is `sbx` — build a microVM
+# with `sbx create`, and sbx's Docker Hub session
+# is the one credential in this deployment that can move between two stores on its own: a
+# file when it detects no OS keychain, the keychain when one appears. On 2026-09-08 every
+# one of those routes was unlaunchable — silently, because nothing here looked, and a route
+# only fails at the moment an operator tries to use it. The session had been alive in a
+# hand-started daemon since 2026-08-24 and rotted the day it lapsed.
+#
+# `sbx ls` is the cheapest call that proves the whole chain: a daemon is up, it answers,
+# and it is authenticated. It is timed out rather than trusted, because the same failure
+# once presented as a hang rather than an error (a locked keyring collection turns a fast
+# refusal into a wait on a prompt nobody can answer), and a deploy check that hangs is a
+# deploy check nobody runs.
+#
+# SKIP, not FAIL, where sbx is absent: a host that configures no sandboxed route does not
+# need it, and this script runs on more than one host.
+if ! command -v sbx >/dev/null 2>&1; then
+  echo "[SKIP] 9. sandbox runtime: no sbx on PATH — this host runs no sandboxed route."
+elif [ ! -f "$CATALOG" ] || ! grep -q '"executable": *"sbx"' "$CATALOG" 2>/dev/null; then
+  echo "[SKIP] 9. sandbox runtime: no route in $CATALOG runs under sbx."
+elif SBX_OUT=$(timeout 30 sbx ls 2>&1); then
+  ok "9. sandbox runtime: sbx answers and is authenticated ($(printf '%s' "$SBX_OUT" | tail -n +2 | grep -c . ) sandbox(es))"
+else
+  SBX_RC=$?
+  printf '%s\n' "$SBX_OUT" | sed 's/^/       /'
+  if [ "$SBX_RC" -eq 124 ]; then
+    bad "9. sandbox runtime: 'sbx ls' TIMED OUT after 30s. Every sandboxed route is
+       unlaunchable. A hang here has meant a credential store waiting on an unlock prompt
+       that nothing can answer — check whether gnome-keyring-daemon is resident, and see
+       the sandbox-runtime notes in OPS.md."
+  else
+    bad "9. sandbox runtime: 'sbx ls' failed (above). Every sandboxed route is unlaunchable
+       until it does not. If it says 'Not authenticated to Docker', run 'sbx login'."
+  fi
+fi
+
+# --- 10. the installed systemd units still say what the repository says ---------------
+#
+# The units in deploy/systemd are COPIED into ~/.config/systemd/user, not symlinked, so an
+# edit here reaches a host only when somebody remembers to copy it. Found drifted on
+# 2026-09-08: the installed backup and bundle services were five weeks behind. That time it
+# was comments only and nothing was broken, which is precisely why it went unnoticed — the
+# same silence would have covered a changed ExecStart.
+#
+# DIRECTIVE lines only, not bytes: comment churn is not drift, and the drift that prompted
+# this check was comments only, which is exactly why nobody noticed it for five weeks.
+#
+# That is the whole of what the comparison buys, and an earlier version of this comment
+# claimed more — that directives spare a host which "adjusts WorkingDirectory, ExecStart,
+# the podman lines". Those are directive lines. A host following those instructions fails
+# this check on every run, and since the script ends `[ "$FAIL" -eq 0 ]`, its whole harness
+# would sit permanently red, which is how an operator learns to stop reading it.
+#
+# So deliberate divergence is DECLARED rather than inferred. A host that means to differ
+# lists those unit names in OMEGAHIVE_SYSTEMD_UNITS_DIVERGED (space-separated) and records
+# why in its docs/deployments/ row. Declared units are still reported on every run — named,
+# not hidden — because an exception nobody sees is how the next real drift gets missed.
+UNIT_DIR="${OMEGAHIVE_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
+UNIT_DIVERGED="${OMEGAHIVE_SYSTEMD_UNITS_DIVERGED:-}"
+directives() { grep -vE '^[[:space:]]*(#|;|$)' "$1" | sed 's/[[:space:]]*$//'; }
+UNIT_DRIFT=""
+UNIT_DECLARED=""
+UNIT_SEEN=0
+for _u in deploy/systemd/*.service deploy/systemd/*.timer; do
+  [ -e "$_u" ] || continue
+  _name=$(basename "$_u")
+  # Only units this host has installed. The repo ships units a given host need not run.
+  [ -f "$UNIT_DIR/$_name" ] || continue
+  UNIT_SEEN=$((UNIT_SEEN + 1))
+  case " $UNIT_DIVERGED " in
+    *" $_name "*) UNIT_DECLARED="$UNIT_DECLARED $_name"; continue ;;
+  esac
+  if ! diff -q <(directives "$UNIT_DIR/$_name") <(directives "$_u") >/dev/null 2>&1; then
+    UNIT_DRIFT="$UNIT_DRIFT $_name"
+  fi
+done
+[ -z "$UNIT_DECLARED" ] || echo "       (declared divergent, not compared:$UNIT_DECLARED)"
+if [ "$UNIT_SEEN" -eq 0 ]; then
+  echo "[SKIP] 10. systemd units: none of deploy/systemd/ is installed in $UNIT_DIR."
+elif [ -z "$UNIT_DRIFT" ]; then
+  ok "10. systemd units: $UNIT_SEEN installed unit(s) match deploy/systemd/"
+else
+  for _name in $UNIT_DRIFT; do
+    # `|| true`: diff exits 1 on a difference, pipefail propagates it, and errexit would
+    # then abort the script HERE — before `bad` runs, before FAIL is incremented, before
+    # the summary prints, and before a second drifted unit is diffed. The check would fail
+    # by going silent, which is the failure it exists to catch.
+    { diff -u <(directives "$UNIT_DIR/$_name") <(directives "deploy/systemd/$_name") \
+      | sed "s|^|       $_name: |" | head -20; } || true
+  done
+  bad "10. systemd units: installed unit(s) differ from deploy/systemd/ (above):$UNIT_DRIFT
+       These are copies, so a repository edit does not reach the host by itself. Sync:
+         cp deploy/systemd/<unit> $UNIT_DIR/ && systemctl --user daemon-reload
+       If this host diverges deliberately, name those units in
+       OMEGAHIVE_SYSTEMD_UNITS_DIVERGED and record why in its docs/deployments/ row."
 fi
 
 echo "== $PASS passed, $FAIL failed =="

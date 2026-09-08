@@ -19,14 +19,22 @@
       "additionalProperties": false,
       "description": "The route's list-price basis, copied from the catalog AT APPROVAL TIME.\n\nCarried on the facts, not looked up later, because the catalog is a mutable\ndeployment file: a reader deriving the cost of a 2026-08 execution from the 2027-02\ncatalog would silently compute a number that was never true. Cost is derived from\nthese numbers, never authored \u2014 no payload here holds a currency amount.\n\nAll four rates are optional: a subscription route has no per-token list price, and\nan absent rate must stay absent rather than become a zero that reads as free.",
       "properties": {
-        "captured_at": {
-          "title": "Captured At",
-          "type": "string"
-        },
         "currency": {
           "default": "USD",
           "title": "Currency",
           "type": "string"
+        },
+        "per_mtok_input": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Per Mtok Input"
         },
         "per_mtok_cache_read": {
           "anyOf": [
@@ -52,18 +60,6 @@
           "default": null,
           "title": "Per Mtok Cache Write"
         },
-        "per_mtok_input": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Per Mtok Input"
-        },
         "per_mtok_output": {
           "anyOf": [
             {
@@ -79,6 +75,10 @@
         "source": {
           "title": "Source",
           "type": "string"
+        },
+        "captured_at": {
+          "title": "Captured At",
+          "type": "string"
         }
       },
       "required": [
@@ -92,6 +92,26 @@
       "additionalProperties": false,
       "description": "One thing this deployment can currently run.",
       "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "model_vendor": {
+          "title": "Model Vendor",
+          "type": "string"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "harness": {
+          "title": "Harness",
+          "type": "string"
+        },
         "adapter": {
           "title": "Adapter",
           "type": "string"
@@ -108,38 +128,13 @@
           "title": "Credential Pool",
           "type": "string"
         },
+        "runner": {
+          "$ref": "#/$defs/RunnerSpec"
+        },
         "enabled": {
           "default": true,
           "title": "Enabled",
           "type": "boolean"
-        },
-        "harness": {
-          "title": "Harness",
-          "type": "string"
-        },
-        "model": {
-          "title": "Model",
-          "type": "string"
-        },
-        "model_vendor": {
-          "title": "Model Vendor",
-          "type": "string"
-        },
-        "name": {
-          "title": "Name",
-          "type": "string"
-        },
-        "note": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Note"
         },
         "price_basis": {
           "anyOf": [
@@ -152,17 +147,14 @@
           ],
           "default": null
         },
-        "provider": {
-          "title": "Provider",
-          "type": "string"
-        },
         "reviewer": {
           "anyOf": [
             {
               "enum": [
                 "codex-plugin",
                 "claude-skill",
-                "opus-in-sandbox"
+                "opus-in-sandbox",
+                "claude-cli"
               ],
               "type": "string"
             },
@@ -173,8 +165,17 @@
           "default": null,
           "title": "Reviewer"
         },
-        "runner": {
-          "$ref": "#/$defs/RunnerSpec"
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
         }
       },
       "required": [
@@ -195,27 +196,16 @@
       "additionalProperties": false,
       "description": "How this deployment actually starts the harness. Argv, never a shell string.\n\n`executable` plus `args` is the whole command, and nothing else here may contribute a\nword to it \u2014 every field that could would be a place a shell re-enters. An operator\nwho wants a container, a VM, a sandbox wrapper or a bare binary writes exactly that\nin those two fields and Hive runs it. The adapter appends the dynamic elements it\nknows the harness needs \u2014 the model, the session id, the task-root paths, and the\nkickoff. The three remaining fields describe the ENVIRONMENT that command runs in,\nand each is a closed shape validated below.\n\n`inherit_env` names variables this route needs from the launching environment. Names\nonly: no value ever appears in this field, in a plan, in a log line, in the preflight\nor on the spine. A provider credential name may be listed deliberately; a Hive\nauthority credential name refuses. A name listed here is a REQUIREMENT \u2014 the launcher\nrefuses when it is unset rather than skipping it, which is the 2026-08-28 defect.\n\n`inherit_env_as` is `inherit_env` with a rename: target name inside the sandbox ->\nsource name on the host. It exists because a provider-compatible harness expects a\nfixed variable name for a credential the host holds under a different one. Inheriting\nthe target name directly and trusting the operator to have overwritten it first ships\nwhatever the host happens to hold, under the right name, silently \u2014 which is how an\nOpenRouter route came to carry the Anthropic key.\n\n`env` is the one field here that holds VALUES, and it accepts only endpoint URLs.\nThat is what keeps the names-only doctrine intact rather than merely stated: a\nprovider endpoint is a fact about the ROUTE, and storing it in the operator's shell\ninstead is how it went missing and took a launch with it. A URL-only shape means no\ncredential can hide here, even by accident.\n\n`inherit_env_as` and `env` are inside the fingerprint, because a worker pointed at a\ndifferent provider is not the same runner configuration.\n\nThere is deliberately no `worker_io` field any more. It used to choose between the\nworker performing its own spine writes and git publication (`direct`) and a\nprivileged resident mediator performing them on its behalf (`supervised`). The\nmediator is retired: under the accepted runner doctrine a configured full-worker\nrunner must itself supply ordinary worker function \u2014 read/edit/test/commit, governed\nemit, workspace sync and publication, code push and PR \u2014 and a runner that withholds\nthem is a runner the operator must change, not a hole for Hive to keep a trusted\nprocess patching. A route that cannot emit, sync or publish now produces an honest\nblock from the worker rather than a second transport.",
       "properties": {
+        "executable": {
+          "title": "Executable",
+          "type": "string"
+        },
         "args": {
           "items": {
             "type": "string"
           },
           "title": "Args",
           "type": "array"
-        },
-        "env": {
-          "additionalProperties": {
-            "pattern": "^https?://[^\\s\\x00]+$",
-            "type": "string"
-          },
-          "propertyNames": {
-            "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
-          },
-          "title": "Env",
-          "type": "object"
-        },
-        "executable": {
-          "title": "Executable",
-          "type": "string"
         },
         "inherit_env": {
           "items": {
@@ -233,6 +223,17 @@
           },
           "title": "Inherit Env As",
           "type": "object"
+        },
+        "env": {
+          "additionalProperties": {
+            "pattern": "^https?://[^\\s\\x00]+$",
+            "type": "string"
+          },
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
+          },
+          "title": "Env",
+          "type": "object"
         }
       },
       "required": [
@@ -242,17 +243,26 @@
       "type": "object"
     }
   },
-  "$id": "https://omegahive.invalid/schemas/route-catalog.v2.json",
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "The deployment's route list.\n\n`routes` is a LIST, not a name-keyed object, on purpose: a JSON object with a\nrepeated key is collapsed silently by every parser we use, so a hand-edited catalog\nholding the same route name twice would resolve to whichever copy happened to win.\nA list makes the duplicate visible, and `resolve_route` refuses it as ambiguous.",
   "properties": {
+    "schema_version": {
+      "title": "Schema Version",
+      "type": "integer"
+    },
     "captured_at": {
       "title": "Captured At",
       "type": "string"
     },
     "defaults": {
       "$ref": "#/$defs/CatalogDefaults"
+    },
+    "routes": {
+      "items": {
+        "$ref": "#/$defs/RouteEntry"
+      },
+      "title": "Routes",
+      "type": "array"
     },
     "note": {
       "anyOf": [
@@ -265,17 +275,6 @@
       ],
       "default": null,
       "title": "Note"
-    },
-    "routes": {
-      "items": {
-        "$ref": "#/$defs/RouteEntry"
-      },
-      "title": "Routes",
-      "type": "array"
-    },
-    "schema_version": {
-      "title": "Schema Version",
-      "type": "integer"
     }
   },
   "required": [
@@ -284,5 +283,7 @@
     "defaults"
   ],
   "title": "RouteCatalog",
-  "type": "object"
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omegahive.invalid/schemas/route-catalog.v2.json"
 }

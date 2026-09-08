@@ -1,0 +1,26 @@
+[Unit]
+Description=Docker Sandboxes daemon (sbx), the runtime behind the hive's sandboxed routes
+Documentation=https://github.com/cassiopenachin/omegahive/blob/main/OPS.md
+# No Requires= on anything: sbx manages its own microVM runtime and does not use the
+# podman socket the rest of this deployment talks to.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/sbx daemon start
+Restart=on-failure
+RestartSec=5s
+
+# WHY THIS UNIT EXISTS. Until 2026-09-08 nothing supervised this: the daemon was a bare
+# `sbx daemon start` someone ran by hand on 2026-08-24, and it held the Docker Hub session
+# in memory for fifteen days. When that session lapsed, all five sandboxed routes became
+# unlaunchable at once, and nothing said so until an operator tried to launch one. A
+# reboot would have done the same thing, quietly, on the next boot after 2026-08-20.
+#
+# Restart=on-failure rather than always: a daemon that cannot authenticate should stay
+# down and be visible in `systemctl --user status`, not spin. deploy_checks.sh check 9
+# is what turns "down" into something an operator reads.
+
+[Install]
+WantedBy=default.target

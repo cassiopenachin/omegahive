@@ -2213,6 +2213,31 @@ def test_a_sandboxed_route_that_routes_a_model_must_name_the_in_vm_reviewer(depl
         assert len(events(dep)) == before, "a preflight refusal must write nothing"
 
 
+def test_a_host_reviewer_on_a_sandboxed_route_is_refused_at_the_launch(deployment):
+    """The gap the provider-routing test leaves. A sandboxed route that routes no model has
+    no routing names, so that guard cannot see it -- and `claude-cli` there is a review
+    invoked on a "host" that is really the VM: no login is copied in for it, because
+    CRED_FOR_REVIEWER keys on `opus-in-sandbox` alone. Such a route builds, runs, and
+    refuses at review time with the whole task already done."""
+    dep = deployment
+    plain = runner(executable="sbx", args=["run", "--name", "{{sandbox}}", "agy"])
+    set_catalog(dep, route(runner=plain, reviewer="claude-cli"))
+    order_rel = order_for(dep, "sbx-host-reviewer")
+    bin_dir = stub_tmux(dep)
+    before = len(events(dep))
+    proc = launch(dep, order_rel, "--check", env=launch_env(dep, bin_dir))
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    out = proc.stdout + proc.stderr
+    assert "claude-cli" in out and "opus-in-sandbox" in out, out
+    assert len(events(dep)) == before
+
+    # And the same route with the right reviewer launches.
+    set_catalog(dep, route(runner=plain, reviewer="opus-in-sandbox"))
+    proc = launch(dep, order_for(dep, "sbx-vm-reviewer"), "--check",
+                  env=launch_env(dep, stub_tmux(dep)))
+    assert "claude-cli" not in (proc.stdout + proc.stderr)
+
+
 def test_a_sandboxed_route_with_no_provider_routing_still_needs_no_reviewer(deployment):
     """claude-*-sbx carries no endpoint and no rename, so its review runs on the same
     subscription either way and there is nothing for a strip to do. The guard must not
@@ -2225,3 +2250,157 @@ def test_a_sandboxed_route_with_no_provider_routing_still_needs_no_reviewer(depl
     bin_dir = stub_tmux(dep)
     proc = launch(dep, order_rel, "--check", env=launch_env(dep, bin_dir))
     assert "reviewer" not in (proc.stdout + proc.stderr), proc.stdout + proc.stderr
+
+
+# --- a harness with no review integration of its own ---------------------------------
+#
+# `codex-plugin` and `claude-skill` name integrations reached from inside a session that
+# already has them. A third harness has neither, and the Antigravity route is the first:
+# no plugin, no skill, and unsandboxed, so its review is Opus invoked as a subprocess on
+# the host's own login. The wrapper that already exists for the sandbox case is the same
+# answer, with two differences that matter.
+
+def test_a_host_cli_reviewer_is_issued_the_same_command(deployment):
+    got = launch_with_reviewer(deployment, "review-host-cli", reviewer="claude-cli")
+    assert got["review"].is_file() and os.access(got["review"], os.X_OK)
+    assert f"{RELATIVE_REVIEW} \"<prompt>\"" in got["prompt"]
+    assert "no review plugin or skill of its own" in got["prompt"]
+
+
+def test_a_host_review_is_read_only_and_a_sandboxed_one_is_not(deployment, tmp_path):
+    """The posture is not copied between them, because the boundary is not the same.
+
+    In a microVM the worker itself runs bypassed and the VM is the wall, so the reviewer
+    may run its tests. On the host there is no wall -- a bypassed reviewer there is a
+    bypassed session on the operator's own machine -- and a reviewer that only reads needs
+    nothing more than reading.
+    """
+    host = launch_with_reviewer(deployment, "posture-host", reviewer="claude-cli")
+    vm = launch_with_reviewer(deployment, "posture-vm", reviewer="opus-in-sandbox")
+
+    reached = run_the_review(host, tmp_path, "posture-host", {})
+    assert "--allowedTools" in reached and "bypassPermissions" not in reached, reached
+    assert "Bash(git diff:*)" in reached, "the reviewer must be able to read the diff"
+    # One argument, not a space-separated list: --allowedTools is variadic and the prompt
+    # is the positional right after it, so a list would risk being read as tool names.
+    assert "--allowedTools" in reached and "Read,Grep,Glob," in reached, reached
+    for writing in ("Edit", "Write", "Bash(git commit", "Bash(git push"):
+        assert writing not in reached, f"a reviewer was allowed to {writing}: {reached}"
+
+    reached = run_the_review(vm, tmp_path, "posture-vm", {})
+    assert "bypassPermissions" in reached and "--allowedTools" not in reached, reached
+
+
+def test_a_route_with_no_provider_routing_still_re_execs_before_checking(
+    deployment, tmp_path
+):
+    """The strip is a no-op on a host route, and the re-exec still has to happen: the login
+    check must see the environment the harness gets. A wrapper that skipped phase one when
+    there was nothing to strip would check the caller's HOME and hand over another."""
+    got = launch_with_reviewer(deployment, "host-reexec", reviewer="claude-cli",
+                               runner=runner(inherit_env=[]))
+    body = got["review"].read_text()
+    assert 'HIVE_REVIEW_STRIP=""' in body, "a route declaring nothing strips nothing"
+    assert "HIVE_REVIEW_STRIPPED" in body, "and re-execs anyway"
+    reached = run_the_review(got, tmp_path, "host-reexec", {})
+    assert "review this diff" in reached
+
+
+# --- a sandbox serves two model callers, and they are not the same caller ------------
+
+def test_the_subscription_credential_follows_the_reviewer_not_only_the_worker():
+    """Until 2026-09-03 both were tested as `SBX_AGENT = claude`, and the comment above the
+    condition described the reviewer while the condition read the worker. Nothing exposed it
+    because every sandboxed route ran the claude agent, so the two were the same set.
+
+    Asserted on the script's own text rather than by launching: the sbx block has no stub in
+    this suite, and this is a pure predicate. What must hold is that an in-VM reviewer gets a
+    login whatever the worker's harness is, and that only a subscription WORKER refuses
+    without one -- a reviewer with no login is a review that refuses later, loudly.
+    """
+    body = (REPO / "scripts" / "hive-launch").read_text()
+    assert 'CRED_FOR_REVIEWER=1' in body and 'CRED_FOR_WORKER=1' in body
+    probe = (
+        'SBX_AGENT="%s"; R_REVIEWER="%s"; R_MARKET="%s"; HAVE="%s"\n'
+        'CRED_FOR_WORKER=""; [ "$SBX_AGENT" != "claude" ] || CRED_FOR_WORKER=1\n'
+        'CRED_FOR_REVIEWER=""; [ "$R_REVIEWER" != "opus-in-sandbox" ] || CRED_FOR_REVIEWER=1\n'
+        'OUT=none\n'
+        'if [ -n "$CRED_FOR_WORKER$CRED_FOR_REVIEWER" ]; then\n'
+        '  if [ -n "$HAVE" ]; then OUT=copied\n'
+        '  elif [ -n "$CRED_FOR_WORKER" ] && [ "$R_MARKET" = "subscription" ]; then OUT=refused\n'
+        '  else OUT=warned; fi\n'
+        'fi\n'
+        'printf %%s "$OUT"\n'
+    )
+    cases = [
+        # The defect. An agy worker whose review runs on Opus in the same VM.
+        ("agy", "opus-in-sandbox", "subscription", "yes", "copied"),
+        ("agy", "opus-in-sandbox", "subscription", "",    "warned"),
+        # A non-claude worker with no in-VM reviewer needs nothing, and must not be refused
+        # for lacking a login it would never use.
+        ("agy", "claude-cli", "subscription", "", "none"),
+        ("agy", "",           "subscription", "", "none"),
+        # Everything that worked before must still behave identically.
+        ("claude", "opus-in-sandbox", "subscription", "yes", "copied"),
+        ("claude", "opus-in-sandbox", "subscription", "",    "refused"),
+        ("claude", "opus-in-sandbox", "api",          "",    "warned"),
+        ("claude", "opus-in-sandbox", "api",          "yes", "copied"),
+    ]
+    for agent, reviewer, market, have, expected in cases:
+        out = subprocess.run(["bash", "-c", probe % (agent, reviewer, market, have)],
+                             capture_output=True, text=True, timeout=30)
+        assert out.stdout == expected, (
+            f"agent={agent} reviewer={reviewer} market={market} login={have or 'no'} "
+            f"-> {out.stdout}, expected {expected}"
+        )
+
+
+def test_the_antigravity_kit_ships_with_the_launcher_that_names_it():
+    """The launcher resolves the kit beside itself rather than under CANON_ROOT, so the kit a
+    launch uses is the one that shipped with it. A map entry pointing at a directory this
+    repository does not carry would build nothing and say so only at `sbx create`."""
+    body = (REPO / "scripts" / "hive-launch").read_text()
+    assert 'antigravity)        SBX_AGENT=agy; SBX_KIT="$SCRIPT_DIR/../kits/agy"' in body
+    spec = REPO / "kits" / "agy" / "spec.yaml"
+    assert spec.is_file(), "the kit the agent map names must be in the tree"
+    text = spec.read_text()
+    assert "api.anthropic.com:443" in text, (
+        "the in-VM reviewer runs Opus from inside this sandbox; without that host in the "
+        "kit's allowlist the review cannot reach anything"
+    )
+    assert "claude-code-docker" in text, (
+        "the reviewer needs a claude binary, which is why this kit does not use the "
+        "upstream shell image"
+    )
+    assert "shelajev/agy-sbx-kit" in text, "vendored code states where it came from"
+
+
+def test_the_antigravity_login_travels_as_a_file_because_the_proxy_will_not_carry_it():
+    """sbx's credential proxy is the better posture -- the real token never enters the VM --
+    and it is unusable for a per-task launcher: the binding is per sandbox, so a freshly
+    created VM is signed out and every launch would stop for an operator at a browser
+    (measured 2026-09-08). The host's token is copied in instead, which is exactly what the
+    Claude subscription already does, for exactly the same reason.
+
+    Asserted on the script and the kit rather than by launching: the sbx block has no stub.
+    """
+    body = (REPO / "scripts" / "hive-launch").read_text()
+    assert 'SBX_AGY_CRED' in body
+    assert 'antigravity-oauth-token' in body
+
+    # A missing login must refuse BEFORE anything is built. Asserted as an ordering, because
+    # that is the property: a check living beside the copy runs inside the sandbox block,
+    # which is after the clones -- so its "nothing was created" would be a lie, and the
+    # retry after logging in would die on its own leftover task root instead of launching.
+    call = body.index("\nrequire_agy_login\n")
+    clone = body.index('git clone --quiet "$WS_HUB"')
+    check_exit = body.index('if [ -n "$CHECK_ONLY" ]; then')
+    assert call < clone, "the login check must run before the clones, not after them"
+    assert call < check_exit, "and before --check returns, so a preflight can surface it"
+
+    spec = (REPO / "kits" / "agy" / "spec.yaml").read_text()
+    assert "\ncredentials:" not in spec, (
+        "the kit's OAuth block must stay out: its credentialFile template writes sentinel "
+        "values to the very path the launcher copies the real token to"
+    )
+    assert "PER SANDBOX" in spec, "and the kit must say why, so nobody restores it"
