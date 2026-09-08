@@ -529,6 +529,28 @@ KICKOFF="${KICKOFF/@@REVIEW@@/$REVIEW_LINE}"
 # is an endpoint, opened in the VM's egress allowlist, so a skipped name builds a worker that
 # cannot reach its provider and discovers it only after four board writes and a microVM.
 # Every missing name is reported at once — one refusal per launch, not one per re-run.
+# The Antigravity harness needs the operator's Google session, and the kit that defines the
+# `agy` agent cannot supply it: sbx's credential-proxy binding is PER SANDBOX (measured
+# 2026-09-08 — a freshly created second VM reports "no binding authorizes antigravity" and
+# its agy is signed out), while this launcher builds one VM per task. So the host's token is
+# copied in, exactly as the Claude subscription credential is. The trade is identical and
+# accepted for the identical reason: an OAuth session the proxy will not carry travels as a
+# file or not at all.
+#
+# Checked HERE, with the other preflights, and not beside the copy. A credential check that
+# runs inside the sandbox block runs after the clones, so its "nothing was created" would be
+# false and the retry after logging in would die on its own leftover task root — the trap
+# the credential comment further down already documents once. Here it also reaches `--check`,
+# which exits long before any of that.
+AGY_TOKEN="$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+require_agy_login() {
+  [ "$R_HARNESS" = "antigravity" ] || return 0
+  [ -f "$AGY_TOKEN" ] || die "route '$ROUTE_NAME' runs the Antigravity harness, and there is no
+  $AGY_TOKEN on this host. Log in first — run 'agy' in a terminal and complete the sign-in.
+  Without it the worker would build, read its order, and find it cannot reach a model.
+  Nothing was created, cloned or emitted."
+}
+
 require_declared_env() {
   local missing=() n src
   while IFS= read -r n; do
@@ -624,6 +646,7 @@ SANDBOX="hive-${TASK//_/-}"
 # --check reaches them by falling through to the same two calls, so the preflight an
 # operator reads can never disagree with the one a launch runs.
 require_declared_env
+require_agy_login
 ENDPOINT_URL=$(printf '%s\n' "$ENV_PAIRS" | sed -n 's/^[^=]*=\(https\{0,1\}:.*\)$/\1/p' | head -1)
 if [ -n "$ENDPOINT_URL" ] && [ -z "$ANYWAY" ]; then
   require_model_served "$ENDPOINT_URL" "$MODEL"
@@ -1157,28 +1180,8 @@ if [ "$EXECUTABLE" = "sbx" ]; then
     fi
   fi
 
-  # The same problem for the Antigravity harness, and the same answer. The kit that defines
-  # the `agy` agent can wire its Google session through sbx's credential proxy, which is the
-  # better posture — the real token never enters the VM. It cannot be used here: that binding
-  # is PER SANDBOX (measured 2026-09-08, a freshly created second VM reports "no binding
-  # authorizes antigravity" and its agy is signed out), and this launcher builds one VM per
-  # task, so every launch would stop for an operator at a browser.
-  #
-  # So the host's own token is copied in, exactly as the Claude subscription credential is
-  # a few lines below. The trade is identical and is accepted for the identical reason: an
-  # OAuth session the proxy will not carry has to travel as a file or not at all.
   SBX_AGY_CRED=""
-  AGY_TOKEN="$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
-  if [ "$SBX_AGENT" = "agy" ]; then
-    if [ -f "$AGY_TOKEN" ]; then
-      SBX_AGY_CRED=1
-    else
-      die "route '$ROUTE_NAME' runs the Antigravity harness, and there is no
-  $AGY_TOKEN to hand the sandbox. Log in on the host first — run 'agy' in a terminal and
-  complete the sign-in. Without it the worker would start, read its order, and find it
-  cannot reach a model. Nothing was created or emitted."
-    fi
-  fi
+  [ "$SBX_AGENT" != "agy" ] || SBX_AGY_CRED=1
 
   # The VM's environment file. Written on BOTH paths, because the facts in it come from the
   # route and the route can change between a create and a re-attach — an endpoint amended in
@@ -1257,11 +1260,19 @@ SBXENV
     # that quietly satisfies itself from the wrong account produces a record that is false
     # about what paid for the work.
     SBX_CREATE_ENV=()
-    # Injection off for EVERY claude sandbox. The proxy substituting a stored Anthropic API key
-    # is what made a mis-billed run silent rather than loud, and there is no route here whose
-    # Claude traffic should be paid for that way: a subscription worker uses the copied login,
-    # and an OpenRouter worker's traffic never goes to Anthropic at all.
-    if [ "$SBX_AGENT" = "claude" ]; then
+    # Injection off for every sandbox that receives the operator's Claude login — which is
+    # what SBX_CLAUDE_CRED means, and is deliberately NOT the same test as "the worker is
+    # Claude Code". The proxy substituting a stored Anthropic API key is what made a
+    # mis-billed run silent rather than loud, and no route here should pay for Claude
+    # traffic that way: a subscription worker uses the copied login, an OpenRouter worker
+    # never talks to Anthropic, and an in-VM reviewer uses the same copied login.
+    #
+    # Keyed on the agent until 2026-09-08, which left a real hole the moment a non-claude
+    # agent got the credential: the Antigravity kit runs the claude-code-docker image, whose
+    # template wires apiKeyHelper AND SBX_CRED_ANTHROPIC_MODE=apikey. That sandbox took the
+    # login, left injection on, and the line below announced "proxy injection off" about a
+    # posture nothing had set.
+    if [ -n "$SBX_CLAUDE_CRED" ]; then
       SBX_CREATE_ENV+=(--env SBX_CRED_ANTHROPIC_MODE=off)
     fi
     SBX_KIT_ARG=()
@@ -1313,15 +1324,15 @@ SBXENV
     # create time. So it is verified rather than assumed, and a sandbox whose posture does not
     # match the route's billing is refused instead of quietly billing the other account.
     # Only for the claude agent template: it is that template which sets the variable and whose
-    # proxy would otherwise substitute an API key. A sandbox built from another agent never has
-    # it, and demanding it there would refuse every such route for a posture it cannot hold.
-    SBX_CRED_MODE=""
-    [ -z "$CRED_FOR_WORKER" ] || SBX_CRED_MODE=$(sbx exec "$SANDBOX" printenv SBX_CRED_ANTHROPIC_MODE 2>/dev/null | tr -d '\r' || true)
-    [ -z "$CRED_FOR_WORKER" ] || [ "$SBX_CRED_MODE" = "off" ] || die "sandbox '$SANDBOX' has SBX_CRED_ANTHROPIC_MODE='${SBX_CRED_MODE:-unset}',
-  but route '$ROUTE_NAME' bills a subscription. Credential injection is fixed at create time,
-  so this VM would run the worker on the proxy's API key while the spine fact says
+    # proxy would otherwise substitute an API key. Verified for exactly the sandboxes the
+    # create path sets it on — those holding the login — so the check and the thing it checks
+    # cannot drift apart the way they did when one read the agent and the other the credential.
+    SBX_CRED_MODE=$(sbx exec "$SANDBOX" printenv SBX_CRED_ANTHROPIC_MODE 2>/dev/null | tr -d '\r' || true)
+    [ "$SBX_CRED_MODE" = "off" ] || die "sandbox '$SANDBOX' has SBX_CRED_ANTHROPIC_MODE='${SBX_CRED_MODE:-unset}',
+  but it holds the operator's Claude login. Credential injection is fixed at create time, so
+  this VM would run its Claude traffic on the proxy's API key while the spine fact says
   subscription. Remove it and launch again:  sbx rm $SANDBOX"
-    echo "  sandbox: subscription credential installed (proxy injection off, apiKeyHelper cleared)"
+    echo "  sandbox: Claude login installed (proxy injection off, apiKeyHelper cleared)"
   fi
 
   # --- the spine tunnel, established on BOTH paths ---------------------------------------

@@ -1,7 +1,7 @@
 # The sandbox runtime, and the credential that is not in a file
 
-Five of the nine routes in a full catalog (`claude-*-sbx`, the `or-*` family) build a
-microVM with `sbx create`. Two host facts make that fragile in ways nothing else here is,
+Every route whose `runner.executable` is `sbx` builds a microVM with `sbx create` — ask
+`hive-routes` which ones those are rather than trusting a count here. Two host facts make that fragile in ways nothing else here is,
 and both cost a full outage on 2026-09-08.
 
 ## 1. Supervise the daemon

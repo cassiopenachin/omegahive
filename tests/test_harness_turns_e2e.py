@@ -2387,9 +2387,16 @@ def test_the_antigravity_login_travels_as_a_file_because_the_proxy_will_not_carr
     body = (REPO / "scripts" / "hive-launch").read_text()
     assert 'SBX_AGY_CRED' in body
     assert 'antigravity-oauth-token' in body
-    # A missing login must refuse before anything is built, not produce a worker that
-    # discovers at its first turn that it cannot reach a model.
-    assert 'Nothing was created or emitted.' in body.split('SBX_AGY_CRED=""')[1][:1200]
+
+    # A missing login must refuse BEFORE anything is built. Asserted as an ordering, because
+    # that is the property: a check living beside the copy runs inside the sandbox block,
+    # which is after the clones -- so its "nothing was created" would be a lie, and the
+    # retry after logging in would die on its own leftover task root instead of launching.
+    call = body.index("\nrequire_agy_login\n")
+    clone = body.index('git clone --quiet "$WS_HUB"')
+    check_exit = body.index('if [ -n "$CHECK_ONLY" ]; then')
+    assert call < clone, "the login check must run before the clones, not after them"
+    assert call < check_exit, "and before --check returns, so a preflight can surface it"
 
     spec = (REPO / "kits" / "agy" / "spec.yaml").read_text()
     assert "\ncredentials:" not in spec, (

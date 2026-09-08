@@ -329,11 +329,15 @@ class RouteEntry(BaseModel):
     #   claude-skill    - a codex route, reviewed by Claude via the claude-review skill
     #   opus-in-sandbox - a sandboxed route, reviewed by opus invoked routing-stripped
     #                     inside the VM, because a sandbox cannot reach Codex
-    #   claude-cli      - a route on a harness with no review integration of its own,
-    #                     reviewed by opus invoked as a subprocess from the launch's
-    #                     issued command. The first is the Antigravity route: neither
-    #                     the codex plugin nor the claude skill exists for it, and it is
-    #                     unsandboxed, so the reviewer runs on the host's own login.
+    #   claude-cli      - an UNSANDBOXED route on a harness with no review integration of
+    #                     its own, reviewed by opus invoked as a subprocess from the
+    #                     launch's issued command, on the host's own login and read-only.
+    #                     No catalogued route uses it yet: the Antigravity harness was
+    #                     going to be the first, and ended up sandboxed, where the value
+    #                     is refused (hive-launch) because inside a VM "the host" is the
+    #                     VM and no login is copied in for a reviewer that does not say
+    #                     `opus-in-sandbox`. It stays for the harness that arrives without
+    #                     a plugin, without a skill, and without a sandbox.
     # Optional: a catalog predating the field still loads, and absence reads as unstated
     # rather than as "no reviewer".
     reviewer: Literal[
