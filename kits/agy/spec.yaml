@@ -13,6 +13,23 @@
 #             binary. The claude template already carries one, so the reviewer costs an
 #             image choice rather than a second install step that could fail at setup.
 #   network   + api.anthropic.com, for that reviewer. Everything else is upstream's list.
+#   +onboarding
+#             agy runs a first-run wizard — theme, then a Terms of Service and data-use
+#             step — before the agent starts. A sandbox is fresh every task, so it fires on
+#             EVERY launch and waits on `enter Confirm` from a human who is not there: the
+#             worker's window opens on a theme picker and nothing else ever happens.
+#             Measured 2026-09-08, on the first real launch of this route.
+#
+#             The gate is cache/onboarding.json, and only that. Seeding the theme, the
+#             onboarding keys in settings.json, and post_onboarding in jetski_state.pbtxt
+#             each changed nothing — all three were measured and none of them is the flag.
+#             The file lives under cache/, which is the one directory a reader is inclined
+#             to dismiss.
+#   +enableTelemetry
+#             The wizard's last step is an opt-IN to Google collecting interactions data,
+#             unchecked by default. Completing it unchecked writes enableTelemetry: false,
+#             and that is set here explicitly rather than left to a wizard nobody can
+#             answer: a worker's interactions are the tenant's orders and code.
 #   command   dropped. hive-launch creates the sandbox and the ROUTE's argv template runs
 #             the session, so a default command here would describe a launch nobody makes.
 #   credentials
@@ -72,6 +89,7 @@ setup:
       content: |
         {
           "agentMode": "accept-edits",
+          "enableTelemetry": false,
           "artifactReviewMode": "always-proceed",
           "fileAccessPolicy": "allow",
           "internetAccessPolicy": "allow",
@@ -93,3 +111,14 @@ setup:
       mode: "0600"
       onlyIfMissing: true
       description: Permissive inside the VM, because the microVM is the boundary — the same posture every other sandboxed route runs under
+    - path: /home/agent/.gemini/antigravity-cli/cache/onboarding.json
+      content: |
+        {
+          "consumerOnboardingComplete": true,
+          "enterpriseOnboardingComplete": false,
+          "onboardingComplete": true
+        }
+      mode: "0644"
+      onlyIfMissing: true
+      description: Mark first-run onboarding done, or an interactive session opens on a wizard no worker can answer
+
