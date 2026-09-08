@@ -323,5 +323,42 @@ else
        this is the only check that sees it."
 fi
 
+# --- 9. the sandbox runtime the sandboxed routes depend on --------------------------
+#
+# Five of the nine routes build a microVM with `sbx create`, and sbx's Docker Hub session
+# is the one credential in this deployment that can move between two stores on its own: a
+# file when it detects no OS keychain, the keychain when one appears. On 2026-09-08 every
+# one of those routes was unlaunchable — silently, because nothing here looked, and a route
+# only fails at the moment an operator tries to use it. The session had been alive in a
+# hand-started daemon since 2026-08-24 and rotted the day it lapsed.
+#
+# `sbx ls` is the cheapest call that proves the whole chain: a daemon is up, it answers,
+# and it is authenticated. It is timed out rather than trusted, because the same failure
+# once presented as a hang rather than an error (a locked keyring collection turns a fast
+# refusal into a wait on a prompt nobody can answer), and a deploy check that hangs is a
+# deploy check nobody runs.
+#
+# SKIP, not FAIL, where sbx is absent: a host that configures no sandboxed route does not
+# need it, and this script runs on more than one host.
+if ! command -v sbx >/dev/null 2>&1; then
+  echo "[SKIP] 9. sandbox runtime: no sbx on PATH — this host runs no sandboxed route."
+elif [ ! -f "$CATALOG" ] || ! grep -q '"executable": *"sbx"' "$CATALOG" 2>/dev/null; then
+  echo "[SKIP] 9. sandbox runtime: no route in $CATALOG runs under sbx."
+elif SBX_OUT=$(timeout 30 sbx ls 2>&1); then
+  ok "9. sandbox runtime: sbx answers and is authenticated ($(printf '%s' "$SBX_OUT" | tail -n +2 | grep -c . ) sandbox(es))"
+else
+  SBX_RC=$?
+  printf '%s\n' "$SBX_OUT" | sed 's/^/       /'
+  if [ "$SBX_RC" -eq 124 ]; then
+    bad "9. sandbox runtime: 'sbx ls' TIMED OUT after 30s. Every sandboxed route is
+       unlaunchable. A hang here has meant a credential store waiting on an unlock prompt
+       that nothing can answer — check whether gnome-keyring-daemon is resident, and see
+       the sandbox-runtime notes in OPS.md."
+  else
+    bad "9. sandbox runtime: 'sbx ls' failed (above). Every sandboxed route is unlaunchable
+       until it does not. If it says 'Not authenticated to Docker', run 'sbx login'."
+  fi
+fi
+
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]
