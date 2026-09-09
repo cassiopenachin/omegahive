@@ -2435,3 +2435,36 @@ def test_repo_assets_resolve_when_the_launcher_is_invoked_by_its_path_name():
             capture_output=True, text=True, timeout=30)
         assert out.stdout == str(REPO / "kits" / "agy"), out.stdout
         assert Path(out.stdout).is_dir(), "and the kit is actually there"
+
+
+def test_the_forge_preflight_tests_a_credential_and_not_only_reachability():
+    """It printed "reachable and authenticated" after running `git ls-remote` alone -- and
+    against a PUBLIC repository ls-remote succeeds with no credential at all (measured
+    2026-09-08 from inside a sandbox holding a dead sentinel token). So the launch announced
+    an authentication it had never tested, and the worker found out after writing the docs,
+    obtaining its review, and reaching the push.
+
+    `gh api user` is the question that cannot be answered without a credential.
+    """
+    body = (REPO / "scripts" / "hive-launch").read_text()
+    assert "gh api user" in body, "the preflight must ask something a credential is needed for"
+
+    # The arms, exercised. "0 1" is the regression: forge answers, credential does not.
+    arms = (
+        'case "$1" in\n'
+        '  "0 0")  echo AUTHENTICATED ;;\n'
+        '  "0 9")  echo UNVERIFIED ;;\n'
+        '  "")     echo UNVERIFIED ;;\n'
+        '  *)      echo REFUSED ;;\n'
+        'esac\n'
+    )
+    for probe, expected, why in [
+        ("0 0", "AUTHENTICATED", "reachable and the credential works"),
+        ("0 1", "REFUSED", "reachable but UNAUTHENTICATED -- the case that used to pass"),
+        ("0 9", "UNVERIFIED", "no gh in the image, so the credential cannot be tested"),
+        ("128 9", "REFUSED", "forge unreachable"),
+        ("", "UNVERIFIED", "the check itself could not run"),
+    ]:
+        out = subprocess.run(["bash", "-c", arms, "bash", probe],
+                             capture_output=True, text=True, timeout=30)
+        assert out.stdout.strip() == expected, f"{probe!r} ({why}) -> {out.stdout!r}"
