@@ -15,6 +15,7 @@
 #   OMEGAHIVE_HUB_REPO   bare hub repo to bundle   (default ~/repos/hive-workspace.git)
 #   OMEGAHIVE_BACKUP_DIR destination directory     (default ~/omegahive-backups)
 #   OMEGAHIVE_BACKUP_KEEP bundles to retain        (default 14)
+#   HIVE_ROUTE_CATALOG   route catalog to snapshot (default ~/.config/omegahive/routes.json)
 #
 # OMEGAHIVE_HUB_REPO must be the WS_HUB this host's workspace actually uses —
 # scripts/hive-init-workspace prints that path when it creates the hub. A mismatch fails
@@ -54,3 +55,47 @@ for f in $(ls -1 "${dir}"/hive-workspace-*.bundle 2>/dev/null | sort -r); do
         echo "pruned old bundle: ${f}"
     fi
 done
+
+# --- the route catalog ------------------------------------------------------------------
+#
+# A third store, and the only one that was never backed up. The spine is dumped by the
+# `backup` compose service and the workspace is bundled above; the catalog is a host file
+# that no container can see, so it is snapshotted HERE, into the same directory, on the
+# principle the deployment spec already states — one directory restores the deployment.
+#
+# It is small and it is not reconstructible. It is DEPLOYMENT AUTHORIZATION: which models
+# this host may spend money on, under which credential pool, and which reviewer each route
+# pairs with. It is deliberately not in git, because committing one host's answer would
+# make another deployment inherit routes it never approved. That reasoning is sound and it
+# leaves exactly one copy on one disk, which is what this fixes.
+#
+# A copy rather than a bundle: it is one small JSON file with no history to preserve.
+cat="${HIVE_ROUTE_CATALOG:-${HOME}/.config/omegahive/routes.json}"
+if [ ! -f "${cat}" ]; then
+    # Not an error. A host that configures no worker routes has no catalog, and the
+    # workspace bundle above is still the point of this run.
+    echo "no route catalog at ${cat}; skipping catalog snapshot"
+else
+    # Only when it has actually changed. The catalog changes rarely -- a route added, a
+    # model repinned -- so daily copies would spend the whole retention window on
+    # fourteen identical files and lose the older, genuinely different one.
+    newest=$(ls -1 "${dir}"/routes-*.json 2>/dev/null | sort -r | head -1 || true)
+    if [ -n "${newest}" ] && cmp -s "${cat}" "${newest}"; then
+        echo "route catalog unchanged since $(basename "${newest}"); no new snapshot"
+    else
+        cout="${dir}/routes-${ts}.json"
+        # umask, not a later chmod: the file must never exist world-readable, even briefly.
+        ( umask 077; cp "${cat}" "${cout}" )
+        echo "catalog snapshot written: ${cout}"
+    fi
+    # Rotation, on the same policy and count as the bundles above.
+    n=0
+    # shellcheck disable=SC2012  # names are this script's own `routes-<ISO stamp>.json`
+    for f in $(ls -1 "${dir}"/routes-*.json 2>/dev/null | sort -r); do
+        n=$((n + 1))
+        if [ "${n}" -gt "${keep}" ]; then
+            rm -f "${f}"
+            echo "pruned old catalog snapshot: ${f}"
+        fi
+    done
+fi

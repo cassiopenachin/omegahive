@@ -53,7 +53,7 @@
       }
     },
     {
-      "name": "codex-sandboxed-subscription",
+      "name": "codex-native-sandbox-subscription",
       "model_vendor": "openai",
       "provider": "openai",
       "model": "example-openai-model",
@@ -62,7 +62,7 @@
       "billing_market": "subscription",
       "credential_pool": "pool-b",
       "enabled": true,
-      "note": "A NATIVE-SANDBOX ROUTE. Everything in `args` is the OPERATOR's: the `exec` subcommand this adapter requires, plus whatever sandbox, permission profile or feature flags this deployment chose. Hive resolves it, records its fingerprint, appends only --json, the pinned model and the prompt, and inserts `resume <thread-id>` after `exec` on a resume turn. Hive does NOT widen it. Before the worker-turns cutover the launcher merged each worker root and both clones' .git directories into this table so a worker could commit, which made the launcher the author of a deployment's posture; now the grant is written here, by the operator, where it is visible. Note the shape: this profile grants write under the parent of every worker root because a worker that can edit but not `git commit` is not a worker, and Codex marks .git read-only inside a workspace-write root by default. Egress stays OFF. Finally, `codex exec resume` on 0.147.0 rejects -s/--sandbox, -C/--cd, --add-dir and -p/--profile: a route carrying one of those can be launched and cannot be resumed, and hive-answer refuses by name rather than dropping it. This route uses only -c overrides, so it stays resumable.",
+      "note": "A NATIVE-SANDBOX ROUTE, and note the distinction from the sbx route below: this one runs the harness DIRECTLY on the host under Codex's own landlock profile, so `runner.executable` is the harness. Everything in `args` is the OPERATOR's: the `exec` subcommand this adapter requires, plus whatever sandbox, permission profile or feature flags this deployment chose. Hive resolves it, records its fingerprint, appends only --json, the pinned model and the prompt, and inserts `resume <thread-id>` after `exec` on a resume turn. Hive does NOT widen it. Before the worker-turns cutover the launcher merged each worker root and both clones' .git directories into this table so a worker could commit, which made the launcher the author of a deployment's posture; now the grant is written here, by the operator, where it is visible. Note the shape: this profile grants write under the parent of every worker root because a worker that can edit but not `git commit` is not a worker, and Codex marks .git read-only inside a workspace-write root by default. Egress stays OFF. Finally, `codex exec resume` on 0.147.0 rejects -s/--sandbox, -C/--cd, --add-dir and -p/--profile: a route carrying one of those can be launched and cannot be resumed, and hive-answer refuses by name rather than dropping it. This route uses only -c overrides, so it stays resumable.",
       "reviewer": "claude-skill",
       "runner": {
         "executable": "codex",
@@ -76,6 +76,32 @@
         "inherit_env": [
           "CODEX_HOME"
         ]
+      }
+    },
+    {
+      "name": "example-sbx-subscription",
+      "model_vendor": "anthropic",
+      "provider": "anthropic",
+      "model": "claude-opus-5",
+      "harness": "claude-code",
+      "adapter": "claude-code",
+      "billing_market": "subscription",
+      "credential_pool": "pool-a",
+      "enabled": true,
+      "reviewer": "opus-in-sandbox",
+      "note": "A SANDBOXED route: the harness runs inside a Docker Sandboxes microVM, and the shape is what makes that true \u2014 `runner.executable` is `sbx`, NOT the harness, and the harness name appears inside `args` after `run --name {{sandbox}}`. The launcher keys on that executable: it builds the VM, mounts the task root and workspace hub, opens the spine tunnel, installs the governed CLI inside, copies the credentials a worker and its reviewer need, and checks the VM can authenticate to the forge \u2014 all before the harness starts. `{{sandbox}}` is substituted per task. REVIEWER: `opus-in-sandbox` is the only correct value for a sandboxed route, and a launch refuses the alternatives. A VM cannot reach the codex plugin or the claude skill, and `claude-cli` means a review on the host, which inside a VM is the VM \u2014 no reviewer login is copied in for it, so that review would fail at the end of the task rather than at the launch. If a sandboxed route also carries provider routing (`runner.env` or `inherit_env_as`, as the api route below does), `opus-in-sandbox` is REQUIRED: the review is stripped of that routing so it bills the operator's subscription instead of the account under test.",
+      "runner": {
+        "executable": "sbx",
+        "args": [
+          "run",
+          "--name",
+          "{{sandbox}}",
+          "claude",
+          "--",
+          "--model",
+          "{{model}}"
+        ],
+        "inherit_env": []
       }
     },
     {

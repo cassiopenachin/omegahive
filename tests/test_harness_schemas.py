@@ -122,3 +122,38 @@ def test_a_v1_example_style_catalog_still_migrates_cleanly():
     }
     out, _ = migrate_catalog(v1)
     load_catalog(json.dumps(out).encode("utf-8"))
+
+
+def test_the_example_shows_the_sandboxed_shape_an_operator_must_copy_exactly():
+    """Six of this deployment's routes run under sbx, and the shape is not guessable: the
+    executable is `sbx`, NOT the harness, and the harness name appears inside `args`. An
+    operator copying a template that never showed it would write the harness as the
+    executable, and the launcher would build no VM at all.
+
+    Pinned here because the template is the only thing a second deployment reads, and the
+    live catalog is a deployment fact that is never committed.
+    """
+    catalog = load_catalog(EXAMPLE.read_bytes())
+    sbx = [r for r in catalog.routes if r.runner.executable == "sbx"]
+    assert sbx, "the example must demonstrate a sandboxed route"
+    r = sbx[0]
+    assert r.runner.args[:3] == ["run", "--name", "{{sandbox}}"], (
+        "the sandbox is named per task by substitution, and the launcher keys on that shape"
+    )
+    assert "--" in r.runner.args, "the harness's own flags come after the agent name"
+    assert r.reviewer == "opus-in-sandbox", (
+        "a sandboxed route cannot reach the codex plugin or the claude skill, and the "
+        "launcher refuses `claude-cli` there -- inside a VM, the host IS the VM"
+    )
+
+
+def test_the_example_does_not_call_a_host_route_sandboxed():
+    """`codex-sandboxed-subscription` meant Codex's own landlock profile, which was
+    unambiguous before real sbx routes existed and misleading afterwards: a reader copying
+    it would expect a microVM and get a host process."""
+    catalog = load_catalog(EXAMPLE.read_bytes())
+    for r in catalog.routes:
+        if r.runner.executable != "sbx":
+            assert "sandboxed" not in r.name, (
+                f"{r.name!r} is not an sbx route; 'sandboxed' in its name now reads as one"
+            )
