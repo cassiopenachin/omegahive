@@ -551,6 +551,50 @@ KICKOFF="${KICKOFF/@@REVIEW@@/$REVIEW_LINE}"
 # the credential comment further down already documents once. Here it also reaches `--check`,
 # which exits long before any of that.
 AGY_TOKEN="$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+# A sandboxed route cannot build its VM while the host's secret store is resident AND
+# locked. sbx reads its Docker Hub credential from a keychain when it detects one and from
+# its own file when it does not; a locked keychain is detected, preferred, and then answers
+# with a prompt no unattended process can dismiss. Measured 2026-09-10, twice: the launch
+# dies at `sbx create` with
+#   encode registry auth: ... get Docker Hub access token: failed to prompt: prompt dismissed
+# after the clones are made, and `--check` said nothing because it never touched sbx.
+#
+# `sbx ls` does NOT detect this — it answers from local state and exits 0 with the keyring
+# locked, which is why deploy check 9 alone was not enough. The collection's own `Locked`
+# property is the reliable probe: instant, no credential, and it cannot hang.
+#
+# RESIDENCY IS TESTED FIRST, and that order is the whole correctness of this function.
+# Reading the property over D-Bus ACTIVATES the daemon, so a check written the other way
+# round CREATES the fault it is looking for — which is exactly what happened while this was
+# being investigated. With no daemon resident there is nothing to check: sbx finds no
+# keychain and uses its file credential, which is the working case.
+require_sandbox_keyring() {
+  [ "$EXECUTABLE" = "sbx" ] || return 0
+  command -v pgrep  >/dev/null 2>&1 || return 0
+  command -v busctl >/dev/null 2>&1 || return 0
+  pgrep -u "$(id -un)" -f gnome-keyring-daemon >/dev/null 2>&1 || return 0
+
+  local locked
+  # A store that cannot be queried is not a store that is locked; say nothing and let the
+  # launch proceed, on the same reasoning as every other unreachable probe here.
+  locked=$(timeout "${HIVE_KEYRING_PROBE_TIMEOUT:-10}" busctl --user get-property \
+    org.freedesktop.secrets /org/freedesktop/secrets/collection/login \
+    org.freedesktop.Secret.Collection Locked 2>/dev/null) || return 0
+  [ "$locked" = "b true" ] || return 0
+
+  die "route '$ROUTE_NAME' builds a sandbox, and this host's login keyring is resident and LOCKED.
+  sbx prefers a keychain when it detects one, so it will ask that keyring for a Docker Hub
+  token, and a locked keyring answers with a prompt nothing here can dismiss. The launch
+  would die at 'sbx create', after the clones were made.
+
+  Either unlock it (it stays unlocked until the next reboot):
+    gnome-keyring-daemon --unlock --daemonize --components=secrets
+  or stop it, so sbx falls back to its own file credential:
+    pkill -f gnome-keyring-daemon
+
+  Set HIVE_SKIP_KEYRING_CHECK=1 to launch anyway. Nothing was created, cloned or emitted."
+}
+
 require_agy_login() {
   [ "$R_HARNESS" = "antigravity" ] || return 0
   [ -f "$AGY_TOKEN" ] || die "route '$ROUTE_NAME' runs the Antigravity harness, and there is no
@@ -583,6 +627,15 @@ require_declared_env() {
 # Unreachable is NOT nonexistent. Only a successful response that does not list the id
 # refuses; a timeout warns and proceeds, because a launcher that turns a DNS hiccup into a
 # refused order is less reliable than the failure it is guarding against.
+#
+# And LISTED is not ROUTABLE. This call carries no credential — which is what makes it safe
+# to run on every launch — and the price of that is that it cannot know whether THIS account
+# may reach the model, only that the provider publishes it. OpenRouter lists
+# `meta/muse-spark-1.3-contributor`, which is not routable through OpenRouter at all
+# (operator, 2026-09-10). So this is a typo-catcher, which is the job it was added for after
+# a `-latest` id that did not exist, and nothing more: a launch it passes can still fail at
+# the first token. Do not "strengthen" it by trusting it further without giving it a
+# credential, and giving it one means it can spend.
 require_model_served() {   # require_model_served <base-url> <model-id>
   local base="${1%/}" model="$2" body ids near
   # A provider pin travels inside the model string as an operator-owned preset; the part
@@ -655,6 +708,7 @@ SANDBOX="hive-${TASK//_/-}"
 # operator reads can never disagree with the one a launch runs.
 require_declared_env
 require_agy_login
+[ -n "${HIVE_SKIP_KEYRING_CHECK:-}" ] || require_sandbox_keyring
 ENDPOINT_URL=$(printf '%s\n' "$ENV_PAIRS" | sed -n 's/^[^=]*=\(https\{0,1\}:.*\)$/\1/p' | head -1)
 if [ -n "$ENDPOINT_URL" ] && [ -z "$ANYWAY" ]; then
   require_model_served "$ENDPOINT_URL" "$MODEL"

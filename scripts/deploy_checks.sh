@@ -345,9 +345,7 @@ if ! command -v sbx >/dev/null 2>&1; then
   echo "[SKIP] 9. sandbox runtime: no sbx on PATH — this host runs no sandboxed route."
 elif [ ! -f "$CATALOG" ] || ! grep -q '"executable": *"sbx"' "$CATALOG" 2>/dev/null; then
   echo "[SKIP] 9. sandbox runtime: no route in $CATALOG runs under sbx."
-elif SBX_OUT=$(timeout 30 sbx ls 2>&1); then
-  ok "9. sandbox runtime: sbx answers and is authenticated ($(printf '%s' "$SBX_OUT" | tail -n +2 | grep -c . ) sandbox(es))"
-else
+elif ! SBX_OUT=$(timeout 30 sbx ls 2>&1); then
   SBX_RC=$?
   printf '%s\n' "$SBX_OUT" | sed 's/^/       /'
   if [ "$SBX_RC" -eq 124 ]; then
@@ -359,6 +357,26 @@ else
     bad "9. sandbox runtime: 'sbx ls' failed (above). Every sandboxed route is unlaunchable
        until it does not. If it says 'Not authenticated to Docker', run 'sbx login'."
   fi
+# `sbx ls` passing is NOT enough, and assuming it was cost a launch on 2026-09-10. It answers
+# from local state and exits 0 with the login keyring resident and locked, while `sbx create`
+# fails at Docker Hub registry auth — sbx prefers a keychain when it detects one, and a locked
+# one answers with a prompt nothing here can dismiss. So the store is asked directly.
+#
+# Residency before the bus query, always: reading the property ACTIVATES the daemon, so the
+# other order would create the fault. With no daemon resident sbx uses its file credential.
+elif command -v pgrep >/dev/null 2>&1 && command -v busctl >/dev/null 2>&1 \
+     && pgrep -u "$(id -un)" -f gnome-keyring-daemon >/dev/null 2>&1 \
+     && [ "$(timeout 10 busctl --user get-property org.freedesktop.secrets \
+              /org/freedesktop/secrets/collection/login \
+              org.freedesktop.Secret.Collection Locked 2>/dev/null)" = "b true" ]; then
+  bad "9. sandbox runtime: 'sbx ls' answers, but the login keyring is resident and LOCKED.
+       'sbx create' will fail at Docker Hub registry auth, so every sandboxed route is
+       unlaunchable while this holds. Unlock it (it stays unlocked until the next reboot):
+         gnome-keyring-daemon --unlock --daemonize --components=secrets
+       or stop it, so sbx falls back to its own file credential:
+         pkill -f '[g]nome-keyring-daemon'"
+else
+  ok "9. sandbox runtime: sbx answers, is authenticated, and no locked keyring shadows it"
 fi
 
 # --- 10. the installed systemd units still say what the repository says ---------------

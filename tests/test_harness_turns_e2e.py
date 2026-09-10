@@ -2695,3 +2695,38 @@ def test_trust_can_be_pruned_without_registering_anything(tmp_path):
     doc = tomllib.loads(toml_cfg.read_text())
     assert str(dead) not in doc["projects"] and str(alive) in doc["projects"]
     assert doc["model"] == "m"
+
+
+def test_the_keyring_check_tests_residency_before_it_queries_the_bus():
+    """The ordering IS the correctness of this check, not a detail of it.
+
+    Reading the collection's `Locked` property over D-Bus ACTIVATES gnome-keyring, so a
+    check written the other way round creates the fault it is looking for -- which is
+    exactly what happened while investigating it: a probe re-broke a working host, and the
+    operator's next launch failed because of the check rather than despite it.
+
+    With no daemon resident there is nothing to check: sbx finds no keychain and uses its
+    own file credential, which is the working case.
+    """
+    body = (REPO / "scripts" / "hive-launch").read_text()
+    fn = body[body.index("require_sandbox_keyring() {"):]
+    fn = fn[:fn.index("\n}\n")]
+    assert fn.index("pgrep") < fn.index("busctl"), (
+        "residency must be tested before the bus is queried, or the check activates the "
+        "daemon whose presence it is testing for"
+    )
+    # Only for routes that build a VM: a host route never asks sbx for anything.
+    assert fn.index('[ "$EXECUTABLE" = "sbx" ]') < fn.index("pgrep")
+    # An unqueryable store is not a locked one.
+    assert "|| return 0" in fn.split("busctl")[1][:400]
+    assert "HIVE_SKIP_KEYRING_CHECK" in body
+
+
+def test_the_keyring_check_runs_before_check_returns_and_before_the_clones():
+    """`--check` passed on the morning of 2026-09-10 and the launch then died at `sbx
+    create`, after the clones. A preflight that cannot see the fault the launch will hit is
+    not preflighting it."""
+    body = (REPO / "scripts" / "hive-launch").read_text()
+    call = body.index("\n[ -n \"${HIVE_SKIP_KEYRING_CHECK:-}\" ] || require_sandbox_keyring\n")
+    assert call < body.index('if [ -n "$CHECK_ONLY" ]; then')
+    assert call < body.index('git clone --quiet "$WS_HUB"')
