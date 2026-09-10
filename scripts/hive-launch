@@ -1015,6 +1015,12 @@ echo "  clones: $WS_ROOT  +  $CODE_ROOT (origin -> $PUSH_REPO, branch $CODE_BRAN
 # parameter; nothing is read back out of the worker's root.
 issue_worker_interface "$RUN_DIR" "$WS_ROOT" "$CODE_ROOT" "$CODE_BRANCH" "$RUN" "$WORKER" \
   "$R_REVIEWER" "$ROUTE_ENV_NAMES"
+# The worker's cwd, recorded as trusted in whichever store its harness reads, before the
+# window exists to ask about it. Only for a harness running on THIS host: a sandboxed route's
+# store is inside its VM, and is the kit's business or the sandbox block's, not this line's.
+if [ "$EXECUTABLE" != "sbx" ]; then
+  register_workspace_trust "$R_HARNESS" "$WS_ROOT"
+fi
 echo "  emit:   $WRAPPER"
 echo "  bridge: $BRIDGE  (sync workspace | publish workspace | publish code)"
 # Which reviewer a launch issued is now a per-route fact, so it belongs in the launch
