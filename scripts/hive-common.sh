@@ -213,6 +213,13 @@ issue_worker_interface() {
   # authorizes for `execution.*` and for no `task.*` event at all — and that holds
   # wherever the wrapper sits.
   mkdir -p "$RUN_DIR/turns"
+  # Where a review lands. It is inside the task root ON PURPOSE: a review written to $TMPDIR
+  # is cleaned by the system before anyone can look at it, and on 2026-09-10 that meant the
+  # only readable record of six review rounds existed because one worker happened to pass
+  # --output. Reading those six side by side showed nine findings on one theme across all of
+  # them — a design problem resurfacing, not six independent defects — which is a pattern
+  # nobody can see one review at a time.
+  mkdir -p "$RUN_DIR/reviews"
 
   # The historical per-seat wrapper (proto-credential): one file per identity, issued at
   # launch, revocable by deletion; role and actor baked in, not parameters — swapping

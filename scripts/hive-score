@@ -507,6 +507,25 @@ already on record for that task; an explicit \`--review\` always overrides it.
 EOF
 fi
 
+# How many times this task's work was reviewed. Counted from the artifacts the launch told
+# the review wrapper to write into the task root, and from the archive once `hive-cleanup`
+# has moved them there — so the number survives the root it was produced in.
+#
+# Recorded because it could not be asked before. Review rounds are not spine events, and the
+# artifacts used to default to $TMPDIR and be swept; on 2026-09-10 one task's six rounds were
+# readable only by accident, and reading them together showed nine findings on a single theme
+# — a design problem resurfacing, not six defects. A count does not show that, but it is what
+# makes the outlier visible enough to go and read.
+REVIEW_ROUNDS=""
+_rv_root="${WORK_ROOT:-$HOME/work}"
+_rv_archive="${OMEGAHIVE_REVIEW_ARCHIVE:-$HOME/omegahive-reviews}"
+_rv_n=0
+for _d in "$_rv_root"/sess-"$TASK"-*/run/reviews "$_rv_archive/$TASK"; do
+  [ -d "$_d" ] || continue
+  _rv_n=$(( _rv_n + $(find "$_d" -maxdepth 1 -type f -name '*review*' 2>/dev/null | wc -l) ))
+done
+[ "$_rv_n" -eq 0 ] || REVIEW_ROUNDS="$_rv_n"
+
 ENTRY_TMP=$(mktemp)
 CAL_TMP=""
 # Installed the moment the first temp file exists, because every path out of here between
@@ -527,6 +546,7 @@ trap 'rm -f "$ENTRY_TMP" ${CAL_TMP:+"$CAL_TMP"}' EXIT
   echo "| review outcome | $PRED_REVIEW | $ACT_REVIEW | $V_REVIEW |"
   echo
   echo "- coverage: $COVERAGE"
+  if [ -n "$REVIEW_ROUNDS" ]; then echo "- review rounds: $REVIEW_ROUNDS"; fi
   echo "- order: \`$ORDER_REL\`"
   echo "- outcome source: run \`$RUN\` at seq $HEAD_SEQ · final status \`$FINAL_STATUS\`"
   if [ -n "$NOTE" ]; then echo "- note: $NOTE"; fi
