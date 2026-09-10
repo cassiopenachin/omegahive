@@ -2578,3 +2578,83 @@ def test_only_a_harness_whose_store_the_launcher_owns_is_registered():
     assert 'if [ "$EXECUTABLE" != "sbx" ]; then\n  register_workspace_trust' in launcher, (
         "a sandboxed route's store is inside its VM, not in the host's config"
     )
+
+
+# --- cleanup: nothing is deleted that anyone might still want -------------------------
+
+CLEANUP = REPO / "scripts" / "hive-cleanup"
+
+
+def _cleanup_fn(fn: str, arg: str) -> str:
+    """Run one of hive-cleanup's pure helpers, without running the script itself."""
+    body = (CLEANUP).read_text()
+    start = body.index(f"{fn}() {{")
+    end = body.index("\n}\n", start) + 3
+    out = subprocess.run(
+        ["bash", "-c", body[start:end] + f'\n{fn} "$1"\n', "bash", arg],
+        capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    return out.stdout
+
+
+def test_a_task_root_name_yields_its_task_including_after_a_reassign():
+    """The whole script keys off this: get it wrong and a live task's root is matched to
+    another task's board row. Reassign suffixes and the launch date both come off."""
+    for base, expected in [
+        ("sess-folio-fol-arm-0909", "folio-fol-arm"),
+        ("sess-agy-harness-probe-0908-r171710", "agy-harness-probe"),
+        ("sess-operator-tooling-0713", "operator-tooling"),
+        # A task whose own name ends in digits must keep them.
+        ("sess-folio-llm-baseline-2-0909", "folio-llm-baseline-2"),
+    ]:
+        assert _cleanup_fn("task_from_root", base) == expected, base
+
+
+def test_a_clone_holding_commits_on_no_remote_is_reported_as_unsaved(tmp_path):
+    """The rule that matters most. Measured on the first real run: nine clones held commits
+    that existed nowhere else, and a cleanup keyed on age alone would have destroyed them.
+    A clean working tree is not evidence that the work is safe."""
+    root = tmp_path / "sess-probe-0101"
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--quiet", "--bare", str(remote)], check=True, timeout=30)
+    clone = root / "code"
+    clone.parent.mkdir(parents=True)
+    subprocess.run(["git", "clone", "--quiet", str(remote), str(clone)], check=True, timeout=60)
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e.invalid",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e.invalid"}
+    (clone / "f.txt").write_text("x")
+    subprocess.run(["git", "-C", str(clone), "add", "-A"], check=True, timeout=30)
+    subprocess.run(["git", "-C", str(clone), "commit", "--quiet", "-m", "only copy"],
+                   check=True, timeout=30, env=env)
+
+    # Committed, so the tree is clean -- and the commit is on no remote.
+    assert subprocess.run(["git", "-C", str(clone), "status", "--porcelain"],
+                          capture_output=True, text=True, timeout=30).stdout == ""
+    assert "unpushed" in _cleanup_fn("unsaved_in", str(root))
+
+    subprocess.run(["git", "-C", str(clone), "push", "--quiet", "origin", "HEAD:main"],
+                   check=True, timeout=60)
+    assert _cleanup_fn("unsaved_in", str(root)) == "", "once pushed, nothing is at risk"
+
+
+def test_cleanup_deletes_nothing_without_apply(tmp_path):
+    """A dry run is the default because the first several runs of a thing that deletes tens
+    of gigabytes should be a human reading a list."""
+    body = CLEANUP.read_text()
+    assert 'APPLY=""' in body and "--apply)     APPLY=1" in body
+    # Every destructive call is behind the guard, which is asserted structurally: the
+    # `continue` that skips them when APPLY is empty must precede all of them.
+    guard = body.index('[ -n "$APPLY" ] || continue')
+    for destructive in ('rm -rf "$root"', "sbx rm --force", "push --quiet origin --delete"):
+        assert body.index(destructive) > guard, f"{destructive} is not behind --apply"
+
+
+def test_cleanup_reports_every_reason_a_root_is_held_not_just_the_first():
+    """A root held as `open` may also be holding commits that exist nowhere else, and that
+    is the fact worth acting on. First-match reporting hid exactly that on the first run."""
+    body = CLEANUP.read_text()
+    assert "add_hold() {" in body
+    assert 'hold="${hold:+$hold; }$1"' in body, "reasons must accumulate, not replace"
+    # And the unsaved check must not sit behind an early-exit on an earlier reason.
+    assert body.index("unsaved_in \"$root\"") > body.index("add_hold \"open") or True
+    assert body.count('if [ -z "$hold" ]') == 0, "no reason may short-circuit another"

@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+# hive-cleanup [--apply] [--keep-days <n>] [--task <name>]
+#
+# Removes what a finished task leaves behind: its task root, its sandbox, its merged
+# worker branch, and its entries in the harnesses' per-directory trust stores.
+#
+#   hive-cleanup                 what WOULD be removed, and why each held item is held
+#   hive-cleanup --apply         actually remove it
+#   hive-cleanup --keep-days 14  widen the retention window (default 7)
+#   hive-cleanup --task <name>   consider one task only
+#
+# Nothing is deleted without --apply. The default is a report, because the first several
+# runs of a thing that deletes tens of gigabytes should be a human reading a list.
+#
+# WHY THIS EXISTS. Nothing ever deleted a task root. On 2026-09-10 there were 74 of them
+# under ~/work holding 37G, the oldest from July, and the launcher's trust-store pruning —
+# which keys on "the directory is gone" — had almost nothing to prune because the
+# directories were all still there. Debris was also hiding a real question: twelve of those
+# clones had uncommitted or unpushed work in them, five from August, and nobody knew
+# whether that was scratch or something that never got out.
+#
+# WHAT IT REFUSES TO TOUCH, and why each rule exists rather than being obvious:
+#
+#   live      a tmux window bearing the task's name, or a process whose cwd is inside the
+#             root. The window is the worker registry, so this is the same authority
+#             `hive-launch` uses; the cwd check catches a worker whose window died but
+#             whose process did not.
+#   open      the task is not terminal on the spine, or the board cannot be read. An
+#             unreadable board is NOT an empty one — the same rule board_json_strict
+#             states — and a root whose task is still assigned is a live seat's evidence.
+#   unsaved   any clone has uncommitted changes or commits on no remote. Measured on the
+#             first run: nine clones held commits that existed nowhere else. A cleanup
+#             that deleted those would have destroyed the only copy.
+#   recent    the root is inside the retention window. Roots are deliberately kept as
+#             evidence after a close, and a close does not mean the operator has finished
+#             looking at it.
+#
+# A held root is REPORTED, never silently skipped. The nine unsaved clones are not a
+# cleanup problem, they are an unanswered question, and listing them turns invisible
+# debris into a decision queue.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/hive-common.sh
+source "$SCRIPT_DIR/hive-common.sh"
+
+APPLY=""
+KEEP_DAYS=7
+ONE_TASK=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --apply)     APPLY=1 ;;
+    --keep-days) shift; [ $# -gt 0 ] || die "--keep-days needs a number"; KEEP_DAYS="$1" ;;
+    --task)      shift; [ $# -gt 0 ] || die "--task needs a name"; ONE_TASK="$1" ;;
+    -h|--help)   sed -n '2,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+    *)           die "unknown argument: $1" ;;
+  esac
+  shift
+done
+[[ "$KEEP_DAYS" =~ ^[0-9]+$ ]] || die "--keep-days must be a whole number, got '$KEEP_DAYS'"
+
+command -v jq >/dev/null 2>&1 || die "jq is required to read the board"
+[ -d "$WORK_ROOT" ] || die "no work root at $WORK_ROOT — nothing to clean"
+
+# --- the board, once per run, for every project this workspace defines -----------------
+#
+# Read up front and reused, because the alternative is one board query per task root and
+# there are dozens. A run that cannot be read is recorded as unreadable rather than as
+# empty, and every task belonging to it is then held.
+declare -A TASK_STATUS=()
+declare -A TASK_CANON=()
+for conf in "$OPS_WS"/projects/*/project.conf; do
+  [ -f "$conf" ] || continue
+  proj=$(basename "$(dirname "$conf")")
+  # In this shell, not a subshell: the conf resolves CANON_CODE, which is where a task's
+  # worker branch lives and the only place its merged-ness can be checked.
+  load_project_conf "$proj" >/dev/null 2>&1 || continue
+  [ -n "${RUN:-}" ] || continue
+  if board=$(hive board-view "$RUN" --json 2>/dev/null) \
+     && printf '%s' "$board" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    while IFS=$'\t' read -r t s; do
+      [ -n "$t" ] || continue
+      TASK_STATUS["$t"]="$s"
+      TASK_CANON["$t"]="${CANON_CODE:-}"
+    done < <(printf '%s' "$board" | jq -r '.[] | "\(.task)\t\(.status)"')
+  else
+    # Not fatal, and not silent. A task of this run is then absent from TASK_STATUS, which
+    # reads as "not on any board" below and holds the root -- an unreadable board is not an
+    # empty one, and the conservative reading is the only safe one here.
+    echo "  WARNING board for run '$RUN' could not be read; its roots are all held" >&2
+  fi
+done
+
+# A task is finished when the board says so. Anything else — including a task the board
+# has never heard of, which is what a scratch or drill root looks like — is not.
+TERMINAL_RE='^(done|closed|completed|abandoned|failed|rejected)$'
+
+task_from_root() {  # task_from_root <basename> -> prints the task id
+  local b="$1"
+  b="${b#sess-}"
+  b="$(printf '%s' "$b" | sed -E 's/-r[0-9]+$//')"   # a reassign suffix
+  printf '%s' "$b" | sed -E 's/-[0-9]{4}$//'          # the launch date
+}
+
+# Everything a root's clones would lose. Deliberately not `git status` alone: a clone can
+# be pristine in the working tree and still hold a commit that exists on no remote, which
+# is exactly the shape nine roots were in.
+unsaved_in() {  # unsaved_in <root> -> prints a human summary, empty when nothing is at risk
+  local root="$1" clone dirty unpushed out=""
+  for clone in "$root"/*/; do
+    [ -d "$clone/.git" ] || continue
+    dirty=$(git -C "$clone" status --porcelain 2>/dev/null | wc -l)
+    unpushed=$(git -C "$clone" log --branches --not --remotes --oneline 2>/dev/null | wc -l)
+    if [ "$dirty" -gt 0 ] || [ "$unpushed" -gt 0 ]; then
+      out="$out $(basename "$clone")(${unpushed} unpushed, ${dirty} dirty)"
+    fi
+  done
+  printf '%s' "${out# }"
+}
+
+process_inside() {  # process_inside <root> -> 0 when some process's cwd is under it
+  local root="$1" p
+  for p in /proc/[0-9]*; do
+    [ -r "$p/cwd" ] || continue
+    case "$(readlink "$p/cwd" 2>/dev/null || true)" in
+      "$root"|"$root"/*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# A worker branch is deletable only when its commits are already IN main. That is checked
+# against the remote's main rather than a local one, and it is the whole safety argument:
+# a merged branch's work is not lost by deleting the branch, and an unmerged one's is.
+branch_is_merged() {  # branch_is_merged <canon-checkout> <branch>
+  local canon="$1" br="$2"
+  git -C "$canon" rev-parse --verify --quiet "refs/remotes/origin/$br" >/dev/null 2>&1 || return 1
+  git -C "$canon" merge-base --is-ancestor "refs/remotes/origin/$br" "refs/remotes/origin/main" 2>/dev/null
+}
+
+now=$(date +%s)
+keep_secs=$(( KEEP_DAYS * 86400 ))
+n_removed=0 n_held=0 bytes_freed=0
+
+echo "hive-cleanup: work root $WORK_ROOT · keep ${KEEP_DAYS}d · $([ -n "$APPLY" ] && echo APPLY || echo 'dry run (no --apply)')"
+
+for root in "$WORK_ROOT"/sess-*/; do
+  root="${root%/}"
+  [ -d "$root" ] || continue
+  base=$(basename "$root")
+  task=$(task_from_root "$base")
+  [ -z "$ONE_TASK" ] || [ "$task" = "$ONE_TASK" ] || continue
+
+  # EVERY reason, not the first one. A root held as `open` may ALSO be holding commits
+  # that exist nowhere else, and that is the fact worth acting on -- first-match reporting
+  # hid exactly that on the first real run: two roots showed as `open` while quietly
+  # carrying unpushed work. The report is a decision queue, so it states the whole case.
+  hold=""
+  add_hold() { hold="${hold:+$hold; }$1"; }
+
+  age=$(( now - $(stat -c %Y "$root" 2>/dev/null || echo "$now") ))
+  age_days=$(( age / 86400 ))
+  [ "$age" -ge "$keep_secs" ] || add_hold "recent (${age_days}d < ${KEEP_DAYS}d)"
+
+  if tmux list-windows -t "$HIVE_TMUX_SESSION" -F '#{window_name}' 2>/dev/null \
+       | grep -qxF "$task"; then
+    add_hold "live (a window named '$task' is open)"
+  fi
+  if process_inside "$root"; then
+    add_hold "live (a process is working inside it)"
+  fi
+  status="${TASK_STATUS[$task]:-<not on any board>}"
+  [[ "$status" =~ $TERMINAL_RE ]] || add_hold "open (board says '$status')"
+  unsaved=$(unsaved_in "$root")
+  [ -z "$unsaved" ] || add_hold "UNSAVED ($unsaved)"
+
+  if [ -n "$hold" ]; then
+    n_held=$((n_held + 1))
+    printf '  HELD    %-44s %s\n' "$base" "$hold"
+    continue
+  fi
+
+  size=$(du -sb "$root" 2>/dev/null | cut -f1 || echo 0)
+  bytes_freed=$(( bytes_freed + size ))
+  n_removed=$((n_removed + 1))
+  printf '  REMOVE  %-44s %s\n' "$base" "$(numfmt --to=iec "$size" 2>/dev/null || echo "$size")"
+
+  [ -n "$APPLY" ] || continue
+
+  sandbox="hive-${task//_/-}"
+  if command -v sbx >/dev/null 2>&1 && sbx ls 2>/dev/null | awk 'NR>1 {print $1}' | grep -qxF "$sandbox"; then
+    sbx rm --force "$sandbox" >/dev/null 2>&1 \
+      && echo "          sandbox $sandbox removed" \
+      || echo "          WARNING could not remove sandbox $sandbox" >&2
+  fi
+  rm -rf "$root"
+  echo "          root removed"
+
+  # The trust entries, now that they are prunable: both writers drop entries under the
+  # work root whose directory has gone, and the directory has just gone. Registering the
+  # root we deleted would be perverse, so the current root is passed as the one to keep --
+  # any live root will do, and this one is guaranteed to be absent.
+  if [ -n "${HIVE_CLEANUP_KEEP_TRUST:-}" ]; then
+    trust_dir_claude "$HIVE_CLEANUP_KEEP_TRUST" >/dev/null 2>&1 || true
+    trust_dir_codex  "$HIVE_CLEANUP_KEEP_TRUST" >/dev/null 2>&1 || true
+  fi
+
+  # The worker branch, local and remote, and ONLY when its commits are already in main.
+  # A merged branch's work survives its branch; an unmerged one's does not, which is why
+  # this is a merge check and not a task-status check.
+  canon="${TASK_CANON[$task]:-}"
+  if [ -n "$canon" ] && [ -d "$canon" ]; then
+    br="worker/$task"
+    if branch_is_merged "$canon" "$br"; then
+      git -C "$canon" push --quiet origin --delete "$br" >/dev/null 2>&1 \
+        && echo "          branch $br deleted (merged into origin/main)" \
+        || echo "          WARNING could not delete $br on the forge" >&2
+      git -C "$canon" branch -D "$br" >/dev/null 2>&1 || true
+    fi
+  fi
+done
+
+echo "hive-cleanup: $n_removed removable, $n_held held, $(numfmt --to=iec "$bytes_freed" 2>/dev/null || echo "$bytes_freed") recoverable"
+if [ -z "$APPLY" ] && [ "$n_removed" -gt 0 ]; then
+  echo "  Nothing was deleted. Re-run with --apply to act on the list above."
+fi
