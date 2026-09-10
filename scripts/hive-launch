@@ -51,6 +51,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Where this script REALLY lives, symlinks resolved. SCRIPT_DIR above is deliberately not
+# resolved — it is how the sibling library is sourced, and on this deployment `~/bin` holds a
+# symlink per script, so both names work there. Repository ASSETS are different: they are not
+# symlinked one by one, so `$SCRIPT_DIR/../kits` becomes `~/kits` when the launcher is invoked
+# by its PATH name, which is how OPS.md tells an operator to invoke it. Measured 2026-09-08,
+# on the first reassign: the kit refusal fired naming `/home/cassio/bin/../kits/agy`. Every
+# test until then had run `./scripts/hive-launch` directly, where the two agree.
+REPO_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 # shellcheck source=scripts/hive-common.sh
 source "$SCRIPT_DIR/hive-common.sh"
 
@@ -1113,8 +1121,9 @@ if [ "$EXECUTABLE" = "sbx" ]; then
   # A KIT is the same decision one level up: a declarative spec that supplies an agent sbx
   # does not ship, including its image, its network allowlist and its credential wiring. Same
   # reasoning, so the same place — and the kit is a directory in THIS repository, resolved
-  # beside the running script rather than under CANON_ROOT, so the kit a launch uses is always
-  # the one that shipped with the launcher it is running. Vendored rather than referenced at
+  # from REPO_ROOT (the launcher's own location with symlinks followed) rather than under
+  # CANON_ROOT, so the kit a launch uses is always the one that shipped with the launcher it
+  # is running, however that launcher was named. Vendored rather than referenced at
   # somebody's HEAD, because a deployment input that can change under us is not an input we
   # have authorized.
   SBX_KIT=""
@@ -1122,7 +1131,7 @@ if [ "$EXECUTABLE" = "sbx" ]; then
     claude-code|claude) SBX_AGENT=claude ;;
     codex)              SBX_AGENT=codex ;;
     omp|shell)          SBX_AGENT=shell ;;
-    antigravity)        SBX_AGENT=agy; SBX_KIT="$SCRIPT_DIR/../kits/agy" ;;
+    antigravity)        SBX_AGENT=agy; SBX_KIT="$REPO_ROOT/kits/agy" ;;
     *) die "route '$ROUTE_NAME' runs under sbx with harness '$R_HARNESS', and this build
   does not know which sbx agent image serves it. Add it to hive-launch's agent map, or
   run this harness on a non-sandboxed route." ;;
@@ -1469,16 +1478,28 @@ PYEOF' >/dev/null 2>&1 \
   # unchanged and 401s. That is a host configuration gap, and the fix is one command, so the
   # refusal names it.
   #
-  # Unreachable is not unauthenticated, on the same reasoning as the model probe: a forge
-  # that does not answer warns and proceeds, and only a forge that answers "no" refuses.
+  # TWO questions, because one of them used to answer for both and answered it wrong. This
+  # check ran `git ls-remote` alone and printed "reachable and authenticated" — and against a
+  # PUBLIC repository ls-remote succeeds with no credential at all. Measured 2026-09-08: an
+  # anonymous ls-remote from inside a sandbox with a dead sentinel token exits 0. So the
+  # launch announced an authentication it had not tested, and the worker learned the truth
+  # after writing the docs, obtaining its review and reaching the push.
+  #
+  # `gh api user` is the question that cannot be answered without a credential, and it is the
+  # check this deployment's own sandboxed-route documentation already specifies. Reachability
+  # is still asked, separately, so the two failures stay distinguishable in the message.
   if [ -z "${HIVE_SKIP_FORGE_CHECK:-}" ]; then
     FORGE_OUT=$(sbx exec "$SANDBOX" bash -lc \
-      "timeout 45 git ls-remote --exit-code '$PUSH_REPO' HEAD >/dev/null 2>&1; echo \$?" 2>/dev/null) \
+      "timeout 45 git ls-remote --exit-code '$PUSH_REPO' HEAD >/dev/null 2>&1; r=\$?; \
+       if command -v gh >/dev/null 2>&1; then timeout 45 gh api user --jq .login >/dev/null 2>&1; a=\$?; else a=9; fi; \
+       echo \"\$r \$a\"" 2>/dev/null) \
       || FORGE_OUT=""
     case "${FORGE_OUT//[$'\r\n']/}" in
-      0)  echo "  sandbox: forge reachable and authenticated ($PUSH_REPO)" ;;
-      '') echo "  sandbox: WARNING could not run the forge check inside '$SANDBOX'; publication is UNVERIFIED" >&2 ;;
-      *)  die "sandbox '$SANDBOX' cannot authenticate to the code forge:
+      "0 0")  echo "  sandbox: forge reachable and authenticated ($PUSH_REPO)" ;;
+      "0 9")  echo "  sandbox: WARNING no gh inside '$SANDBOX', so the credential could not be
+           tested; the forge answers, but publication is UNVERIFIED" >&2 ;;
+      '')     echo "  sandbox: WARNING could not run the forge check inside '$SANDBOX'; publication is UNVERIFIED" >&2 ;;
+      *)      die "sandbox '$SANDBOX' cannot authenticate to the code forge:
     $PUSH_REPO
   The worker would do the whole order and block at 'hive publish code'. sbx gives the VM a
   sentinel GH_TOKEN and its proxy swaps in the host's stored 'github' secret; if none is
