@@ -2468,3 +2468,113 @@ def test_the_forge_preflight_tests_a_credential_and_not_only_reachability():
         out = subprocess.run(["bash", "-c", arms, "bash", probe],
                              capture_output=True, text=True, timeout=30)
         assert out.stdout.strip() == expected, f"{probe!r} ({why}) -> {out.stdout!r}"
+
+
+# --- the worker's directory is trusted before there is a window to ask about it --------
+
+def _trust(fn, cfg_env, cfg, target, work_root):
+    return subprocess.run(
+        ["bash", "-c", f'set -euo pipefail; source "{COMMON}"; {fn} "$1"', "bash", str(target)],
+        capture_output=True, text=True, timeout=60,
+        env={**os.environ, cfg_env: str(cfg), "WORK_ROOT": str(work_root),
+             "OMEGA_DIR": str(REPO)})
+
+
+def test_claude_trust_is_recorded_and_dead_task_roots_are_pruned(tmp_path):
+    """Every launch mints a fresh task root, so every launch is asked whether it trusts one.
+    The launcher created that directory and cloned into it, so it answers. Without pruning
+    the file then grows by one entry per task forever."""
+    work = tmp_path / "work"
+    live, alive = work / "sess-live/hive", work / "sess-alive/hive"
+    for d in (live, alive):
+        d.mkdir(parents=True)
+    dead = work / "sess-dead/hive"          # never created
+    cfg = tmp_path / "claude.json"
+    cfg.write_text(json.dumps({
+        "numStartups": 42,
+        "projects": {
+            "/somewhere/the/operators/own": {"hasTrustDialogAccepted": True,
+                                             "allowedTools": ["Read"]},
+            str(dead): {"hasTrustDialogAccepted": True},
+            str(alive): {"hasTrustDialogAccepted": True},
+        }}))
+    out = _trust("trust_dir_claude", "HIVE_CLAUDE_CONFIG", cfg, live, work)
+    assert out.returncode == 0, out.stderr
+    doc = json.loads(cfg.read_text())
+    assert doc["projects"][str(live)]["hasTrustDialogAccepted"] is True
+    assert str(dead) not in doc["projects"], "a task root that no longer exists must go"
+    assert str(alive) in doc["projects"], "one that still exists must stay"
+    # The operator's own entries, and everything else in the file, are not ours to touch.
+    assert doc["projects"]["/somewhere/the/operators/own"]["allowedTools"] == ["Read"]
+    assert doc["numStartups"] == 42
+
+
+def test_codex_trust_is_recorded_without_rewriting_the_rest_of_the_config(tmp_path):
+    """The stdlib reads TOML and cannot write it, and this file carries the operator's model
+    defaults and MCP blocks. So the edit is line-oriented and touches only stanzas of the
+    exact shape it writes."""
+    work = tmp_path / "work"
+    live = work / "sess-live/hive"
+    live.mkdir(parents=True)
+    dead = work / "sess-dead/hive"
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        'model = "gpt-5.6-sol"\n\n'
+        f'[projects."{dead}"]\ntrust_level = "trusted"\n\n'
+        '[projects."/the/operators/own"]\ntrust_level = "trusted"\n\n'
+        '[mcp_servers."metta-lsp"]\ncommand = "/bin/sh"\n'
+        '''args = ["-lc", 'exec "$HOME/.local/bin/metta-lsp" mcp --stdio']\n'''
+    )
+    out = _trust("trust_dir_codex", "HIVE_CODEX_CONFIG", cfg, live, work)
+    assert out.returncode == 0, out.stderr
+
+    import tomllib
+    doc = tomllib.loads(cfg.read_text())
+    assert doc["projects"][str(live)]["trust_level"] == "trusted"
+    assert str(dead) not in doc["projects"]
+    assert "/the/operators/own" in doc["projects"]
+    # The awkward bits survive verbatim: a single-quoted TOML string containing $HOME.
+    assert doc["mcp_servers"]["metta-lsp"]["args"][1].startswith('exec "$HOME')
+    assert doc["model"] == "gpt-5.6-sol"
+
+
+def test_trust_registration_is_idempotent(tmp_path):
+    """A reassign re-registers the same root. Three runs must leave one entry, not three."""
+    work = tmp_path / "work"
+    live = work / "sess-live/hive"
+    live.mkdir(parents=True)
+    toml_cfg, json_cfg = tmp_path / "c.toml", tmp_path / "c.json"
+    toml_cfg.write_text('model = "x"\n')
+    json_cfg.write_text('{"projects": {}}')
+    for _ in range(3):
+        for fn, var, cfg in (("trust_dir_codex", "HIVE_CODEX_CONFIG", toml_cfg),
+                             ("trust_dir_claude", "HIVE_CLAUDE_CONFIG", json_cfg)):
+            assert _trust(fn, var, cfg, live, work).returncode == 0
+    assert toml_cfg.read_text().count(f'[projects."{live}"]') == 1
+    assert len(json.loads(json_cfg.read_text())["projects"]) == 1
+
+
+def test_a_config_that_cannot_be_parsed_is_left_alone(tmp_path):
+    """It is the operator's file and it holds far more than trust. A launcher that truncates
+    it to fix a dialog has done real damage; the worker asking is the lesser outcome."""
+    work = tmp_path / "work"
+    live = work / "sess-live/hive"
+    live.mkdir(parents=True)
+    cfg = tmp_path / "claude.json"
+    cfg.write_text("this is { not json")
+    out = _trust("trust_dir_claude", "HIVE_CLAUDE_CONFIG", cfg, live, work)
+    assert cfg.read_text() == "this is { not json", "the file must not be rewritten"
+    assert "WARNING" in out.stderr and "it will ask" in out.stderr
+
+
+def test_only_a_harness_whose_store_the_launcher_owns_is_registered():
+    """Antigravity's trust lives inside its sandbox and is seeded by the kit that builds it.
+    A harness nobody has measured must ask rather than have an answer invented for it."""
+    body = (REPO / "scripts" / "hive-common.sh").read_text()
+    block = body[body.index("register_workspace_trust() {"):]
+    assert "claude-code|claude)" in block and "codex)" in block
+    assert "antigravity" not in block.split("esac")[0]
+    launcher = (REPO / "scripts" / "hive-launch").read_text()
+    assert 'if [ "$EXECUTABLE" != "sbx" ]; then\n  register_workspace_trust' in launcher, (
+        "a sandboxed route's store is inside its VM, not in the host's config"
+    )

@@ -1568,3 +1568,126 @@ run_turn() {  # run_turn <turn-dir>
   [ -n "$RC" ] || return 0
   return "$RC"
 }
+
+# --- pre-registering the worker's directory as trusted ---------------------------------
+#
+# Claude Code and Codex each ask, on first use of a directory, whether its contents are
+# trusted, and record the answer per absolute path — `~/.claude.json` under
+# `projects.<path>.hasTrustDialogAccepted`, `~/.codex/config.toml` under
+# `[projects."<path>"] trust_level`. Every launch mints a fresh task root, so every launch
+# asks, and the worker sits on the dialog until a human answers it.
+#
+# The question is being put to the wrong party. `hive-launch` created that directory
+# seconds earlier and cloned into it from the hub and the canonical checkout; the operator
+# answering "yes" is relaying what the launcher already knows. So the launcher records it.
+#
+# This is NOT auto-consent, and the distinction is worth keeping sharp: "workers trust the
+# task roots my own launcher minted" is one operator policy, applied mechanically. A process
+# that watched panes and answered whatever dialog appeared would be something else entirely,
+# because the next dialog might be a licence agreement.
+#
+# Measured 2026-09-09: trust is EXACT PATH, not a prefix. A trusted parent does not cover a
+# child, so one entry for ~/work would not do — hence per-root registration, and hence the
+# pruning below, without which these files grow by one stanza per task forever (15 stale
+# codex entries had accumulated, the oldest from August, all naming deleted directories).
+: "${HIVE_CLAUDE_CONFIG:=$HOME/.claude.json}"
+: "${HIVE_CODEX_CONFIG:=$HOME/.codex/config.toml}"
+
+trust_dir_claude() {  # trust_dir_claude <abs-dir>
+  local dir="$1" cfg="$HIVE_CLAUDE_CONFIG"
+  [ -n "$dir" ] || return 0
+  python3 - "$cfg" "$dir" <<'PY' || echo "  trust: WARNING could not record Claude trust for $dir (it will ask)" >&2
+import json, os, sys, tempfile
+cfg, wanted = sys.argv[1], sys.argv[2]
+try:
+    with open(cfg) as fh:
+        doc = json.load(fh)
+except FileNotFoundError:
+    doc = {}
+except (OSError, ValueError):
+    # A config we cannot parse is one we must not rewrite: it is the operator's, it holds
+    # far more than trust, and a launcher that truncates it has done real damage to fix a
+    # dialog. Leave it and let the worker ask.
+    sys.exit(1)
+projects = doc.setdefault("projects", {})
+projects.setdefault(wanted, {})["hasTrustDialogAccepted"] = True
+# Prune entries naming directories that no longer exist. Only ever entries this launcher
+# would itself have created — under the work root — so an operator's own project entries,
+# with their history and allowlists, are never touched.
+work_root = os.environ.get("WORK_ROOT") or os.path.join(os.path.expanduser("~"), "work")
+for path in [p for p in projects if p != wanted]:
+    if path.startswith(work_root + os.sep) and not os.path.isdir(path):
+        del projects[path]
+d = os.path.dirname(os.path.abspath(cfg)) or "."
+fd, tmp = tempfile.mkstemp(dir=d, prefix=".hive-trust-")
+try:
+    with os.fdopen(fd, "w") as fh:
+        json.dump(doc, fh, indent=2)
+    os.replace(tmp, cfg)          # atomic: a crash mid-write must not lose the config
+except BaseException:
+    os.path.exists(tmp) and os.unlink(tmp)
+    raise
+PY
+}
+
+trust_dir_codex() {  # trust_dir_codex <abs-dir>
+  local dir="$1" cfg="$HIVE_CODEX_CONFIG"
+  [ -n "$dir" ] || return 0
+  mkdir -p "$(dirname "$cfg")" 2>/dev/null || true
+  python3 - "$cfg" "$dir" <<'PY' || echo "  trust: WARNING could not record Codex trust for $dir (it will ask)" >&2
+import os, re, sys, tempfile
+cfg, wanted = sys.argv[1], sys.argv[2]
+try:
+    text = open(cfg).read()
+except FileNotFoundError:
+    text = ""
+except OSError:
+    sys.exit(1)
+# Line-oriented rather than a TOML round-trip: the stdlib can read TOML and cannot write it,
+# and this file carries the operator's model defaults and MCP server blocks. Rewriting it
+# through a lossy parser to add one stanza is not a trade worth making. Only stanzas of the
+# exact shape this function writes are ever touched.
+head = re.compile(r'^\[projects\."(.+)"\]\s*$')
+out, i, lines, seen = [], 0, text.splitlines(), False
+work_root = os.environ.get("WORK_ROOT") or os.path.join(os.path.expanduser("~"), "work")
+while i < len(lines):
+    m = head.match(lines[i])
+    if not m:
+        out.append(lines[i]); i += 1; continue
+    path = m.group(1)
+    block = [lines[i]]; i += 1
+    while i < len(lines) and not lines[i].startswith("["):
+        block.append(lines[i]); i += 1
+    if path == wanted:
+        seen = True
+        out.extend(block)
+    elif path.startswith(work_root + os.sep) and not os.path.isdir(path):
+        pass                      # a stanza for a task root that no longer exists
+    else:
+        out.extend(block)
+if not seen:
+    if out and out[-1].strip():
+        out.append("")
+    out.append('[projects."%s"]' % wanted)
+    out.append('trust_level = "trusted"')
+d = os.path.dirname(os.path.abspath(cfg)) or "."
+fd, tmp = tempfile.mkstemp(dir=d, prefix=".hive-trust-")
+try:
+    with os.fdopen(fd, "w") as fh:
+        fh.write("\n".join(out).rstrip("\n") + "\n")
+    os.replace(tmp, cfg)
+except BaseException:
+    os.path.exists(tmp) and os.unlink(tmp)
+    raise
+PY
+}
+
+# Which store, if any, this harness reads. Absent from the case is the answer for a harness
+# whose trust the launcher does not own: Antigravity's is inside its sandbox, seeded by the
+# kit that builds it, and a harness nobody has measured must ask rather than be assumed.
+register_workspace_trust() {  # register_workspace_trust <harness> <abs-dir>
+  case "$1" in
+    claude-code|claude) trust_dir_claude "$2"; echo "  trust:  $2 (Claude)" ;;
+    codex)              trust_dir_codex  "$2"; echo "  trust:  $2 (Codex)" ;;
+  esac
+}
