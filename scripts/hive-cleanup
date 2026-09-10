@@ -196,15 +196,6 @@ for root in "$WORK_ROOT"/sess-*/; do
   rm -rf "$root"
   echo "          root removed"
 
-  # The trust entries, now that they are prunable: both writers drop entries under the
-  # work root whose directory has gone, and the directory has just gone. Registering the
-  # root we deleted would be perverse, so the current root is passed as the one to keep --
-  # any live root will do, and this one is guaranteed to be absent.
-  if [ -n "${HIVE_CLEANUP_KEEP_TRUST:-}" ]; then
-    trust_dir_claude "$HIVE_CLEANUP_KEEP_TRUST" >/dev/null 2>&1 || true
-    trust_dir_codex  "$HIVE_CLEANUP_KEEP_TRUST" >/dev/null 2>&1 || true
-  fi
-
   # The worker branch, local and remote, and ONLY when its commits are already in main.
   # A merged branch's work survives its branch; an unmerged one's does not, which is why
   # this is a merge check and not a task-status check.
@@ -219,6 +210,14 @@ for root in "$WORK_ROOT"/sess-*/; do
     fi
   fi
 done
+
+# The trust entries the deletions above just made collectable. Once, at the end: both
+# writers prune every entry under the work root whose directory is gone, so calling this
+# per-root would rewrite two config files dozens of times for one net effect.
+if [ -n "$APPLY" ] && [ "$n_removed" -gt 0 ]; then
+  prune_trust_stores
+  echo "hive-cleanup: trust entries for deleted roots pruned"
+fi
 
 echo "hive-cleanup: $n_removed removable, $n_held held, $(numfmt --to=iec "$bytes_freed" 2>/dev/null || echo "$bytes_freed") recoverable"
 if [ -z "$APPLY" ] && [ "$n_removed" -gt 0 ]; then

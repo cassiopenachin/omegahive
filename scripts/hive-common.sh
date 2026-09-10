@@ -1593,9 +1593,11 @@ run_turn() {  # run_turn <turn-dir>
 : "${HIVE_CLAUDE_CONFIG:=$HOME/.claude.json}"
 : "${HIVE_CODEX_CONFIG:=$HOME/.codex/config.toml}"
 
-trust_dir_claude() {  # trust_dir_claude <abs-dir>
-  local dir="$1" cfg="$HIVE_CLAUDE_CONFIG"
-  [ -n "$dir" ] || return 0
+# An EMPTY <abs-dir> means prune only, registering nothing. That is what a cleanup run
+# needs: it has just deleted the roots whose entries are now collectable, and it has no
+# directory it wants to add.
+trust_dir_claude() {  # trust_dir_claude [<abs-dir>]
+  local dir="${1:-}" cfg="$HIVE_CLAUDE_CONFIG"
   python3 - "$cfg" "$dir" <<'PY' || echo "  trust: WARNING could not record Claude trust for $dir (it will ask)" >&2
 import json, os, sys, tempfile
 cfg, wanted = sys.argv[1], sys.argv[2]
@@ -1610,7 +1612,8 @@ except (OSError, ValueError):
     # dialog. Leave it and let the worker ask.
     sys.exit(1)
 projects = doc.setdefault("projects", {})
-projects.setdefault(wanted, {})["hasTrustDialogAccepted"] = True
+if wanted:
+    projects.setdefault(wanted, {})["hasTrustDialogAccepted"] = True
 # Prune entries naming directories that no longer exist. Only ever entries this launcher
 # would itself have created — under the work root — so an operator's own project entries,
 # with their history and allowlists, are never touched.
@@ -1630,9 +1633,8 @@ except BaseException:
 PY
 }
 
-trust_dir_codex() {  # trust_dir_codex <abs-dir>
-  local dir="$1" cfg="$HIVE_CODEX_CONFIG"
-  [ -n "$dir" ] || return 0
+trust_dir_codex() {  # trust_dir_codex [<abs-dir>]
+  local dir="${1:-}" cfg="$HIVE_CODEX_CONFIG"
   mkdir -p "$(dirname "$cfg")" 2>/dev/null || true
   python3 - "$cfg" "$dir" <<'PY' || echo "  trust: WARNING could not record Codex trust for $dir (it will ask)" >&2
 import os, re, sys, tempfile
@@ -1665,7 +1667,7 @@ while i < len(lines):
         pass                      # a stanza for a task root that no longer exists
     else:
         out.extend(block)
-if not seen:
+if wanted and not seen:
     if out and out[-1].strip():
         out.append("")
     out.append('[projects."%s"]' % wanted)
@@ -1686,8 +1688,17 @@ PY
 # whose trust the launcher does not own: Antigravity's is inside its sandbox, seeded by the
 # kit that builds it, and a harness nobody has measured must ask rather than be assumed.
 register_workspace_trust() {  # register_workspace_trust <harness> <abs-dir>
+  [ -n "${2:-}" ] || return 0
   case "$1" in
     claude-code|claude) trust_dir_claude "$2"; echo "  trust:  $2 (Claude)" ;;
     codex)              trust_dir_codex  "$2"; echo "  trust:  $2 (Codex)" ;;
   esac
+}
+
+# Prune both stores without registering anything. Called by `hive-cleanup` once it has
+# deleted the roots that make entries collectable — per-root would rewrite the files
+# dozens of times for one net effect.
+prune_trust_stores() {
+  trust_dir_claude ""
+  trust_dir_codex ""
 }

@@ -2658,3 +2658,40 @@ def test_cleanup_reports_every_reason_a_root_is_held_not_just_the_first():
     # And the unsaved check must not sit behind an early-exit on an earlier reason.
     assert body.index("unsaved_in \"$root\"") > body.index("add_hold \"open") or True
     assert body.count('if [ -z "$hold" ]') == 0, "no reason may short-circuit another"
+
+
+def test_trust_can_be_pruned_without_registering_anything(tmp_path):
+    """What a cleanup run needs: it has just deleted the roots whose entries became
+    collectable, and has no directory it wants to add. The first version of this gated the
+    prune behind an env var nobody set, so a real run deleted 52 roots and left all 55 of
+    their trust entries behind -- caught by checking the store afterwards rather than
+    trusting the script's own output."""
+    work = tmp_path / "work"
+    alive = work / "sess-alive/hive"
+    alive.mkdir(parents=True)
+    dead = work / "sess-dead/hive"
+    json_cfg, toml_cfg = tmp_path / "c.json", tmp_path / "c.toml"
+    json_cfg.write_text(json.dumps({"projects": {
+        str(dead): {"hasTrustDialogAccepted": True},
+        str(alive): {"hasTrustDialogAccepted": True},
+    }}))
+    toml_cfg.write_text(
+        f'model = "m"\n\n[projects."{dead}"]\ntrust_level = "trusted"\n\n'
+        f'[projects."{alive}"]\ntrust_level = "trusted"\n'
+    )
+    out = subprocess.run(
+        ["bash", "-c", f'set -euo pipefail; source "{COMMON}"; prune_trust_stores'],
+        capture_output=True, text=True, timeout=60,
+        env={**os.environ, "HIVE_CLAUDE_CONFIG": str(json_cfg),
+             "HIVE_CODEX_CONFIG": str(toml_cfg), "WORK_ROOT": str(work),
+             "OMEGA_DIR": str(REPO)})
+    assert out.returncode == 0, out.stderr
+
+    projects = json.loads(json_cfg.read_text())["projects"]
+    assert str(dead) not in projects and str(alive) in projects
+    assert len(projects) == 1, "prune-only must not add an entry of its own"
+
+    import tomllib
+    doc = tomllib.loads(toml_cfg.read_text())
+    assert str(dead) not in doc["projects"] and str(alive) in doc["projects"]
+    assert doc["model"] == "m"
