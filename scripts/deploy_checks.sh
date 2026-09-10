@@ -422,5 +422,38 @@ else
        OMEGAHIVE_SYSTEMD_UNITS_DIVERGED and record why in its docs/deployments/ row."
 fi
 
+# --- 11. installed helper scripts still match the repository ---------------------------
+#
+# The same defect as check 10, in a second place found the same way: `deploy/git_bundle.sh`
+# is COPIED to ~/.local/bin under another name, and on 2026-09-10 the installed copy was
+# weeks behind. A backup change was committed, tested, and did nothing on the host, because
+# the timer runs the copy. It surfaced only because the operator ran the backup by hand and
+# looked at what landed.
+#
+# An explicit map rather than a glob: the install renames (git_bundle.sh ->
+# omegahive-git-bundle), so nothing can derive one name from the other. A helper the host
+# has not installed is skipped, not failed -- not every deployment schedules every job.
+declare -A HELPERS=( ["deploy/git_bundle.sh"]="omegahive-git-bundle" )
+HELPER_DIR="${OMEGAHIVE_HELPER_BIN:-$HOME/.local/bin}"
+HELPER_DRIFT=""
+HELPER_SEEN=0
+for _src in "${!HELPERS[@]}"; do
+  _dst="$HELPER_DIR/${HELPERS[$_src]}"
+  [ -f "$_src" ] || continue
+  [ -f "$_dst" ] || continue
+  HELPER_SEEN=$((HELPER_SEEN + 1))
+  cmp -s "$_src" "$_dst" || HELPER_DRIFT="$HELPER_DRIFT ${HELPERS[$_src]}"
+done
+if [ "$HELPER_SEEN" -eq 0 ]; then
+  echo "[SKIP] 11. installed helpers: none of deploy/*.sh is installed in $HELPER_DIR."
+elif [ -z "$HELPER_DRIFT" ]; then
+  ok "11. installed helpers: $HELPER_SEEN installed script(s) match the repository"
+else
+  bad "11. installed helpers: stale copies in $HELPER_DIR:$HELPER_DRIFT
+       A timer runs the COPY, so a committed change to deploy/ does nothing until it is
+       reinstalled. Sync it:
+         install -m 0755 deploy/<script>.sh $HELPER_DIR/<installed-name>"
+fi
+
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

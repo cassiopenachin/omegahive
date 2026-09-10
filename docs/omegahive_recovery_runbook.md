@@ -42,17 +42,26 @@ container socket — control is entirely operator-side.
 ## 3. Backup
 
 Backups are a containerized `pg_dump` of the log store (the source of truth for all
-coordination history) plus a `git bundle` of the workspace hub, landing in ONE host
-directory (`${OMEGAHIVE_BACKUP_DIR}`, e.g. `~/omegahive-backups`) so one directory
-restores both stores. The dir is a host bind mount, so the operator pulls it over the
-tailnet SSH path (`rsync beastie:omegahive-backups/ …`). Both families rotate to the
-newest `OMEGAHIVE_BACKUP_KEEP` (default 14).
+coordination history), a `git bundle` of the workspace hub, and a copy of this host's
+route catalog, landing in ONE host directory (`${OMEGAHIVE_BACKUP_DIR}`, e.g.
+`~/omegahive-backups`) so one directory restores the deployment. The dir is a host bind
+mount, so the operator pulls it over the tailnet SSH path
+(`rsync beastie:omegahive-backups/ …`). All three families rotate to the newest
+`OMEGAHIVE_BACKUP_KEEP` (default 14).
+
+The catalog rides with the bundle because it is a host file no container can see. It is
+copied only when it has changed since the newest snapshot, so the window holds the last
+fourteen *distinct* catalogs rather than fourteen copies of today's. It is not in git and
+is not reconstructible: it records which models this host may spend money on, under which
+credential pool, and which reviewer each route pairs with. Its file mode is 0600 in the
+backup as it is live.
 
 ```sh
 # run one now
 OMEGAHIVE_BACKUP_DIR=$HOME/omegahive-backups \
   docker compose --profile ops run --rm backup    # -> ${OMEGAHIVE_BACKUP_DIR}/omegahive-<UTC>.sql
 ~/.local/bin/omegahive-git-bundle                 # -> ${OMEGAHIVE_BACKUP_DIR}/hive-workspace-<UTC>.bundle
+                                                  #    and routes-<UTC>.json, when it changed
 
 # list backups
 ls -la $HOME/omegahive-backups
@@ -61,6 +70,18 @@ ls -la $HOME/omegahive-backups
 Scheduled daily by two systemd user timers, `omegahive-backup.timer` (03:00, pg_dump) and
 `omegahive-bundle.timer` (03:15, git bundle) — both in `deploy/systemd/`. Check them:
 `systemctl --user list-timers 'omegahive-*'`.
+
+### Restoring the route catalog
+
+```sh
+install -m 0600 <backup-dir>/routes-<UTC>.json ~/.config/omegahive/routes.json
+hive-routes                                       # what resolves, and which route is default
+```
+
+Check it before trusting it: a catalog restored from an older snapshot may name a model a
+provider has since retired, or a harness this host has not installed. `hive-routes` reports
+both — a missing binary is a refusal, not a warning — and `hive-launch … --check` resolves
+one route end to end without creating anything.
 
 ## 4. Restore from a dump
 
