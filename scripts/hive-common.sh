@@ -443,6 +443,210 @@ REVIEWBODY
   fi
 }
 
+# --- opencode's generated configuration, for a route whose harness is opencode ---------
+#
+# opencode reaches a provider through a config file rather than through environment
+# variables, so a route that names it needs one written per launch. It cannot be a catalog
+# literal and it cannot be the sbx template's global config: it carries this launch's model
+# id, this deployment's context limit, and a plugin path under this worker's own task root.
+#
+# WHERE it goes, and why not simply beside the worker: opencode discovers a project config
+# by walking up from the project directory and STOPS at the git root (measured, 1.18.23).
+# The worker's project is a clone, so a file in the task root above it is never found, and a
+# file inside the clone would be an untracked artifact in a tree the worker is about to
+# commit and publish. So it lives in the task root and is named explicitly through
+# OPENCODE_CONFIG, which MERGES with the sandbox template's global config rather than
+# replacing it — the template's MCP gateway survives, which is the reason a wholesale
+# replacement was not used.
+#
+# The credential is NOT written into this file. opencode interpolates `{env:NAME}` in config
+# strings, and the name is already in the VM's environment file at 0600, so the key lives in
+# exactly one place instead of two. That is a deliberate improvement on the shape this was
+# specified with, for the same reason `.sandbox-env` is not an argument: every additional
+# copy of a credential is another thing to leak.
+#
+# PERMISSIONS are allowed wholesale, and that is the same judgement the in-VM reviewer's
+# `--permission-mode bypassPermissions` already makes: inside a microVM the boundary IS the
+# VM. It is not merely convenience. A hive worker's cwd is its workspace CLONE, while its
+# emit wrapper, its review command, its code clone and its kickoff all sit in the task root
+# ABOVE that — every one of them an `external_directory` under opencode's defaults, which
+# ask, and an ask in a worker session that nobody is watching is a refusal. Measured
+# 2026-09-11: a worker with the defaults spent eighteen steps asking to read its own order
+# and never read it.
+issue_opencode_config() {
+  # issue_opencode_config <task-root> <endpoint> <key-env-name> <model> <context-limit>
+  #                       <compaction-model>
+  local TASK_ROOT="$1" ENDPOINT="$2" KEY_NAME="$3" MODEL="$4" LIMIT="$5" COMPACTION="$6"
+  local CFG="$TASK_ROOT/opencode.json" PLUGIN="$TASK_ROOT/hive-compaction.js"
+
+  # The compaction model is addressed through the SAME provider block as the worker's, so
+  # one credential and one endpoint serve both. `openrouter/` prefixes the provider key;
+  # everything after the first slash is the model id, which is why a vendor/slug id
+  # survives the round trip intact.
+  jq -n \
+    --arg endpoint "$ENDPOINT" --arg key "$KEY_NAME" --arg model "$MODEL" \
+    --arg compaction "$COMPACTION" --argjson limit "$LIMIT" '
+    {
+      "$schema": "https://opencode.ai/config.json",
+      plugin: ["./hive-compaction.js"],
+      provider: {
+        openrouter: {
+          npm: "@ai-sdk/openai-compatible",
+          options: { baseURL: $endpoint, apiKey: "{env:\($key)}" },
+          models: (
+            { ($model): { reasoning: true, limit: { context: $limit, output: 16000 } } }
+            + (if $compaction == "" or $compaction == $model then {}
+               else { ($compaction): { reasoning: true } } end)
+          )
+        }
+      },
+      model: "openrouter/\($model)",
+      permission: {
+        edit: "allow", bash: "allow", webfetch: "allow",
+        external_directory: { "*": "allow" }
+      }
+    }
+    + (if $compaction == "" then {}
+       else { agent: { compaction: { model: "openrouter/\($compaction)" } } } end)
+  ' > "$CFG" || die "could not write opencode's configuration to $CFG"
+
+  # The plugin is written verbatim, with nothing interpolated into it. Everything it needs
+  # it derives from the project directory opencode hands it, so there is no path, worker id
+  # or order ref to quote into JavaScript — and therefore no way for one to arrive escaped.
+  cat > "$PLUGIN" <<'HIVEPLUGIN'
+// Hive worker state, injected into the summary that replaces this session's context.
+//
+// A watched session gets told "we are about to compact, record what matters". A worker
+// gets nothing: opencode compacts it silently and the default summary is written from the
+// transcript alone. What a transcript is worst at is exactly what a worker cannot afford
+// to lose — which commits exist, what is still only in the working tree, and what a
+// reviewer has already said. Those are cheap to read from disk and expensive to
+// reconstruct from prose, so this hook reads them at the moment the loss happens.
+//
+// WORKER.md already says "externalize your state to committed files as you go". That is a
+// standing instruction nothing invokes at the moment it matters. This is the invocation.
+
+import { execFile } from "node:child_process"
+import { promisify } from "node:util"
+import { readdir, readFile, stat } from "node:fs/promises"
+import { dirname, join } from "node:path"
+
+const run = promisify(execFile)
+const CAP = 4000        // characters of injected context, at most
+const LOG_MAX = 25      // commits listed per clone
+const DIRTY_MAX = 40    // dirty paths listed per clone
+
+async function git(cwd, ...args) {
+  try {
+    const { stdout } = await run("git", ["-C", cwd, ...args], { timeout: 10_000 })
+    return stdout.trim()
+  } catch {
+    return ""
+  }
+}
+
+async function exists(p) {
+  try { await stat(p); return true } catch { return false }
+}
+
+// The task root holds `run/` — the worker's own interface — and that is what identifies it.
+// Checked at the project directory and at its parent, because a route may start opencode in
+// either: the sandbox mounts the task root, and the catalog points the project at the
+// workspace clone inside it.
+async function findTaskRoot(directory) {
+  for (const p of [directory, dirname(directory)]) {
+    if (await exists(join(p, "run"))) return p
+  }
+  return dirname(directory)
+}
+
+async function cloneState(path) {
+  const head = await git(path, "rev-parse", "HEAD")
+  if (!head) return ""
+  const branch = await git(path, "rev-parse", "--abbrev-ref", "HEAD")
+  const lines = [`${path}  branch ${branch || "?"}  HEAD ${head.slice(0, 12)}`]
+
+  // What this worker has committed: everything its upstream does not have. A clone with no
+  // upstream yet falls back to its last few commits rather than reporting nothing.
+  const upstream = await git(path, "rev-parse", "--abbrev-ref", "@{upstream}")
+  const log = upstream
+    ? await git(path, "log", "--oneline", "--no-decorate", `${upstream}..HEAD`)
+    : await git(path, "log", "--oneline", "--no-decorate", "-n5")
+  if (log) {
+    lines.push(upstream ? `  committed, not yet on ${upstream}:` : "  recent commits:")
+    for (const c of log.split("\n").slice(0, LOG_MAX)) lines.push(`    ${c}`)
+  } else if (upstream) {
+    lines.push(`  nothing committed beyond ${upstream}`)
+  }
+
+  const dirty = await git(path, "status", "--porcelain")
+  if (dirty) {
+    lines.push("  UNCOMMITTED — this work exists only in the working tree:")
+    for (const p of dirty.split("\n").slice(0, DIRTY_MAX)) lines.push(`    ${p}`)
+  } else {
+    lines.push("  working tree clean")
+  }
+  return lines.join("\n")
+}
+
+// Review rounds, with each round's verdict. A worker that cannot recall a finding has not
+// addressed it, and the round count is the fact that makes a loop visible from inside it.
+async function reviewState(runDir) {
+  const dir = join(runDir, "reviews")
+  let names
+  try { names = (await readdir(dir)).sort() } catch { return "" }
+  if (!names.length) return ""
+  const lines = [`Reviews so far (${names.length}), in ${dir}:`]
+  for (const n of names) {
+    let verdict = "verdict not stated in the file"
+    try {
+      const text = await readFile(join(dir, n), "utf8")
+      const m = text.match(/^\s*(?:\*\*)?VERDICT(?:\*\*)?\s*:?\s*(\w+)/im)
+      if (m) verdict = m[1].toUpperCase()
+    } catch { verdict = "unreadable" }
+    lines.push(`  ${n}  ${verdict}`)
+  }
+  lines.push("Re-read any round you have not addressed before continuing: a finding you")
+  lines.push("cannot recall is still outstanding, and repeating a repair is not progress.")
+  return lines.join("\n")
+}
+
+export default async ({ directory }) => ({
+  "experimental.session.compacting": async (_input, output) => {
+    const taskRoot = await findTaskRoot(directory)
+    const blocks = []
+
+    const kickoff = join(taskRoot, "kickoff.txt")
+    if (await exists(kickoff)) {
+      blocks.push(
+        `Your order, its scopes and its stop-lines are in the kickoff you were given, kept\n` +
+        `at ${kickoff}. Re-read it before your next action: the summary below is a record\n` +
+        `of this session, not the order, and it is not authoritative about either.`,
+      )
+    }
+
+    const entries = await readdir(taskRoot, { withFileTypes: true }).catch(() => [])
+    const clones = []
+    for (const e of entries) {
+      if (!e.isDirectory() || e.name === "run" || e.name === "cli") continue
+      const p = join(taskRoot, e.name)
+      if (await exists(join(p, ".git"))) clones.push(p)
+    }
+    const states = (await Promise.all(clones.map(cloneState))).filter(Boolean)
+    if (states.length) blocks.push("Git state of this worker's clones:\n" + states.join("\n"))
+
+    const reviews = await reviewState(join(taskRoot, "run"))
+    if (reviews) blocks.push(reviews)
+
+    if (!blocks.length) return
+    let text = "== Hive worker state, read from disk at compaction time ==\n\n" + blocks.join("\n\n")
+    if (text.length > CAP) text = text.slice(0, CAP) + "\n… (truncated)"
+    output.context.push(text)
+  },
+})
+HIVEPLUGIN
+}
+
 # Read a harness version out of a `--version` probe's combined output.
 #
 # The probe merges stderr, deliberately: a harness that fails to start says so there and

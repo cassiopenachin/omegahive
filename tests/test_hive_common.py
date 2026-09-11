@@ -243,3 +243,129 @@ def test_the_launcher_and_the_model_compute_the_same_runner_fingerprint():
     for runner in cases:
         route = {"runner": runner}
         assert _jq_fingerprint(route) == _py_fingerprint(route), runner
+
+
+# --- the opencode harness's generated configuration ------------------------------------
+
+
+def _issue_opencode_config(
+    task_root: Path,
+    *,
+    endpoint: str = "https://openrouter.ai/api/v1",
+    key_name: str = "OPENROUTER_API_KEY",
+    model: str = "deepseek/deepseek-v4-flash-0731",
+    limit: str = "250000",
+    compaction: str = "anthropic/claude-sonnet-5",
+) -> subprocess.CompletedProcess[str]:
+    """Run the SHIPPED generator, never a copy of it."""
+    return subprocess.run(
+        ["bash", "-c",
+         f'set -euo pipefail; source "{COMMON}"; '
+         'issue_opencode_config "$1" "$2" "$3" "$4" "$5" "$6"',
+         "bash", str(task_root), endpoint, key_name, model, limit, compaction],
+        capture_output=True, text=True, cwd=REPO, timeout=60,
+    )
+
+
+def test_the_generated_opencode_config_carries_the_route_and_the_context_limit(tmp_path):
+    """The three facts a launch cannot leave to a default.
+
+    Without an explicit `limit.context` opencode never compacts at all, so that number is
+    the difference between the harness that was measured and the harness that is deployed.
+    The model id must survive with its vendor prefix intact — opencode splits a model
+    reference at the FIRST slash, so `openrouter/deepseek/deepseek-v4-flash-0731` names
+    provider `openrouter` and model `deepseek/deepseek-v4-flash-0731`.
+    """
+    r = _issue_opencode_config(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    cfg = json.loads((tmp_path / "opencode.json").read_text())
+
+    provider = cfg["provider"]["openrouter"]
+    assert provider["npm"] == "@ai-sdk/openai-compatible"
+    assert provider["options"]["baseURL"] == "https://openrouter.ai/api/v1"
+    entry = provider["models"]["deepseek/deepseek-v4-flash-0731"]
+    assert entry["reasoning"] is True
+    assert entry["limit"]["context"] == 250000
+    assert cfg["model"] == "openrouter/deepseek/deepseek-v4-flash-0731"
+
+
+def test_the_generated_opencode_config_never_holds_the_credential(tmp_path):
+    """The key is named, never copied.
+
+    opencode interpolates `{env:NAME}` in config strings and the VM's environment file
+    already holds the value at 0600, so writing it here would be a second copy of a
+    credential for no gain. The test asserts the SHAPE rather than the absence of one
+    particular string: a config carrying `sk-`-anything would pass an absence check while
+    still being a leak.
+    """
+    r = _issue_opencode_config(tmp_path, key_name="SOME_PROVIDER_KEY")
+    assert r.returncode == 0, r.stdout + r.stderr
+    cfg = json.loads((tmp_path / "opencode.json").read_text())
+    assert cfg["provider"]["openrouter"]["options"]["apiKey"] == "{env:SOME_PROVIDER_KEY}"
+
+
+def test_the_compaction_agent_is_pinned_off_the_model_under_test(tmp_path):
+    """Compaction is the one artifact that must survive the rewrite.
+
+    It is written by a mid-tier model rather than by the cheap model being evaluated, and
+    that model is addressed through the SAME provider block, so one credential serves both.
+    """
+    r = _issue_opencode_config(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    cfg = json.loads((tmp_path / "opencode.json").read_text())
+    assert cfg["agent"]["compaction"]["model"] == "openrouter/anthropic/claude-sonnet-5"
+    # and it must be declared in the provider, or the reference resolves to nothing
+    assert "anthropic/claude-sonnet-5" in cfg["provider"]["openrouter"]["models"]
+
+
+def test_a_worker_may_reach_its_own_run_interface(tmp_path):
+    """The permission that is not a convenience.
+
+    A hive worker's cwd is its workspace CLONE, while `../run/emit`, `../run/review`, the
+    code clone and the kickoff all sit in the task root ABOVE it. Under opencode's defaults
+    every one of those is an `external_directory` ask, and an ask in a session nobody is
+    watching is a refusal — measured 2026-09-11, where a worker spent eighteen steps asking
+    to read its own order and never read it.
+    """
+    r = _issue_opencode_config(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    cfg = json.loads((tmp_path / "opencode.json").read_text())
+    assert cfg["permission"]["external_directory"] == {"*": "allow"}
+    assert cfg["permission"]["bash"] == "allow"
+    assert cfg["permission"]["edit"] == "allow"
+
+
+def test_the_compaction_plugin_is_written_beside_the_config_and_interpolates_nothing(tmp_path):
+    """The plugin is declared by a path RELATIVE to the config that declares it, so the two
+    files travel together; and nothing about this launch is written into it. A worker id,
+    an order ref or a task root quoted into JavaScript would be one escaping bug away from
+    a syntax error inside a VM, discovered at compaction time — which is the worst possible
+    moment to discover anything.
+    """
+    r = _issue_opencode_config(tmp_path, model="z-ai/glm-5.3")
+    assert r.returncode == 0, r.stdout + r.stderr
+    cfg = json.loads((tmp_path / "opencode.json").read_text())
+    assert cfg["plugin"] == ["./hive-compaction.js"]
+
+    plugin = (tmp_path / "hive-compaction.js").read_text()
+    assert "experimental.session.compacting" in plugin
+    assert "output.context.push" in plugin
+    # No launch-specific value reached the file.
+    assert str(tmp_path) not in plugin
+    assert "z-ai/glm-5.3" not in plugin
+
+
+def test_the_launcher_names_the_generated_config_to_the_sandbox(tmp_path):
+    """opencode's own config discovery walks up from the project directory and stops at the
+    git root. The worker's project IS a clone, so a config in the task root above it is
+    never found by discovery — the launcher must name it, and it must do so in the VM's
+    environment file, which is written on the create path and the re-attach path alike.
+    """
+    launch = (REPO / "scripts" / "hive-launch").read_text()
+    assert "OPENCODE_CONFIG=%s" in launch
+    assert "opencode)           SBX_AGENT=opencode ;;" in launch
+    # No kit: `sbx create opencode` is a first-class agent, unlike the Antigravity harness.
+    agent_map = launch.split("SBX_KIT=\"\"", 1)[1].split("esac", 1)[0]
+    opencode_line = [l for l in agent_map.splitlines() if "SBX_AGENT=opencode" in l]
+    assert len(opencode_line) == 1
+    assert "SBX_KIT" not in opencode_line[0]
