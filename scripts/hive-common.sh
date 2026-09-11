@@ -456,26 +456,53 @@ fi
 # thirty-four reviews, thirty-four REWORK verdicts, no PASS, and round seventeen finding two
 # defects introduced by earlier repairs. Both workers diagnosed the loop accurately and only
 # once a human said stop, which is why this is a refusal and not a warning.
-REVIEW_REPO=$(git rev-parse --show-toplevel 2>/dev/null) || REVIEW_REPO=""
-REVIEW_REPO_NAME=${REVIEW_REPO##*/}
-: "${REVIEW_REPO_NAME:=review}"
+# ONE budget per TASK, counted over every review in the directory whoever wrote it.
+#
+# It was per repository, which cannot be implemented here and was double-counted where it
+# could. This command cannot know which repository it is reviewing: the diff arrives on
+# stdin and a worker's cwd is the WORKSPACE clone, so `git rev-parse --show-toplevel`
+# returned `hive` for a review of the CODE clone's diff -- naming and charging every round
+# to the wrong repository. And `claude-review` counts its own filename prefix, which these
+# files did not match, so a worker able to reach both reviewers had two budgets of four
+# rather than the single four WORKER.md promises. One count over `*review*` is the only
+# version both paths can agree on, and it is what `hive-cleanup` and `hive-score` read.
+#
+# The filename therefore claims no repository, because this command has no honest way to
+# name one. `claude-review` still names it: there the diff is built from the repo itself,
+# so the name is a fact rather than a guess.
 ROUND_CAP=${HIVE_REVIEW_ROUND_CAP:-4}
+# A non-numeric cap used to disable the cap in silence: the comparison fails, bash prints
+# "integer expected" to stderr, the test reads false, and every review runs uncapped. An
+# operator typo must not quietly remove the guard it was meant to set.
+case "$ROUND_CAP" in
+  ''|*[!0-9]*)
+    echo "review: HIVE_REVIEW_ROUND_CAP='$ROUND_CAP' is not a number. Refusing, rather than" >&2
+    echo "        running uncapped -- which is what an unreadable cap silently used to mean." >&2
+    exit 2 ;;
+esac
 ROUNDS=0
 CANONICAL=""
-if [ -n "${HIVE_REVIEW_DIR:-}" ] && mkdir -p "$HIVE_REVIEW_DIR" 2>/dev/null; then
-  ROUNDS=$(find "$HIVE_REVIEW_DIR" -maxdepth 1 -type f \
-    -name "review-$REVIEW_REPO_NAME-*" 2>/dev/null | wc -l)
-  # The pid is in the name because a second-resolution stamp is not unique: two reviews
-  # finishing in the same second would land on one path, and the second would overwrite the
-  # first -- destroying an artifact AND leaving the round count one short, on the very
-  # mechanism the count is supposed to make unevadable.
-  CANONICAL="$HIVE_REVIEW_DIR/review-$REVIEW_REPO_NAME-$(date +%Y%m%dT%H%M%S)-$$.txt"
+if [ -n "${HIVE_REVIEW_DIR:-}" ]; then
+  if mkdir -p "$HIVE_REVIEW_DIR" 2>/dev/null; then
+    ROUNDS=$(find "$HIVE_REVIEW_DIR" -maxdepth 1 -type f -name '*review*' 2>/dev/null | wc -l)
+    # The pid is in the name because a second-resolution stamp is not unique: two reviews
+    # finishing in the same second would land on one path, the second overwriting the
+    # first -- destroying an artifact AND leaving the count one short.
+    CANONICAL="$HIVE_REVIEW_DIR/review-$(date +%Y%m%dT%H%M%S)-$$.txt"
+  else
+    # Inside a hive launch this variable is always set, so a directory that cannot be made
+    # means something is wrong with the task root -- and the consequence is that this
+    # review is neither kept nor counted. Silence would leave a worker trusting a cap that
+    # is not running.
+    echo "review: WARNING cannot use HIVE_REVIEW_DIR ($HIVE_REVIEW_DIR)." >&2
+    echo "        This review will NOT be saved and NOT counted against the round cap." >&2
+  fi
 fi
 
 if [ -n "$CANONICAL" ] && [ "$ROUND_CAP" -gt 0 ] && [ "$ROUNDS" -ge "$ROUND_CAP" ]; then
   {
-    echo "review: REFUSING -- $ROUNDS completed reviews of $REVIEW_REPO_NAME already exist"
-    echo "        in $HIVE_REVIEW_DIR, which is this deployment's cap."
+    echo "review: REFUSING -- $ROUNDS completed reviews already exist in"
+    echo "        $HIVE_REVIEW_DIR, which is this deployment's cap for one task."
     echo
     echo "  Another round is not the next step. Read the existing rounds together and"
     echo "  decide which is true: they are instances of ONE underlying problem the order"
@@ -492,8 +519,10 @@ fi
 # this is the only output a caller is guaranteed to see. It is also the answer to the
 # question that produced the polling: a missing file means running, never failed.
 {
-  echo "review: reviewing $REVIEW_REPO_NAME. This takes MINUTES, not seconds."
-  [ -z "$CANONICAL" ] || echo "        round $((ROUNDS + 1)) of $ROUND_CAP allowed on this repository"
+  echo "review: this takes MINUTES, not seconds."
+  if [ -n "$CANONICAL" ] && [ "$ROUND_CAP" -gt 0 ]; then
+    echo "        round $((ROUNDS + 1)) of $ROUND_CAP allowed for this task"
+  fi
   echo "        The review is written only when COMPLETE; until then its path does not"
   echo "        exist. Do not poll it, do not re-run this because it seems slow, and do"
   echo "        not start a second one -- a completed review spends a round either way."
@@ -506,28 +535,61 @@ fi
 if [ -z "$CANONICAL" ]; then
   exec claude -p --model "${HIVE_REVIEW_MODEL:-opus}" "${HIVE_REVIEW_POSTURE[@]}" "$@"
 fi
-PARTIAL="$CANONICAL.partial.$$"
+# The in-progress capture lives OUTSIDE the counted directory, and is removed however this
+# command ends. Writing it inside was a quiet disaster: its name matched the counting glob
+# from the moment `tee` opened it, so any interruption -- a harness timeout, a killed
+# exec_command, a caller closing stdout -- left a file that counted as a completed round
+# forever. Four interrupted attempts would have refused a worker that never got one review,
+# with no way back. It also contradicted what the worker is told, that the review's file
+# does not exist until the review is complete, and it inflated the review counts that
+# `hive-cleanup` archives and `hive-score` reads.
+PARTIAL=$(mktemp "${TMPDIR:-/tmp}/hive-review-partial.XXXXXX") || exit 1
+trap 'rm -f "$PARTIAL"' EXIT
 set +e
 claude -p --model "${HIVE_REVIEW_MODEL:-opus}" "${HIVE_REVIEW_POSTURE[@]}" "$@" \
   | tee "$PARTIAL"
-STATUS=${PIPESTATUS[0]}
+PIPE=("${PIPESTATUS[@]}")
 set -e
-if [ "$STATUS" -ne 0 ] || [ ! -s "$PARTIAL" ]; then
-  rm -f "$PARTIAL"
-  echo "review: the reviewer exited $STATUS with no usable output; NO round was spent." >&2
-  # Never exit 0 here. A reviewer that produced nothing is a review that did not happen,
-  # and a zero exit is what a worker reads as "reviewed, nothing to fix" -- which is the
-  # one thing WORKER.md says a review that did not run must never be reported as.
+STATUS=${PIPE[0]}
+TEE_STATUS=${PIPE[1]:-0}
+# A review is KEPT whenever there is one, whatever the reviewer's exit status. `claude -p`
+# exits non-zero in real cases after emitting a complete response, and deleting that
+# response -- then telling the worker there was "no usable output" while it can see the
+# review on its own stdout -- destroys the artifact every later round is read against.
+if [ ! -s "$PARTIAL" ]; then
+  echo "review: the reviewer exited $STATUS and produced no output; NO round was spent." >&2
+  # Never exit 0 here. A review that produced nothing is a review that did not happen, and
+  # zero is what a worker reads as "reviewed, nothing to fix" -- the one thing WORKER.md
+  # says such a review must never be reported as.
   [ "$STATUS" -ne 0 ] || STATUS=1
   exit "$STATUS"
 fi
-mv -f "$PARTIAL" "$CANONICAL"
+if [ "$TEE_STATUS" -ne 0 ]; then
+  # The capture failed part-way. What is on disk may be truncated, and a truncated review
+  # counted as a round is worse than no round: later rounds are read against it.
+  echo "review: the capture failed (tee exited $TEE_STATUS), so this review was NOT saved" >&2
+  echo "        and NO round was spent. The review itself is above, on stdout." >&2
+  exit 1
+fi
+mv -f "$PARTIAL" "$CANONICAL" || {
+  echo "review: the review is complete and above, on stdout, but could not be saved to" >&2
+  echo "        $CANONICAL -- so NO round was spent and it is not in the record." >&2
+  exit 1
+}
+trap - EXIT
 ROUNDS=$((ROUNDS + 1))
+if [ "$STATUS" -ne 0 ]; then
+  echo "review: the reviewer exited $STATUS but produced a review, which was saved." >&2
+fi
 {
   echo
-  echo "review: round $ROUNDS of $ROUND_CAP, saved at $CANONICAL"
+  if [ "$ROUND_CAP" -gt 0 ]; then
+    echo "review: round $ROUNDS of $ROUND_CAP, saved at $CANONICAL"
+  else
+    echo "review: round $ROUNDS (cap disabled), saved at $CANONICAL"
+  fi
   if [ "$ROUND_CAP" -gt 0 ] && [ "$ROUNDS" -ge "$ROUND_CAP" ]; then
-    echo "        That was the LAST round this repository gets; the next call refuses."
+    echo "        That was the LAST round this task gets; the next call refuses."
     echo "        If these findings are not closable now, emit question.asked naming the"
     echo "        decision you need and then task.blocked, rather than discovering the"
     echo "        refusal after another repair cycle."
