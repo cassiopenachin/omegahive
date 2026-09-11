@@ -75,6 +75,13 @@ _MODEL_SHAPE = re.compile(r"\S+\Z")
 
 _OPENROUTER_MODEL_SHAPE = re.compile(r"~?[^/\s]+/[^/\s]+\Z")
 
+# A reasoning-effort level, as a SHAPE rather than an allowlist, for the same reason model
+# ids are: providers name their effort levels and Hive does not. `opencode` validates this
+# as a bare string for an OpenAI-compatible provider, so a catalogued typo would otherwise
+# travel all the way to the provider and come back as a rejected request from inside a VM.
+# One lowercase token, which is what every provider that has this concept actually accepts.
+_EFFORT_SHAPE = re.compile(r"[a-z]+\Z")
+
 # The same two shapes, expressed for the GENERATED JSON SCHEMA as well as for the validators
 # below. Both statements are needed and neither is redundant: `hive-launch` parses the catalog
 # with jq and never through this loader, so the schema is the only statement of shape a
@@ -343,6 +350,13 @@ class RouteEntry(BaseModel):
     reviewer: Literal[
         "codex-plugin", "claude-skill", "opus-in-sandbox", "claude-cli"
     ] | None = None
+    # How hard this route's model is asked to think, when its harness can say so and the
+    # model's own default is not the one wanted. It is a ROUTE fact and not a launcher
+    # constant: `or-glm-5.3` asks for `high` because GLM 5.3 defaults to `max`, and that is
+    # true of that model rather than of this deployment. Absent means "the model's default",
+    # which is a different statement from any particular level and stays distinguishable
+    # from one.
+    reasoning_effort: str | None = None
     note: str | None = None
 
     @field_validator("name")
@@ -372,6 +386,13 @@ class RouteEntry(BaseModel):
                 f"model {self.model!r} is not an OpenRouter id: OpenRouter names a model "
                 "'<vendor>/<slug>' (for example 'deepseek/deepseek-v4-flash-0731'), and a "
                 "bare slug resolves to nothing there"
+            )
+        if self.reasoning_effort is not None and not _EFFORT_SHAPE.fullmatch(
+            self.reasoning_effort
+        ):
+            raise ValueError(
+                f"reasoning_effort {self.reasoning_effort!r} must be a single lowercase "
+                "token (for example 'high'), or absent to accept the model's own default"
             )
         return self
 

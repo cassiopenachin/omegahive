@@ -475,8 +475,9 @@ REVIEWBODY
 # and never read it.
 issue_opencode_config() {
   # issue_opencode_config <task-root> <endpoint> <key-env-name> <model> <context-limit>
-  #                       <compaction-model>
+  #                       <compaction-model> [<reasoning-effort>]
   local TASK_ROOT="$1" ENDPOINT="$2" KEY_NAME="$3" MODEL="$4" LIMIT="$5" COMPACTION="$6"
+  local EFFORT="${7:-}"
   local CFG="$TASK_ROOT/opencode.json" PLUGIN="$TASK_ROOT/hive-compaction.js"
 
   # The compaction model is addressed through the SAME provider block as the worker's, so
@@ -485,7 +486,7 @@ issue_opencode_config() {
   # survives the round trip intact.
   jq -n \
     --arg endpoint "$ENDPOINT" --arg key "$KEY_NAME" --arg model "$MODEL" \
-    --arg compaction "$COMPACTION" --argjson limit "$LIMIT" '
+    --arg compaction "$COMPACTION" --argjson limit "$LIMIT" --arg effort "$EFFORT" '
     {
       "$schema": "https://opencode.ai/config.json",
       plugin: ["./hive-compaction.js"],
@@ -494,7 +495,15 @@ issue_opencode_config() {
           npm: "@ai-sdk/openai-compatible",
           options: { baseURL: $endpoint, apiKey: "{env:\($key)}" },
           models: (
-            { ($model): { reasoning: true, limit: { context: $limit, output: 16000 } } }
+            { ($model): (
+                { reasoning: true, limit: { context: $limit, output: 16000 } }
+                # `options` on a model entry is forwarded into the request body by the
+                # openai-compatible provider — verified at the wire on 2026-09-11, where
+                # `reasoningEffort: "high"` arrived at OpenRouter as `reasoning_effort`.
+                # Omitted entirely when the route states none, so the model default
+                # stays a different thing from any level this could have named.
+                + (if $effort == "" then {} else { options: { reasoningEffort: $effort } } end)
+              ) }
             + (if $compaction == "" or $compaction == $model then {}
                else { ($compaction): { reasoning: true } } end)
           )

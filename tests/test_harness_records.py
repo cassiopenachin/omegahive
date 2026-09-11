@@ -331,3 +331,33 @@ def test_a_non_openrouter_model_may_be_a_bare_token():
     """The v1 migration fixture carries `model: "m"`; a shape rule aimed at OpenRouter
     must not retire other providers' naming."""
     assert load_catalog(catalog_bytes(route(model="m"))).routes[0].model == "m"
+
+
+def test_a_reasoning_effort_is_optional_and_absence_is_absence():
+    """A catalog predating the field loads, and a route that states no effort records
+    that rather than acquiring a default one."""
+    assert load_catalog(catalog_bytes(route())).routes[0].reasoning_effort is None
+
+
+def test_a_stated_reasoning_effort_loads():
+    cat = load_catalog(catalog_bytes(route(reasoning_effort="high")))
+    assert cat.routes[0].reasoning_effort == "high"
+
+
+def test_a_misspelt_reasoning_effort_refuses_at_the_catalog():
+    """Same reasoning as the model id: opencode passes this through to the provider as a
+    bare string, so a typo here travels into a VM and comes back as a rejected request
+    with the board already written to."""
+    with pytest.raises(RefusalError) as exc:
+        load_catalog(catalog_bytes(route(reasoning_effort="High ")))
+    assert exc.value.code == "CATALOG_MALFORMED"
+
+
+def test_the_reasoning_effort_is_outside_the_runner_fingerprint():
+    """The fingerprint answers "is this the same RUNNER configuration", and `hive-launch`
+    recomputes it in jq over the runner block alone. An effort level is a property of the
+    route, not of the command the runner executes, so folding it in would move every
+    fingerprint for a fact the shell twin cannot see."""
+    a = load_catalog(catalog_bytes(route())).routes[0]
+    b = load_catalog(catalog_bytes(route(reasoning_effort="high"))).routes[0]
+    assert a.runner.fingerprint() == b.runner.fingerprint()

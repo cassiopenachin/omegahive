@@ -392,6 +392,10 @@ R_POOL=$(route_field credential_pool)
 # absence reads as unstated rather than as "no reviewer". It is not an execution-identity
 # field and so is not in the required loop below.
 R_REVIEWER=$(route_field reviewer)
+# Also optional, and also not an identity field: how hard the model is asked to think, for
+# a harness that can say so. Absence means the model's own default, which is a different
+# statement from any level this could have named and stays distinguishable from one.
+R_EFFORT=$(route_field reasoning_effort)
 EXECUTABLE=$(printf '%s' "$ROUTE" | jq -r '.runner.executable // ""')
 # Every field the spine's execution identity requires, checked before anything is created.
 # The identity block may not be synthesized or defaulted (events/types.py), so a route
@@ -1314,7 +1318,7 @@ if [ "$EXECUTABLE" = "sbx" ]; then
     esac
     SBX_OPENCODE_CFG="$TASK_ROOT/opencode.json"
     issue_opencode_config "$TASK_ROOT" "$ENDPOINT_URL" "$OPENCODE_KEY_NAME" "$MODEL" \
-      "$HIVE_OPENCODE_CONTEXT_LIMIT" "$HIVE_OPENCODE_COMPACTION_MODEL"
+      "$HIVE_OPENCODE_CONTEXT_LIMIT" "$HIVE_OPENCODE_COMPACTION_MODEL" "$R_EFFORT"
     echo "  opencode: $SBX_OPENCODE_CFG (context limit $HIVE_OPENCODE_CONTEXT_LIMIT, compaction on $HIVE_OPENCODE_COMPACTION_MODEL)"
   fi
 

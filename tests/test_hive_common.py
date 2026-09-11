@@ -256,13 +256,14 @@ def _issue_opencode_config(
     model: str = "deepseek/deepseek-v4-flash-0731",
     limit: str = "250000",
     compaction: str = "anthropic/claude-sonnet-5",
+    effort: str = "",
 ) -> subprocess.CompletedProcess[str]:
     """Run the SHIPPED generator, never a copy of it."""
     return subprocess.run(
         ["bash", "-c",
          f'set -euo pipefail; source "{COMMON}"; '
-         'issue_opencode_config "$1" "$2" "$3" "$4" "$5" "$6"',
-         "bash", str(task_root), endpoint, key_name, model, limit, compaction],
+         'issue_opencode_config "$1" "$2" "$3" "$4" "$5" "$6" "$7"',
+         "bash", str(task_root), endpoint, key_name, model, limit, compaction, effort],
         capture_output=True, text=True, cwd=REPO, timeout=60,
     )
 
@@ -366,6 +367,33 @@ def test_the_launcher_names_the_generated_config_to_the_sandbox(tmp_path):
     assert "opencode)           SBX_AGENT=opencode ;;" in launch
     # No kit: `sbx create opencode` is a first-class agent, unlike the Antigravity harness.
     agent_map = launch.split("SBX_KIT=\"\"", 1)[1].split("esac", 1)[0]
-    opencode_line = [l for l in agent_map.splitlines() if "SBX_AGENT=opencode" in l]
+    opencode_line = [ln for ln in agent_map.splitlines() if "SBX_AGENT=opencode" in ln]
     assert len(opencode_line) == 1
     assert "SBX_KIT" not in opencode_line[0]
+
+
+def test_a_stated_reasoning_effort_reaches_the_model_entry(tmp_path):
+    """GLM 5.3 defaults to `max`, and this deployment asks for `high`. That is a fact about
+    the model, so it is a route field rather than a launcher constant — and it has to
+    arrive somewhere the provider reads. Verified at the wire on 2026-09-11: a model entry
+    carrying `options.reasoningEffort` is forwarded by opencode's openai-compatible
+    provider as `reasoning_effort` in the request body.
+    """
+    r = _issue_opencode_config(tmp_path, model="z-ai/glm-5.3", effort="high")
+    assert r.returncode == 0, r.stdout + r.stderr
+    cfg = json.loads((tmp_path / "opencode.json").read_text())
+    assert cfg["provider"]["openrouter"]["models"]["z-ai/glm-5.3"]["options"] == {
+        "reasoningEffort": "high"
+    }
+
+
+def test_an_unstated_effort_leaves_the_model_default_alone(tmp_path):
+    """Absence is absence. A route that states no effort must not have one chosen for it:
+    `options` is omitted entirely rather than written with some default level, so "the
+    model decides" stays distinguishable from every level this could have named.
+    """
+    r = _issue_opencode_config(tmp_path, effort="")
+    assert r.returncode == 0, r.stdout + r.stderr
+    cfg = json.loads((tmp_path / "opencode.json").read_text())
+    entry = cfg["provider"]["openrouter"]["models"]["deepseek/deepseek-v4-flash-0731"]
+    assert "options" not in entry
