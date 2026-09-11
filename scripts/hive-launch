@@ -199,6 +199,38 @@ BRIDGE="$RUN_DIR/hive"                    # the worker's sync/publish command
 CLI_SRC="$TASK_ROOT/cli"                  # sandboxed routes only: tracked-files-only clone the in-VM CLI is built from
 CODE_BRANCH="worker/$TASK"                # the publication branch, fixed by the plan
 
+# --- how an opencode worker is tuned, for the routes that run one ----------------------
+# Two numbers and a model id, here rather than in the catalog, because neither is a fact
+# about any one route. The limit was derived from a measurement ACROSS routes and orders,
+# and a per-route knob would invite exactly the drift that makes those routes
+# incomparable; the compaction model is infrastructure, not the thing under test. Both are
+# overridable for a drill or a deliberate experiment, and both are printed at launch, so
+# "configured in code" does not mean "invisible".
+#
+# 250,000 rather than something larger. Without an explicit limit opencode never compacts
+# at all — every default-config run in the 2026-09-10 canary grew monotonically, one of
+# them to 403,200 tokens — so this single number is the difference between the harness
+# that was measured and the harness that is deployed. A HIGH threshold would make
+# degradation unfalsifiable: only complex orders reach 800K, so a failure there cannot be
+# told apart from the order simply being hard. A lower one is crossed by simple orders
+# too, which breaks that correlation and makes the question answerable. Field reports put
+# mild DeepSeek degradation near 250K, and across 37 real worker orders measured on this
+# host peak context ran median 440K, p75 573K, p90 742K, max 962K — so this WILL compact
+# a typical order once or twice. That is intended, and it is why the plugin exists.
+: "${HIVE_OPENCODE_CONTEXT_LIMIT:=250000}"
+# Compaction is the one artifact that must survive the rewrite, so it is not written by
+# the cheap model under test. Summarising a transcript is far easier than the work that
+# produced it, and this fires once or twice per order, so the cost is noise. Addressed
+# through the route's OWN provider block, so it costs one credential and no second route.
+: "${HIVE_OPENCODE_COMPACTION_MODEL:=anthropic/claude-sonnet-5}"
+# The per-response output cap. It is here for the same reason the two above are — it is not
+# a fact about any one route — but it earns far less argument than they do: 16K is above
+# what a worker writes in one turn and below every cap the catalogued models enforce. It is
+# a tunable rather than a literal because a model with a lower hard cap would otherwise
+# reject every request, and a model that can write more would have long output clipped,
+# both silently and both from inside a VM.
+: "${HIVE_OPENCODE_OUTPUT_LIMIT:=16000}"
+
 # --- what the WORKER is told to type, as against where the files live -----------------
 # The paths above are task-specific and absolute; the commands below are neither. A
 # worker's turn starts in a CLONE ROOT — `hive/` on the initial turn, and a native resume
@@ -367,6 +399,10 @@ R_POOL=$(route_field credential_pool)
 # absence reads as unstated rather than as "no reviewer". It is not an execution-identity
 # field and so is not in the required loop below.
 R_REVIEWER=$(route_field reviewer)
+# Also optional, and also not an identity field: how hard the model is asked to think, for
+# a harness that can say so. Absence means the model's own default, which is a different
+# statement from any level this could have named and stays distinguishable from one.
+R_EFFORT=$(route_field reasoning_effort)
 EXECUTABLE=$(printf '%s' "$ROUTE" | jq -r '.runner.executable // ""')
 # Every field the spine's execution identity requires, checked before anything is created.
 # The identity block may not be synthesized or defaulted (events/types.py), so a route
@@ -513,9 +549,10 @@ case "$R_REVIEWER" in
   opus-in-sandbox)
     REVIEW_LINE="Your independent review command:  $WORKER_REVIEW \"<prompt>\"   (or pipe the prompt in)
 That is Opus on the operator's subscription, invoked with this route's provider routing
-stripped. Do NOT invoke 'claude' directly for the review: this sandbox's environment points
-Claude Code at the worker's own provider, so a bare invocation reviews the account under
-test, on the account under test, and says nothing about either." ;;
+stripped. Do NOT invoke 'claude' or any other model directly for the review: that command
+is the issued one, and a bare invocation inherits whatever routing this VM carries — which
+on a provider route reviews the account under test, on the account under test, and says
+nothing about either." ;;
   claude-cli)
     REVIEW_LINE="Your independent review command:  $WORKER_REVIEW \"<prompt>\"   (or pipe the prompt in)
 That is Opus on the operator's subscription, read-only, running as a subprocess of your
@@ -714,6 +751,73 @@ if [ -n "$ENDPOINT_URL" ] && [ -z "$ANYWAY" ]; then
   require_model_served "$ENDPOINT_URL" "$MODEL"
 fi
 
+# --- everything an opencode route must satisfy, asked HERE ------------------------------
+# Up here rather than beside the code that uses it, because `--check` exits below this line
+# and a preflight that cannot reach a refusal is a preflight that passes a route the launch
+# then aborts on — with the operator having been told it was fine.
+#
+# `reasoning_effort` is shape-checked in the SHELL as well as in records.py, and that
+# duplication is the point: `hive-launch` reads the catalog with jq and never calls
+# `load_catalog`, so the Python validator guards `hive-routes` and guards nothing here. A
+# catalogued `"High "` would otherwise refuse the whole catalog in one tool and launch
+# happily in the other, which is worse than either behaviour on its own.
+if [ -n "$R_EFFORT" ]; then
+  case "$R_EFFORT" in
+    *[!a-z]*|"") die "route '$ROUTE_NAME' states reasoning_effort '$R_EFFORT', which is not a
+  single lowercase token. This travels into the provider's request body verbatim, so the
+  launch would build a VM and discover it as a rejected request. Fix it in
+  $HIVE_ROUTE_CATALOG. Nothing was created or emitted." ;;
+  esac
+  # And it must reach a harness that can apply it. This build applies it only through
+  # opencode's generated config; on any other harness the field would be accepted, printed
+  # by `hive-routes` as though it were in force, and silently ignored — which is how a
+  # codex route came to carry `model_reasoning_effort` in its argv AND a catalog field that
+  # could disagree with it.
+  [ "$R_HARNESS" = "opencode" ] || die "route '$ROUTE_NAME' states reasoning_effort
+  '$R_EFFORT', but its harness is '$R_HARNESS' and this build can only apply that field
+  through opencode's generated config. Left as it is the field would read as in force and
+  do nothing. Put the setting in runner.args where this harness reads it, or drop it.
+  Nothing was created or emitted."
+fi
+
+if [ "$R_HARNESS" = "opencode" ]; then
+  # opencode is reached only through sbx on this deployment. A non-sandboxed opencode route
+  # would take the generated config nowhere — the whole block that writes it lives inside
+  # the sandbox path — and would therefore run with NO context limit, which by opencode's
+  # own default means it never compacts at all.
+  [ "$EXECUTABLE" = "sbx" ] || die "route '$ROUTE_NAME' runs the opencode harness outside
+  sbx. This build generates opencode's configuration only for a sandboxed route, so this
+  one would launch with no context limit and never compact. Nothing was created or emitted."
+  [ -n "$ENDPOINT_URL" ] || die "route '$ROUTE_NAME' runs the opencode harness but declares no
+  provider endpoint in runner.env. opencode reaches a provider through a generated config,
+  and this launch has no URL to put in it. Nothing was created or emitted."
+  # Exactly one credential name, or a refusal. A route carrying several gives this code no
+  # way to tell which one opencode should read, and picking the first would be a coin toss
+  # settled by jq's output order — producing a config that looks right and authenticates as
+  # nobody, discovered on the worker's first call from inside a VM.
+  OPENCODE_KEY_NAME=$(printf '%s' "$ROUTE" | jq -r '
+    (.runner.inherit_env[]?), ((.runner.inherit_env_as // {}) | keys[])' | sort -u | tr '\n' ' ')
+  OPENCODE_KEY_NAME="${OPENCODE_KEY_NAME% }"
+  case "$(printf '%s' "$OPENCODE_KEY_NAME" | wc -w)" in
+    1) : ;;
+    0) die "route '$ROUTE_NAME' runs the opencode harness but inherits no credential name.
+  The generated config reads the provider key from the VM's environment by name, so there
+  is nothing for it to read. Nothing was created or emitted." ;;
+    *) die "route '$ROUTE_NAME' runs the opencode harness and inherits several environment
+  names ($OPENCODE_KEY_NAME). This build cannot tell which one holds the provider key, and
+  guessing would produce a config that authenticates as nobody. Leave exactly one inherited
+  name on the route in $HIVE_ROUTE_CATALOG. Nothing was created or emitted." ;;
+  esac
+  # The compaction model is served by the SAME endpoint as the worker's, because it is
+  # addressed through the same generated provider block. Nothing checked that until an
+  # opencode route on a non-OpenRouter endpoint would have generated a config that looks
+  # correct, passed preflight, and failed its first compaction at 250K tokens inside a VM —
+  # at the one moment the state injection exists to protect.
+  if [ -z "$ANYWAY" ]; then
+    require_model_served "$ENDPOINT_URL" "$HIVE_OPENCODE_COMPACTION_MODEL"
+  fi
+fi
+
 # --- the argv, with this launch's own values substituted --------------------------------
 # `runner.args` is a template: the route says WHERE the model, the task root, the clones, the
 # hub and the sandbox name go, and this substitutes them. Substitution happens on the ARRAY,
@@ -757,6 +861,14 @@ if [ -n "$CHECK_ONLY" ]; then
     | jq -r '[(.runner.inherit_env_as // {}) | to_entries[] | "\(.key)<-\(.value)"] | join(" ")')
   [ -z "$AS_NAMES" ] || echo "  env renames: $AS_NAMES   (NAMES only)"
   [ -z "$ENV_PAIRS" ] || echo "  endpoint:   $(printf '%s' "$ENV_PAIRS" | tr '\n' ' ')  (a route fact, not the shell's)"
+  # What an opencode launch would generate. Shown here because it is not in the catalog and
+  # not in the argv: an operator reading a preflight would otherwise have no way to see the
+  # context limit their worker is about to run under, and that number decides whether the
+  # order compacts once, twice or never.
+  if [ "$R_HARNESS" = "opencode" ]; then
+    echo "  opencode:   context limit $HIVE_OPENCODE_CONTEXT_LIMIT, compaction on $HIVE_OPENCODE_COMPACTION_MODEL"
+    [ -z "$R_EFFORT" ] || echo "              reasoning effort $R_EFFORT (a route fact)"
+  fi
   # `require_declared_env` already ran above, so reaching this line means every declared name
   # is set. Saying so is the point: a preflight that stays silent about the thing that broke
   # the last launch has not preflighted it.
@@ -1191,6 +1303,7 @@ if [ "$EXECUTABLE" = "sbx" ]; then
     claude-code|claude) SBX_AGENT=claude ;;
     codex)              SBX_AGENT=codex ;;
     omp|shell)          SBX_AGENT=shell ;;
+    opencode)           SBX_AGENT=opencode ;;
     antigravity)        SBX_AGENT=agy; SBX_KIT="$REPO_ROOT/kits/agy" ;;
     *) die "route '$ROUTE_NAME' runs under sbx with harness '$R_HARNESS', and this build
   does not know which sbx agent image serves it. Add it to hive-launch's agent map, or
@@ -1252,6 +1365,31 @@ if [ "$EXECUTABLE" = "sbx" ]; then
   SBX_AGY_CRED=""
   [ "$SBX_AGENT" != "agy" ] || SBX_AGY_CRED=1
 
+  # opencode is configured by a FILE, not by environment variables, so a route that names
+  # it needs one written for this launch: this model, this deployment's context limit, and
+  # the compaction plugin beside it. Issued by hive-common.sh so the test suite exercises
+  # the very file a launch writes rather than a second copy of it.
+  #
+  # It is regenerated on a re-attach, and that is NOT the same guarantee `.sandbox-env`
+  # gets, which is why the two are checked against each other below. This file lives in the
+  # mounted task root and is read LIVE by the harness; `.sandbox-env` is only ever consumed
+  # by `sbx create --env-file`, so rewriting it does nothing to a VM that already exists.
+  # Regenerating one and not the other is how a config saying `{env:NEW_NAME}` comes to sit
+  # inside a VM whose baked environment still holds OLD_NAME — an interpolation that
+  # resolves to nothing, an agent that authenticates as nobody, and a launcher that has
+  # already announced success.
+  SBX_OPENCODE_CFG=""
+  if [ "$SBX_AGENT" = "opencode" ]; then
+    # Everything this needs was proved at the preflight, hundreds of lines above and before
+    # anything was built: the endpoint exists, exactly one credential name is inherited, and
+    # both models are served by that endpoint.
+    SBX_OPENCODE_CFG="$TASK_ROOT/opencode.json"
+    issue_opencode_config "$TASK_ROOT" "$ENDPOINT_URL" "$OPENCODE_KEY_NAME" "$MODEL" \
+      "$HIVE_OPENCODE_CONTEXT_LIMIT" "$HIVE_OPENCODE_COMPACTION_MODEL" "$R_EFFORT" \
+      "$HIVE_OPENCODE_OUTPUT_LIMIT"
+    echo "  opencode: $SBX_OPENCODE_CFG (context limit $HIVE_OPENCODE_CONTEXT_LIMIT, compaction on $HIVE_OPENCODE_COMPACTION_MODEL)"
+  fi
+
   # The VM's environment file. Written on BOTH paths, because the facts in it come from the
   # route and the route can change between a create and a re-attach — an endpoint amended in
   # the catalog that never reached an existing VM would leave the worker pointed at the old
@@ -1275,6 +1413,11 @@ GIT_AUTHOR_EMAIL=$WORKER@hive.local
 GIT_COMMITTER_NAME=$WORKER
 GIT_COMMITTER_EMAIL=$WORKER@hive.local
 SBXENV
+      # Which config opencode reads. Named explicitly because opencode's own discovery
+      # walks up from the project directory and stops at the git root, and the project here
+      # IS a git clone — so a file in the task root above it would never be found. Setting
+      # it MERGES with the sandbox template's global config rather than replacing it.
+      [ -z "$SBX_OPENCODE_CFG" ] || printf 'OPENCODE_CONFIG=%s\n' "$SBX_OPENCODE_CFG"
       # The route's own environment facts, in the one place a value can travel without
       # appearing on a command line that `ps` can read.
       #
@@ -1313,6 +1456,19 @@ SBXENV
     # previous worker's state. Its tunnel and CLI are re-established below, because a VM
     # with the right name is not the same thing as a working worker.
     echo "  sandbox: $SANDBOX (exists — re-attaching; 'sbx rm $SANDBOX' first for a clean VM)"
+    # The credential name the regenerated config interpolates must actually be set in THIS
+    # VM. It cannot be re-applied after create — `--env-file` is a create-time argument —
+    # so it is verified instead of assumed, exactly as the Claude credential posture is a
+    # few lines down. The check reads whether the name is set, never its value.
+    if [ -n "$SBX_OPENCODE_CFG" ] \
+       && ! sbx exec "$SANDBOX" bash -lc "[ -n \"\${$OPENCODE_KEY_NAME+set}\" ]" >/dev/null 2>&1; then
+      die "sandbox '$SANDBOX' already exists and does not hold '$OPENCODE_KEY_NAME', which is
+  the name this route's generated opencode config reads its provider key from. A sandbox's
+  environment is fixed at create time, so this cannot be repaired by re-launching: the
+  worker would start, resolve that name to nothing, and authenticate as nobody. Rebuild it:
+    sbx rm $SANDBOX
+  Nothing was emitted."
+    fi
   else
     # --- which credential actually pays for this route ---------------------------------
     # sbx ships its agent templates wired for API billing: the claude template writes

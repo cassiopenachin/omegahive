@@ -165,6 +165,19 @@
           "default": null,
           "title": "Reviewer"
         },
+        "reasoning_effort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "pattern": "^[a-z]+$",
+          "title": "Reasoning Effort"
+        },
         "note": {
           "anyOf": [
             {

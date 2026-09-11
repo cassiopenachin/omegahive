@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 COMMON = REPO / "scripts" / "hive-common.sh"
@@ -453,3 +456,357 @@ def test_an_unusable_review_directory_warns_rather_than_going_quiet(tmp_path):
     assert r.returncode == 0, r.stderr
     assert "WARNING cannot use HIVE_REVIEW_DIR" in r.stderr
     assert "NOT counted" in r.stderr
+
+# --- the opencode harness's generated configuration ------------------------------------
+
+
+def _issue_opencode_config(
+    task_root: Path,
+    *,
+    endpoint: str = "https://openrouter.ai/api/v1",
+    key_name: str = "OPENROUTER_API_KEY",
+    model: str = "deepseek/deepseek-v4-flash-0731",
+    limit: str = "250000",
+    compaction: str = "anthropic/claude-sonnet-5",
+    effort: str = "",
+) -> subprocess.CompletedProcess[str]:
+    """Run the SHIPPED generator, never a copy of it."""
+    return subprocess.run(
+        ["bash", "-c",
+         f'set -euo pipefail; source "{COMMON}"; '
+         'issue_opencode_config "$1" "$2" "$3" "$4" "$5" "$6" "$7"',
+         "bash", str(task_root), endpoint, key_name, model, limit, compaction, effort],
+        capture_output=True, text=True, cwd=REPO, timeout=60,
+    )
+
+
+def test_the_generated_opencode_config_carries_the_route_and_the_context_limit(tmp_path):
+    """The three facts a launch cannot leave to a default.
+
+    Without an explicit `limit.context` opencode never compacts at all, so that number is
+    the difference between the harness that was measured and the harness that is deployed.
+    The model id must survive with its vendor prefix intact — opencode splits a model
+    reference at the FIRST slash, so `openrouter/deepseek/deepseek-v4-flash-0731` names
+    provider `openrouter` and model `deepseek/deepseek-v4-flash-0731`.
+    """
+    r = _issue_opencode_config(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    cfg = json.loads((tmp_path / "opencode.json").read_text())
+
+    provider = cfg["provider"]["openrouter"]
+    assert provider["npm"] == "@ai-sdk/openai-compatible"
+    assert provider["options"]["baseURL"] == "https://openrouter.ai/api/v1"
+    entry = provider["models"]["deepseek/deepseek-v4-flash-0731"]
+    assert entry["reasoning"] is True
+    assert entry["limit"]["context"] == 250000
+    assert cfg["model"] == "openrouter/deepseek/deepseek-v4-flash-0731"
+
+
+def test_the_generated_opencode_config_never_holds_the_credential(tmp_path):
+    """The key is named, never copied.
+
+    opencode interpolates `{env:NAME}` in config strings and the VM's environment file
+    already holds the value at 0600, so writing it here would be a second copy of a
+    credential for no gain. The test asserts the SHAPE rather than the absence of one
+    particular string: a config carrying `sk-`-anything would pass an absence check while
+    still being a leak.
+    """
+    r = _issue_opencode_config(tmp_path, key_name="SOME_PROVIDER_KEY")
+    assert r.returncode == 0, r.stdout + r.stderr
+    cfg = json.loads((tmp_path / "opencode.json").read_text())
+    assert cfg["provider"]["openrouter"]["options"]["apiKey"] == "{env:SOME_PROVIDER_KEY}"
+
+
+def test_the_compaction_agent_is_pinned_off_the_model_under_test(tmp_path):
+    """Compaction is the one artifact that must survive the rewrite.
+
+    It is written by a mid-tier model rather than by the cheap model being evaluated, and
+    that model is addressed through the SAME provider block, so one credential serves both.
+    """
+    r = _issue_opencode_config(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    cfg = json.loads((tmp_path / "opencode.json").read_text())
+    assert cfg["agent"]["compaction"]["model"] == "openrouter/anthropic/claude-sonnet-5"
+    # and it must be declared in the provider, or the reference resolves to nothing
+    assert "anthropic/claude-sonnet-5" in cfg["provider"]["openrouter"]["models"]
+
+
+def test_a_worker_may_reach_its_own_run_interface(tmp_path):
+    """The permission that is not a convenience.
+
+    A hive worker's cwd is its workspace CLONE, while `../run/emit`, `../run/review`, the
+    code clone and the kickoff all sit in the task root ABOVE it. Under opencode's defaults
+    every one of those is an `external_directory` ask, and an ask in a session nobody is
+    watching is a refusal — measured 2026-09-11, where a worker spent eighteen steps asking
+    to read its own order and never read it.
+    """
+    r = _issue_opencode_config(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    cfg = json.loads((tmp_path / "opencode.json").read_text())
+    assert cfg["permission"]["external_directory"] == {"*": "allow"}
+    assert cfg["permission"]["bash"] == "allow"
+    assert cfg["permission"]["edit"] == "allow"
+
+
+def test_the_compaction_plugin_is_written_beside_the_config_and_interpolates_nothing(tmp_path):
+    """The plugin is declared by a path RELATIVE to the config that declares it, so the two
+    files travel together; and nothing about this launch is written into it. A worker id,
+    an order ref or a task root quoted into JavaScript would be one escaping bug away from
+    a syntax error inside a VM, discovered at compaction time — which is the worst possible
+    moment to discover anything.
+    """
+    r = _issue_opencode_config(tmp_path, model="z-ai/glm-5.3")
+    assert r.returncode == 0, r.stdout + r.stderr
+    cfg = json.loads((tmp_path / "opencode.json").read_text())
+    assert cfg["plugin"] == ["./hive-compaction.js"]
+
+    plugin = (tmp_path / "hive-compaction.js").read_text()
+    assert "experimental.session.compacting" in plugin
+    assert "output.context.push" in plugin
+    # No launch-specific value reached the file.
+    assert str(tmp_path) not in plugin
+    assert "z-ai/glm-5.3" not in plugin
+
+
+def test_the_launcher_names_the_generated_config_to_the_sandbox(tmp_path):
+    """opencode's own config discovery walks up from the project directory and stops at the
+    git root. The worker's project IS a clone, so a config in the task root above it is
+    never found by discovery — the launcher must name it, and it must do so in the VM's
+    environment file, which is written on the create path and the re-attach path alike.
+    """
+    launch = (REPO / "scripts" / "hive-launch").read_text()
+    assert "OPENCODE_CONFIG=%s" in launch
+    assert "opencode)           SBX_AGENT=opencode ;;" in launch
+    # No kit: `sbx create opencode` is a first-class agent, unlike the Antigravity harness.
+    agent_map = launch.split("SBX_KIT=\"\"", 1)[1].split("esac", 1)[0]
+    opencode_line = [ln for ln in agent_map.splitlines() if "SBX_AGENT=opencode" in ln]
+    assert len(opencode_line) == 1
+    assert "SBX_KIT" not in opencode_line[0]
+
+
+def test_a_stated_reasoning_effort_reaches_the_model_entry(tmp_path):
+    """GLM 5.3 defaults to `max`, and this deployment asks for `high`. That is a fact about
+    the model, so it is a route field rather than a launcher constant — and it has to
+    arrive somewhere the provider reads. Verified at the wire on 2026-09-11: a model entry
+    carrying `options.reasoningEffort` is forwarded by opencode's openai-compatible
+    provider as `reasoning_effort` in the request body.
+    """
+    r = _issue_opencode_config(tmp_path, model="z-ai/glm-5.3", effort="high")
+    assert r.returncode == 0, r.stdout + r.stderr
+    cfg = json.loads((tmp_path / "opencode.json").read_text())
+    assert cfg["provider"]["openrouter"]["models"]["z-ai/glm-5.3"]["options"] == {
+        "reasoningEffort": "high"
+    }
+
+
+def test_an_unstated_effort_leaves_the_model_default_alone(tmp_path):
+    """Absence is absence. A route that states no effort must not have one chosen for it:
+    `options` is omitted entirely rather than written with some default level, so "the
+    model decides" stays distinguishable from every level this could have named.
+    """
+    r = _issue_opencode_config(tmp_path, effort="")
+    assert r.returncode == 0, r.stdout + r.stderr
+    cfg = json.loads((tmp_path / "opencode.json").read_text())
+    entry = cfg["provider"]["openrouter"]["models"]["deepseek/deepseek-v4-flash-0731"]
+    assert "options" not in entry
+
+
+def test_the_generated_plugin_actually_parses(tmp_path):
+    """The failure this catches is silent, which is why it is a test and not a review note.
+
+    Measured 2026-09-11: opencode loads a syntactically broken plugin without a word —
+    exit 0, no diagnostic, the session runs normally — so a worker would compact with no
+    hive state and nobody would ever learn that it had. The plugin is generated from a
+    shell heredoc, so the realistic way it breaks is an edit to that heredoc, and this is
+    the cheapest place to find out.
+    """
+    r = _issue_opencode_config(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("no node on PATH to parse-check the generated ES module")
+    check = subprocess.run(
+        [node, "--input-type=module", "--check"],
+        stdin=(tmp_path / "hive-compaction.js").open("rb"),
+        capture_output=True, text=True, timeout=30,
+    )
+    assert check.returncode == 0, check.stderr
+
+
+def test_the_plugin_reports_a_failure_rather_than_injecting_nothing(tmp_path):
+    """A hook that throws injects nothing, and nothing looks exactly like the default
+    summary — so the one failure mode that must never be silent is this one. The hook
+    wraps its whole body and pushes a block saying the state could not be read, and it
+    refuses to treat an empty task root as an empty answer.
+    """
+    r = _issue_opencode_config(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    plugin = (tmp_path / "hive-compaction.js").read_text()
+    assert "catch (err)" in plugin
+    assert "could not be read at compaction time" in plugin
+    # Exactly one unconditional push per path: the success block and the failure block.
+    assert plugin.count("output.context.push") == 2
+
+
+def _run_plugin(task_root: Path) -> str:
+    """Execute the generated plugin's compaction hook and return what it injects.
+
+    Asserting on the plugin's SOURCE proves only that the text is there. What matters is
+    what a worker actually receives at the one moment the transcript is discarded, so this
+    imports the shipped module and calls the hook.
+    """
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("no node on PATH to execute the generated ES module")
+    gen = _issue_opencode_config(task_root)
+    assert gen.returncode == 0, gen.stdout + gen.stderr
+    driver = task_root / "drive.mjs"
+    driver.write_text(
+        "const mod = await import('./hive-compaction.js')\n"
+        "const hooks = await mod.default({ directory: process.argv[2] })\n"
+        "const out = { context: [] }\n"
+        "await hooks['experimental.session.compacting']({}, out)\n"
+        "process.stdout.write(out.context.join('\\n---\\n'))\n"
+    )
+    r = subprocess.run(
+        [node, str(driver), str(task_root / "hive")],
+        capture_output=True, text=True, timeout=60, cwd=str(task_root),
+    )
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+def _worker_root(tmp_path: Path) -> Path:
+    """A task root shaped the way `hive-launch` builds one."""
+    root = tmp_path / "sess-drill-0101"
+    (root / "run").mkdir(parents=True)
+    (root / "kickoff.txt").write_text("your order is at projects/x/order.md\n")
+    for clone in ("hive", "widget"):
+        d = root / clone
+        d.mkdir()
+        subprocess.run(["git", "init", "-q", str(d)], check=True, timeout=30)
+        for k, v in (("user.email", "d@drill"), ("user.name", "drill")):
+            subprocess.run(["git", "-C", str(d), "config", k, v], check=True, timeout=30)
+        (d / "seed.txt").write_text("seed\n")
+        subprocess.run(["git", "-C", str(d), "add", "-A"], check=True, timeout=30)
+        subprocess.run(["git", "-C", str(d), "commit", "-qm", f"seed {clone}"],
+                       check=True, timeout=30)
+    return root
+
+
+def test_the_plugin_reports_uncommitted_work_and_puts_it_first(tmp_path):
+    """Committed work is recoverable from git long after this session ends. Uncommitted
+    work is what a compaction can cause a worker to walk away from — so it is the block
+    that must survive truncation, which means it must be emitted before the commit log.
+    """
+    root = _worker_root(tmp_path)
+    (root / "widget" / "half-done.py").write_text("# not committed\n")
+    text = _run_plugin(root)
+    assert "UNCOMMITTED" in text
+    assert "half-done.py" in text
+    assert text.index("UNCOMMITTED") < text.index("Committed by this worker")
+
+
+def test_a_git_failure_is_never_reported_as_a_clean_tree(tmp_path):
+    """The worst thing this plugin could do is assert a fact it failed to read. `git
+    status` can fail on a timeout, an index lock or an oversized listing while `rev-parse
+    HEAD` succeeds — so a plugin that collapses "failed" into "empty" tells the worker its
+    tree is clean at the exact moment that claim is most costly and least checkable.
+    """
+    root = _worker_root(tmp_path)
+    # Break `git status` alone: an unreadable index survives rev-parse but fails status.
+    (root / "widget" / ".git" / "index").write_bytes(b"not an index")
+    text = _run_plugin(root)
+    assert "COULD NOT READ the working tree" in text
+    widget_block = text.split(str(root / "widget"), 1)[1]
+    assert "working tree clean" not in widget_block.split("\n\n")[0]
+
+
+def test_a_missing_review_directory_is_reported_as_missing_not_as_no_reviews(tmp_path):
+    """Absence of the directory and absence of rounds are different facts, and the second
+    is a claim a worker would act on. `run/reviews` is created by `issue_worker_interface`;
+    a task root provisioned by a launcher that predates it has none, and this must not read
+    as "you have not been reviewed".
+    """
+    text = _run_plugin(_worker_root(tmp_path))
+    assert "No review directory" in text
+    assert "Reviews so far" not in text
+
+
+def test_review_rounds_are_listed_with_their_verdicts(tmp_path):
+    root = _worker_root(tmp_path)
+    reviews = root / "run" / "reviews"
+    reviews.mkdir()
+    (reviews / "001-first.md").write_text("# round one\n\nVERDICT: REWORK\n")
+    (reviews / "002-second.md").write_text("**VERDICT**: PASS\n")
+    text = _run_plugin(root)
+    assert "Reviews so far (2)" in text
+    assert "001-first.md  REWORK" in text
+    assert "002-second.md  PASS" in text
+
+
+def test_a_task_root_that_is_not_one_says_so_rather_than_going_quiet(tmp_path):
+    """An empty reading here is evidence of a bug in the plugin, not of a worker with
+    nothing to say, and saying so is what makes that bug findable."""
+    root = tmp_path / "empty"
+    (root / "hive").mkdir(parents=True)
+    (root / "run").mkdir()
+    text = _run_plugin(root)
+    assert "Hive worker state" in text
+    assert "No review directory" in text
+
+
+# --- the refusals a preflight has to be able to reach -----------------------------------
+
+
+def _launch_source() -> str:
+    return (REPO / "scripts" / "hive-launch").read_text()
+
+
+def test_every_opencode_refusal_sits_above_the_check_exit():
+    """A preflight that cannot reach a refusal passes a route the launch then aborts on,
+    after telling the operator it was fine. `--check` returns at its own block, so each of
+    these `die`s has to be above that line or it is unreachable from a preflight.
+    """
+    src = _launch_source()
+    check_at = src.index('if [ -n "$CHECK_ONLY" ]; then')
+    preflight = src[:check_at]
+    for phrase in (
+        "runs the opencode harness outside",
+        "declares no\n  provider endpoint in runner.env",
+        "inherits no credential name",
+        "inherits several environment",
+        "is not a\n  single lowercase token",
+    ):
+        assert phrase in preflight, f"refusal is below the --check exit: {phrase!r}"
+
+
+def test_the_shape_rule_is_enforced_in_the_shell_as_well_as_in_python():
+    """`hive-launch` reads the catalog with jq and never calls `load_catalog`, so the
+    pydantic validator guards `hive-routes` and guards nothing on the launch path. Without
+    a shell-side twin the same catalogued typo refuses one tool and launches the other.
+    """
+    src = _launch_source()
+    assert "*[!a-z]*" in src, "no shell-side reasoning_effort shape check"
+
+
+def test_an_effort_that_no_harness_would_apply_is_refused():
+    """The field is applied only through opencode's generated config. On any other harness
+    it would be accepted, printed by `hive-routes` as if in force, and ignored — and the
+    codex routes already carry their own effort inside `runner.args`, so the two statements
+    could silently disagree.
+    """
+    src = _launch_source()
+    assert 'can only apply that field' in src
+
+
+def test_a_reattach_verifies_the_credential_name_it_cannot_re_apply():
+    """`.sandbox-env` is consumed only by `sbx create --env-file`, so rewriting it does
+    nothing to a VM that already exists — while the generated config lives in the mounted
+    task root and IS read live. Regenerating one and not the other is how a config saying
+    `{env:NEW_NAME}` ends up inside a VM whose environment still holds the old name.
+    """
+    src = _launch_source()
+    reattach = src.split("exists — re-attaching", 1)[1].split("sbx create --quiet", 1)[0]
+    assert "$OPENCODE_KEY_NAME+set" in reattach
+    assert "authenticate as nobody" in reattach

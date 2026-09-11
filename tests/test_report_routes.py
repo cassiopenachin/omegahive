@@ -73,3 +73,19 @@ def test_the_fingerprint_shown_is_the_one_the_launcher_will_record():
         env={"ANTHROPIC_BASE_URL": "https://openrouter.ai/api"})))
     expected = load_catalog(raw).routes[0].runner.fingerprint()
     assert evaluate_routes(catalog_raw=raw)[0]["runner_fingerprint"] == expected
+
+
+def test_a_stated_reasoning_effort_is_printed_and_an_absent_one_is_not():
+    """The field exists because a decision was made about it — GLM 5.3 defaults to `max`
+    and this deployment asks for `high` — and a decision nothing prints is the same
+    invisible fact `reviewer` was before 2026-08-28. Absence stays silent: printing
+    "unstated" on every other route would make the one line that matters skippable.
+    """
+    text = routes_to_text(rows(
+        route(name="or-glm", provider="openrouter", model="z-ai/glm-5.3",
+              reasoning_effort="high"),
+        route(name="or-ds", provider="openrouter",
+              model="deepseek/deepseek-v4-flash-0731"),
+    ))
+    assert "reasoning effort: high" in text
+    assert text.count("reasoning effort") == 1
