@@ -138,10 +138,16 @@ branch_is_merged() {  # branch_is_merged <canon-checkout> <branch>
   git -C "$canon" merge-base --is-ancestor "refs/remotes/origin/$br" "refs/remotes/origin/main" 2>/dev/null
 }
 
+# Reviews are copied here before their root is deleted. Outside the work root on purpose:
+# everything under it is disposable by construction, and this is the one thing in a task root
+# that is evidence rather than scaffolding.
+REVIEW_ARCHIVE="${OMEGAHIVE_REVIEW_ARCHIVE:-$HOME/omegahive-reviews}"
+
 now=$(date +%s)
 keep_secs=$(( KEEP_DAYS * 86400 ))
 n_removed=0 n_held=0 bytes_freed=0
 
+echo "hive-cleanup: reviews are archived to $REVIEW_ARCHIVE before a root is removed"
 echo "hive-cleanup: work root $WORK_ROOT · keep ${KEEP_DAYS}d · $([ -n "$APPLY" ] && echo APPLY || echo 'dry run (no --apply)')"
 
 for root in "$WORK_ROOT"/sess-*/; do
@@ -192,6 +198,18 @@ for root in "$WORK_ROOT"/sess-*/; do
     sbx rm --force "$sandbox" >/dev/null 2>&1 \
       && echo "          sandbox $sandbox removed" \
       || echo "          WARNING could not remove sandbox $sandbox" >&2
+  fi
+  # The reviews outlive the root. They are the only record of how many rounds a task took
+  # and what each one said, and reading six of them side by side is what showed that nine
+  # findings across all six were one design problem resurfacing rather than six defects
+  # (2026-09-10). Deleting that with the clones would destroy the evidence for the question
+  # the counts are meant to raise.
+  if compgen -G "$root/run/reviews/*" >/dev/null 2>&1; then
+    dest="$REVIEW_ARCHIVE/$task"
+    mkdir -p "$dest"
+    cp -p "$root"/run/reviews/* "$dest"/ 2>/dev/null \
+      && echo "          reviews archived -> $dest ($(ls -1 "$dest" | wc -l) file(s))" \
+      || echo "          WARNING could not archive reviews from $root" >&2
   fi
   rm -rf "$root"
   echo "          root removed"

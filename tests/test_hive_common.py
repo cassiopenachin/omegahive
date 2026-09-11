@@ -243,3 +243,213 @@ def test_the_launcher_and_the_model_compute_the_same_runner_fingerprint():
     for runner in cases:
         route = {"runner": runner}
         assert _jq_fingerprint(route) == _py_fingerprint(route), runner
+
+
+# --- the review round cap ---------------------------------------------------------------
+
+
+def _issue_review_wrapper(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    """Issue the SHIPPED sandboxed review wrapper against a throwaway repo."""
+    run_dir, repo = tmp_path / "run", tmp_path / "repo"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=30)
+    for k, v in (("user.email", "d@drill"), ("user.name", "drill")):
+        subprocess.run(["git", "-C", str(repo), "config", k, v], check=True, timeout=30)
+    (repo / "f").write_text("x\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, timeout=30)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True, timeout=30)
+    r = subprocess.run(
+        ["bash", "-c",
+         f'set -euo pipefail; source "{COMMON}"; '
+         'issue_worker_interface "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8"',
+         "bash", str(run_dir), str(repo), str(repo), "worker/x", "run1", "w1",
+         "opus-in-sandbox", ""],
+        capture_output=True, text=True, cwd=str(REPO), timeout=120,
+        env={**os.environ, "OMEGA_DIR": str(REPO)})
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    # A stand-in reviewer, so the cap is exercised without a model call.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "claude"
+    fake.write_text('#!/bin/sh\necho "VERDICT: REWORK"\necho "a finding"\n')
+    fake.chmod(0o755)
+
+    # An isolated HOME carrying a stand-in credential. The wrapper refuses outright when
+    # there is no Claude login, which is correct — a review with no login would fall back to
+    # the worker's own account — but it means these tests would otherwise pass only on a
+    # machine where the operator happens to be logged in, and fail in CI. Which they did.
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / ".credentials.json").write_text("{}\n")
+    return run_dir, repo, bin_dir, home
+
+
+def _review(run_dir: Path, repo: Path, bin_dir: Path, home: Path, review_dir: Path, **env):
+    return subprocess.run(
+        [str(run_dir / "review"), "review this"],
+        capture_output=True, text=True, cwd=str(repo), timeout=120,
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
+             "HOME": str(home), "HIVE_REVIEW_DIR": str(review_dir), **env},
+    )
+
+
+def test_the_sandboxed_review_caps_its_rounds(tmp_path):
+    """The cap has to exist on THIS path, not only in `claude-review`.
+
+    `../run/review` is what every sandboxed provider route uses, and it used to `exec
+    claude` and write nothing at all — so there was no record a review had happened and
+    nothing to count. A cap present only on the codex-skill path would be absent from the
+    routes with the least supervision.
+    """
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    reviews = tmp_path / "reviews"
+    for n in range(1, 5):
+        r = _review(run_dir, repo, bin_dir, home, reviews)
+        assert r.returncode == 0, r.stderr
+        assert f"round {n} of 4" in r.stderr
+    assert len(list(reviews.iterdir())) == 4
+    refused = _review(run_dir, repo, bin_dir, home, reviews)
+    assert refused.returncode == 3
+    assert "REFUSING" in refused.stderr
+    assert "question.asked" in refused.stderr
+    assert len(list(reviews.iterdir())) == 4, "a refused round must not write a review"
+
+
+def test_the_last_allowed_round_says_it_is_the_last(tmp_path):
+    """Discovering the cap by being refused, after another full repair cycle, wastes the
+    cycle. The round that spends the budget says so while the worker is still deciding."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    reviews = tmp_path / "reviews"
+    for _ in range(3):
+        assert _review(run_dir, repo, bin_dir, home, reviews).returncode == 0
+    last = _review(run_dir, repo, bin_dir, home, reviews)
+    assert "LAST round" in last.stderr
+    assert "task.blocked" in last.stderr
+
+
+def test_a_review_that_did_not_produce_output_spends_no_round_and_fails(tmp_path):
+    """Two properties at once. A reviewer that produced nothing must not consume the
+    budget — otherwise an infrastructure failure costs a round the work never got. And it
+    must not exit zero: WORKER.md's rule is that a review which did not happen is never
+    reported as clean, and zero is exactly what a worker reads as clean.
+    """
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    (bin_dir / "claude").write_text("#!/bin/sh\nexit 0\n")
+    (bin_dir / "claude").chmod(0o755)
+    reviews = tmp_path / "reviews"
+    reviews.mkdir()
+    r = _review(run_dir, repo, bin_dir, home, reviews)
+    assert r.returncode != 0
+    assert "NO round was spent" in r.stderr
+    assert not list(reviews.iterdir())
+
+
+def test_the_review_still_reaches_stdout_unchanged(tmp_path):
+    """Capturing the review on its way past must not change the interface. Every existing
+    invocation pipes a diff in and reads the verdict off stdout."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    r = _review(run_dir, repo, bin_dir, home, tmp_path / "reviews")
+    assert r.stdout.startswith("VERDICT: REWORK")
+
+
+def test_the_cap_is_an_operator_control(tmp_path):
+    """Zero disables it, for the operator who has decided this order earns more rounds."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    reviews = tmp_path / "reviews"
+    for _ in range(5):
+        r = _review(run_dir, repo, bin_dir, home, reviews, HIVE_REVIEW_ROUND_CAP="0")
+        assert r.returncode == 0, r.stderr
+    assert len(list(reviews.iterdir())) == 5
+
+
+def test_an_interrupted_review_spends_no_round(tmp_path):
+    """The failure that inverted this mechanism's own promise.
+
+    The in-progress capture used to be written inside the counted directory, under a name
+    the counting glob matched from the moment it was opened. Any interruption — a harness
+    timeout, a killed command, a caller closing stdout — therefore left a file that counted
+    as a completed round forever, and four interrupted attempts would refuse a worker that
+    had never obtained a single review, with no way back.
+    """
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    slow = bin_dir / "claude"
+    slow.write_text('#!/bin/sh\nsleep 30\necho "VERDICT: PASS"\n')
+    slow.chmod(0o755)
+    reviews = tmp_path / "reviews"
+    reviews.mkdir()
+    killed = subprocess.run(
+        ["timeout", "2", str(run_dir / "review"), "review this"],
+        capture_output=True, text=True, cwd=str(repo), timeout=60,
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
+             "HOME": str(home), "HIVE_REVIEW_DIR": str(reviews)},
+    )
+    assert killed.returncode != 0
+    assert not list(reviews.iterdir()), "an interrupted review left a phantom round behind"
+
+
+def test_a_review_produced_alongside_a_non_zero_exit_is_kept(tmp_path):
+    """`claude -p` exits non-zero in real cases after emitting a complete response. Deleting
+    that response — and telling the worker there was "no usable output" while it can read
+    the review on its own stdout — destroys the artifact every later round is read against.
+    """
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    grumpy = bin_dir / "claude"
+    grumpy.write_text('#!/bin/sh\necho "VERDICT: REWORK"\necho "a real finding"\nexit 7\n')
+    grumpy.chmod(0o755)
+    reviews = tmp_path / "reviews"
+    r = _review(run_dir, repo, bin_dir, home, reviews)
+    saved = list(reviews.iterdir())
+    assert len(saved) == 1, r.stderr
+    assert "a real finding" in saved[0].read_text()
+    assert "exited 7 but produced a review" in r.stderr
+
+
+def test_one_budget_covers_both_reviewers(tmp_path):
+    """A worker able to reach both reviewers had two budgets of four, because each counted
+    only its own filename prefix. WORKER.md promises one number."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    reviews = tmp_path / "reviews"
+    reviews.mkdir()
+    # Four rounds already taken by the OTHER reviewer, under its own naming.
+    for i in range(4):
+        other = reviews / f"claude-review-repo-main-2026091{i}T000000-1.txt"
+        other.write_text("VERDICT: REWORK\n")
+    r = _review(run_dir, repo, bin_dir, home, reviews)
+    assert r.returncode == 3, "the other reviewer's rounds were not counted"
+    assert "REFUSING" in r.stderr
+
+
+def test_a_cap_that_cannot_be_read_refuses_rather_than_running_uncapped(tmp_path):
+    """`[ "$CAP" -gt 0 ]` on a non-numeric value prints "integer expected", reads false, and
+    lets every review through. An operator typo must not silently remove the guard it was
+    trying to set."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    r = _review(run_dir, repo, bin_dir, home, tmp_path / "reviews",
+                HIVE_REVIEW_ROUND_CAP="four")
+    assert r.returncode == 2
+    assert "is not a number" in r.stderr
+
+
+def test_a_disabled_cap_does_not_announce_a_budget_of_zero(tmp_path):
+    """`round 1 of 0` reads as "already over budget", which is the opposite of what the
+    operator who disabled the cap intended."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    r = _review(run_dir, repo, bin_dir, home, tmp_path / "reviews",
+                HIVE_REVIEW_ROUND_CAP="0")
+    assert r.returncode == 0, r.stderr
+    assert " of 0" not in r.stderr
+    assert "cap disabled" in r.stderr
+
+
+def test_an_unusable_review_directory_warns_rather_than_going_quiet(tmp_path):
+    """Inside a launch HIVE_REVIEW_DIR is always set, so one that cannot be created means
+    something is wrong with the task root — and the consequence is a review that is neither
+    kept nor counted. Silence leaves a worker trusting a cap that is not running."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    blocked = tmp_path / "not-a-dir"
+    blocked.write_text("I am a file\n")
+    r = _review(run_dir, repo, bin_dir, home, blocked)
+    assert r.returncode == 0, r.stderr
+    assert "WARNING cannot use HIVE_REVIEW_DIR" in r.stderr
+    assert "NOT counted" in r.stderr
