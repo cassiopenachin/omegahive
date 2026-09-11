@@ -1538,6 +1538,16 @@ SBXENV
   fi
 
   if [ -n "$SBX_CLAUDE_CRED" ]; then
+    # The destination directory first. `sbx cp` does not create parents, and only the
+    # claude-derived agent images ship a `~/.claude` — which stayed invisible for as long as
+    # every sandboxed route ran the claude agent or a kit built on its image. The opencode
+    # image does not, so the first launch of an opencode route failed here, after the VM was
+    # built, with "could not copy the Claude subscription credential". That is the same
+    # coincidence the comment above already records for credential POSTURE, showing up a
+    # second time one step further down: the reviewer needs this login whatever the worker
+    # is, so the path it lands on cannot be assumed from the worker's image.
+    sbx exec "$SANDBOX" mkdir -p /home/agent/.claude >/dev/null 2>&1 \
+      || die "could not create /home/agent/.claude in '$SANDBOX' for the review credential."
     sbx cp "$HOME/.claude/.credentials.json" "$SANDBOX:/home/agent/.claude/.credentials.json" \
       >/dev/null 2>&1 \
       || die "could not copy the Claude subscription credential into '$SANDBOX'."

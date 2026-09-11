@@ -810,3 +810,22 @@ def test_a_reattach_verifies_the_credential_name_it_cannot_re_apply():
     reattach = src.split("exists — re-attaching", 1)[1].split("sbx create --quiet", 1)[0]
     assert "$OPENCODE_KEY_NAME+set" in reattach
     assert "authenticate as nobody" in reattach
+
+
+def test_the_review_credential_directory_is_created_before_the_copy():
+    """`sbx cp` does not create parent directories, and only the claude-derived agent
+    images ship a `~/.claude`.
+
+    That stayed invisible for as long as every sandboxed route ran the claude agent or a
+    kit built on its image. The opencode image has no such directory, so the first launch
+    of an opencode route died here — after the VM was built — with "could not copy the
+    Claude subscription credential". The reviewer needs that login whatever the worker is,
+    so the path it lands on cannot be assumed from the worker's image.
+    """
+    launch = (REPO / "scripts" / "hive-launch").read_text()
+    # Anchored on the Claude credential's own copy, not merely the next `sbx cp`: the
+    # Antigravity token is copied a few lines above it, and matching that one would pass
+    # while proving nothing about this directory.
+    copy_at = launch.index('sbx cp "$HOME/.claude/.credentials.json"')
+    mkdir_at = launch.index("mkdir -p /home/agent/.claude")
+    assert mkdir_at < copy_at, "the credential is copied before its directory exists"
