@@ -443,8 +443,100 @@ fi
 # by the launch, and differs by where this runs: bypassed inside a microVM, whose boundary
 # is the VM, and read-only on the host, where there is no boundary but a reviewer has no
 # business writing anything either.
-exec claude -p --model "${HIVE_REVIEW_MODEL:-opus}" \
-  "${HIVE_REVIEW_POSTURE[@]}" "$@"
+# --- the round cap, and a durable copy to count it from --------------------------------
+#
+# This command used to `exec claude` and write nothing: the worker redirected stdout
+# wherever it liked, so there was no record of a review having happened and nothing to
+# count. The cap in `claude-review` therefore did not exist on this path at all -- which is
+# the path every sandboxed provider route uses, and so the path with the least supervision.
+#
+# WORKER.md says "fix or rebut every finding". Against an agentic reviewer on a growing diff
+# that has no fixed point: each round's repairs change the code the next round reads, so the
+# next round finds what the repairs introduced. Measured 2026-09-10 -- two workers,
+# thirty-four reviews, thirty-four REWORK verdicts, no PASS, and round seventeen finding two
+# defects introduced by earlier repairs. Both workers diagnosed the loop accurately and only
+# once a human said stop, which is why this is a refusal and not a warning.
+REVIEW_REPO=$(git rev-parse --show-toplevel 2>/dev/null) || REVIEW_REPO=""
+REVIEW_REPO_NAME=${REVIEW_REPO##*/}
+: "${REVIEW_REPO_NAME:=review}"
+ROUND_CAP=${HIVE_REVIEW_ROUND_CAP:-4}
+ROUNDS=0
+CANONICAL=""
+if [ -n "${HIVE_REVIEW_DIR:-}" ] && mkdir -p "$HIVE_REVIEW_DIR" 2>/dev/null; then
+  ROUNDS=$(find "$HIVE_REVIEW_DIR" -maxdepth 1 -type f \
+    -name "review-$REVIEW_REPO_NAME-*" 2>/dev/null | wc -l)
+  # The pid is in the name because a second-resolution stamp is not unique: two reviews
+  # finishing in the same second would land on one path, and the second would overwrite the
+  # first -- destroying an artifact AND leaving the round count one short, on the very
+  # mechanism the count is supposed to make unevadable.
+  CANONICAL="$HIVE_REVIEW_DIR/review-$REVIEW_REPO_NAME-$(date +%Y%m%dT%H%M%S)-$$.txt"
+fi
+
+if [ -n "$CANONICAL" ] && [ "$ROUND_CAP" -gt 0 ] && [ "$ROUNDS" -ge "$ROUND_CAP" ]; then
+  {
+    echo "review: REFUSING -- $ROUNDS completed reviews of $REVIEW_REPO_NAME already exist"
+    echo "        in $HIVE_REVIEW_DIR, which is this deployment's cap."
+    echo
+    echo "  Another round is not the next step. Read the existing rounds together and"
+    echo "  decide which is true: they are instances of ONE underlying problem the order"
+    echo "  never settled, or the scope has grown past what this order can close."
+    echo
+    echo "  Either way the next action is a question, not a repair:"
+    echo "    emit question.asked naming the decision you need, then task.blocked."
+    echo "  Say in your report how many rounds ran and what they had in common."
+  } >&2
+  exit 3
+fi
+
+# Printed before the wait, because on a harness that yields control after a second or two
+# this is the only output a caller is guaranteed to see. It is also the answer to the
+# question that produced the polling: a missing file means running, never failed.
+{
+  echo "review: reviewing $REVIEW_REPO_NAME. This takes MINUTES, not seconds."
+  [ -z "$CANONICAL" ] || echo "        round $((ROUNDS + 1)) of $ROUND_CAP allowed on this repository"
+  echo "        The review is written only when COMPLETE; until then its path does not"
+  echo "        exist. Do not poll it, do not re-run this because it seems slow, and do"
+  echo "        not start a second one -- a completed review spends a round either way."
+} >&2
+
+# No `exec`: the output has to be captured on its way past. It still reaches stdout
+# unchanged, so every existing invocation keeps working, and it lands on disk only once the
+# reviewer has exited -- a half-written review is indistinguishable from a failed one, and a
+# worker that concludes "failed" re-runs, which is a round spent on nothing.
+if [ -z "$CANONICAL" ]; then
+  exec claude -p --model "${HIVE_REVIEW_MODEL:-opus}" "${HIVE_REVIEW_POSTURE[@]}" "$@"
+fi
+PARTIAL="$CANONICAL.partial.$$"
+set +e
+claude -p --model "${HIVE_REVIEW_MODEL:-opus}" "${HIVE_REVIEW_POSTURE[@]}" "$@" \
+  | tee "$PARTIAL"
+STATUS=${PIPESTATUS[0]}
+set -e
+if [ "$STATUS" -ne 0 ] || [ ! -s "$PARTIAL" ]; then
+  rm -f "$PARTIAL"
+  echo "review: the reviewer exited $STATUS with no usable output; NO round was spent." >&2
+  # Never exit 0 here. A reviewer that produced nothing is a review that did not happen,
+  # and a zero exit is what a worker reads as "reviewed, nothing to fix" -- which is the
+  # one thing WORKER.md says a review that did not run must never be reported as.
+  [ "$STATUS" -ne 0 ] || STATUS=1
+  exit "$STATUS"
+fi
+mv -f "$PARTIAL" "$CANONICAL"
+ROUNDS=$((ROUNDS + 1))
+{
+  echo
+  echo "review: round $ROUNDS of $ROUND_CAP, saved at $CANONICAL"
+  if [ "$ROUND_CAP" -gt 0 ] && [ "$ROUNDS" -ge "$ROUND_CAP" ]; then
+    echo "        That was the LAST round this repository gets; the next call refuses."
+    echo "        If these findings are not closable now, emit question.asked naming the"
+    echo "        decision you need and then task.blocked, rather than discovering the"
+    echo "        refusal after another repair cycle."
+  elif [ "$ROUNDS" -ge 3 ]; then
+    echo "        Earlier rounds are beside it. Read them together and ask whether these"
+    echo "        findings are instances of ONE problem: if they are, fix that instead of"
+    echo "        the instance, or raise it as a question."
+  fi
+} >&2
 REVIEWBODY
     chmod +x "$REVIEW"
   fi

@@ -243,3 +243,113 @@ def test_the_launcher_and_the_model_compute_the_same_runner_fingerprint():
     for runner in cases:
         route = {"runner": runner}
         assert _jq_fingerprint(route) == _py_fingerprint(route), runner
+
+
+# --- the review round cap ---------------------------------------------------------------
+
+
+def _issue_review_wrapper(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Issue the SHIPPED sandboxed review wrapper against a throwaway repo."""
+    run_dir, repo = tmp_path / "run", tmp_path / "repo"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=30)
+    for k, v in (("user.email", "d@drill"), ("user.name", "drill")):
+        subprocess.run(["git", "-C", str(repo), "config", k, v], check=True, timeout=30)
+    (repo / "f").write_text("x\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, timeout=30)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True, timeout=30)
+    r = subprocess.run(
+        ["bash", "-c",
+         f'set -euo pipefail; source "{COMMON}"; '
+         'issue_worker_interface "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8"',
+         "bash", str(run_dir), str(repo), str(repo), "worker/x", "run1", "w1",
+         "opus-in-sandbox", ""],
+        capture_output=True, text=True, cwd=str(REPO), timeout=120,
+        env={**os.environ, "OMEGA_DIR": str(REPO)})
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    # A stand-in reviewer, so the cap is exercised without a model call.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "claude"
+    fake.write_text('#!/bin/sh\necho "VERDICT: REWORK"\necho "a finding"\n')
+    fake.chmod(0o755)
+    return run_dir, repo, bin_dir
+
+
+def _review(run_dir: Path, repo: Path, bin_dir: Path, review_dir: Path, **env):
+    return subprocess.run(
+        [str(run_dir / "review"), "review this"],
+        capture_output=True, text=True, cwd=str(repo), timeout=120,
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
+             "HIVE_REVIEW_DIR": str(review_dir), **env},
+    )
+
+
+def test_the_sandboxed_review_caps_its_rounds(tmp_path):
+    """The cap has to exist on THIS path, not only in `claude-review`.
+
+    `../run/review` is what every sandboxed provider route uses, and it used to `exec
+    claude` and write nothing at all — so there was no record a review had happened and
+    nothing to count. A cap present only on the codex-skill path would be absent from the
+    routes with the least supervision.
+    """
+    run_dir, repo, bin_dir = _issue_review_wrapper(tmp_path)
+    reviews = tmp_path / "reviews"
+    for n in range(1, 5):
+        r = _review(run_dir, repo, bin_dir, reviews)
+        assert r.returncode == 0, r.stderr
+        assert f"round {n} of 4" in r.stderr
+    assert len(list(reviews.iterdir())) == 4
+    refused = _review(run_dir, repo, bin_dir, reviews)
+    assert refused.returncode == 3
+    assert "REFUSING" in refused.stderr
+    assert "question.asked" in refused.stderr
+    assert len(list(reviews.iterdir())) == 4, "a refused round must not write a review"
+
+
+def test_the_last_allowed_round_says_it_is_the_last(tmp_path):
+    """Discovering the cap by being refused, after another full repair cycle, wastes the
+    cycle. The round that spends the budget says so while the worker is still deciding."""
+    run_dir, repo, bin_dir = _issue_review_wrapper(tmp_path)
+    reviews = tmp_path / "reviews"
+    for _ in range(3):
+        assert _review(run_dir, repo, bin_dir, reviews).returncode == 0
+    last = _review(run_dir, repo, bin_dir, reviews)
+    assert "LAST round" in last.stderr
+    assert "task.blocked" in last.stderr
+
+
+def test_a_review_that_did_not_produce_output_spends_no_round_and_fails(tmp_path):
+    """Two properties at once. A reviewer that produced nothing must not consume the
+    budget — otherwise an infrastructure failure costs a round the work never got. And it
+    must not exit zero: WORKER.md's rule is that a review which did not happen is never
+    reported as clean, and zero is exactly what a worker reads as clean.
+    """
+    run_dir, repo, bin_dir = _issue_review_wrapper(tmp_path)
+    (bin_dir / "claude").write_text("#!/bin/sh\nexit 0\n")
+    (bin_dir / "claude").chmod(0o755)
+    reviews = tmp_path / "reviews"
+    reviews.mkdir()
+    r = _review(run_dir, repo, bin_dir, reviews)
+    assert r.returncode != 0
+    assert "NO round was spent" in r.stderr
+    assert not list(reviews.iterdir())
+
+
+def test_the_review_still_reaches_stdout_unchanged(tmp_path):
+    """Capturing the review on its way past must not change the interface. Every existing
+    invocation pipes a diff in and reads the verdict off stdout."""
+    run_dir, repo, bin_dir = _issue_review_wrapper(tmp_path)
+    r = _review(run_dir, repo, bin_dir, tmp_path / "reviews")
+    assert r.stdout.startswith("VERDICT: REWORK")
+
+
+def test_the_cap_is_an_operator_control(tmp_path):
+    """Zero disables it, for the operator who has decided this order earns more rounds."""
+    run_dir, repo, bin_dir = _issue_review_wrapper(tmp_path)
+    reviews = tmp_path / "reviews"
+    for _ in range(5):
+        r = _review(run_dir, repo, bin_dir, reviews, HIVE_REVIEW_ROUND_CAP="0")
+        assert r.returncode == 0, r.stderr
+    assert len(list(reviews.iterdir())) == 5
