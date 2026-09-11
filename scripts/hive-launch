@@ -1407,6 +1407,7 @@ if [ "$EXECUTABLE" = "sbx" ]; then
 OMEGAHIVE_GATEWAY_DATABASE_URL=$GW_DSN_VM
 OMEGAHIVE_DATABASE_URL=$GW_DSN_VM
 HIVE_CLI_CMD=omegahive
+HIVE_REVIEW_DIR=$RUN_DIR/reviews
 GIT_AUTHOR_NAME=$WORKER
 GIT_AUTHOR_EMAIL=$WORKER@hive.local
 GIT_COMMITTER_NAME=$WORKER
@@ -1939,7 +1940,10 @@ launch_cmd="$(printf '%q ' "${ARGV[@]}")\"\$HIVE_KICKOFF\""
 # enforced by `harness/records.py` at catalog load; reading the catalog here in the shell moved
 # it off the path, and a comment claiming the old guarantee is not the guarantee (cross-harness
 # review, 2026-08-24).
-TMUX_ENV=(-e "HIVE_KICKOFF=$KICKOFF")
+# HIVE_REVIEW_DIR is how the review wrappers find a durable home for their output. Without
+# it they default to $TMPDIR, which is swept, so review history evaporates and the question
+# "how many rounds did this take, and were they the same finding" cannot be asked at all.
+TMUX_ENV=(-e "HIVE_KICKOFF=$KICKOFF" -e "HIVE_REVIEW_DIR=$RUN_DIR/reviews")
 while IFS= read -r n; do
   [ -n "$n" ] || continue
   [ -n "${!n+set}" ] || continue
