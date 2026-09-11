@@ -475,9 +475,9 @@ REVIEWBODY
 # and never read it.
 issue_opencode_config() {
   # issue_opencode_config <task-root> <endpoint> <key-env-name> <model> <context-limit>
-  #                       <compaction-model> [<reasoning-effort>]
+  #                       <compaction-model> [<reasoning-effort>] [<output-limit>]
   local TASK_ROOT="$1" ENDPOINT="$2" KEY_NAME="$3" MODEL="$4" LIMIT="$5" COMPACTION="$6"
-  local EFFORT="${7:-}"
+  local EFFORT="${7:-}" OUTPUT="${8:-16000}"
   local CFG="$TASK_ROOT/opencode.json" PLUGIN="$TASK_ROOT/hive-compaction.js"
 
   # The compaction model is addressed through the SAME provider block as the worker's, so
@@ -486,7 +486,8 @@ issue_opencode_config() {
   # survives the round trip intact.
   jq -n \
     --arg endpoint "$ENDPOINT" --arg key "$KEY_NAME" --arg model "$MODEL" \
-    --arg compaction "$COMPACTION" --argjson limit "$LIMIT" --arg effort "$EFFORT" '
+    --arg compaction "$COMPACTION" --argjson limit "$LIMIT" --arg effort "$EFFORT" \
+    --argjson output "$OUTPUT" '
     {
       "$schema": "https://opencode.ai/config.json",
       plugin: ["./hive-compaction.js"],
@@ -496,7 +497,7 @@ issue_opencode_config() {
           options: { baseURL: $endpoint, apiKey: "{env:\($key)}" },
           models: (
             { ($model): (
-                { reasoning: true, limit: { context: $limit, output: 16000 } }
+                { reasoning: true, limit: { context: $limit, output: $output } }
                 # `options` on a model entry is forwarded into the request body by the
                 # openai-compatible provider — verified at the wire on 2026-09-11, where
                 # `reasoningEffort: "high"` arrived at OpenRouter as `reasoning_effort`.
@@ -534,6 +535,11 @@ issue_opencode_config() {
 //
 // WORKER.md already says "externalize your state to committed files as you go". That is a
 // standing instruction nothing invokes at the moment it matters. This is the invocation.
+//
+// Every reading here distinguishes "the command failed" from "the answer is empty", and
+// says which. A summary that reports a clean tree because `git status` timed out is worse
+// than one that reports nothing, because the worker would believe it — and it would
+// believe it about the one fact this hook exists to carry.
 
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
@@ -541,21 +547,31 @@ import { readdir, readFile, stat } from "node:fs/promises"
 import { dirname, join } from "node:path"
 
 const run = promisify(execFile)
-const CAP = 4000        // characters of injected context, at most
+const BLOCK_CAP = 2500  // characters per block, so no block can crowd out another
+const TOTAL_CAP = 8000  // characters of injected context, at most
 const LOG_MAX = 25      // commits listed per clone
 const DIRTY_MAX = 40    // dirty paths listed per clone
 
+// null means the command did not answer; "" means it answered with nothing. Collapsing
+// those two is how a plugin comes to assert a clean tree it never managed to read.
 async function git(cwd, ...args) {
   try {
-    const { stdout } = await run("git", ["-C", cwd, ...args], { timeout: 10_000 })
+    const { stdout } = await run("git", ["-C", cwd, ...args], {
+      timeout: 10_000,
+      maxBuffer: 8 * 1024 * 1024,
+    })
     return stdout.trim()
   } catch {
-    return ""
+    return null
   }
 }
 
 async function exists(p) {
   try { await stat(p); return true } catch { return false }
+}
+
+function clip(text) {
+  return text.length > BLOCK_CAP ? text.slice(0, BLOCK_CAP) + "\n  … (list truncated)" : text
 }
 
 // The task root holds `run/` — the worker's own interface — and that is what identifies it.
@@ -569,11 +585,28 @@ async function findTaskRoot(directory) {
   return dirname(directory)
 }
 
+// Two blocks per clone, deliberately separate. The uncommitted one is the load-bearing
+// half — committed work is recoverable from git long after this session ends, while
+// uncommitted work is what a compaction can cause a worker to walk away from — so it is
+// emitted first and budgeted separately, rather than sharing a tail that truncation eats.
 async function cloneState(path) {
   const head = await git(path, "rev-parse", "HEAD")
-  if (!head) return ""
+  if (head === null) return { dirty: "", committed: "" }
   const branch = await git(path, "rev-parse", "--abbrev-ref", "HEAD")
-  const lines = [`${path}  branch ${branch || "?"}  HEAD ${head.slice(0, 12)}`]
+  const label = `${path}  branch ${branch || "?"}  HEAD ${head.slice(0, 12)}`
+
+  const dirty = await git(path, "status", "--porcelain")
+  let dirtyBlock
+  if (dirty === null) {
+    dirtyBlock = `${label}\n  COULD NOT READ the working tree here. Run \`git status\` yourself\n  before assuming anything about it.`
+  } else if (dirty) {
+    dirtyBlock = clip(
+      `${label}\n  UNCOMMITTED — this work exists only in the working tree:\n` +
+      dirty.split("\n").slice(0, DIRTY_MAX).map((l) => `    ${l}`).join("\n"),
+    )
+  } else {
+    dirtyBlock = `${label}\n  working tree clean`
+  }
 
   // What this worker has committed: everything its upstream does not have. A clone with no
   // upstream yet falls back to its last few commits rather than reporting nothing.
@@ -581,30 +614,39 @@ async function cloneState(path) {
   const log = upstream
     ? await git(path, "log", "--oneline", "--no-decorate", `${upstream}..HEAD`)
     : await git(path, "log", "--oneline", "--no-decorate", "-n5")
-  if (log) {
-    lines.push(upstream ? `  committed, not yet on ${upstream}:` : "  recent commits:")
-    for (const c of log.split("\n").slice(0, LOG_MAX)) lines.push(`    ${c}`)
-  } else if (upstream) {
-    lines.push(`  nothing committed beyond ${upstream}`)
-  }
-
-  const dirty = await git(path, "status", "--porcelain")
-  if (dirty) {
-    lines.push("  UNCOMMITTED — this work exists only in the working tree:")
-    for (const p of dirty.split("\n").slice(0, DIRTY_MAX)) lines.push(`    ${p}`)
+  let committed
+  if (log === null) {
+    committed = `${path}: COULD NOT READ the commit log.`
+  } else if (log) {
+    committed = clip(
+      `${path}\n  ${upstream ? `committed, not yet on ${upstream}:` : "recent commits:"}\n` +
+      log.split("\n").slice(0, LOG_MAX).map((l) => `    ${l}`).join("\n"),
+    )
   } else {
-    lines.push("  working tree clean")
+    committed = `${path}: nothing committed beyond ${upstream}`
   }
-  return lines.join("\n")
+  return { dirty: dirtyBlock, committed }
 }
 
 // Review rounds, with each round's verdict. A worker that cannot recall a finding has not
 // addressed it, and the round count is the fact that makes a loop visible from inside it.
+//
+// On this branch NOTHING creates `run/reviews` yet: review artifacts still default to a
+// swept temp directory, and the change that puts them in the task root and hands the worker
+// HIVE_REVIEW_DIR is a separate one. So this block is dormant until that lands, and it says
+// so rather than going quiet — a missing directory is reported as a missing READING, never
+// as "you have not been reviewed", because only one of those is a claim a worker would act
+// on and it is the one that would be false.
 async function reviewState(runDir) {
   const dir = join(runDir, "reviews")
+  if (!(await exists(dir))) {
+    return `No review directory at ${dir}, so this reading says nothing about whether\nyou have been reviewed. Check where your review command writes before assuming\nthere have been no rounds.`
+  }
   let names
-  try { names = (await readdir(dir)).sort() } catch { return "" }
-  if (!names.length) return ""
+  try { names = (await readdir(dir)).sort() } catch (err) {
+    return `Could not read ${dir}: ${err}`
+  }
+  if (!names.length) return `No review rounds have been written to ${dir} yet.`
   const lines = [`Reviews so far (${names.length}), in ${dir}:`]
   for (const n of names) {
     let verdict = "verdict not stated in the file"
@@ -617,16 +659,62 @@ async function reviewState(runDir) {
   }
   lines.push("Re-read any round you have not addressed before continuing: a finding you")
   lines.push("cannot recall is still outstanding, and repeating a repair is not progress.")
-  return lines.join("\n")
+  return clip(lines.join("\n"))
+}
+
+async function hiveState(directory) {
+  const taskRoot = await findTaskRoot(directory)
+  const blocks = []
+
+  const kickoff = join(taskRoot, "kickoff.txt")
+  if (await exists(kickoff)) {
+    blocks.push(
+      `Your order, its scopes and its stop-lines are in the kickoff you were given, kept\n` +
+      `at ${kickoff}. Re-read it before your next action: the summary below is a record\n` +
+      `of this session, not the order, and it is not authoritative about either.`,
+    )
+  }
+
+  const entries = await readdir(taskRoot, { withFileTypes: true }).catch(() => [])
+  const clones = []
+  for (const e of entries) {
+    if (!e.isDirectory() || e.name === "run" || e.name === "cli") continue
+    const p = join(taskRoot, e.name)
+    if (await exists(join(p, ".git"))) clones.push(p)
+  }
+  const states = await Promise.all(clones.map(cloneState))
+
+  // Ordered by what a truncation may least afford to lose: uncommitted work first,
+  // outstanding reviews next, commit history last.
+  const dirty = states.map((s) => s.dirty).filter(Boolean)
+  if (dirty.length) blocks.push("Working trees of this worker's clones:\n" + dirty.join("\n"))
+  blocks.push(await reviewState(join(taskRoot, "run")))
+  const committed = states.map((s) => s.committed).filter(Boolean)
+  if (committed.length) blocks.push("Committed by this worker:\n" + committed.join("\n"))
+
+  // Never an empty return. A task root with no kickoff, no clone and no review is not a
+  // real worker, so an empty result is evidence of a bug in here rather than of a worker
+  // with nothing to say — and reporting it as such is what makes that bug findable.
+  if (!blocks.length) {
+    return (
+      "== Hive worker state ==\n\n" +
+      `Nothing was found under ${taskRoot}: no kickoff, no git clone, no review round.\n` +
+      "That is not what a worker's task root looks like, so treat this as a missing\n" +
+      "reading rather than as an empty one."
+    )
+  }
+  let text = "== Hive worker state, read from disk at compaction time ==\n\n" + blocks.join("\n\n")
+  if (text.length > TOTAL_CAP) text = text.slice(0, TOTAL_CAP) + "\n… (truncated)"
+  return text
 }
 
 export default async ({ directory }) => ({
   "experimental.session.compacting": async (_input, output) => {
-    // Everything below is wrapped, because the alternative is the failure mode this hook
-    // exists to prevent. A hook that throws injects nothing, and nothing is exactly what
-    // the default summary already looks like — so a worker would compact without its own
-    // state and have no way to tell. A block that says the state could not be read is a
-    // worse summary than the intended one and a far better one than a silent absence.
+    // The SINK is guarded, not only the producer. If `output.context` is ever not an array
+    // — the realistic cause being a change to this experimental hook's own signature —
+    // then pushing from inside a catch throws again and the error escapes, which lands
+    // right back on the silent absence this wrapper exists to prevent.
+    if (!Array.isArray(output?.context)) return
     try {
       output.context.push(await hiveState(directory))
     } catch (err) {
@@ -640,49 +728,11 @@ export default async ({ directory }) => ({
     }
   },
 })
-
-async function hiveState(directory) {
-    const taskRoot = await findTaskRoot(directory)
-    const blocks = []
-
-    const kickoff = join(taskRoot, "kickoff.txt")
-    if (await exists(kickoff)) {
-      blocks.push(
-        `Your order, its scopes and its stop-lines are in the kickoff you were given, kept\n` +
-        `at ${kickoff}. Re-read it before your next action: the summary below is a record\n` +
-        `of this session, not the order, and it is not authoritative about either.`,
-      )
-    }
-
-    const entries = await readdir(taskRoot, { withFileTypes: true }).catch(() => [])
-    const clones = []
-    for (const e of entries) {
-      if (!e.isDirectory() || e.name === "run" || e.name === "cli") continue
-      const p = join(taskRoot, e.name)
-      if (await exists(join(p, ".git"))) clones.push(p)
-    }
-    const states = (await Promise.all(clones.map(cloneState))).filter(Boolean)
-    if (states.length) blocks.push("Git state of this worker's clones:\n" + states.join("\n"))
-
-    const reviews = await reviewState(join(taskRoot, "run"))
-    if (reviews) blocks.push(reviews)
-
-    // Never an empty return. A task root with no kickoff, no clone and no review is not a
-    // real worker, so an empty result is evidence of a bug in here rather than of a worker
-    // with nothing to say — and reporting it as such is what makes that bug findable.
-    if (!blocks.length) {
-      return (
-        "== Hive worker state ==\n\n" +
-        `Nothing was found under ${taskRoot}: no kickoff, no git clone, no review round.\n` +
-        "That is not what a worker's task root looks like, so treat this as a missing\n" +
-        "reading rather than as an empty one."
-      )
-    }
-    let text = "== Hive worker state, read from disk at compaction time ==\n\n" + blocks.join("\n\n")
-    if (text.length > CAP) text = text.slice(0, CAP) + "\n… (truncated)"
-    return text
-}
 HIVEPLUGIN
+  # Checked like the config above it. Unchecked, a failed write here — a full filesystem,
+  # an unwritable task root — returns non-zero as this function's LAST command, and `set -e`
+  # kills the launch with no message at all, part-way through provisioning.
+  [ -s "$PLUGIN" ] || die "could not write the compaction plugin to $PLUGIN"
 }
 
 # Read a harness version out of a `--version` probe's combined output.

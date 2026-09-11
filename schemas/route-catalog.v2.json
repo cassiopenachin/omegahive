@@ -175,6 +175,7 @@
             }
           ],
           "default": null,
+          "pattern": "^[a-z]+$",
           "title": "Reasoning Effort"
         },
         "note": {

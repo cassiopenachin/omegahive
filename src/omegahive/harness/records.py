@@ -80,7 +80,10 @@ _OPENROUTER_MODEL_SHAPE = re.compile(r"~?[^/\s]+/[^/\s]+\Z")
 # as a bare string for an OpenAI-compatible provider, so a catalogued typo would otherwise
 # travel all the way to the provider and come back as a rejected request from inside a VM.
 # One lowercase token, which is what every provider that has this concept actually accepts.
-_EFFORT_SHAPE = re.compile(r"[a-z]+\Z")
+# Anchored `^...$` rather than `\Z`: this pattern is also published in
+# `schemas/route-catalog.v2.json`, where the dialect is ECMA-262 and `\Z` means a
+# literal Z. Every other pattern in that file is already anchored this way.
+_EFFORT_SHAPE = re.compile(r"^[a-z]+$")
 
 # The same two shapes, expressed for the GENERATED JSON SCHEMA as well as for the validators
 # below. Both statements are needed and neither is redundant: `hive-launch` parses the catalog
@@ -356,7 +359,8 @@ class RouteEntry(BaseModel):
     # true of that model rather than of this deployment. Absent means "the model's default",
     # which is a different statement from any particular level and stays distinguishable
     # from one.
-    reasoning_effort: str | None = None
+    reasoning_effort: str | None = Field(
+        default=None, json_schema_extra={"pattern": _EFFORT_SHAPE.pattern})
     note: str | None = None
 
     @field_validator("name")

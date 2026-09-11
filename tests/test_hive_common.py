@@ -437,3 +437,167 @@ def test_the_plugin_reports_a_failure_rather_than_injecting_nothing(tmp_path):
     assert "could not be read at compaction time" in plugin
     # Exactly one unconditional push per path: the success block and the failure block.
     assert plugin.count("output.context.push") == 2
+
+
+def _run_plugin(task_root: Path) -> str:
+    """Execute the generated plugin's compaction hook and return what it injects.
+
+    Asserting on the plugin's SOURCE proves only that the text is there. What matters is
+    what a worker actually receives at the one moment the transcript is discarded, so this
+    imports the shipped module and calls the hook.
+    """
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("no node on PATH to execute the generated ES module")
+    gen = _issue_opencode_config(task_root)
+    assert gen.returncode == 0, gen.stdout + gen.stderr
+    driver = task_root / "drive.mjs"
+    driver.write_text(
+        "const mod = await import('./hive-compaction.js')\n"
+        "const hooks = await mod.default({ directory: process.argv[2] })\n"
+        "const out = { context: [] }\n"
+        "await hooks['experimental.session.compacting']({}, out)\n"
+        "process.stdout.write(out.context.join('\\n---\\n'))\n"
+    )
+    r = subprocess.run(
+        [node, str(driver), str(task_root / "hive")],
+        capture_output=True, text=True, timeout=60, cwd=str(task_root),
+    )
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+def _worker_root(tmp_path: Path) -> Path:
+    """A task root shaped the way `hive-launch` builds one."""
+    root = tmp_path / "sess-drill-0101"
+    (root / "run").mkdir(parents=True)
+    (root / "kickoff.txt").write_text("your order is at projects/x/order.md\n")
+    for clone in ("hive", "widget"):
+        d = root / clone
+        d.mkdir()
+        subprocess.run(["git", "init", "-q", str(d)], check=True, timeout=30)
+        for k, v in (("user.email", "d@drill"), ("user.name", "drill")):
+            subprocess.run(["git", "-C", str(d), "config", k, v], check=True, timeout=30)
+        (d / "seed.txt").write_text("seed\n")
+        subprocess.run(["git", "-C", str(d), "add", "-A"], check=True, timeout=30)
+        subprocess.run(["git", "-C", str(d), "commit", "-qm", f"seed {clone}"],
+                       check=True, timeout=30)
+    return root
+
+
+def test_the_plugin_reports_uncommitted_work_and_puts_it_first(tmp_path):
+    """Committed work is recoverable from git long after this session ends. Uncommitted
+    work is what a compaction can cause a worker to walk away from — so it is the block
+    that must survive truncation, which means it must be emitted before the commit log.
+    """
+    root = _worker_root(tmp_path)
+    (root / "widget" / "half-done.py").write_text("# not committed\n")
+    text = _run_plugin(root)
+    assert "UNCOMMITTED" in text
+    assert "half-done.py" in text
+    assert text.index("UNCOMMITTED") < text.index("Committed by this worker")
+
+
+def test_a_git_failure_is_never_reported_as_a_clean_tree(tmp_path):
+    """The worst thing this plugin could do is assert a fact it failed to read. `git
+    status` can fail on a timeout, an index lock or an oversized listing while `rev-parse
+    HEAD` succeeds — so a plugin that collapses "failed" into "empty" tells the worker its
+    tree is clean at the exact moment that claim is most costly and least checkable.
+    """
+    root = _worker_root(tmp_path)
+    # Break `git status` alone: an unreadable index survives rev-parse but fails status.
+    (root / "widget" / ".git" / "index").write_bytes(b"not an index")
+    text = _run_plugin(root)
+    assert "COULD NOT READ the working tree" in text
+    widget_block = text.split(str(root / "widget"), 1)[1]
+    assert "working tree clean" not in widget_block.split("\n\n")[0]
+
+
+def test_a_missing_review_directory_is_reported_as_missing_not_as_no_reviews(tmp_path):
+    """Absence of the directory and absence of rounds are different facts, and the second
+    is a claim a worker would act on. `run/reviews` is created by `issue_worker_interface`;
+    a task root provisioned by a launcher that predates it has none, and this must not read
+    as "you have not been reviewed".
+    """
+    text = _run_plugin(_worker_root(tmp_path))
+    assert "No review directory" in text
+    assert "Reviews so far" not in text
+
+
+def test_review_rounds_are_listed_with_their_verdicts(tmp_path):
+    root = _worker_root(tmp_path)
+    reviews = root / "run" / "reviews"
+    reviews.mkdir()
+    (reviews / "001-first.md").write_text("# round one\n\nVERDICT: REWORK\n")
+    (reviews / "002-second.md").write_text("**VERDICT**: PASS\n")
+    text = _run_plugin(root)
+    assert "Reviews so far (2)" in text
+    assert "001-first.md  REWORK" in text
+    assert "002-second.md  PASS" in text
+
+
+def test_a_task_root_that_is_not_one_says_so_rather_than_going_quiet(tmp_path):
+    """An empty reading here is evidence of a bug in the plugin, not of a worker with
+    nothing to say, and saying so is what makes that bug findable."""
+    root = tmp_path / "empty"
+    (root / "hive").mkdir(parents=True)
+    (root / "run").mkdir()
+    text = _run_plugin(root)
+    assert "Hive worker state" in text
+    assert "No review directory" in text
+
+
+# --- the refusals a preflight has to be able to reach -----------------------------------
+
+
+def _launch_source() -> str:
+    return (REPO / "scripts" / "hive-launch").read_text()
+
+
+def test_every_opencode_refusal_sits_above_the_check_exit():
+    """A preflight that cannot reach a refusal passes a route the launch then aborts on,
+    after telling the operator it was fine. `--check` returns at its own block, so each of
+    these `die`s has to be above that line or it is unreachable from a preflight.
+    """
+    src = _launch_source()
+    check_at = src.index('if [ -n "$CHECK_ONLY" ]; then')
+    preflight = src[:check_at]
+    for phrase in (
+        "runs the opencode harness outside",
+        "declares no\n  provider endpoint in runner.env",
+        "inherits no credential name",
+        "inherits several environment",
+        "is not a\n  single lowercase token",
+    ):
+        assert phrase in preflight, f"refusal is below the --check exit: {phrase!r}"
+
+
+def test_the_shape_rule_is_enforced_in_the_shell_as_well_as_in_python():
+    """`hive-launch` reads the catalog with jq and never calls `load_catalog`, so the
+    pydantic validator guards `hive-routes` and guards nothing on the launch path. Without
+    a shell-side twin the same catalogued typo refuses one tool and launches the other.
+    """
+    src = _launch_source()
+    assert "*[!a-z]*" in src, "no shell-side reasoning_effort shape check"
+
+
+def test_an_effort_that_no_harness_would_apply_is_refused():
+    """The field is applied only through opencode's generated config. On any other harness
+    it would be accepted, printed by `hive-routes` as if in force, and ignored — and the
+    codex routes already carry their own effort inside `runner.args`, so the two statements
+    could silently disagree.
+    """
+    src = _launch_source()
+    assert 'can only apply that field' in src
+
+
+def test_a_reattach_verifies_the_credential_name_it_cannot_re_apply():
+    """`.sandbox-env` is consumed only by `sbx create --env-file`, so rewriting it does
+    nothing to a VM that already exists — while the generated config lives in the mounted
+    task root and IS read live. Regenerating one and not the other is how a config saying
+    `{env:NEW_NAME}` ends up inside a VM whose environment still holds the old name.
+    """
+    src = _launch_source()
+    reattach = src.split("exists — re-attaching", 1)[1].split("sbx create --quiet", 1)[0]
+    assert "$OPENCODE_KEY_NAME+set" in reattach
+    assert "authenticate as nobody" in reattach
