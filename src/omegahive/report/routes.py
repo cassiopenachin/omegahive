@@ -67,6 +67,7 @@ def _row(route: RouteEntry, *, default: bool, present: bool | None,
         "inherit_env_as": dict(sorted(route.runner.inherit_env_as.items())),
         "provider_env": dict(sorted(route.runner.env.items())),
         "reviewer": route.reviewer,
+        "reasoning_effort": route.reasoning_effort,
         "runner_fingerprint": route.runner.fingerprint(),
         # Resolved through the adapter, not guessed: `codex exec resume` refuses several
         # options `codex exec` accepts, so "can this route be resumed" is a property of
@@ -202,6 +203,11 @@ def routes_to_text(rows: list[dict[str, Any]]) -> str:
         # 2026-08-28, so the operator question "can this route carry an order that
         # requires a review" had no answer a tool could give.
         out.append(f"      reviewer: {r['reviewer'] or 'unstated'}")
+        # Printed only when stated. A route that says nothing here accepts the model's
+        # own default, and printing "unstated" beside every route would turn the one case
+        # that IS a decision into a line the operator learns to skip.
+        if r["reasoning_effort"]:
+            out.append(f"      reasoning effort: {r['reasoning_effort']}")
         out.append(f"      fingerprint: {r['runner_fingerprint']}")
         if r["reason"]:
             out.append(f"    reason: {r['reason']}")
