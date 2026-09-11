@@ -787,6 +787,14 @@ if [ -n "$CHECK_ONLY" ]; then
     | jq -r '[(.runner.inherit_env_as // {}) | to_entries[] | "\(.key)<-\(.value)"] | join(" ")')
   [ -z "$AS_NAMES" ] || echo "  env renames: $AS_NAMES   (NAMES only)"
   [ -z "$ENV_PAIRS" ] || echo "  endpoint:   $(printf '%s' "$ENV_PAIRS" | tr '\n' ' ')  (a route fact, not the shell's)"
+  # What an opencode launch would generate. Shown here because it is not in the catalog and
+  # not in the argv: an operator reading a preflight would otherwise have no way to see the
+  # context limit their worker is about to run under, and that number decides whether the
+  # order compacts once, twice or never.
+  if [ "$R_HARNESS" = "opencode" ]; then
+    echo "  opencode:   context limit $HIVE_OPENCODE_CONTEXT_LIMIT, compaction on $HIVE_OPENCODE_COMPACTION_MODEL"
+    [ -z "$R_EFFORT" ] || echo "              reasoning effort $R_EFFORT (a route fact)"
+  fi
   # `require_declared_env` already ran above, so reaching this line means every declared name
   # is set. Saying so is the point: a preflight that stays silent about the thing that broke
   # the last launch has not preflighted it.
