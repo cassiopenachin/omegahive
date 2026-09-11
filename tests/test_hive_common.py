@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 COMMON = REPO / "scripts" / "hive-common.sh"
@@ -397,3 +400,40 @@ def test_an_unstated_effort_leaves_the_model_default_alone(tmp_path):
     cfg = json.loads((tmp_path / "opencode.json").read_text())
     entry = cfg["provider"]["openrouter"]["models"]["deepseek/deepseek-v4-flash-0731"]
     assert "options" not in entry
+
+
+def test_the_generated_plugin_actually_parses(tmp_path):
+    """The failure this catches is silent, which is why it is a test and not a review note.
+
+    Measured 2026-09-11: opencode loads a syntactically broken plugin without a word —
+    exit 0, no diagnostic, the session runs normally — so a worker would compact with no
+    hive state and nobody would ever learn that it had. The plugin is generated from a
+    shell heredoc, so the realistic way it breaks is an edit to that heredoc, and this is
+    the cheapest place to find out.
+    """
+    r = _issue_opencode_config(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("no node on PATH to parse-check the generated ES module")
+    check = subprocess.run(
+        [node, "--input-type=module", "--check"],
+        stdin=(tmp_path / "hive-compaction.js").open("rb"),
+        capture_output=True, text=True, timeout=30,
+    )
+    assert check.returncode == 0, check.stderr
+
+
+def test_the_plugin_reports_a_failure_rather_than_injecting_nothing(tmp_path):
+    """A hook that throws injects nothing, and nothing looks exactly like the default
+    summary — so the one failure mode that must never be silent is this one. The hook
+    wraps its whole body and pushes a block saying the state could not be read, and it
+    refuses to treat an empty task root as an empty answer.
+    """
+    r = _issue_opencode_config(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    plugin = (tmp_path / "hive-compaction.js").read_text()
+    assert "catch (err)" in plugin
+    assert "could not be read at compaction time" in plugin
+    # Exactly one unconditional push per path: the success block and the failure block.
+    assert plugin.count("output.context.push") == 2

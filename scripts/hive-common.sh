@@ -622,6 +622,26 @@ async function reviewState(runDir) {
 
 export default async ({ directory }) => ({
   "experimental.session.compacting": async (_input, output) => {
+    // Everything below is wrapped, because the alternative is the failure mode this hook
+    // exists to prevent. A hook that throws injects nothing, and nothing is exactly what
+    // the default summary already looks like — so a worker would compact without its own
+    // state and have no way to tell. A block that says the state could not be read is a
+    // worse summary than the intended one and a far better one than a silent absence.
+    try {
+      output.context.push(await hiveState(directory))
+    } catch (err) {
+      output.context.push(
+        "== Hive worker state could not be read at compaction time ==\n\n" +
+        `${err}\n\n` +
+        "Treat the summary below as incomplete. Before your next action, check `git status`\n" +
+        "and `git log` in each clone yourself, and re-read your kickoff and any review\n" +
+        "rounds under the task root.",
+      )
+    }
+  },
+})
+
+async function hiveState(directory) {
     const taskRoot = await findTaskRoot(directory)
     const blocks = []
 
@@ -647,12 +667,21 @@ export default async ({ directory }) => ({
     const reviews = await reviewState(join(taskRoot, "run"))
     if (reviews) blocks.push(reviews)
 
-    if (!blocks.length) return
+    // Never an empty return. A task root with no kickoff, no clone and no review is not a
+    // real worker, so an empty result is evidence of a bug in here rather than of a worker
+    // with nothing to say — and reporting it as such is what makes that bug findable.
+    if (!blocks.length) {
+      return (
+        "== Hive worker state ==\n\n" +
+        `Nothing was found under ${taskRoot}: no kickoff, no git clone, no review round.\n` +
+        "That is not what a worker's task root looks like, so treat this as a missing\n" +
+        "reading rather than as an empty one."
+      )
+    }
     let text = "== Hive worker state, read from disk at compaction time ==\n\n" + blocks.join("\n\n")
     if (text.length > CAP) text = text.slice(0, CAP) + "\n… (truncated)"
-    output.context.push(text)
-  },
-})
+    return text
+}
 HIVEPLUGIN
 }
 
