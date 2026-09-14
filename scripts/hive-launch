@@ -1200,8 +1200,11 @@ if [ "$EXECUTABLE" = "sbx" ]; then
   REVIEW_STRIP_NAMES="$REVIEW_STRIP_NAMES $SBX_INJECTED_ROUTING_NAMES"
   REVIEW_STRIP_NAMES="${REVIEW_STRIP_NAMES# }"
 fi
+# The order and its PIN travel to the review contract. The sha matters: by review time
+# `main` has moved and the worker's clone is dirty, so an order read live is not the order
+# the worker was given.
 issue_worker_interface "$RUN_DIR" "$WS_ROOT" "$CODE_ROOT" "$CODE_BRANCH" "$RUN" "$WORKER" \
-  "$R_REVIEWER" "$REVIEW_STRIP_NAMES"
+  "$R_REVIEWER" "$REVIEW_STRIP_NAMES" "$REL" "$SHA"
 # The worker's cwd, recorded as trusted in whichever store its harness reads, before the
 # window exists to ask about it. Only for a harness running on THIS host: a sandboxed route's
 # store is inside its VM, and is the kit's business or the sandbox block's, not this line's.
@@ -1429,6 +1432,7 @@ OMEGAHIVE_GATEWAY_DATABASE_URL=$GW_DSN_VM
 OMEGAHIVE_DATABASE_URL=$GW_DSN_VM
 HIVE_CLI_CMD=omegahive
 HIVE_REVIEW_DIR=$RUN_DIR/reviews
+HIVE_REVIEW_CONTRACT=$RUN_DIR/review-contract.md
 GIT_AUTHOR_NAME=$WORKER
 GIT_AUTHOR_EMAIL=$WORKER@hive.local
 GIT_COMMITTER_NAME=$WORKER
@@ -1996,7 +2000,8 @@ launch_cmd="$(printf '%q ' "${ARGV[@]}")\"\$HIVE_KICKOFF\""
 # HIVE_REVIEW_DIR is how the review wrappers find a durable home for their output. Without
 # it they default to $TMPDIR, which is swept, so review history evaporates and the question
 # "how many rounds did this take, and were they the same finding" cannot be asked at all.
-TMUX_ENV=(-e "HIVE_KICKOFF=$KICKOFF" -e "HIVE_REVIEW_DIR=$RUN_DIR/reviews")
+TMUX_ENV=(-e "HIVE_KICKOFF=$KICKOFF" -e "HIVE_REVIEW_DIR=$RUN_DIR/reviews" \
+          -e "HIVE_REVIEW_CONTRACT=$RUN_DIR/review-contract.md")
 while IFS= read -r n; do
   [ -n "$n" ] || continue
   [ -n "${!n+set}" ] || continue

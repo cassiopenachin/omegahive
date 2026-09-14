@@ -199,6 +199,7 @@ issue_worker_interface() {
   #                        [<reviewer>]
   local RUN_DIR="$1" WS_ROOT="$2" CODE_ROOT="$3" CODE_BRANCH="$4"
   local RUN="$5" WORKER="$6" REVIEWER="${7:-}" ROUTE_ENV_NAMES="${8:-}"
+  local ORDER_REF="${9:-}" ORDER_SHA="${10:-}"
   local WRAPPER="$RUN_DIR/emit" BRIDGE="$RUN_DIR/hive"
   local INSTRUMENT="$RUN_DIR/emit-instrument" REVIEW="$RUN_DIR/review"
   resolve_compose
@@ -356,6 +357,73 @@ esac
 BRIDGEBODY
   chmod +x "$BRIDGE"
 
+  # --- the review contract: what the reviewer is measured against ----------------------
+  #
+  # Written once, at launch, from the order AT ITS PINNED SHA — not at HEAD. By review time
+  # `main` has usually moved and the worker's own clone is dirty, so reading the order live
+  # would check the work against an order nobody was given.
+  #
+  # It exists because nothing ever compared a diff to its order. On 2026-09-10 a scope of
+  # "move a floor constant" produced 106 files and 5,016 insertions including a 903-line
+  # second implementation of the scoring pipeline; the reviewer named it in round 1 and it
+  # was still there at round 17. The reviewer was reviewing the diff it was handed, for
+  # correctness, which is all it was ever asked to do.
+  #
+  # One file, three consumers: the wrapper below, and the host-side review skills through
+  # HIVE_REVIEW_CONTRACT. A second copy of this text would drift within a week.
+  local CONTRACT="$RUN_DIR/review-contract.md"
+  if [ -n "$ORDER_REF" ] && [ -n "$ORDER_SHA" ]; then
+    local ORDER_TEXT
+    ORDER_TEXT=$(git -C "$WS_ROOT" show "$ORDER_SHA:$ORDER_REF" 2>/dev/null) || ORDER_TEXT=""
+    if [ -n "$ORDER_TEXT" ]; then
+      {
+        printf '# Review contract — %s on run %s\n\n' "$WORKER" "$RUN"
+        printf 'You are reviewing one hive worker against the order it was given. The order\n'
+        printf 'is quoted below at the sha it was pinned to (%s). It is authoritative\n' "${ORDER_SHA:0:12}"
+        printf 'about what "done" means; you are not.\n\n'
+        printf '## The order\n\n'
+        # Only the three sections a reviewer is measured against. The rest of an order is
+        # context for the worker -- refs, predictions, prose -- and handing it over invites
+        # a review of the order instead of the work.
+        printf '%s\n' "$ORDER_TEXT" | awk '
+          /^## (Scope|Stop-lines|Definition of done)/ { keep = 1; print; next }
+          /^## / { keep = 0 }
+          keep { print }
+        '
+        cat <<'CONTRACTBODY'
+
+## How to decide the verdict
+
+Answer these two questions, in this order, and say which one you are answering.
+
+**1. Is the Definition of done met?** Take each item above and say met or not met, with the
+evidence you checked. The order defines done. A reviewer with no stated bar invents one, and
+the one it invents is "unassailable" — across 44 saved reviews on this deployment, not one
+returned PASS.
+
+**2. Is anything shipped incorrect?** Blocking findings only. A finding is blocking when, and
+only when, one of these holds:
+
+  - a result the work states would be wrong;
+  - a published or postable artifact asserts something false;
+  - a test claimed to guard a behaviour cannot fail when that behaviour breaks.
+
+Everything else that is correct but not blocking is a **note**. Notes are worth writing and
+do not hold up the work.
+
+Then give exactly one verdict line, as the first non-empty line of your response:
+
+    VERDICT: PASS      every Definition-of-done item met, no blocking finding (notes are fine)
+    VERDICT: REWORK    a Definition-of-done item is not met, or a blocking finding stands
+
+Work outside Scope, or across a Stop-line, goes under a heading **OUT OF SCOPE**. Name it;
+do not require it to be removed, and do not require it to be perfected. Whether to cut or
+keep it is the operator's decision, and yours only to surface.
+CONTRACTBODY
+      } > "$CONTRACT"
+    fi
+  fi
+
   # --- the review command, for a route whose reviewer runs inside the sandbox ----------
   #
   # Issued for the two reviewers that are a COMMAND rather than an integration. The codex
@@ -417,6 +485,7 @@ BRIDGEBODY
 set -euo pipefail
 HIVE_REVIEW_STRIP="${unset_flags# }"
 HIVE_REVIEW_POSTURE=($review_posture)
+HIVE_REVIEW_CONTRACT="${HIVE_REVIEW_CONTRACT:-$CONTRACT}"
 REVIEWHEAD
     cat >> "$REVIEW" <<'REVIEWBODY'
 # Phase one: drop the routing and re-enter. On a route that sets none this is a no-op, and
@@ -515,6 +584,52 @@ if [ -n "$CANONICAL" ] && [ "$ROUND_CAP" -gt 0 ] && [ "$ROUNDS" -ge "$ROUND_CAP"
   exit 3
 fi
 
+# --- what this reviewer is given, beyond the diff -------------------------------------
+#
+# The contract (the order's Scope, Stop-lines and Definition of done, plus how to decide a
+# verdict) travels on STDIN ahead of whatever the worker piped in. It is a file path that is
+# read here, never a string interpolated into a command line: an order carries arbitrary
+# prose, and on 2026-09-10 a worker ran this very script through `sed` to change one word of
+# a prompt. Nothing about the order should be able to reach a shell.
+#
+# From round 2 the previous round and the incremental range are named too. Re-reading the
+# whole branch every round is how one task reached seventeen of them: each round found new
+# things in code it had already passed, because it was looking at all of it again.
+PREAMBLE=$(mktemp "${TMPDIR:-/tmp}/hive-review-preamble.XXXXXX") || exit 1
+trap 'rm -f "$PREAMBLE"' EXIT
+{
+  if [ -n "${HIVE_REVIEW_CONTRACT:-}" ] && [ -r "${HIVE_REVIEW_CONTRACT:-}" ]; then
+    cat "$HIVE_REVIEW_CONTRACT"
+  else
+    echo "# Review contract"
+    echo
+    echo "No order was supplied to this review, so SCOPE IS NOT CHECKED and the Definition"
+    echo "of done is unknown. Say so in your verdict rather than inventing a bar."
+  fi
+  echo
+  if [ -n "$CANONICAL" ] && [ "$ROUND_CAP" -gt 0 ]; then
+    echo "## This round"
+    echo
+    echo "Round $((ROUNDS + 1)) of $ROUND_CAP for this task."
+  fi
+  PREV=$(ls -1t "${HIVE_REVIEW_DIR:-/nonexistent}"/*review* 2>/dev/null | head -1 || true)
+  if [ -n "$PREV" ]; then
+    echo "The previous round is at $PREV. Read it first: your first job this round is"
+    echo "whether its findings were addressed, not to re-derive the whole branch."
+    PREV_HEAD=""
+    PREV_META="${HIVE_REVIEW_DIR:-}/meta/$(basename "$PREV").head"
+    [ ! -r "$PREV_META" ] || PREV_HEAD=$(cat "$PREV_META" 2>/dev/null || true)
+    if [ -n "$PREV_HEAD" ]; then
+      echo "It reviewed $PREV_HEAD. The incremental diff since then is the primary subject:"
+      echo "    git diff $PREV_HEAD..HEAD"
+      echo "The full branch diff stays available and is secondary."
+    fi
+    DISP="${HIVE_REVIEW_DIR:-}/disposition.md"
+    [ ! -r "$DISP" ] || echo "The worker recorded what it did with those findings in $DISP."
+  fi
+  echo
+} > "$PREAMBLE"
+
 # Printed before the wait, because on a harness that yields control after a second or two
 # this is the only output a caller is guaranteed to see. It is also the answer to the
 # question that produced the polling: a missing file means running, never failed.
@@ -546,12 +661,13 @@ fi
 PARTIAL=$(mktemp "${TMPDIR:-/tmp}/hive-review-partial.XXXXXX") || exit 1
 trap 'rm -f "$PARTIAL"' EXIT
 set +e
-claude -p --model "${HIVE_REVIEW_MODEL:-opus}" "${HIVE_REVIEW_POSTURE[@]}" "$@" \
+{ cat "$PREAMBLE"; [ -t 0 ] || cat; } \
+  | claude -p --model "${HIVE_REVIEW_MODEL:-opus}" "${HIVE_REVIEW_POSTURE[@]}" "$@" \
   | tee "$PARTIAL"
 PIPE=("${PIPESTATUS[@]}")
 set -e
-STATUS=${PIPE[0]}
-TEE_STATUS=${PIPE[1]:-0}
+STATUS=${PIPE[1]:-0}
+TEE_STATUS=${PIPE[2]:-0}
 # A review is KEPT whenever there is one, whatever the reviewer's exit status. `claude -p`
 # exits non-zero in real cases after emitting a complete response, and deleting that
 # response -- then telling the worker there was "no usable output" while it can see the
@@ -590,6 +706,8 @@ if [ "$TEE_STATUS" -ne 0 ]; then
   echo "        and NO round was spent. The review itself is above, on stdout." >&2
   exit 1
 fi
+mkdir -p "$HIVE_REVIEW_DIR/meta" 2>/dev/null || true
+git rev-parse HEAD > "$HIVE_REVIEW_DIR/meta/$(basename "$CANONICAL").head" 2>/dev/null || true
 mv -f "$PARTIAL" "$CANONICAL" || {
   echo "review: the review is complete and above, on stdout, but could not be saved to" >&2
   echo "        $CANONICAL -- so NO round was spent and it is not in the record." >&2
