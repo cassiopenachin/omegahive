@@ -31,8 +31,10 @@ whole of the decision-making is testable without a spine, a sandbox or a network
 
 from __future__ import annotations
 
+import base64
 import json
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -57,13 +59,32 @@ REVIEW_EXTRACTORS = ("claude-code-cost-state", "claude-code-transcript", "codex-
 
 
 @dataclass
+class Source:
+    """One harvested file: what reads it, where it is now, and what it was called.
+
+    `origin` and `path` differ for anything that came out of a sandbox: the file is a
+    local copy, while the name the review sidecars use is the path INSIDE the VM. Keeping
+    both is what lets a sidecar written by a reviewer at `/home/agent/.claude/...` be
+    matched against a file the harvest pulled out to the host. Collapsing them would
+    silently unattribute every sandboxed review.
+    """
+
+    extractor: str
+    path: Path
+    origin: str | None = None
+
+    def key(self) -> str:
+        return self.origin if self.origin is not None else str(self.path)
+
+
+@dataclass
 class HarvestRequest:
     """Everything the harvest needs, resolved by its caller.
 
-    `host_sources` and `sandbox_sources` are `(extractor, path)` pairs the caller has
-    already located — on the host, or copied out of the sandbox. Locating them needs a
-    live `sbx` and the operator's home; deciding what they MEAN does not, and keeping the
-    two apart is what makes this module testable.
+    `host_sources` and `sandbox_sources` are `Source`s the caller has already located —
+    on the host, or copied out of the sandbox. Locating them needs a live `sbx` and the
+    operator's home; deciding what they MEAN does not, and keeping the two apart is what
+    makes this module testable.
     """
 
     task: str
@@ -77,8 +98,8 @@ class HarvestRequest:
     execution_id: str | None
     attempt: int
     order_ref: str | None
-    host_sources: list[tuple[str, Path]] = field(default_factory=list)
-    sandbox_sources: list[tuple[str, Path]] = field(default_factory=list)
+    host_sources: list[Source] = field(default_factory=list)
+    sandbox_sources: list[Source] = field(default_factory=list)
 
 
 @dataclass
@@ -90,6 +111,145 @@ class HarvestResult:
     # see what the harvest could not place, rather than having it vanish.
     unattributed: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+
+
+def locate_host_sources(
+    *, task_root: Path, home: Path, codex_home: Path
+) -> list[Source]:
+    """Every usage surface on the HOST that belongs to this task root.
+
+    Two harnesses write outside the task root and have to be found by other means.
+
+    Claude Code files a session under a directory named for the cwd it ran in, with the
+    separators flattened — `/home/x/work/sess-t-0914/hive` becomes
+    `-home-x-work-sess-t-0914-hive`. A task root usually has several such directories,
+    one per repo the worker touched, so the match is on the flattened task root plus a
+    separator. Plus a separator, and not a bare prefix: `sess-t-0914` is a prefix of
+    `sess-t-0914b`, and a bare prefix would put a neighbouring task's tokens on this
+    task's bill.
+
+    codex files by date instead, so its rollouts are found by reading the `cwd` off each
+    `session_meta` header and keeping the ones under this task root. Only the first line
+    of each file is read; a rollout is megabytes and the header is the first record.
+    """
+    sources: list[Source] = []
+    slug = str(task_root).replace("/", "-")
+    projects = home / ".claude" / "projects"
+    if projects.is_dir():
+        for d in sorted(projects.iterdir()):
+            if not d.is_dir():
+                continue
+            if d.name != slug and not d.name.startswith(slug + "-"):
+                continue
+            for f in sorted(d.glob("*.jsonl")):
+                sources.append(Source("claude-code-cost-state", f))
+
+    sessions = codex_home / "sessions"
+    if sessions.is_dir():
+        for f in sorted(sessions.rglob("rollout-*.jsonl")):
+            try:
+                with f.open() as fh:
+                    head = json.loads(fh.readline() or "{}")
+            except (OSError, json.JSONDecodeError):
+                continue
+            cwd = str((head.get("payload") or {}).get("cwd") or "")
+            if cwd == str(task_root) or cwd.startswith(str(task_root) + "/"):
+                sources.append(Source("codex-rollout", f))
+    return sources
+
+
+def pull_sandbox_sources(
+    *, sandbox: str, staging: Path, runner: Callable[[list[str]], tuple[int, str]]
+) -> tuple[list[Source], list[str]]:
+    """Copy this task's sandbox surfaces onto the host, before the VM is pruned.
+
+    `runner` is the seam — it takes an argv and returns (exit status, stdout) — so the
+    decision logic here is exercised without a live `sbx`, matching how `HIVE_CLI_CMD`
+    and `HIVE_MODEL_PROBE_CMD` are already stubbed elsewhere.
+
+    Claude transcripts come out with `sbx cp`, which is byte-exact. opencode's store does
+    NOT: it is SQLite with a write-ahead log, and copying `opencode.db` alone silently
+    drops everything still in the `-wal` — which on a session that just ended is most of
+    it. So the export runs INSIDE the VM, where SQLite can read the log, and only the
+    resulting JSONL crosses the boundary.
+
+    Every failure is returned as a note rather than raised. A sandbox that has been
+    removed, or that holds neither surface, is an ordinary outcome of harvesting an old
+    task, and it must not cost the surfaces that WERE readable.
+    """
+    notes: list[str] = []
+    sources: list[Source] = []
+    staging.mkdir(parents=True, exist_ok=True)
+
+    status, out = runner(["exec", sandbox, "--", "sh", "-lc",
+                          "ls -1 /home/agent/.claude/projects/*/*.jsonl 2>/dev/null"])
+    if status != 0:
+        notes.append(f"sandbox {sandbox!r} could not be read ({out.strip() or 'no output'})")
+        return sources, notes
+    for line in out.splitlines():
+        in_vm = line.strip()
+        if not in_vm.endswith(".jsonl"):
+            continue
+        local = staging / Path(in_vm).name
+        cp_status, cp_out = runner(["cp", f"{sandbox}:{in_vm}", str(staging) + "/"])
+        if cp_status != 0 or not local.is_file():
+            notes.append(f"could not copy {in_vm} out of {sandbox} ({cp_out.strip()})")
+            continue
+        # The transcript is read for its cost-state record, and the per-message
+        # derivation is the fallback the extractor itself does not make — a review run
+        # with `claude -p` writes no cost-state, so this is the surface that has one only
+        # sometimes. `extract` returns `unavailable` when it is missing, and the caller
+        # retries with the transcript reader.
+        sources.append(Source("claude-code-cost-state", local, origin=in_vm))
+
+    db = "/home/agent/.local/share/opencode/opencode.db"
+    # base64 rather than a heredoc or `python3 -c`: the export is multi-line Python
+    # travelling through `sh -lc` inside an argv, and every quoting scheme that survives
+    # that is one someone will break later without noticing. This one has nothing to
+    # quote.
+    encoded = base64.b64encode(_OPENCODE_EXPORT.encode()).decode()
+    # Exit 3 says "this sandbox has no opencode store", which is the ordinary answer for
+    # every claude and antigravity route and must not be reported as a failure. Anything
+    # else that fails IS one, and gets named. Distinguishing them is the difference
+    # between a harvest that is quiet when it should be and one nobody reads.
+    status, out = runner([
+        "exec", sandbox, "--", "sh", "-lc",
+        f"if [ -f {db} ]; then echo {encoded} | base64 -d | python3 -; else exit 3; fi",
+    ])
+    if status == 0 and out.strip():
+        local = staging / "opencode-messages.jsonl"
+        local.write_text(out)
+        sources.append(Source("opencode-messages", local, origin=f"{sandbox}:{db}"))
+    elif status == 3:
+        pass
+    elif status != 0:
+        detail = out.strip().splitlines()[-1] if out.strip() else f"exit {status}"
+        notes.append(f"opencode export from {sandbox} failed ({detail})")
+    return sources, notes
+
+
+# Runs inside the sandbox. Reads the message rows and writes one JSON object per line —
+# ids, model, the counts and the harness's own cost, and no message content, which is the
+# same line `harness.usage` draws for its evidence rows.
+_OPENCODE_EXPORT = """
+import json, sqlite3
+c = sqlite3.connect(
+    "file:/home/agent/.local/share/opencode/opencode.db?mode=ro", uri=True)
+for (data,) in c.execute("select data from message order by time_created"):
+    try:
+        o = json.loads(data)
+    except Exception:
+        continue
+    if o.get("role") != "assistant":
+        continue
+    print(json.dumps({
+        "id": o.get("id") or o.get("parentID"),
+        "role": "assistant",
+        "modelID": o.get("modelID"),
+        "cost": o.get("cost"),
+        "tokens": o.get("tokens"),
+    }))
+"""
 
 
 def _usage_dir(task_root: Path) -> Path:
@@ -209,15 +369,14 @@ def harvest(req: HarvestRequest) -> HarvestResult:
 
     # 1. Copy first. Everything after this reads the copy, so a VM removed between the
     #    harvest and the next question costs nothing.
-    copied: list[tuple[str, Path, Path]] = []   # (extractor, origin, kept)
-    for extractor, origin in req.host_sources:
-        if Path(origin).is_file():
-            copied.append((extractor, Path(origin), _copy_in(req.task_root, Path(origin), "host")))
-    for extractor, origin in req.sandbox_sources:
-        if Path(origin).is_file():
-            copied.append((extractor, Path(origin), _copy_in(req.task_root, Path(origin), "vm")))
+    copied: list[tuple[str, str, Path]] = []   # (extractor, origin key, kept copy)
+    for src, subdir in [(s, "host") for s in req.host_sources] + [
+        (s, "vm") for s in req.sandbox_sources
+    ]:
+        if src.path.is_file():
+            copied.append((src.extractor, src.key(), _copy_in(req.task_root, src.path, subdir)))
 
-    by_origin = {str(origin): (extractor, kept) for extractor, origin, kept in copied}
+    by_origin = {origin: (extractor, kept) for extractor, origin, kept in copied}
 
     # 2. Reviews, attributed strictly by the sidecar the wrapper wrote at the time.
     review_parts: list[UsageEvidence] = []
@@ -288,7 +447,7 @@ def harvest(req: HarvestRequest) -> HarvestResult:
     else:
         work_parts = []
         for extractor, origin, kept in copied:
-            if str(origin) in claimed:
+            if origin in claimed:
                 continue
             if extractor != want:
                 # A transcript on a route whose worker writes a different surface is a
@@ -306,8 +465,7 @@ def harvest(req: HarvestRequest) -> HarvestResult:
 
     unattributed = [
         kept.name for extractor, origin, kept in copied
-        if str(origin) not in claimed
-        and (want is None or extractor != want)
+        if origin not in claimed and (want is None or extractor != want)
     ]
     if unattributed:
         notes.append(
@@ -333,7 +491,7 @@ def harvest(req: HarvestRequest) -> HarvestResult:
                 "attempt": req.attempt,
                 "order_ref": req.order_ref,
                 "sources": [
-                    {"extractor": e, "origin": str(o), "kept": str(k.relative_to(req.task_root))}
+                    {"extractor": e, "origin": o, "kept": str(k.relative_to(req.task_root))}
                     for e, o, k in copied
                 ],
                 "review_rounds": [{"round": n, "transcripts": t} for n, t in rounds],
