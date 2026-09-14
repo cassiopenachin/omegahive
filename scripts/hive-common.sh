@@ -466,7 +466,7 @@ CONTRACTBODY
     opus-in-sandbox)
       review_posture='--permission-mode bypassPermissions'
       review_cmd='claude -p --model "${HIVE_REVIEW_MODEL:-opus}"'
-      review_cred="$HOME/.claude/.credentials.json"
+      review_cred='$HOME/.claude/.credentials.json'
       review_cred_hint="Do NOT fall back to plain 'claude' -- that reviews this worker on the account under test." ;;
     # Comma-separated, deliberately. `--allowedTools` is variadic (<tools...>), and the
     # prompt is the positional argument immediately after it — a space-separated list would
@@ -475,7 +475,7 @@ CONTRACTBODY
     claude-cli)
       review_posture='--allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*)"'
       review_cmd='claude -p --model "${HIVE_REVIEW_MODEL:-opus}"'
-      review_cred="$HOME/.claude/.credentials.json"
+      review_cred='$HOME/.claude/.credentials.json'
       review_cred_hint="Do NOT fall back to plain 'claude' -- that reviews this worker on the account under test." ;;
     # Codex reviews a Claude worker: the other harness AND the other account, which is the
     # whole point of this reviewer. It was reached through the `/codex:review` plugin until
@@ -496,7 +496,7 @@ CONTRACTBODY
       review_posture=''
       review_cmd='codex exec -s read-only review -'
       review_scope='Review the diff of the current branch against `main` (its merge-base).'
-      review_cred="$HOME/.codex/auth.json"
+      review_cred='$HOME/.codex/auth.json'
       review_cred_hint="Do NOT review your own diff with your own harness; that is not an independent review." ;;
   esac
 

@@ -539,16 +539,6 @@ SBX_INJECTED_ROUTING_NAMES="ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BAS
 # route preflights clean, builds, works, and refuses at review time with the task done —
 # so it is refused here instead. The provider-routing test below does not catch it: a
 # sandboxed route that routes no model has no routing names at all.
-# Codex cannot be reached from inside sbx either: its credential proxy forces API billing for
-# OpenAI and blocks ChatGPT auth passthrough (probe, 2026-08-24), which is why no sandboxed
-# route runs Codex as a worker. The same wall applies to it as a reviewer.
-if [ "$EXECUTABLE" = "sbx" ] && [ "$R_REVIEWER" = "codex-plugin" ]; then
-  die "route '$ROUTE_NAME' runs in a sandbox and names the reviewer 'codex-plugin', which
-  invokes Codex. A sandbox's credential proxy forces API-key billing for OpenAI and blocks
-  ChatGPT auth passthrough, so that review would have no login. Use 'opus-in-sandbox'.
-  Nothing was created, cloned or emitted."
-fi
-
 if [ "$EXECUTABLE" = "sbx" ] && [ "$R_REVIEWER" = "claude-cli" ]; then
   die "route '$ROUTE_NAME' runs in a sandbox and names the reviewer 'claude-cli', which is a
   review invoked on the host. Inside a VM that is not a reviewer: no Claude login is copied
@@ -565,6 +555,16 @@ if [ "$EXECUTABLE" = "sbx" ] && [ -n "$ROUTE_ROUTING_NAMES" ] \
   reviewer strips it — so this route would bill its review to the account under test and
   call it independent. Set \"reviewer\": \"opus-in-sandbox\" on the route in
   $HIVE_ROUTE_CATALOG. Nothing was created, cloned or emitted."
+fi
+
+# Codex cannot be reached from inside sbx either: its credential proxy forces API billing for
+# OpenAI and blocks ChatGPT auth passthrough (probe, 2026-08-24), which is why no sandboxed
+# route runs Codex as a worker. The same wall applies to it as a reviewer.
+if [ "$EXECUTABLE" = "sbx" ] && [ "$R_REVIEWER" = "codex-plugin" ]; then
+  die "route '$ROUTE_NAME' runs in a sandbox and names the reviewer 'codex-plugin', which
+  invokes Codex. A sandbox's credential proxy forces API-key billing for OpenAI and blocks
+  ChatGPT auth passthrough, so that review would have no login. Use 'opus-in-sandbox'.
+  Nothing was created, cloned or emitted."
 fi
 
 case "$R_REVIEWER" in
