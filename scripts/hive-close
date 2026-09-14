@@ -20,10 +20,11 @@
 # worker's wrapper is gone — the one case this script cannot help with — falls
 # back to the manual two-emit close in RUNBOOK.md.
 #
-# project's metrics (hive-metrics) and scores the task's predictions (hive-score),
-# carrying the review verdict straight through — so the instrument refresh AND the
-# calibration row are both by-products of closing, not a separate errand the
-# operator has to remember afterwards (retro 3 D2/D4: a close that leaves the
+# project's metrics (hive-metrics), harvests what the task consumed (hive-usage) and
+# scores the task's predictions (hive-score), carrying the review verdict straight
+# through — so the instrument refresh, the consumption record AND the calibration row
+# are all by-products of closing, not a separate errand the operator has to remember
+# afterwards (retro 3 D2/D4: a close that leaves the
 # review column for a human to fill in later is exactly how it got filled in
 # wrong, or not at all). `--review` is therefore required for a scored close;
 # `--no-score` is the explicit opt-out, and skips both the metrics regeneration
@@ -146,6 +147,34 @@ echo "  NOTE review.passed = the operator read the result report (not artifact c
 #    place it is validated against the spine's own review.failed count (a false
 #    `clean` is refused there, loudly, same as any other scoring failure below —
 #    the close still stands and names the one recovery command).
+# 5a. Harvest what this task consumed, BEFORE the metrics and the scoring, and outside
+#     the --no-score branch. Two reasons it is not optional and not last.
+#
+#     The evidence is perishable in a way nothing else here is. Two of the four surfaces
+#     live inside a sandbox VM, and `sbx prune` removes every stopped one — so the window
+#     in which a review's cost can still be read closes without warning, and closing a
+#     task is the last moment anyone is reliably looking at it. `--no-score` says "do not
+#     score this task", not "do not record what it cost".
+#
+#     Non-fatal and loud, exactly like the two below it: the close is the governed act and
+#     is already durable on the spine, and a harvest failure names the one command that
+#     recovers it. It is re-runnable by construction — every payload it writes is derived
+#     from the evidence rather than from the clock, so a second run of the same task
+#     produces the same facts and the gateway collapses them.
+if "$SCRIPT_DIR/hive-usage" "$TASK" --project "$PROJECT" </dev/null; then
+  :
+else
+  {
+    echo
+    echo "hive-close: WARNING the close SUCCEEDED and is durable on the spine — harvesting"
+    echo "  what task '$TASK' consumed did not. Nothing about the close is in doubt; only"
+    echo "  the consumption record is missing. Recover with one command:"
+    echo "      hive-usage $TASK --project $PROJECT"
+    echo "  Do it before the task's sandbox is pruned: two of the four surfaces live"
+    echo "  inside it and nothing else holds a copy."
+  } >&2
+fi
+
 if [ "$SCORE" -eq 0 ]; then
   echo "hive-close: --no-score — metrics not regenerated, calibration not recorded;"
   echo "  run 'hive-metrics $PROJECT' and 'hive-score $TASK' when you want them."

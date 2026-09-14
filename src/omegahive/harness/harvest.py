@@ -215,7 +215,14 @@ def pull_sandbox_sources(
     status, out = runner(["exec", sandbox, "--", "sh", "-lc",
                           "ls -1 /home/agent/.claude/projects/*/*.jsonl 2>/dev/null"])
     if status != 0:
-        notes.append(f"sandbox {sandbox!r} could not be read ({out.strip() or 'no output'})")
+        # A host route never had a sandbox, and saying so on every harvest of one would
+        # be a note nobody reads. Anything ELSE that stops the listing is a real failure
+        # — a VM that exists and cannot be entered is exactly the case worth naming.
+        if "no sandbox named" not in out:
+            notes.append(
+                f"sandbox {sandbox!r} could not be read ({out.strip().splitlines()[0]})"
+                if out.strip() else f"sandbox {sandbox!r} could not be read (exit {status})"
+            )
         return sources, notes
     for line in out.splitlines():
         in_vm = line.strip()
@@ -407,12 +414,17 @@ def harvest(req: HarvestRequest) -> HarvestResult:
     # 2. What the ROUTE entails, before anything is attributed. Nothing in an opencode,
     #    antigravity or codex sandbox runs Claude Code except the reviewer — so a Claude
     #    transcript there is a review by entailment, and matching it to a particular round
-    #    is a refinement rather than a prerequisite. Where the worker IS Claude Code the
-    #    entailment fails: worker and reviewer write into the same home in the same shape,
-    #    and the sidecar is then the only thing that separates them.
+    #    is a refinement rather than a prerequisite.
+    #
+    #    The entailment is PER SURFACE, not per route, and getting that wrong left whole
+    #    classes uncounted: the claude-opus route runs a CODEX reviewer, whose rollout is
+    #    a shape the Claude worker never writes and so cannot be confused with. What
+    #    genuinely needs a sidecar is only the case where the reviewer writes the SAME
+    #    shape as the worker — a Claude reviewer on a Claude route, both filing into one
+    #    home.
     harness = (req.work_identity or {}).get("harness")
     want = WORK_SURFACE_BY_HARNESS.get(str(harness)) if harness else None
-    worker_writes_transcripts = str(harness) == "claude-code"
+    shares_surface_with_reviewer = want in REVIEW_SURFACES
 
     # 3. Reviews. Sidecars first, because they are exact and they carry the round name.
     review_parts: list[UsageEvidence] = []
@@ -425,13 +437,13 @@ def harvest(req: HarvestRequest) -> HarvestResult:
     claimed: set[str] = set()
     rounds = _review_rounds(req.task_root)
     for name, listed in rounds:
-        if len(listed) > 1 and worker_writes_transcripts:
+        if len(listed) > 1 and shares_surface_with_reviewer:
             # One `claude -p` writes one session file. Two, on a route where the worker
             # writes transcripts too, most plausibly means the worker's own session moved
             # in the window — and adding it would bill an entire worker run to a review.
             review_refusals.append(
                 f"{name} named {len(listed)} transcripts and this route's worker writes "
-                "transcripts too, so which one it wrote is ambiguous"
+                "the same shape, so which one it wrote is ambiguous"
             )
             claimed.update(listed)
             continue
@@ -452,7 +464,7 @@ def harvest(req: HarvestRequest) -> HarvestResult:
     # 4. On a route the entailment covers, every remaining reviewer-shaped source is a
     #    review — including the rounds whose sidecars predate this mechanism.
     entailed = 0
-    if want is not None and not worker_writes_transcripts:
+    if want is not None:
         for surface, origin, kept in copied:
             if origin in claimed or surface == want:
                 continue

@@ -493,3 +493,39 @@ def test_a_claude_worker_with_an_unsidecarred_round_refuses_the_round_by_name(tm
               work_identity={**IDENTITY, "harness": "claude-code"})
     assert res.review.usage.status == "unavailable"
     assert "review-1.txt" in (res.review.usage.reason or "")
+
+
+def test_a_reviewer_on_another_harness_is_entailed_even_on_a_claude_route(tmp_path):
+    """The claude-opus route runs a CODEX reviewer. Its rollout is a shape the Claude
+    worker never writes, so there is nothing to confuse it with — the ambiguity is
+    per-surface, not per-route, and gating it on the route left every codex review of a
+    Claude worker uncounted."""
+    rollout = tmp_path / "host" / "rollout-x.jsonl"
+    rollout.parent.mkdir(parents=True, exist_ok=True)
+    rollout.write_text(json.dumps({"type": "event_msg", "payload": {
+        "type": "token_count", "info": {"total_token_usage": {
+            "input_tokens": 1100, "cached_input_tokens": 1000,
+            "cache_write_input_tokens": 0, "output_tokens": 55,
+            "reasoning_output_tokens": 0}}}}) + "\n")
+    mine = transcript(tmp_path / "host" / "w.jsonl", out=400)
+    root = task_root(tmp_path, reviews={"review-1.txt": []})
+    res = run(root, work_identity={**IDENTITY, "harness": "claude-code"},
+              host_sources=[Source("claude-session", mine), Source("codex-rollout", rollout)])
+    assert res.review.usage.status == "reported"
+    assert res.review.usage.output_tokens == 55
+    assert res.work.usage.output_tokens == 400, "the worker's own transcript stays its own"
+    assert res.unattributed == []
+
+
+def test_a_route_with_no_sandbox_at_all_is_silent_about_it(tmp_path):
+    """Every host route is this case — `claude-opus` never had a VM. A note here would
+    appear on most harvests and train the operator past the ones that mean something."""
+    from omegahive.harness.harvest import pull_sandbox_sources
+
+    def runner(argv: list[str]) -> tuple[int, str]:
+        return 1, "ERROR: no sandbox named 'hive-t'\n\nTo create one:\n  sbx create ..."
+
+    sources, notes = pull_sandbox_sources(
+        sandbox="hive-t", staging=tmp_path / "s", runner=runner)
+    assert sources == []
+    assert notes == []
