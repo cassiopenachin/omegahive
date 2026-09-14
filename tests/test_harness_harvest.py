@@ -100,7 +100,7 @@ def run(root: Path, **over) -> object:
 def test_the_workers_own_surface_becomes_the_work_execution(tmp_path):
     root = task_root(tmp_path)
     export = opencode_export(tmp_path / "vm" / "opencode-messages.jsonl")
-    res = run(root, sandbox_sources=[Source("opencode-messages", export)])
+    res = run(root, sandbox_sources=[Source("opencode-export", export)])
     assert res.work.usage.status == "reported"
     assert res.work.usage.output_tokens == 500
 
@@ -109,8 +109,8 @@ def test_a_transcript_a_review_sidecar_names_is_billed_to_the_review(tmp_path):
     reviewed = transcript(tmp_path / "vm" / "claude" / "r1.jsonl", out=70)
     root = task_root(tmp_path, reviews={"review-1.txt": [reviewed]})
     export = opencode_export(tmp_path / "vm" / "opencode-messages.jsonl")
-    res = run(root, sandbox_sources=[Source("opencode-messages", export),
-                                     Source("claude-code-transcript", reviewed)])
+    res = run(root, sandbox_sources=[Source("opencode-export", export),
+                                     Source("claude-session", reviewed)])
     assert res.review.usage.output_tokens == 70
     assert res.work.usage.output_tokens == 500, "the review must not leak into the work total"
 
@@ -119,8 +119,8 @@ def test_two_rounds_are_summed_into_one_review_execution(tmp_path):
     r1 = transcript(tmp_path / "vm" / "c" / "r1.jsonl", msg="a", out=70)
     r2 = transcript(tmp_path / "vm" / "c" / "r2.jsonl", msg="b", out=30)
     root = task_root(tmp_path, reviews={"review-1.txt": [r1], "review-2.txt": [r2]})
-    res = run(root, sandbox_sources=[Source("claude-code-transcript", r1),
-                                     Source("claude-code-transcript", r2)],
+    res = run(root, sandbox_sources=[Source("claude-session", r1),
+                                     Source("claude-session", r2)],
               work_identity=None)
     assert res.review.usage.output_tokens == 100
     assert res.review.usage.evidence_records == 2
@@ -128,13 +128,15 @@ def test_two_rounds_are_summed_into_one_review_execution(tmp_path):
 
 def test_a_round_naming_two_transcripts_refuses_rather_than_guessing(tmp_path):
     """Claude Code writes one session file per `-p` invocation, so two is anomalous — most
-    likely the worker's own session landed in the window. Summing it would bill the whole
-    worker run to the review."""
+    likely the worker's own session landed in the window. On a Claude route, where the
+    worker writes transcripts too, summing them would bill a whole worker run to a
+    review."""
     a = transcript(tmp_path / "vm" / "c" / "a.jsonl", msg="a")
     b = transcript(tmp_path / "vm" / "c" / "b.jsonl", msg="b")
     root = task_root(tmp_path, reviews={"review-1.txt": [a, b]})
-    res = run(root, sandbox_sources=[Source("claude-code-transcript", a),
-                                     Source("claude-code-transcript", b)])
+    res = run(root, work_identity={**IDENTITY, "harness": "claude-code"},
+              sandbox_sources=[Source("claude-session", a),
+                               Source("claude-session", b)])
     assert res.review.usage.status == "unavailable"
     assert "review-1.txt" in (res.review.usage.reason or "")
     assert res.review.usage.output_tokens is None
@@ -171,8 +173,8 @@ def test_every_source_is_copied_into_the_task_root(tmp_path):
     reviewed = transcript(tmp_path / "vm" / "c" / "r1.jsonl")
     root = task_root(tmp_path, reviews={"review-1.txt": [reviewed]})
     export = opencode_export(tmp_path / "vm" / "opencode-messages.jsonl")
-    res = run(root, sandbox_sources=[Source("opencode-messages", export),
-                                     Source("claude-code-transcript", reviewed)])
+    res = run(root, sandbox_sources=[Source("opencode-export", export),
+                                     Source("claude-session", reviewed)])
     kept = sorted(p.name for p in (root / "run" / "usage" / "raw").rglob("*.jsonl"))
     assert len(kept) == 2
     for p in (root / "run" / "usage" / "raw").rglob("*.jsonl"):
@@ -183,7 +185,7 @@ def test_every_source_is_copied_into_the_task_root(tmp_path):
 def test_the_evidence_ref_points_at_a_file_that_re_derives_the_total(tmp_path):
     root = task_root(tmp_path)
     export = opencode_export(tmp_path / "vm" / "opencode-messages.jsonl")
-    res = run(root, sandbox_sources=[Source("opencode-messages", export)])
+    res = run(root, sandbox_sources=[Source("opencode-export", export)])
     ref = Path(res.work.usage.evidence_ref)
     assert ref.exists()
     rows = json.loads(ref.read_text())["rows"]
@@ -194,7 +196,7 @@ def test_no_row_carries_message_text(tmp_path):
     """The evidence must re-derive a total and reconstruct nothing."""
     reviewed = transcript(tmp_path / "vm" / "c" / "r1.jsonl")
     root = task_root(tmp_path, reviews={"review-1.txt": [reviewed]})
-    res = run(root, sandbox_sources=[Source("claude-code-transcript", reviewed)])
+    res = run(root, sandbox_sources=[Source("claude-session", reviewed)])
     rows = json.loads(Path(res.review.usage.evidence_ref).read_text())["rows"]
     allowed = {"message_id", "model", "input_tokens", "cache_read_tokens",
                "cache_write_tokens", "output_tokens", "sidechain",
@@ -208,7 +210,7 @@ def test_no_row_carries_message_text(tmp_path):
 def test_the_finished_payload_validates_and_carries_the_identity(tmp_path):
     root = task_root(tmp_path)
     export = opencode_export(tmp_path / "vm" / "opencode-messages.jsonl")
-    res = run(root, sandbox_sources=[Source("opencode-messages", export)])
+    res = run(root, sandbox_sources=[Source("opencode-export", export)])
     payload = finished_payload(
         execution_id="t-a1-abc", purpose="work", attempt=1,
         identity=IDENTITY, evidence=res.work,
@@ -224,7 +226,7 @@ def test_the_finished_payload_validates_and_carries_the_identity(tmp_path):
 def test_a_review_payload_uses_the_reviewers_identity_not_the_workers(tmp_path):
     reviewed = transcript(tmp_path / "vm" / "c" / "r1.jsonl")
     root = task_root(tmp_path, reviews={"review-1.txt": [reviewed]})
-    res = run(root, sandbox_sources=[Source("claude-code-transcript", reviewed)])
+    res = run(root, sandbox_sources=[Source("claude-session", reviewed)])
     payload = finished_payload(
         execution_id="t-a1-rev", purpose="review", attempt=1,
         identity=REVIEWER_IDENTITY, evidence=res.review,
@@ -236,7 +238,7 @@ def test_a_review_payload_uses_the_reviewers_identity_not_the_workers(tmp_path):
 def test_a_model_the_evidence_names_is_recorded_as_harness_reported(tmp_path):
     reviewed = transcript(tmp_path / "vm" / "c" / "r1.jsonl")
     root = task_root(tmp_path, reviews={"review-1.txt": [reviewed]})
-    res = run(root, sandbox_sources=[Source("claude-code-transcript", reviewed)])
+    res = run(root, sandbox_sources=[Source("claude-session", reviewed)])
     payload = finished_payload(
         execution_id="e", purpose="review", attempt=1,
         identity=REVIEWER_IDENTITY, evidence=res.review,
@@ -263,7 +265,7 @@ def test_a_task_with_no_recorded_route_attributes_nothing_to_work(tmp_path):
     a dollar figure attached."""
     stray = transcript(tmp_path / "vm" / "c" / "stray.jsonl", out=999)
     root = task_root(tmp_path)
-    res = run(root, work_identity=None, sandbox_sources=[Source("claude-code-transcript", stray)])
+    res = run(root, work_identity=None, sandbox_sources=[Source("claude-session", stray)])
     assert res.work.usage.status == "unavailable"
     assert "no recorded route" in (res.work.usage.reason or "")
     assert res.work.usage.output_tokens is None
@@ -280,7 +282,7 @@ def test_a_sandbox_source_is_matched_by_its_in_VM_path(tmp_path):
     pulled = transcript(tmp_path / "pulled" / "9f7606ac.jsonl", out=42)
     in_vm = "/home/agent/.claude/projects/-x/9f7606ac.jsonl"
     root = task_root(tmp_path, reviews={"review-1.txt": [Path(in_vm)]})
-    res = run(root, sandbox_sources=[Source("claude-code-transcript", pulled, origin=in_vm)])
+    res = run(root, sandbox_sources=[Source("claude-session", pulled, origin=in_vm)])
     assert res.review.usage.status == "reported"
     assert res.review.usage.output_tokens == 42
     assert res.unattributed == []
@@ -307,7 +309,7 @@ def test_the_host_locator_finds_the_task_roots_own_claude_sessions(tmp_path):
 
     found = locate_host_sources(task_root=root, home=home, codex_home=tmp_path / "nope")
     assert [s.path.name for s in found] == ["a.jsonl"]
-    assert found[0].extractor == "claude-code-cost-state"
+    assert found[0].surface == "claude-session"
 
 
 def test_the_host_locator_does_not_claim_a_neighbouring_task_root(tmp_path):
@@ -336,7 +338,7 @@ def test_the_host_locator_finds_codex_rollouts_by_the_directory_they_ran_in(tmp_
 
     found = locate_host_sources(task_root=root, home=tmp_path / "h", codex_home=tmp_path / "codex")
     assert [s.path.name for s in found] == [mine.name]
-    assert found[0].extractor == "codex-rollout"
+    assert found[0].surface == "codex-rollout"
 
 
 def _fake_sbx(tmp_path: Path, *, listing: str = "", cp_ok: bool = True,
@@ -369,7 +371,7 @@ def test_the_pull_keeps_the_in_VM_path_as_the_origin(tmp_path):
     runner, _ = _fake_sbx(tmp_path, listing=f"{in_vm}\n")
     sources, notes = pull_sandbox_sources(
         sandbox="hive-t", staging=tmp_path / "stage", runner=runner)
-    claude = [s for s in sources if s.extractor == "claude-code-cost-state"]
+    claude = [s for s in sources if s.surface == "claude-session"]
     assert len(claude) == 1
     assert claude[0].origin == in_vm
     assert claude[0].path.is_file()
@@ -386,7 +388,7 @@ def test_the_opencode_export_runs_inside_the_VM_not_against_a_copied_file(tmp_pa
     runner, calls = _fake_sbx(tmp_path, export=row + "\n")
     sources, notes = pull_sandbox_sources(
         sandbox="hive-t", staging=tmp_path / "stage", runner=runner)
-    assert any(s.extractor == "opencode-messages" for s in sources)
+    assert any(s.surface == "opencode-export" for s in sources)
     assert not any(a[0] == "cp" and "opencode.db" in a[1] for a in calls), (
         "the database itself must never be copied out"
     )
@@ -420,3 +422,74 @@ def test_a_sandbox_without_an_opencode_store_is_silent_about_it(tmp_path):
     runner, _ = _fake_sbx(tmp_path, listing="/home/agent/.claude/projects/-x/a.jsonl\n")
     _, notes = pull_sandbox_sources(sandbox="hive-t", staging=tmp_path / "s", runner=runner)
     assert notes == []
+
+
+def test_finished_at_is_derived_from_the_evidence_and_not_from_the_clock(tmp_path):
+    """Two harvests of one finished task must produce the SAME payload, or the gateway's
+    content-addressed idempotency cannot collapse them and one execution acquires two
+    terminal facts. `datetime.now()` would guarantee that."""
+    root = task_root(tmp_path)
+    export = opencode_export(tmp_path / "vm" / "opencode-messages.jsonl")
+    first = run(root, sandbox_sources=[Source("opencode-export", export)])
+    second = run(root, sandbox_sources=[Source("opencode-export", export)])
+    a = finished_payload(execution_id="e", purpose="work", attempt=1,
+                         identity=IDENTITY, evidence=first.work,
+                         finished_at=first.finished_at)
+    b = finished_payload(execution_id="e", purpose="work", attempt=1,
+                         identity=IDENTITY, evidence=second.work,
+                         finished_at=second.finished_at)
+    assert a["finished_at"] == b["finished_at"]
+    assert a == b
+
+
+def test_finished_at_is_when_the_evidence_was_last_written(tmp_path):
+    import os
+    root = task_root(tmp_path)
+    export = opencode_export(tmp_path / "vm" / "opencode-messages.jsonl")
+    os.utime(export, (1_789_000_000, 1_789_000_000))
+    res = run(root, sandbox_sources=[Source("opencode-export", export)])
+    assert res.finished_at.startswith("2026-"), res.finished_at
+
+
+# --- what the route entails -----------------------------------------------------------
+#
+# The sidecars are new, so every review already on disk names no transcript. Refusing all
+# of them would be needlessly strict on the routes where the answer is forced: nothing in
+# an opencode or antigravity sandbox runs Claude Code EXCEPT the reviewer, so a Claude
+# transcript there is a review by entailment from the route, not by inference from a
+# timestamp. Where the worker IS Claude Code the entailment does not hold, and there the
+# sidecar is the only thing that separates the two.
+
+def test_an_unsidecarred_transcript_is_a_review_when_the_worker_is_not_claude(tmp_path):
+    orphan = transcript(tmp_path / "vm" / "c" / "o.jsonl", out=60)
+    root = task_root(tmp_path, reviews={"review-1.txt": []})
+    export = opencode_export(tmp_path / "vm" / "opencode-messages.jsonl")
+    res = run(root, sandbox_sources=[Source("opencode-export", export),
+                                     Source("claude-session", orphan)])
+    assert res.review.usage.status == "reported"
+    assert res.review.usage.output_tokens == 60
+    assert res.work.usage.output_tokens == 500
+    assert res.unattributed == []
+
+
+def test_an_unsidecarred_transcript_stays_the_workers_when_the_worker_is_claude(tmp_path):
+    """Here the entailment fails: both the worker and the reviewer write Claude
+    transcripts into the same home, and only the sidecar tells them apart."""
+    mine = transcript(tmp_path / "host" / "w.jsonl", out=400)
+    root = task_root(tmp_path)
+    res = run(root, host_sources=[Source("claude-session", mine)],
+              work_identity={**IDENTITY, "harness": "claude-code"})
+    assert res.work.usage.output_tokens == 400
+    assert res.review.usage.status == "unavailable"
+
+
+def test_a_claude_worker_with_an_unsidecarred_round_refuses_the_round_by_name(tmp_path):
+    """A pre-sidecar review on a Claude route is genuinely unattributable, and its
+    transcript is indistinguishable from the worker's. Saying which round is missing is
+    the difference between a gap an operator can close and one they cannot see."""
+    root = task_root(tmp_path, reviews={"review-1.txt": []})
+    mine = transcript(tmp_path / "host" / "w.jsonl")
+    res = run(root, host_sources=[Source("claude-session", mine)],
+              work_identity={**IDENTITY, "harness": "claude-code"})
+    assert res.review.usage.status == "unavailable"
+    assert "review-1.txt" in (res.review.usage.reason or "")

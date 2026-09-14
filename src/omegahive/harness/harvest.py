@@ -46,16 +46,40 @@ from omegahive.harness.usage import UsageEvidence, extract, unavailable
 # What each worker harness writes, and where a harvest can find it. A harness absent from
 # this map is not an error: it is a harness whose consumption surface this deployment has
 # not established, and it is recorded as exactly that.
-WORK_EXTRACTOR_BY_HARNESS = {
-    "claude-code": "claude-code-cost-state",
-    "opencode": "opencode-messages",
+WORK_SURFACE_BY_HARNESS = {
+    "claude-code": "claude-session",
+    "opencode": "opencode-export",
     "codex": "codex-rollout",
 }
 
-# The reviewers all write Claude Code transcripts today; a codex reviewer writes a rollout.
-# Keyed by the extractor the caller already determined from the file itself, so this module
-# never has to guess a format from a path.
-REVIEW_EXTRACTORS = ("claude-code-cost-state", "claude-code-transcript", "codex-rollout")
+# A SURFACE is a file shape, not a parser. One shape can need either of two parsers: a
+# Claude session holds the harness's own `cost-state` total when the session was
+# interactive, and holds only per-message records when it came from `claude -p` — which is
+# every review. Naming the surface and choosing the parser at read time is what keeps a
+# review from being recorded as unmeasurable merely because the better parser found
+# nothing. The preference order is the accuracy order, best first.
+EXTRACTORS_BY_SURFACE: dict[str, tuple[str, ...]] = {
+    "claude-session": ("claude-code-cost-state", "claude-code-transcript"),
+    "opencode-export": ("opencode-messages",),
+    "codex-rollout": ("codex-rollout",),
+}
+
+# Surfaces a reviewer can write. A worker can write these too; which is why the entailment
+# below is gated on the worker's own harness.
+REVIEW_SURFACES = ("claude-session", "codex-rollout")
+
+
+def _read(surface: str, path: Path, label: str) -> UsageEvidence:
+    """Read one source, trying each parser the surface allows, best first."""
+    last = unavailable(f"no parser is registered for the {surface!r} surface")
+    for extractor in EXTRACTORS_BY_SURFACE.get(surface, ()):
+        ev = extract(extractor, path.read_text().splitlines())
+        if ev.usage.status == "reported":
+            for row in ev.rows:
+                row["source_file"] = label
+            return ev
+        last = ev
+    return last
 
 
 @dataclass
@@ -69,7 +93,7 @@ class Source:
     silently unattribute every sandboxed review.
     """
 
-    extractor: str
+    surface: str
     path: Path
     origin: str | None = None
 
@@ -107,6 +131,13 @@ class HarvestResult:
     work: UsageEvidence
     review: UsageEvidence
     manifest_path: Path
+    # When the newest piece of evidence was last written, ISO-8601 UTC. Used as the
+    # payload's `finished_at`, and derived rather than read off the clock so that two
+    # harvests of one finished task produce byte-identical payloads — otherwise the
+    # gateway's content-addressed idempotency cannot collapse them and one execution ends
+    # up with two terminal facts. It is also the more truthful answer: a harvest does not
+    # know when the process stopped, only when it last wrote.
+    finished_at: str = ""
     # Files copied into the task root that no execution claims. Named so the operator can
     # see what the harvest could not place, rather than having it vanish.
     unattributed: list[str] = field(default_factory=list)
@@ -142,7 +173,7 @@ def locate_host_sources(
             if d.name != slug and not d.name.startswith(slug + "-"):
                 continue
             for f in sorted(d.glob("*.jsonl")):
-                sources.append(Source("claude-code-cost-state", f))
+                sources.append(Source("claude-session", f))
 
     sessions = codex_home / "sessions"
     if sessions.is_dir():
@@ -195,12 +226,7 @@ def pull_sandbox_sources(
         if cp_status != 0 or not local.is_file():
             notes.append(f"could not copy {in_vm} out of {sandbox} ({cp_out.strip()})")
             continue
-        # The transcript is read for its cost-state record, and the per-message
-        # derivation is the fallback the extractor itself does not make — a review run
-        # with `claude -p` writes no cost-state, so this is the surface that has one only
-        # sometimes. `extract` returns `unavailable` when it is missing, and the caller
-        # retries with the transcript reader.
-        sources.append(Source("claude-code-cost-state", local, origin=in_vm))
+        sources.append(Source("claude-session", local, origin=in_vm))
 
     db = "/home/agent/.local/share/opencode/opencode.db"
     # base64 rather than a heredoc or `python3 -c`: the export is multi-line Python
@@ -219,7 +245,7 @@ def pull_sandbox_sources(
     if status == 0 and out.strip():
         local = staging / "opencode-messages.jsonl"
         local.write_text(out)
-        sources.append(Source("opencode-messages", local, origin=f"{sandbox}:{db}"))
+        sources.append(Source("opencode-export", local, origin=f"{sandbox}:{db}"))
     elif status == 3:
         pass
     elif status != 0:
@@ -369,70 +395,104 @@ def harvest(req: HarvestRequest) -> HarvestResult:
 
     # 1. Copy first. Everything after this reads the copy, so a VM removed between the
     #    harvest and the next question costs nothing.
-    copied: list[tuple[str, str, Path]] = []   # (extractor, origin key, kept copy)
+    copied: list[tuple[str, str, Path]] = []   # (surface, origin key, kept copy)
     for src, subdir in [(s, "host") for s in req.host_sources] + [
         (s, "vm") for s in req.sandbox_sources
     ]:
         if src.path.is_file():
-            copied.append((src.extractor, src.key(), _copy_in(req.task_root, src.path, subdir)))
+            copied.append((src.surface, src.key(), _copy_in(req.task_root, src.path, subdir)))
 
-    by_origin = {origin: (extractor, kept) for extractor, origin, kept in copied}
+    by_origin = {origin: (surface, kept) for surface, origin, kept in copied}
 
-    # 2. Reviews, attributed strictly by the sidecar the wrapper wrote at the time.
+    # 2. What the ROUTE entails, before anything is attributed. Nothing in an opencode,
+    #    antigravity or codex sandbox runs Claude Code except the reviewer — so a Claude
+    #    transcript there is a review by entailment, and matching it to a particular round
+    #    is a refinement rather than a prerequisite. Where the worker IS Claude Code the
+    #    entailment fails: worker and reviewer write into the same home in the same shape,
+    #    and the sidecar is then the only thing that separates them.
+    harness = (req.work_identity or {}).get("harness")
+    want = WORK_SURFACE_BY_HARNESS.get(str(harness)) if harness else None
+    worker_writes_transcripts = str(harness) == "claude-code"
+
+    # 3. Reviews. Sidecars first, because they are exact and they carry the round name.
     review_parts: list[UsageEvidence] = []
     review_refusals: list[str] = []
+    # Rounds whose sidecar names nothing. Not a refusal on its own: on a route the
+    # entailment covers, the transcripts are still found and the only thing lost is which
+    # round wrote which. On a Claude route it IS the refusal, because there the sidecar is
+    # the only thing separating a review's transcript from the worker's.
+    unmatched_rounds: list[str] = []
     claimed: set[str] = set()
     rounds = _review_rounds(req.task_root)
     for name, listed in rounds:
-        if not listed:
+        if len(listed) > 1 and worker_writes_transcripts:
+            # One `claude -p` writes one session file. Two, on a route where the worker
+            # writes transcripts too, most plausibly means the worker's own session moved
+            # in the window — and adding it would bill an entire worker run to a review.
             review_refusals.append(
-                f"{name} named no transcript (a round from before the sidecar existed, or "
-                "one whose sidecar could not be written)"
-            )
-            continue
-        if len(listed) > 1:
-            # One `claude -p` writes one session file. Two means something else moved in
-            # the window — most plausibly the worker's own session — and adding it would
-            # bill an entire worker run to a review.
-            review_refusals.append(
-                f"{name} named {len(listed)} transcripts, so which one it wrote is "
-                "ambiguous and none is counted"
+                f"{name} named {len(listed)} transcripts and this route's worker writes "
+                "transcripts too, so which one it wrote is ambiguous"
             )
             claimed.update(listed)
             continue
-        named = listed[0]
-        claimed.add(named)
-        found = by_origin.get(named)
-        if found is None:
-            review_refusals.append(
-                f"{name} named {named}, which the harvest could not read"
-            )
-            continue
-        extractor, kept = found
-        part = extract(extractor, kept.read_text().splitlines())
-        for row in part.rows:
-            row["source_file"] = kept.name
-        if part.usage.status == "reported":
-            review_parts.append(part)
-        else:
-            review_refusals.append(f"{name}: {part.usage.reason}")
+        for named in listed:
+            claimed.add(named)
+            found = by_origin.get(named)
+            if found is None:
+                review_refusals.append(f"{name} named {named}, which the harvest could not read")
+                continue
+            part = _read(found[0], found[1], found[1].name)
+            if part.usage.status == "reported":
+                review_parts.append(part)
+            else:
+                review_refusals.append(f"{name}: {part.usage.reason}")
+        if not listed:
+            unmatched_rounds.append(name)
 
-    if not rounds:
+    # 4. On a route the entailment covers, every remaining reviewer-shaped source is a
+    #    review — including the rounds whose sidecars predate this mechanism.
+    entailed = 0
+    if want is not None and not worker_writes_transcripts:
+        for surface, origin, kept in copied:
+            if origin in claimed or surface == want:
+                continue
+            if surface not in REVIEW_SURFACES:
+                continue
+            claimed.add(origin)
+            part = _read(surface, kept, kept.name)
+            if part.usage.status == "reported":
+                review_parts.append(part)
+                entailed += 1
+            else:
+                review_refusals.append(f"{kept.name}: {part.usage.reason}")
+
+    if not rounds and not review_parts:
         review = unavailable("this task saved no review, so no review execution consumed anything")
-    elif review_parts and not review_refusals:
-        review = _merge(review_parts, "review-transcripts")
     elif review_parts:
         review = _merge(review_parts, "review-transcripts")
-        review.notes.append(
-            "PARTIAL: " + "; ".join(review_refusals)
-            + " — this total covers only the rounds that could be attributed"
-        )
+        if entailed:
+            review.notes.append(
+                f"{entailed} transcript(s) were attributed to the review by the route "
+                "rather than by a sidecar: this worker's harness writes none, so nothing "
+                "else in its environment could have written them"
+            )
+        if unmatched_rounds:
+            review.notes.append(
+                f"{len(unmatched_rounds)} round(s) named no transcript and are covered in "
+                f"aggregate rather than individually: {', '.join(unmatched_rounds)}"
+            )
+        if review_refusals:
+            review.notes.append(
+                "PARTIAL: " + "; ".join(review_refusals)
+                + " — this total covers only what could be attributed"
+            )
     else:
-        review = unavailable("no review round could be attributed: " + "; ".join(review_refusals))
+        why = review_refusals + [
+            f"{n} named no transcript" for n in unmatched_rounds
+        ]
+        review = unavailable("no review round could be attributed: " + "; ".join(why))
 
-    # 3. Work: the surface the worker's own harness writes, and nothing a review claimed.
-    harness = (req.work_identity or {}).get("harness")
-    want = WORK_EXTRACTOR_BY_HARNESS.get(str(harness)) if harness else None
+    # 5. Work: the surface the worker's own harness writes, and nothing a review claimed.
     if harness and want is None:
         work = unavailable(
             f"the {harness!r} harness exposes no usage surface this deployment can read"
@@ -446,16 +506,10 @@ def harvest(req: HarvestRequest) -> HarvestResult:
         )
     else:
         work_parts = []
-        for extractor, origin, kept in copied:
-            if origin in claimed:
+        for surface, origin, kept in copied:
+            if origin in claimed or surface != want:
                 continue
-            if extractor != want:
-                # A transcript on a route whose worker writes a different surface is a
-                # review nobody attributed. Kept, named, never counted.
-                continue
-            part = extract(extractor, kept.read_text().splitlines())
-            for row in part.rows:
-                row["source_file"] = kept.name
+            part = _read(surface, kept, kept.name)
             if part.usage.status == "reported":
                 work_parts.append(part)
         if work_parts:
@@ -464,8 +518,8 @@ def harvest(req: HarvestRequest) -> HarvestResult:
             work = unavailable(f"no readable {want} surface was found for this worker")
 
     unattributed = [
-        kept.name for extractor, origin, kept in copied
-        if origin not in claimed and (want is None or extractor != want)
+        kept.name for surface, origin, kept in copied
+        if origin not in claimed and (want is None or surface != want)
     ]
     if unattributed:
         notes.append(
@@ -481,6 +535,9 @@ def harvest(req: HarvestRequest) -> HarvestResult:
     if review_ref:
         review.usage.evidence_ref = str(review_ref)
 
+    newest = max((k.stat().st_mtime for _, _, k in copied), default=0.0)
+    finished_at = datetime.fromtimestamp(newest, tz=UTC).isoformat() if newest else ""
+
     manifest = usage_dir / "harvest.json"
     manifest.write_text(
         json.dumps(
@@ -490,8 +547,9 @@ def harvest(req: HarvestRequest) -> HarvestResult:
                 "execution_id": req.execution_id,
                 "attempt": req.attempt,
                 "order_ref": req.order_ref,
+                "finished_at": finished_at,
                 "sources": [
-                    {"extractor": e, "origin": o, "kept": str(k.relative_to(req.task_root))}
+                    {"surface": e, "origin": o, "kept": str(k.relative_to(req.task_root))}
                     for e, o, k in copied
                 ],
                 "review_rounds": [{"round": n, "transcripts": t} for n, t in rounds],
@@ -507,7 +565,7 @@ def harvest(req: HarvestRequest) -> HarvestResult:
     )
     return HarvestResult(
         work=work, review=review, manifest_path=manifest,
-        unattributed=unattributed, notes=notes,
+        unattributed=unattributed, notes=notes, finished_at=finished_at,
     )
 
 
@@ -550,3 +608,142 @@ def finished_payload(
         "usage": evidence.usage.model_dump(),
         "price_basis": None,
     }
+
+
+# --- the host entry point --------------------------------------------------------------
+#
+# Invoked by `hive-usage`, which runs on the HOST because that is where `~/.claude`,
+# `~/.codex` and `sbx` are — the containerised CLI can reach none of them. It prints one
+# JSON object and emits nothing: the spine write stays in the shell, with the same `emit`
+# helper, the same actor and the same refusal handling every other operator-tier write
+# uses.
+
+
+def _sbx_runner(sbx_cmd: str) -> Callable[[list[str]], tuple[int, str]]:
+    import shlex
+    import subprocess
+
+    base = shlex.split(sbx_cmd)
+
+    def run(argv: list[str]) -> tuple[int, str]:
+        try:
+            p = subprocess.run(  # noqa: S603
+                base + argv, capture_output=True, text=True, timeout=300
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return 1, str(exc)
+        # stdout is the payload for the export and the listing; stderr only matters when
+        # something failed, and folding it in then is what makes a note say anything.
+        return p.returncode, p.stdout if p.returncode == 0 else (p.stdout + p.stderr)
+
+    return run
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    import os
+    import tempfile
+
+    from omegahive.harness.plan import execution_id_for
+    from omegahive.harness.records import RefusalError, load_catalog, resolve_reviewer_route
+
+    ap = argparse.ArgumentParser(prog="omegahive-harvest", description=__doc__)
+    ap.add_argument("--task", required=True)
+    ap.add_argument("--task-root", required=True, type=Path)
+    ap.add_argument("--worker", required=True)
+    ap.add_argument("--attempt", type=int, default=1)
+    ap.add_argument("--order-ref", default=None)
+    ap.add_argument("--execution-id", default=None)
+    ap.add_argument("--identity", default=None, help="the work execution's identity, JSON")
+    ap.add_argument("--catalog", type=Path, default=None)
+    ap.add_argument("--sandbox", default=None)
+    ap.add_argument("--sbx-cmd", default=os.environ.get("HIVE_SBX_CMD", "sbx"))
+    ap.add_argument("--home", type=Path, default=Path(os.path.expanduser("~")))
+    ap.add_argument("--codex-home", type=Path,
+                    default=Path(os.environ.get("CODEX_HOME", os.path.expanduser("~/.codex"))))
+    args = ap.parse_args(argv)
+
+    notes: list[str] = []
+    work_identity = json.loads(args.identity) if args.identity else None
+
+    reviewer_identity = None
+    if args.catalog and args.catalog.is_file():
+        try:
+            entry = resolve_reviewer_route(load_catalog(args.catalog.read_bytes()))
+            reviewer_identity = {
+                "route": entry.name, "model_vendor": entry.model_vendor,
+                "provider": entry.provider, "model": entry.model, "harness": entry.harness,
+                "billing_market": entry.billing_market,
+                "credential_pool": entry.credential_pool, "adapter": entry.adapter,
+            }
+        except RefusalError as exc:
+            notes.append(f"{exc.code}: {exc.message}")
+    else:
+        notes.append("no catalog was given, so a review cannot be attributed to a route")
+
+    host_sources = locate_host_sources(
+        task_root=args.task_root, home=args.home, codex_home=args.codex_home
+    )
+    sandbox_sources: list[Source] = []
+    if args.sandbox:
+        staging = Path(tempfile.mkdtemp(prefix="hive-usage-"))
+        sandbox_sources, pull_notes = pull_sandbox_sources(
+            sandbox=args.sandbox, staging=staging, runner=_sbx_runner(args.sbx_cmd)
+        )
+        notes.extend(pull_notes)
+
+    result = harvest(HarvestRequest(
+        task=args.task, task_root=args.task_root, worker_id=args.worker,
+        work_identity=work_identity, reviewer_identity=reviewer_identity,
+        execution_id=args.execution_id, attempt=args.attempt, order_ref=args.order_ref,
+        host_sources=host_sources, sandbox_sources=sandbox_sources,
+    ))
+    notes.extend(result.notes)
+
+    payloads: dict[str, Any] = {"work": None, "review": None}
+    if not result.finished_at:
+        # No evidence at all was found, so there is nothing to report but an absence — and
+        # an absence emitted with a wall-clock timestamp would duplicate on every re-run.
+        # The manifest still records what was looked for.
+        notes.append(
+            "no usage evidence of any kind was found for this task; nothing is emitted, "
+            f"and what was searched is recorded in {result.manifest_path}"
+        )
+    else:
+        if work_identity and args.execution_id:
+            payloads["work"] = finished_payload(
+                execution_id=args.execution_id, purpose="work", attempt=args.attempt,
+                identity=work_identity, evidence=result.work,
+                finished_at=result.finished_at,
+            )
+        elif result.work.usage.status == "reported":
+            notes.append("the work surface was read but has no identity to attribute it to")
+        if reviewer_identity and args.order_ref and result.review.usage.status == "reported":
+            payloads["review"] = finished_payload(
+                execution_id=execution_id_for(
+                    task=args.task, order_ref=args.order_ref,
+                    purpose="review", attempt=args.attempt,
+                ),
+                purpose="review", attempt=args.attempt,
+                identity=reviewer_identity, evidence=result.review,
+                finished_at=result.finished_at,
+            )
+        elif result.review.usage.status == "reported":
+            notes.append("the reviews were read but have no identity to attribute them to")
+
+    print(json.dumps({
+        "manifest": str(result.manifest_path),
+        "work": payloads["work"],
+        "review": payloads["review"],
+        "work_status": result.work.usage.status,
+        "work_reason": result.work.usage.reason,
+        "review_status": result.review.usage.status,
+        "review_reason": result.review.usage.reason,
+        "unattributed": result.unattributed,
+        "notes": notes,
+    }, indent=2))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised through `hive-usage`
+    raise SystemExit(main())
