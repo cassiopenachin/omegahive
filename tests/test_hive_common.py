@@ -1058,3 +1058,20 @@ def test_a_codex_reviewed_route_is_told_the_command(tmp_path):
     block = launch.split("codex-plugin)", 1)[1].split(";;", 1)[0]
     assert "$WORKER_REVIEW" in block
     assert "codex-review skill" not in block
+
+
+def test_no_generated_wrapper_line_carries_a_shell_metacharacter(tmp_path):
+    """Prose is not inert inside generated shell.
+
+    The scope hint contained `main` in backticks, which the unquoted heredoc turned into
+    command substitution in the generated file: the wrapper died with "main: command not
+    found" on its first real invocation. That is the same family as the apostrophe a worker
+    once ran `sed` over. Every value this generator interpolates is checked, not just the
+    one that bit.
+    """
+    run_dir, _, _, _ = _issue_review_wrapper(tmp_path)
+    for line in (run_dir / "review").read_text().splitlines():
+        if not line.startswith("HIVE_REVIEW_"):
+            continue
+        assert "`" not in line, f"backtick in a generated assignment: {line}"
+        assert "$(" not in line.split("=", 1)[1], f"substitution in a generated value: {line}"

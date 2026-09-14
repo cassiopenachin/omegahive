@@ -495,7 +495,7 @@ CONTRACTBODY
       # first real review.
       review_posture=''
       review_cmd='codex exec -s read-only review -'
-      review_scope='Review the diff of the current branch against `main` (its merge-base).'
+      review_scope='Review the diff of the current branch against its merge-base with main.'
       review_cred='$HOME/.codex/auth.json'
       review_cred_hint="Do NOT review your own diff with your own harness; that is not an independent review." ;;
   esac
