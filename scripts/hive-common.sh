@@ -556,6 +556,25 @@ TEE_STATUS=${PIPE[1]:-0}
 # exits non-zero in real cases after emitting a complete response, and deleting that
 # response -- then telling the worker there was "no usable output" while it can see the
 # review on its own stdout -- destroys the artifact every later round is read against.
+# A reviewer that FAILED did not review, whatever it printed. Its output is kept, because
+# it is the only evidence of what went wrong, but under a name the round counter does not
+# match -- so an infrastructure failure costs no part of the budget the work never got.
+#
+# Measured 2026-09-11: a worker's first review returned the forty bytes
+# "Invalid API key - Fix external API key", which was saved and counted, leaving it three
+# real rounds out of four. That came from folding an earlier review finding too literally:
+# "keep a review produced alongside a non-zero exit" is right, and became "count it", which
+# is not. Keeping and counting are separate decisions and this is where they part.
+if [ "$STATUS" -ne 0 ] && [ -s "$PARTIAL" ] && [ -n "$CANONICAL" ]; then
+  FAILED_DIR="$HIVE_REVIEW_DIR/failures"
+  mkdir -p "$FAILED_DIR" 2>/dev/null || true
+  FAILED="$FAILED_DIR/$(basename "$CANONICAL")"
+  mv -f "$PARTIAL" "$FAILED" 2>/dev/null || true
+  trap - EXIT
+  echo "review: the reviewer exited $STATUS. Its output is at $FAILED and NO round was" >&2
+  echo "        spent -- a reviewer that failed did not review. Fix the cause and retry." >&2
+  exit "$STATUS"
+fi
 if [ ! -s "$PARTIAL" ]; then
   echo "review: the reviewer exited $STATUS and produced no output; NO round was spent." >&2
   # Never exit 0 here. A review that produced nothing is a review that did not happen, and
@@ -578,9 +597,6 @@ mv -f "$PARTIAL" "$CANONICAL" || {
 }
 trap - EXIT
 ROUNDS=$((ROUNDS + 1))
-if [ "$STATUS" -ne 0 ]; then
-  echo "review: the reviewer exited $STATUS but produced a review, which was saved." >&2
-fi
 {
   echo
   if [ "$ROUND_CAP" -gt 0 ]; then
@@ -704,7 +720,7 @@ issue_opencode_config() {
 
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import { readdir, readFile, stat } from "node:fs/promises"
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 
 const run = promisify(execFile)
@@ -803,7 +819,13 @@ async function reviewState(runDir) {
     return `No review directory at ${dir}, so this reading says nothing about whether\nyou have been reviewed. Check where your review command writes before assuming\nthere have been no rounds.`
   }
   let names
-  try { names = (await readdir(dir)).sort() } catch (err) {
+  try {
+    // Files only. The directory also holds a `failures/` subdirectory for reviewers that
+    // failed, and those are deliberately not rounds -- listing one as a round with an
+    // unreadable verdict would put the failure back into the count in prose.
+    const entries = await readdir(dir, { withFileTypes: true })
+    names = entries.filter((e) => e.isFile()).map((e) => e.name).sort()
+  } catch (err) {
     return `Could not read ${dir}: ${err}`
   }
   if (!names.length) return `No review rounds have been written to ${dir} yet.`
@@ -868,6 +890,27 @@ async function hiveState(directory) {
   return text
 }
 
+// What was injected, written where an operator can read it afterwards.
+//
+// The injection is a PROMPT input: it is never stored as a message, and the summary only
+// echoes the parts its model thought worth keeping. So after the fact there is no way to
+// tell whether this hook ran, or what it said — which is exactly the question asked of the
+// first production compaction on 2026-09-11, and it could not be answered from the session
+// store, the logs, or anywhere else. A compaction is also the one moment whose evidence is
+// deliberately destroyed, so it is the last place to rely on a transcript.
+//
+// Deliberately NOT under the review directory: files there are counted as review rounds.
+async function trace(directory, text) {
+  try {
+    const dir = join(await findTaskRoot(directory), "run", "compactions")
+    await mkdir(dir, { recursive: true })
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-")
+    await writeFile(join(dir, `${stamp}.txt`), text, "utf8")
+  } catch {
+    // A trace that cannot be written must never cost the injection it is recording.
+  }
+}
+
 export default async ({ directory }) => ({
   "experimental.session.compacting": async (_input, output) => {
     // The SINK is guarded, not only the producer. If `output.context` is ever not an array
@@ -876,7 +919,9 @@ export default async ({ directory }) => ({
     // right back on the silent absence this wrapper exists to prevent.
     if (!Array.isArray(output?.context)) return
     try {
-      output.context.push(await hiveState(directory))
+      const state = await hiveState(directory)
+      output.context.push(state)
+      await trace(directory, state)
     } catch (err) {
       output.context.push(
         "== Hive worker state could not be read at compaction time ==\n\n" +

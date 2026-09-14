@@ -491,6 +491,22 @@ ROUTE_ROUTING_NAMES=$(printf '%s' "$ROUTE" | jq -r '
   ((.runner.inherit_env_as // {}) | keys[])' | sort -u | tr '\n' ' ')
 ROUTE_ROUTING_NAMES="${ROUTE_ROUTING_NAMES% }"
 
+# Names the SANDBOX puts into a worker's environment, which the route knows nothing about.
+#
+# `ROUTE_ENV_NAMES` above is everything the CATALOG contributes, and until 2026-09-11 that
+# was enough by coincidence: every `or-*` route masqueraded as Anthropic, so the route
+# itself declared ANTHROPIC_API_KEY and the reviewer's strip removed it. Dropping that
+# masquerade for opencode removed the one name whose stripping made the in-VM review
+# independent — and sbx injects its own `ANTHROPIC_API_KEY=proxy-managed` sentinel, so the
+# reviewer authenticated with it and came back "Invalid API key". Measured on both opencode
+# arms, 2026-09-11; one of them spent a review round on the error text.
+#
+# So the strip list is the union of two sources, because there are two: what the route
+# sets, and what the VM sets. This half is a property of sbx rather than of any catalog, so
+# it is written here rather than in a route — and it is a list of NAMES, so nothing about a
+# credential is read, logged or compared.
+SBX_INJECTED_ROUTING_NAMES="ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL"
+
 # --- naming the reviewer to the worker -------------------------------------------------
 # The kickoff above is built before the route is resolved, so this paragraph is substituted
 # in here, where R_REVIEWER and ROUTE_ENV_NAMES both exist and nothing has yet consumed
@@ -1179,8 +1195,13 @@ echo "  clones: $WS_ROOT  +  $CODE_ROOT (origin -> $PUSH_REPO, branch $CODE_BRAN
 # Issued by hive-common.sh so the tooling drill exercises the very wrappers a launch
 # writes, rather than a second copy of them that could drift. Everything they need is a
 # parameter; nothing is read back out of the worker's root.
+REVIEW_STRIP_NAMES="$ROUTE_ENV_NAMES"
+if [ "$EXECUTABLE" = "sbx" ]; then
+  REVIEW_STRIP_NAMES="$REVIEW_STRIP_NAMES $SBX_INJECTED_ROUTING_NAMES"
+  REVIEW_STRIP_NAMES="${REVIEW_STRIP_NAMES# }"
+fi
 issue_worker_interface "$RUN_DIR" "$WS_ROOT" "$CODE_ROOT" "$CODE_BRANCH" "$RUN" "$WORKER" \
-  "$R_REVIEWER" "$ROUTE_ENV_NAMES"
+  "$R_REVIEWER" "$REVIEW_STRIP_NAMES"
 # The worker's cwd, recorded as trusted in whichever store its harness reads, before the
 # window exists to ask about it. Only for a harness running on THIS host: a sandboxed route's
 # store is inside its VM, and is the kit's business or the sandbox block's, not this line's.
@@ -1538,6 +1559,16 @@ SBXENV
   fi
 
   if [ -n "$SBX_CLAUDE_CRED" ]; then
+    # The destination directory first. `sbx cp` does not create parents, and only the
+    # claude-derived agent images ship a `~/.claude` — which stayed invisible for as long as
+    # every sandboxed route ran the claude agent or a kit built on its image. The opencode
+    # image does not, so the first launch of an opencode route failed here, after the VM was
+    # built, with "could not copy the Claude subscription credential". That is the same
+    # coincidence the comment above already records for credential POSTURE, showing up a
+    # second time one step further down: the reviewer needs this login whatever the worker
+    # is, so the path it lands on cannot be assumed from the worker's image.
+    sbx exec "$SANDBOX" mkdir -p /home/agent/.claude >/dev/null 2>&1 \
+      || die "could not create /home/agent/.claude in '$SANDBOX' for the review credential."
     sbx cp "$HOME/.claude/.credentials.json" "$SANDBOX:/home/agent/.claude/.credentials.json" \
       >/dev/null 2>&1 \
       || die "could not copy the Claude subscription credential into '$SANDBOX'."
@@ -1682,6 +1713,28 @@ PYEOF' >/dev/null 2>&1 \
     sbx exec "$SANDBOX" bash -lc "uv tool install --quiet '$CLI_SRC'" \
       || die "could not install the omegahive CLI inside '$SANDBOX'. The worker would have no
   emit path. Inspect it with:  sbx exec $SANDBOX bash -l"
+  fi
+
+  # --- the reviewer's own binary, for a review that runs in this VM ---------------------
+  #
+  # `reviewer: opus-in-sandbox` means a second model is invoked from inside the sandbox, and
+  # that invocation is `claude`. Only the claude-derived agent images ship one — which was
+  # invisible while every sandboxed route ran the claude agent or a kit built on its image.
+  # The opencode image does not, so on 2026-09-11 a worker reached its Finishing sequence,
+  # found no `claude`, and installed one itself before it could be reviewed at all. A worker
+  # improvising its own reviewer is exactly what `reviewer` exists to prevent.
+  #
+  # Paid here, once per sandbox, for the same reason the governed CLI is: better fifteen
+  # seconds at launch than a discovery at review time with the work already done. Checked
+  # rather than assumed, so a claude image is not reinstalled and a re-attached sandbox that
+  # predates this is repaired.
+  if [ -n "$CRED_FOR_REVIEWER" ] \
+     && ! sbx exec "$SANDBOX" bash -lc 'command -v claude >/dev/null' >/dev/null 2>&1; then
+    echo "  sandbox: installing the reviewer's harness (npm i -g @anthropic-ai/claude-code)"
+    sbx exec "$SANDBOX" bash -lc 'npm install -g --silent @anthropic-ai/claude-code' \
+      || die "route '$ROUTE_NAME' names the in-VM reviewer 'opus-in-sandbox', and '$SANDBOX'
+  has no 'claude' to run it with — nor could one be installed. The worker would do the whole
+  order and discover this at review time. Nothing was emitted."
   fi
 
   # --- can this sandbox actually publish? -----------------------------------------------
