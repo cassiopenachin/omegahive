@@ -456,17 +456,51 @@ CONTRACTBODY
   # more, so the host case gets an explicit read-only allowance instead — which is the
   # stronger posture anyway, and the reason it is not simply copied into the sandbox case is
   # that a sandboxed reviewer may need to run the tests it is reviewing.
-  local review_posture=""
+  # WHICH reviewer this wrapper runs, and what it needs to run at all. Everything else about
+  # the wrapper -- the round cap, the contract, the incremental preamble, the atomic capture,
+  # the sidecar -- is the same whoever reviews, so it is written once and the command swaps.
+  # A second body for the codex reviewer would be two implementations of one semantics, which
+  # is the shape that produced seventeen review rounds on 2026-09-10.
+  local review_posture="" review_cmd="" review_cred="" review_cred_hint="" review_scope=""
   case "$REVIEWER" in
-    opus-in-sandbox) review_posture='--permission-mode bypassPermissions' ;;
+    opus-in-sandbox)
+      review_posture='--permission-mode bypassPermissions'
+      review_cmd='claude -p --model "${HIVE_REVIEW_MODEL:-opus}"'
+      review_cred="$HOME/.claude/.credentials.json"
+      review_cred_hint="Do NOT fall back to plain 'claude' -- that reviews this worker on the account under test." ;;
     # Comma-separated, deliberately. `--allowedTools` is variadic (<tools...>), and the
     # prompt is the positional argument immediately after it — a space-separated list would
     # put the review's own prompt in tool position and depend on the parser being lenient
     # about where the list ends. One argument cannot be misread.
-    claude-cli)      review_posture='--allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*)"' ;;
+    claude-cli)
+      review_posture='--allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*)"'
+      review_cmd='claude -p --model "${HIVE_REVIEW_MODEL:-opus}"'
+      review_cred="$HOME/.claude/.credentials.json"
+      review_cred_hint="Do NOT fall back to plain 'claude' -- that reviews this worker on the account under test." ;;
+    # Codex reviews a Claude worker: the other harness AND the other account, which is the
+    # whole point of this reviewer. It was reached through the `/codex:review` plugin until
+    # 2026-09-14, and that plugin maps to a built-in reviewer taking no custom text — so the
+    # order never reached it, and nothing it did was counted, capped or kept. `codex exec
+    # review` is the same built-in reviewer with the instruction slot open, so the route
+    # joins the protocol the other nine already use.
+    #
+    # `-s read-only` for the reason the claude-cli posture is restrictive: this one runs on
+    # the HOST, where there is no VM boundary, and a reviewer needs to read the tree and
+    # nothing else. `-` reads the instructions from stdin, which is where the contract is.
+    codex-plugin)
+      # The sandbox flag belongs to `codex exec`, BEFORE the subcommand: `codex exec review
+      # - -s read-only` is rejected with "unexpected argument '-s'". So this reviewer's
+      # posture travels inside its command rather than appended after it, and the append
+      # below is a no-op for it. Found by running it; the wrapper would have failed on its
+      # first real review.
+      review_posture=''
+      review_cmd='codex exec -s read-only review -'
+      review_scope='Review the diff of the current branch against `main` (its merge-base).'
+      review_cred="$HOME/.codex/auth.json"
+      review_cred_hint="Do NOT review your own diff with your own harness; that is not an independent review." ;;
   esac
 
-  if [ -n "$review_posture" ]; then
+  if [ -n "$review_cmd" ]; then
     local unset_flags="" n
     for n in $ROUTE_ENV_NAMES; do
       unset_flags="$unset_flags -u $n"
@@ -485,7 +519,11 @@ CONTRACTBODY
 set -euo pipefail
 HIVE_REVIEW_STRIP="${unset_flags# }"
 HIVE_REVIEW_POSTURE=($review_posture)
-HIVE_REVIEW_CONTRACT="${HIVE_REVIEW_CONTRACT:-$CONTRACT}"
+HIVE_REVIEW_CONTRACT="\${HIVE_REVIEW_CONTRACT:-$CONTRACT}"
+HIVE_REVIEW_CRED="$review_cred"
+HIVE_REVIEW_CRED_HINT="$review_cred_hint"
+HIVE_REVIEW_SCOPE="$review_scope"
+HIVE_REVIEW_CMD=($review_cmd)
 REVIEWHEAD
     cat >> "$REVIEW" <<'REVIEWBODY'
 # Phase one: drop the routing and re-enter. On a route that sets none this is a no-op, and
@@ -499,10 +537,9 @@ if [ -z "${HIVE_REVIEW_STRIPPED:-}" ]; then
 fi
 
 # Phase two: this environment is the reviewer's.
-if [ ! -f "$HOME/.claude/.credentials.json" ]; then
-  echo "review: there is no $HOME/.claude/.credentials.json here, so this review has no" >&2
-  echo "        login to use. Block and tell the operator. Do NOT fall back to plain" >&2
-  echo "        'claude' -- that reviews this worker on the account under test." >&2
+if [ -n "$HIVE_REVIEW_CRED" ] && [ ! -f "$HIVE_REVIEW_CRED" ]; then
+  echo "review: there is no $HIVE_REVIEW_CRED here, so this review has no login to use." >&2
+  echo "        Block and tell the operator. $HIVE_REVIEW_CRED_HINT" >&2
   exit 1
 fi
 
@@ -648,7 +685,11 @@ trap 'rm -f "$PREAMBLE"' EXIT
 # reviewer has exited -- a half-written review is indistinguishable from a failed one, and a
 # worker that concludes "failed" re-runs, which is a round spent on nothing.
 if [ -z "$CANONICAL" ]; then
-  exec claude -p --model "${HIVE_REVIEW_MODEL:-opus}" "${HIVE_REVIEW_POSTURE[@]}" "$@"
+  { [ -z "${HIVE_REVIEW_SCOPE:-}" ] || printf '%s\n\n' "$HIVE_REVIEW_SCOPE"
+    [ "$#" -eq 0 ] || printf '%s\n\n' "$*"
+    [ -t 0 ] || cat
+  } | "${HIVE_REVIEW_CMD[@]}" "${HIVE_REVIEW_POSTURE[@]}"
+  exit "${PIPESTATUS[1]}"
 fi
 # The in-progress capture lives OUTSIDE the counted directory, and is removed however this
 # command ends. Writing it inside was a quiet disaster: its name matched the counting glob
@@ -661,8 +702,12 @@ fi
 PARTIAL=$(mktemp "${TMPDIR:-/tmp}/hive-review-partial.XXXXXX") || exit 1
 trap 'rm -f "$PARTIAL"' EXIT
 set +e
-{ cat "$PREAMBLE"; [ -t 0 ] || cat; } \
-  | claude -p --model "${HIVE_REVIEW_MODEL:-opus}" "${HIVE_REVIEW_POSTURE[@]}" "$@" \
+{ cat "$PREAMBLE"
+  [ -z "${HIVE_REVIEW_SCOPE:-}" ] || printf '%s\n\n' "$HIVE_REVIEW_SCOPE"
+  [ "$#" -eq 0 ] || printf '%s\n\n' "$*"
+  [ -t 0 ] || cat
+} \
+  | "${HIVE_REVIEW_CMD[@]}" "${HIVE_REVIEW_POSTURE[@]}" \
   | tee "$PARTIAL"
 PIPE=("${PIPESTATUS[@]}")
 set -e

@@ -539,6 +539,16 @@ SBX_INJECTED_ROUTING_NAMES="ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BAS
 # route preflights clean, builds, works, and refuses at review time with the task done —
 # so it is refused here instead. The provider-routing test below does not catch it: a
 # sandboxed route that routes no model has no routing names at all.
+# Codex cannot be reached from inside sbx either: its credential proxy forces API billing for
+# OpenAI and blocks ChatGPT auth passthrough (probe, 2026-08-24), which is why no sandboxed
+# route runs Codex as a worker. The same wall applies to it as a reviewer.
+if [ "$EXECUTABLE" = "sbx" ] && [ "$R_REVIEWER" = "codex-plugin" ]; then
+  die "route '$ROUTE_NAME' runs in a sandbox and names the reviewer 'codex-plugin', which
+  invokes Codex. A sandbox's credential proxy forces API-key billing for OpenAI and blocks
+  ChatGPT auth passthrough, so that review would have no login. Use 'opus-in-sandbox'.
+  Nothing was created, cloned or emitted."
+fi
+
 if [ "$EXECUTABLE" = "sbx" ] && [ "$R_REVIEWER" = "claude-cli" ]; then
   die "route '$ROUTE_NAME' runs in a sandbox and names the reviewer 'claude-cli', which is a
   review invoked on the host. Inside a VM that is not a reviewer: no Claude login is copied
@@ -559,7 +569,11 @@ fi
 
 case "$R_REVIEWER" in
   codex-plugin)
-    REVIEW_LINE="Your independent review: Codex, via the codex-review skill, from inside this session." ;;
+    REVIEW_LINE="Your independent review command:  $WORKER_REVIEW \"<prompt>\"   (or pipe the prompt in)
+That is Codex reviewing your diff — the other harness, on the other account. It was reached
+through the /codex:review plugin until 2026-09-14, which took no instructions and left no
+record, so this route had no round cap, no saved reviews and no way to hand the reviewer your
+order. Run the command as given; it carries all three." ;;
   claude-skill)
     REVIEW_LINE="Your independent review: Claude, via the claude-review skill, from inside this session." ;;
   opus-in-sandbox)

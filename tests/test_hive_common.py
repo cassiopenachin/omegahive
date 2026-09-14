@@ -1006,3 +1006,55 @@ def test_the_head_sidecar_is_not_counted_as_a_round(tmp_path):
     assert len([p for p in reviews.iterdir() if p.is_file()]) == 1
     assert (reviews / "meta").is_dir()
     assert "round 2 of 4" in _review(run_dir, repo, bin_dir, home, reviews).stderr
+
+
+def test_the_codex_reviewer_gets_the_same_wrapper_as_every_other():
+    """`claude-opus` is the default route and was outside the review protocol entirely.
+
+    It reached Codex through the `/codex:review` plugin, which maps to a built-in reviewer
+    taking no custom text and knows nothing of HIVE_REVIEW_DIR — so that route had no round
+    cap, no saved reviews, no round counting, no incremental narrowing and no way to hand
+    the reviewer its order. `codex exec review -` is the same built-in reviewer with the
+    instruction slot open.
+
+    One wrapper body, with the command swapped. A second body would be two implementations
+    of one semantics, which is the shape that produced seventeen review rounds.
+    """
+    common = COMMON.read_text()
+    block = common.split("codex-plugin)", 1)[1].split("esac", 1)[0]
+    assert "codex exec -s read-only review -" in block
+    assert "-s read-only" in block, "a host-side reviewer must not be able to write"
+    # the flag belongs to `codex exec`, before the subcommand, or it is rejected
+    assert block.index("-s read-only") < block.index("review -")
+    assert ".codex/auth.json" in block, "no credential is checked before reviewing"
+
+
+def test_the_wrapper_has_one_body_for_every_reviewer():
+    """The cap, the contract, the preamble, the capture and the sidecar are the same
+    whoever reviews; only the command differs."""
+    common = COMMON.read_text()
+    body = common.split("REVIEWBODY'", 1)[1].split("REVIEWBODY\n", 1)[0]
+    assert body.count('"${HIVE_REVIEW_CMD[@]}"') == 2, "the reviewer command is not swappable"
+    # Comments may name a harness when explaining its behaviour; code may not invoke one.
+    code = [ln for ln in body.splitlines() if not ln.lstrip().startswith("#")]
+    hardcoded = [ln for ln in code if "claude -p" in ln or "codex exec" in ln]
+    assert not hardcoded, f"a reviewer is hardcoded in the shared body: {hardcoded}"
+
+
+def test_codex_as_a_reviewer_is_refused_inside_a_sandbox():
+    """A sandbox's credential proxy forces API-key billing for OpenAI and blocks ChatGPT
+    auth passthrough, which is why no sandboxed route runs Codex as a worker. The same wall
+    applies to it as a reviewer, and the refusal belongs at launch rather than at review
+    time with the order already done."""
+    launch = (REPO / "scripts" / "hive-launch").read_text()
+    check_at = launch.index('if [ -n "$CHECK_ONLY" ]; then')
+    assert "names the reviewer 'codex-plugin'" in launch[:check_at]
+
+
+def test_a_codex_reviewed_route_is_told_the_command(tmp_path):
+    """The kickoff named a skill, not a command, so the worker chose how to invoke its
+    reviewer — and both workers measured on 2026-09-10 modified that invocation."""
+    launch = (REPO / "scripts" / "hive-launch").read_text()
+    block = launch.split("codex-plugin)", 1)[1].split(";;", 1)[0]
+    assert "$WORKER_REVIEW" in block
+    assert "codex-review skill" not in block
