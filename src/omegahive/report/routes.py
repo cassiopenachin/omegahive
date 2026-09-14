@@ -40,6 +40,7 @@ from omegahive.harness.records import RefusalError, RouteEntry, load_catalog
 
 
 def _row(route: RouteEntry, *, default: bool, present: bool | None,
+         reviewer_default: bool = False,
          state: str = "resolvable", refusal_code: str | None = None,
          reason: str | None = None) -> dict[str, Any]:
     return {
@@ -48,6 +49,12 @@ def _row(route: RouteEntry, *, default: bool, present: bool | None,
         "refusal_code": refusal_code,
         "reason": reason,
         "is_worker_default": default,
+        # Which route the REVIEWS run on. Shown because a review is a spend decision like
+        # any other and an operator reading this page is deciding what a launch will cost
+        # — and on most routes the review runs somewhere other than the work does.
+        # Unlike the worker default, an unset value marks nothing rather than refusing:
+        # a deployment may legitimately not have stated one yet.
+        "is_reviewer_default": reviewer_default,
         "enabled": route.enabled,
         "model_vendor": route.model_vendor,
         "provider": route.provider,
@@ -94,6 +101,7 @@ def evaluate_routes(
     present_executables = present_executables or {}
     rows: list[dict[str, Any]] = []
     default_name = catalog.defaults.worker
+    reviewer_name = catalog.defaults.reviewer_route
     seen: dict[str, int] = {}
     for route in catalog.routes:
         seen[route.name] = seen.get(route.name, 0) + 1
@@ -101,14 +109,17 @@ def evaluate_routes(
     for route in catalog.routes:
         present = present_executables.get(route.runner.executable)
         is_default = route.name == default_name
+        is_reviewer = reviewer_name is not None and route.name == reviewer_name
         if seen[route.name] > 1:
-            rows.append(_row(route, default=is_default, present=present, state="refused",
+            rows.append(_row(route, default=is_default, reviewer_default=is_reviewer,
+                             present=present, state="refused",
                              refusal_code="ROUTE_AMBIGUOUS",
                              reason=f"route name {route.name!r} appears "
                                     f"{seen[route.name]} times in the catalog"))
             continue
         if not route.enabled:
-            rows.append(_row(route, default=is_default, present=present, state="refused",
+            rows.append(_row(route, default=is_default, reviewer_default=is_reviewer,
+                             present=present, state="refused",
                              refusal_code="ROUTE_DISABLED",
                              reason="present but disabled; enabling it is the "
                                     "authorization act"))
@@ -116,16 +127,18 @@ def evaluate_routes(
         try:
             get_adapter(route.adapter)
         except RefusalError as exc:
-            rows.append(_row(route, default=is_default, present=present, state="refused",
+            rows.append(_row(route, default=is_default, reviewer_default=is_reviewer,
+                             present=present, state="refused",
                              refusal_code=exc.code, reason=exc.message))
             continue
         if present is False:
-            rows.append(_row(route, default=is_default, present=present, state="refused",
+            rows.append(_row(route, default=is_default, reviewer_default=is_reviewer,
+                             present=present, state="refused",
                              refusal_code="EXECUTABLE_MISSING",
                              reason=f"the host cannot find {route.runner.executable!r} "
                                     "on PATH"))
             continue
-        rows.append(_row(route, default=is_default, present=present))
+        rows.append(_row(route, default=is_default, reviewer_default=is_reviewer, present=present))
 
     if default_name not in {r["route"] for r in rows}:
         known = ", ".join(sorted(r["route"] for r in rows)) or "<none>"
@@ -173,7 +186,12 @@ def routes_to_text(rows: list[dict[str, Any]]) -> str:
     out.append("")
     for r in rows:
         verdict = "OK      " if r["state"] == "resolvable" else f"REFUSED [{r['refusal_code']}]"
-        marker = "  <- worker default" if r["is_worker_default"] else ""
+        roles = []
+        if r["is_worker_default"]:
+            roles.append("worker default")
+        if r["is_reviewer_default"]:
+            roles.append("reviewer default")
+        marker = f"  <- {', '.join(roles)}" if roles else ""
         out.append(f"{verdict}  {r['route']}{marker}")
         out.append(
             f"    {r['model']} @ {r['harness']} "

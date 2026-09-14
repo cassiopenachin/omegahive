@@ -89,3 +89,38 @@ def test_a_stated_reasoning_effort_is_printed_and_an_absent_one_is_not():
     ))
     assert "reasoning effort: high" in text
     assert text.count("reasoning effort") == 1
+
+
+def test_the_reviewer_route_is_marked_so_an_operator_can_see_what_reviews_cost():
+    """`reviewer: opus-in-sandbox` on a route says how ITS review is invoked. Which route
+    the review itself RUNS on is a catalog-level fact, and until it is visible here an
+    operator cannot tell whether their reviews are billed to a subscription or an API
+    key."""
+    text = routes_to_text(rows(
+        route(), route(name="the-reviewer"),
+        **{"defaults": {"worker": "fake-subscription", "reviewer_route": "the-reviewer"}},
+    ))
+    assert "<- reviewer default" in text
+    assert "the-reviewer" in text
+
+
+def test_one_route_can_be_both_defaults_and_says_so_twice():
+    """The common deployment: reviews run on the same route the work does."""
+    text = routes_to_text(rows(
+        route(), **{"defaults": {"worker": "fake-subscription",
+                                 "reviewer_route": "fake-subscription"}},
+    ))
+    assert "<- worker default, reviewer default" in text
+
+
+def test_an_unstated_reviewer_route_marks_nothing_rather_than_guessing():
+    text = routes_to_text(rows(route()))
+    assert "reviewer default" not in text
+
+
+def test_the_json_form_carries_the_reviewer_default_flag():
+    out = json.loads(routes_to_json(rows(
+        route(), **{"defaults": {"worker": "fake-subscription",
+                                 "reviewer_route": "fake-subscription"}},
+    )))
+    assert out[0]["is_reviewer_default"] is True

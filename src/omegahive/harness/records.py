@@ -425,10 +425,24 @@ class CatalogDefaults(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     worker: str
+    # Which route the deployment's REVIEWS run on. Optional, unlike `worker`, and the
+    # asymmetry is deliberate: a launch with no worker route is a coin toss over billing
+    # markets and must refuse, while a deployment that has not decided what its reviewer
+    # is should say nothing rather than have one guessed for it. Every catalog written
+    # before this field keeps loading, and reads as "not stated".
+    #
+    # A route NAME and not the `reviewer` mechanism already on each entry, because those
+    # answer different questions. `opus-in-sandbox` says HOW the review is invoked; it
+    # does not say the vendor, the model id, the billing market or the credential pool,
+    # and `ExecutionIdentity` may not synthesize any of them. Only a catalog entry
+    # carries those, so only a catalog entry can identify what a review consumed.
+    reviewer_route: str | None = None
 
-    @field_validator("worker")
+    @field_validator("worker", "reviewer_route")
     @classmethod
-    def _name_shape(cls, v: str) -> str:
+    def _name_shape(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
         if not _NAME_SHAPE.fullmatch(v):
             raise ValueError(f"must match [A-Za-z0-9._-]{{1,64}}, got {v!r}")
         return v
@@ -545,6 +559,39 @@ def _legacy_fields(data: Any) -> list[str]:
             if field_name in runner:
                 found.append(f"routes[{name}].runner.{field_name}")
     return found
+
+
+def resolve_reviewer_route(catalog: RouteCatalog) -> RouteEntry:
+    """The route a REVIEW execution runs on, from `defaults.reviewer_route`.
+
+    Separate from `resolve_route` because the caller is different in kind. A worker
+    launch always has a route — named or defaulted — and a missing one is a launch
+    error. A review harvest may legitimately find a deployment that never stated its
+    reviewer, and the remedy there is one catalog line, not a different command. So the
+    unset case gets its own code and says the field name, rather than arriving as a
+    ROUTE_UNKNOWN about a route nobody named.
+
+    Everything after that is the ordinary resolution, reused rather than reimplemented:
+    unknown, ambiguous and disabled mean here exactly what they mean for a worker.
+    """
+    name = catalog.defaults.reviewer_route
+    if not name:
+        raise RefusalError(
+            "REVIEWER_ROUTE_UNSET",
+            "this catalog does not say what its reviews run on; set "
+            "defaults.reviewer_route to the name of the route a review executes under. "
+            "Until it is set, a review's consumption can be retained as evidence but "
+            "cannot be attributed to an identity",
+        )
+    if not any(r.name == name for r in catalog.routes):
+        known = ", ".join(sorted(r.name for r in catalog.routes)) or "<none>"
+        raise RefusalError(
+            "REVIEWER_ROUTE_UNKNOWN",
+            f"the catalog's defaults.reviewer_route names {name!r} and no such route "
+            f"exists; known: {known}",
+        )
+    entry, _ = resolve_route(catalog, name)
+    return entry
 
 
 def resolve_route(catalog: RouteCatalog, name: str | None) -> tuple[RouteEntry, str]:
