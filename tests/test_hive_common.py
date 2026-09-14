@@ -391,23 +391,6 @@ def test_an_interrupted_review_spends_no_round(tmp_path):
     assert not list(reviews.iterdir()), "an interrupted review left a phantom round behind"
 
 
-def test_a_review_produced_alongside_a_non_zero_exit_is_kept(tmp_path):
-    """`claude -p` exits non-zero in real cases after emitting a complete response. Deleting
-    that response — and telling the worker there was "no usable output" while it can read
-    the review on its own stdout — destroys the artifact every later round is read against.
-    """
-    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
-    grumpy = bin_dir / "claude"
-    grumpy.write_text('#!/bin/sh\necho "VERDICT: REWORK"\necho "a real finding"\nexit 7\n')
-    grumpy.chmod(0o755)
-    reviews = tmp_path / "reviews"
-    r = _review(run_dir, repo, bin_dir, home, reviews)
-    saved = list(reviews.iterdir())
-    assert len(saved) == 1, r.stderr
-    assert "a real finding" in saved[0].read_text()
-    assert "exited 7 but produced a review" in r.stderr
-
-
 def test_one_budget_covers_both_reviewers(tmp_path):
     """A worker able to reach both reviewers had two budgets of four, because each counted
     only its own filename prefix. WORKER.md promises one number."""
@@ -829,3 +812,91 @@ def test_the_review_credential_directory_is_created_before_the_copy():
     copy_at = launch.index('sbx cp "$HOME/.claude/.credentials.json"')
     mkdir_at = launch.index("mkdir -p /home/agent/.claude")
     assert mkdir_at < copy_at, "the credential is copied before its directory exists"
+
+
+def test_a_failed_reviewer_keeps_its_output_without_spending_a_round(tmp_path):
+    """Keeping and counting are separate decisions, and conflating them cost a real worker
+    a quarter of its budget.
+
+    Measured 2026-09-11: a worker's first review returned forty bytes of
+    "Invalid API key", which was saved AND counted, leaving three real rounds out of four.
+    The output is evidence and is kept; it goes to a `failures/` subdirectory, which the
+    counter's `-maxdepth 1` excludes — a sibling file named `failed-review-…` would still
+    match `*review*` and put the failure straight back into the count.
+    """
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    broken = bin_dir / "claude"
+    broken.write_text('#!/bin/sh\necho "Invalid API key"\nexit 1\n')
+    broken.chmod(0o755)
+    reviews = tmp_path / "reviews"
+    r = _review(run_dir, repo, bin_dir, home, reviews)
+    assert r.returncode != 0
+    assert "NO round was" in r.stderr
+    assert not [p for p in reviews.iterdir() if p.is_file()], "a failure was counted"
+    kept = list((reviews / "failures").iterdir())
+    assert len(kept) == 1 and "Invalid API key" in kept[0].read_text()
+
+    # and the next call is still round 1
+    good = bin_dir / "claude"
+    good.write_text('#!/bin/sh\necho "VERDICT: REWORK"\n')
+    good.chmod(0o755)
+    assert "round 1 of 4" in _review(run_dir, repo, bin_dir, home, reviews).stderr
+
+
+def test_the_plugin_does_not_count_the_failures_directory_as_a_round(tmp_path):
+    """The plugin lists the review directory to report rounds and verdicts. A subdirectory
+    read as a file would come back "unreadable" and put the failure back in the count, in
+    prose this time."""
+    root = _worker_root(tmp_path)
+    reviews = root / "run" / "reviews"
+    (reviews / "failures").mkdir(parents=True)
+    (reviews / "failures" / "review-x.txt").write_text("Invalid API key\n")
+    (reviews / "review-real.txt").write_text("VERDICT: REWORK\n")
+    text = _run_plugin(root)
+    assert "Reviews so far (1)" in text
+    assert "unreadable" not in text
+
+
+def test_the_plugin_records_what_it_injected(tmp_path):
+    """The injection is a prompt input: never stored, and echoed only as far as the
+    summariser chose to. After the first production compaction, "did this run, and what did
+    it say" could not be answered from the session store, the logs, or anywhere else — and
+    a compaction is the one moment whose evidence is deliberately destroyed.
+
+    The trace goes under `run/compactions/`, never the review directory, where a file would
+    be counted as a review round.
+    """
+    root = _worker_root(tmp_path)
+    text = _run_plugin(root)
+    traces = list((root / "run" / "compactions").iterdir())
+    assert len(traces) == 1
+    assert traces[0].read_text() == text
+
+
+def test_the_reviewer_sheds_the_sandboxs_own_routing_not_only_the_routes():
+    """The strip list has two sources because the environment has two authors.
+
+    `ROUTE_ENV_NAMES` covers what the catalog contributes, and that sufficed only while
+    every `or-*` route masqueraded as Anthropic and so declared ANTHROPIC_API_KEY itself.
+    Dropping the masquerade removed the one name whose stripping made the in-VM review
+    independent — and sbx injects `ANTHROPIC_API_KEY=proxy-managed`, so the reviewer
+    authenticated as nobody and came back "Invalid API key" (measured on both opencode
+    arms, 2026-09-11).
+    """
+    launch = (REPO / "scripts" / "hive-launch").read_text()
+    assert "ANTHROPIC_API_KEY" in launch.split("SBX_INJECTED_ROUTING_NAMES=", 1)[1][:200]
+    # folded in only for a sandboxed route, and only into what the reviewer strips
+    block = launch.split("REVIEW_STRIP_NAMES=", 1)[1].split("issue_worker_interface", 1)[0]
+    assert '[ "$EXECUTABLE" = "sbx" ]' in block
+
+
+def test_a_sandbox_whose_reviewer_runs_inside_it_gets_a_reviewer_binary():
+    """`opus-in-sandbox` means `claude` is invoked inside the VM, and only claude-derived
+    images ship one. A worker that finds none improvises its own reviewer, which is the
+    thing the `reviewer` field exists to prevent — and it discovers this at review time,
+    with the order already done."""
+    launch = (REPO / "scripts" / "hive-launch").read_text()
+    block = launch.split("the reviewer's own binary", 1)[1].split("can this sandbox", 1)[0]
+    assert '[ -n "$CRED_FOR_REVIEWER" ]' in block
+    assert "command -v claude" in block, "installs without checking for an existing claude"
+    assert "@anthropic-ai/claude-code" in block
