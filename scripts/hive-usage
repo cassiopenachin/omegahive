@@ -115,15 +115,21 @@ WROTE=0
 for PURPOSE in work review; do
   PAYLOAD=$(printf '%s' "$OUT" | jq -c --arg p "$PURPOSE" '.[$p] // empty')
   [ -n "$PAYLOAD" ] || continue
-  if emit instrument "$OPERATOR_ACTOR" execution.finished --task "$TASK" \
-       --payload "$PAYLOAD" >/dev/null; then
+  # In a SUBSHELL, because `emit` dies on a rejection and this loop must not. The two
+  # purposes are independent facts: a review the gateway refuses must not cost the work
+  # fact that already landed, and vice versa. Without the subshell the else branch below
+  # is unreachable and the first refusal takes the script with it.
+  if ( emit instrument "$OPERATOR_ACTOR" execution.finished --task "$TASK" \
+       --payload "$PAYLOAD" >/dev/null ); then
     WROTE=$((WROTE + 1))
     printf '  recorded execution.finished (%s) %s\n' "$PURPOSE" \
       "$(printf '%s' "$PAYLOAD" | jq -r '.usage.status')"
   else
-    echo "hive-usage: WARNING the $PURPOSE fact could not be emitted; the evidence is" >&2
-    echo "  harvested and durable under $TASK_ROOT/run/usage, so re-running this command" >&2
-    echo "  after the cause is fixed will record it. Nothing else is in doubt." >&2
+    echo >&2
+    echo "hive-usage: WARNING the $PURPOSE fact was REJECTED (the reason is above)." >&2
+    echo "  The evidence is harvested and durable under $TASK_ROOT/run/usage, so" >&2
+    echo "  re-running this command once the cause is fixed will record it. The other" >&2
+    echo "  purpose is unaffected, and nothing else is in doubt." >&2
   fi
 done
 [ "$WROTE" -gt 0 ] || echo "hive-usage: nothing could be attributed, so nothing was emitted."
