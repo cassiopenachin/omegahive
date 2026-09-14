@@ -1075,3 +1075,94 @@ def test_no_generated_wrapper_line_carries_a_shell_metacharacter(tmp_path):
             continue
         assert "`" not in line, f"backtick in a generated assignment: {line}"
         assert "$(" not in line.split("=", 1)[1], f"substitution in a generated value: {line}"
+
+
+# --- what a review CONSUMED, and how a harvest finds it later -------------------------
+#
+# A review's token usage lives in the reviewer harness's own transcript, in the reviewer's
+# home — not in the review text, and not anywhere the task root can see. Nothing recorded
+# WHICH transcript belonged to which round, so a later harvest had to guess by timestamp
+# and could not tell a review's session from the worker's own.
+#
+# The wrapper knows exactly: it holds the review's start time and the worker is blocked on
+# its pipe throughout. So it writes the list beside the `.head` sidecar it already writes.
+# The list may legitimately hold more than one path, and it is recorded as found rather
+# than narrowed to a best guess — an ambiguous attribution has to reach the harvest as
+# ambiguous.
+
+def _transcript_writing_reviewer(bin_dir: Path, home: Path, *, sessions: int = 1) -> None:
+    """A stand-in reviewer that writes a Claude Code transcript the way the real one does."""
+    proj = home / ".claude" / "projects" / "-some-repo"
+    fake = bin_dir / "claude"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f"mkdir -p '{proj}'\n"
+        f"for i in $(seq 1 {sessions}); do\n"
+        f"  echo '{{\"type\":\"assistant\"}}' > '{proj}'/sess-$$-$i.jsonl\n"
+        "done\n"
+        'echo "VERDICT: PASS"\n'
+    )
+    fake.chmod(0o755)
+
+
+def test_a_review_records_the_transcript_it_produced(tmp_path):
+    """Without this the harvest cannot say what a review cost — only that one happened."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    _transcript_writing_reviewer(bin_dir, home)
+    reviews = tmp_path / "reviews"
+    r = _review(run_dir, repo, bin_dir, home, reviews)
+    assert r.returncode == 0, r.stderr
+
+    saved = [p for p in reviews.iterdir() if p.is_file()]
+    assert len(saved) == 1
+    sidecar = reviews / "meta" / f"{saved[0].name}.transcripts"
+    assert sidecar.exists(), "the review recorded no transcript list"
+    listed = [ln for ln in sidecar.read_text().splitlines() if ln.strip()]
+    assert len(listed) == 1
+    assert listed[0].endswith(".jsonl")
+    assert Path(listed[0]).exists()
+
+
+def test_a_transcript_written_before_the_review_is_not_claimed_by_it(tmp_path):
+    """The worker's own session lives in the same directory. Listing it would bill the
+    worker's whole run to the review, which is the loudest possible wrong answer."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    stale = home / ".claude" / "projects" / "-some-repo"
+    stale.mkdir(parents=True)
+    worker_session = stale / "the-workers-own.jsonl"
+    worker_session.write_text('{"type":"assistant"}\n')
+    os.utime(worker_session, (1_600_000_000, 1_600_000_000))
+
+    _transcript_writing_reviewer(bin_dir, home)
+    reviews = tmp_path / "reviews"
+    assert _review(run_dir, repo, bin_dir, home, reviews).returncode == 0
+
+    saved = [p for p in reviews.iterdir() if p.is_file()][0]
+    listed = (reviews / "meta" / f"{saved.name}.transcripts").read_text()
+    assert "the-workers-own.jsonl" not in listed
+
+
+def test_several_transcripts_are_all_recorded_rather_than_one_being_chosen(tmp_path):
+    """Choosing would be a guess. The harvest needs to see the ambiguity to refuse."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    _transcript_writing_reviewer(bin_dir, home, sessions=3)
+    reviews = tmp_path / "reviews"
+    assert _review(run_dir, repo, bin_dir, home, reviews).returncode == 0
+    saved = [p for p in reviews.iterdir() if p.is_file()][0]
+    listed = [ln for ln in (reviews / "meta" / f"{saved.name}.transcripts")
+              .read_text().splitlines() if ln.strip()]
+    assert len(listed) == 3
+
+
+def test_a_failed_review_records_no_transcript_list(tmp_path):
+    """A failed review spends no round and writes no canonical file; a sidecar naming a
+    round that does not exist would be counted by nothing and confuse everything."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    fake = bin_dir / "claude"
+    fake.write_text('#!/bin/sh\necho "half a review"\nexit 4\n')
+    fake.chmod(0o755)
+    reviews = tmp_path / "reviews"
+    r = _review(run_dir, repo, bin_dir, home, reviews)
+    assert r.returncode == 4
+    meta = reviews / "meta"
+    assert not meta.exists() or not list(meta.glob("*.transcripts"))

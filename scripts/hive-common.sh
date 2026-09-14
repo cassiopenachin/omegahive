@@ -701,6 +701,16 @@ fi
 # `hive-cleanup` archives and `hive-score` reads.
 PARTIAL=$(mktemp "${TMPDIR:-/tmp}/hive-review-partial.XXXXXX") || exit 1
 trap 'rm -f "$PARTIAL"' EXIT
+# When this review started, to the second. What a review CONSUMED is not in the review
+# text and not anywhere under this task root: it is in the reviewer harness's own
+# transcript, in the reviewer's home, under a session id nothing here chose. A later
+# harvest can only find it by asking which transcripts moved while the review ran, and
+# only this wrapper knows that window -- so the window is captured here and the answer is
+# written beside the review, next to the `.head` sidecar.
+#
+# The worker cannot race it into the same window: it is blocked on this pipe for the whole
+# of it. That is what makes an mtime window an exact answer here rather than a heuristic.
+REVIEW_T0=$(date +%s)
 set +e
 { cat "$PREAMBLE"
   [ -z "${HIVE_REVIEW_SCOPE:-}" ] || printf '%s\n\n' "$HIVE_REVIEW_SCOPE"
@@ -753,6 +763,20 @@ if [ "$TEE_STATUS" -ne 0 ]; then
 fi
 mkdir -p "$HIVE_REVIEW_DIR/meta" 2>/dev/null || true
 git rev-parse HEAD > "$HIVE_REVIEW_DIR/meta/$(basename "$CANONICAL").head" 2>/dev/null || true
+# Both reviewer homes are scanned rather than the one this route happens to use: one rule
+# covers claude and codex, and a reviewer swapped in the catalog cannot silently stop
+# being measured. EVERY match is written, never the newest -- if two transcripts moved,
+# the attribution is ambiguous and the harvest has to see that rather than receive a
+# guess dressed as a fact.
+#
+# Non-fatal throughout. The review is the deliverable; failing to note what it consumed
+# must never lose it, and a missing sidecar is read downstream as "not recorded".
+{
+  find "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" -type f -name '*.jsonl' \
+       -newermt "@$REVIEW_T0" 2>/dev/null
+  find "${CODEX_HOME:-$HOME/.codex}/sessions" -type f -name 'rollout-*.jsonl' \
+       -newermt "@$REVIEW_T0" 2>/dev/null
+} > "$HIVE_REVIEW_DIR/meta/$(basename "$CANONICAL").transcripts" 2>/dev/null || true
 mv -f "$PARTIAL" "$CANONICAL" || {
   echo "review: the review is complete and above, on stdout, but could not be saved to" >&2
   echo "        $CANONICAL -- so NO round was spent and it is not in the record." >&2
