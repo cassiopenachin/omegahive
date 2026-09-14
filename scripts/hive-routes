@@ -175,4 +175,33 @@ if [ -z "$AS_JSON" ]; then
   echo
 fi
 
-printf '%s' "$REQ" | hive harness-routes ${AS_JSON:+--json}
+# The catalog is a DEPLOYMENT fact and the model that validates it is CODE, so the two drift
+# independently: a new field lands the moment an operator edits the catalog, and the model
+# that accepts it only arrives when the image is rebuilt. It has happened twice — `reviewer`
+# on 2026-08-28, `reasoning_effort` on 2026-09-11 — and both times the answer was a bare
+# CATALOG_MALFORMED naming a field, with nothing to say the field is fine and the READER is
+# old. `deploy_checks.sh` check 8 has always had the right words, and they are only reachable
+# by someone who already suspects the image.
+#
+# Launches keep working throughout, which is what makes it confusing: `hive-launch` parses
+# the catalog with jq and never through the model. So this is usually the first and only
+# place the drift shows.
+if ! ROUTES_OUT=$(printf '%s' "$REQ" | hive harness-routes ${AS_JSON:+--json} 2>&1); then
+  printf '%s\n' "$ROUTES_OUT" >&2
+  case "$ROUTES_OUT" in
+    *CATALOG_MALFORMED*Extra\ inputs*|*CATALOG_MALFORMED*extra_forbidden*)
+      {
+        echo
+        echo "hive-routes: that field is rejected as UNKNOWN, which usually means the reader is"
+        echo "  older than the catalog rather than the catalog being wrong — the CLI runs from a"
+        echo "  container image, and an image built before the field was added has never heard"
+        echo "  of it. Launches are unaffected: hive-launch parses the catalog with jq."
+        echo
+        echo "  Confirm and fix:"
+        echo "    scripts/deploy_checks.sh        # check 12 compares image against working tree"
+        echo "    podman compose build && podman compose up -d"
+      } >&2 ;;
+  esac
+  exit 2
+fi
+printf '%s\n' "$ROUTES_OUT"

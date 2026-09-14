@@ -261,12 +261,24 @@ def _issue_review_wrapper(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     (repo / "f").write_text("x\n")
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, timeout=30)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True, timeout=30)
+    order_rel = "projects/p/orders/2026-09-14-drill.md"
+    order = repo / order_rel
+    order.parent.mkdir(parents=True, exist_ok=True)
+    order.write_text(
+        "# Order: drill\n\n## Scope\n\n1. Move the constant.\n\n"
+        "## Stop-lines\n\n- No new modules.\n\n"
+        "## Definition of done\n\n- The constant is moved and the tests pass.\n\n"
+        "## Predictions\n\n- Expected effort: 1 hour. NOT-FOR-THE-REVIEWER\n")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, timeout=30)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "order"], check=True, timeout=30)
+    sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                         capture_output=True, text=True, timeout=30).stdout.strip()
     r = subprocess.run(
         ["bash", "-c",
          f'set -euo pipefail; source "{COMMON}"; '
-         'issue_worker_interface "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8"',
+         'issue_worker_interface "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}"',
          "bash", str(run_dir), str(repo), str(repo), "worker/x", "run1", "w1",
-         "opus-in-sandbox", ""],
+         "opus-in-sandbox", "", order_rel, sha],
         capture_output=True, text=True, cwd=str(REPO), timeout=120,
         env={**os.environ, "OMEGA_DIR": str(REPO)})
     assert r.returncode == 0, r.stdout + r.stderr
@@ -311,12 +323,13 @@ def test_the_sandboxed_review_caps_its_rounds(tmp_path):
         r = _review(run_dir, repo, bin_dir, home, reviews)
         assert r.returncode == 0, r.stderr
         assert f"round {n} of 4" in r.stderr
-    assert len(list(reviews.iterdir())) == 4
+    assert len([p for p in reviews.iterdir() if p.is_file()]) == 4
     refused = _review(run_dir, repo, bin_dir, home, reviews)
     assert refused.returncode == 3
     assert "REFUSING" in refused.stderr
     assert "question.asked" in refused.stderr
-    assert len(list(reviews.iterdir())) == 4, "a refused round must not write a review"
+    rounds = [p for p in reviews.iterdir() if p.is_file()]
+    assert len(rounds) == 4, "a refused round must not write a review"
 
 
 def test_the_last_allowed_round_says_it_is_the_last(tmp_path):
@@ -363,7 +376,7 @@ def test_the_cap_is_an_operator_control(tmp_path):
     for _ in range(5):
         r = _review(run_dir, repo, bin_dir, home, reviews, HIVE_REVIEW_ROUND_CAP="0")
         assert r.returncode == 0, r.stderr
-    assert len(list(reviews.iterdir())) == 5
+    assert len([p for p in reviews.iterdir() if p.is_file()]) == 5
 
 
 def test_an_interrupted_review_spends_no_round(tmp_path):
@@ -900,3 +913,165 @@ def test_a_sandbox_whose_reviewer_runs_inside_it_gets_a_reviewer_binary():
     assert '[ -n "$CRED_FOR_REVIEWER" ]' in block
     assert "command -v claude" in block, "installs without checking for an existing claude"
     assert "@anthropic-ai/claude-code" in block
+
+
+def test_the_contract_quotes_the_order_at_its_pin_and_nothing_else(tmp_path):
+    """The three sections a reviewer is measured against, and no more.
+
+    Read at the PINNED sha rather than at HEAD: by review time `main` has moved and the
+    worker's clone is dirty, so an order read live is not the order anyone was given. And
+    only Scope, Stop-lines and Definition of done — the rest of an order is context for the
+    worker, and handing it over invites a review of the order instead of the work.
+    """
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    contract = (run_dir / "review-contract.md").read_text()
+    assert "Move the constant." in contract
+    assert "No new modules." in contract
+    assert "The constant is moved" in contract
+    assert "NOT-FOR-THE-REVIEWER" not in contract, "the whole order was handed over"
+
+
+def test_the_contract_defines_blocking_and_leaves_scope_to_the_operator(tmp_path):
+    """A reviewer with no stated bar invents one, and the one it invents is "unassailable" —
+    44 saved reviews, zero PASS. So the bar is stated: the Definition of done decides done,
+    blocking is enumerated, and everything correct-but-not-blocking is a note.
+
+    Out-of-scope work is named, never required to be removed: cutting is rework by another
+    name, and whether to cut or keep is the operator's call.
+    """
+    run_dir, _, _, _ = _issue_review_wrapper(tmp_path)
+    c = (run_dir / "review-contract.md").read_text()
+    assert "Is the Definition of done met?" in c
+    assert "cannot fail when that behaviour breaks" in c
+    assert "VERDICT: PASS" in c and "VERDICT: REWORK" in c
+    assert "OUT OF SCOPE" in c
+    assert "operator's decision" in c
+
+
+def test_the_reviewer_is_handed_the_contract_on_stdin(tmp_path):
+    """A file that is read, never a string interpolated into a command line. An order is
+    arbitrary prose, and a worker once ran this very script through `sed` to change a word
+    of its prompt."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    echoing = bin_dir / "claude"
+    echoing.write_text('#!/bin/sh\necho "VERDICT: PASS"\ncat\n')
+    echoing.chmod(0o755)
+    r = _review(run_dir, repo, bin_dir, home, tmp_path / "reviews")
+    assert r.returncode == 0, r.stderr
+    assert "Move the constant." in r.stdout
+    assert "Is the Definition of done met?" in r.stdout
+
+
+def test_a_review_with_no_order_says_scope_was_not_checked(tmp_path):
+    """Absence must be loud. This wrapper is also reachable without a launch, and a silent
+    absence is exactly how the round-3 recurrence trigger stayed inert for seventeen
+    rounds."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    (run_dir / "review-contract.md").unlink()
+    echoing = bin_dir / "claude"
+    echoing.write_text('#!/bin/sh\necho "VERDICT: PASS"\ncat\n')
+    echoing.chmod(0o755)
+    r = _review(run_dir, repo, bin_dir, home, tmp_path / "reviews")
+    assert "SCOPE IS NOT CHECKED" in r.stdout
+
+
+def test_the_second_round_leads_with_the_previous_one_and_the_increment(tmp_path):
+    """Re-reading the whole branch every round is how one task reached seventeen of them:
+    each round found new things in code it had already passed."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    echoing = bin_dir / "claude"
+    echoing.write_text('#!/bin/sh\necho "VERDICT: REWORK"\ncat\n')
+    echoing.chmod(0o755)
+    reviews = tmp_path / "reviews"
+    first = _review(run_dir, repo, bin_dir, home, reviews)
+    assert first.returncode == 0, first.stderr
+    assert "The previous round is at" not in first.stdout
+
+    (repo / "f").write_text("changed\n")
+    subprocess.run(["git", "-C", str(repo), "commit", "-aqm", "repair"], check=True, timeout=30)
+    (reviews / "disposition.md").write_text("finding 1: fixed\n")
+    second = _review(run_dir, repo, bin_dir, home, reviews)
+    assert "The previous round is at" in second.stdout
+    assert "git diff" in second.stdout, "no incremental range was named"
+    assert "disposition.md" in second.stdout
+
+
+def test_the_head_sidecar_is_not_counted_as_a_round(tmp_path):
+    """A sidecar named review-<stamp>.txt.head sits in the counted directory and matches
+    `*review*`. Third time this trap has been set; `meta/` is outside `-maxdepth 1`."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    reviews = tmp_path / "reviews"
+    r = _review(run_dir, repo, bin_dir, home, reviews)
+    assert r.returncode == 0, r.stderr
+    assert len([p for p in reviews.iterdir() if p.is_file()]) == 1
+    assert (reviews / "meta").is_dir()
+    assert "round 2 of 4" in _review(run_dir, repo, bin_dir, home, reviews).stderr
+
+
+def test_the_codex_reviewer_gets_the_same_wrapper_as_every_other():
+    """`claude-opus` is the default route and was outside the review protocol entirely.
+
+    It reached Codex through the `/codex:review` plugin, which maps to a built-in reviewer
+    taking no custom text and knows nothing of HIVE_REVIEW_DIR — so that route had no round
+    cap, no saved reviews, no round counting, no incremental narrowing and no way to hand
+    the reviewer its order. `codex exec review -` is the same built-in reviewer with the
+    instruction slot open.
+
+    One wrapper body, with the command swapped. A second body would be two implementations
+    of one semantics, which is the shape that produced seventeen review rounds.
+    """
+    common = COMMON.read_text()
+    block = common.split("codex-plugin)", 1)[1].split("esac", 1)[0]
+    assert "codex exec -s read-only review -" in block
+    assert "-s read-only" in block, "a host-side reviewer must not be able to write"
+    # the flag belongs to `codex exec`, before the subcommand, or it is rejected
+    assert block.index("-s read-only") < block.index("review -")
+    assert ".codex/auth.json" in block, "no credential is checked before reviewing"
+
+
+def test_the_wrapper_has_one_body_for_every_reviewer():
+    """The cap, the contract, the preamble, the capture and the sidecar are the same
+    whoever reviews; only the command differs."""
+    common = COMMON.read_text()
+    body = common.split("REVIEWBODY'", 1)[1].split("REVIEWBODY\n", 1)[0]
+    assert body.count('"${HIVE_REVIEW_CMD[@]}"') == 2, "the reviewer command is not swappable"
+    # Comments may name a harness when explaining its behaviour; code may not invoke one.
+    code = [ln for ln in body.splitlines() if not ln.lstrip().startswith("#")]
+    hardcoded = [ln for ln in code if "claude -p" in ln or "codex exec" in ln]
+    assert not hardcoded, f"a reviewer is hardcoded in the shared body: {hardcoded}"
+
+
+def test_codex_as_a_reviewer_is_refused_inside_a_sandbox():
+    """A sandbox's credential proxy forces API-key billing for OpenAI and blocks ChatGPT
+    auth passthrough, which is why no sandboxed route runs Codex as a worker. The same wall
+    applies to it as a reviewer, and the refusal belongs at launch rather than at review
+    time with the order already done."""
+    launch = (REPO / "scripts" / "hive-launch").read_text()
+    check_at = launch.index('if [ -n "$CHECK_ONLY" ]; then')
+    assert "names the reviewer 'codex-plugin'" in launch[:check_at]
+
+
+def test_a_codex_reviewed_route_is_told_the_command(tmp_path):
+    """The kickoff named a skill, not a command, so the worker chose how to invoke its
+    reviewer — and both workers measured on 2026-09-10 modified that invocation."""
+    launch = (REPO / "scripts" / "hive-launch").read_text()
+    block = launch.split("codex-plugin)", 1)[1].split(";;", 1)[0]
+    assert "$WORKER_REVIEW" in block
+    assert "codex-review skill" not in block
+
+
+def test_no_generated_wrapper_line_carries_a_shell_metacharacter(tmp_path):
+    """Prose is not inert inside generated shell.
+
+    The scope hint contained `main` in backticks, which the unquoted heredoc turned into
+    command substitution in the generated file: the wrapper died with "main: command not
+    found" on its first real invocation. That is the same family as the apostrophe a worker
+    once ran `sed` over. Every value this generator interpolates is checked, not just the
+    one that bit.
+    """
+    run_dir, _, _, _ = _issue_review_wrapper(tmp_path)
+    for line in (run_dir / "review").read_text().splitlines():
+        if not line.startswith("HIVE_REVIEW_"):
+            continue
+        assert "`" not in line, f"backtick in a generated assignment: {line}"
+        assert "$(" not in line.split("=", 1)[1], f"substitution in a generated value: {line}"

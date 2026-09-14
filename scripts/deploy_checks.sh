@@ -473,5 +473,42 @@ else
          install -m 0755 deploy/<script>.sh $HELPER_DIR/<installed-name>"
 fi
 
+# --- 12. the deployed image was built from the source in this working tree --------------
+#
+# Check 8 asks whether the image can read the CATALOG, which catches drift the catalog
+# happens to expose. Everything else an image can be stale about it passes happily: a fixed
+# reducer, a new event kind, a corrected projection. On 2026-09-14 the image was two weeks
+# old and nobody knew, because nothing ever asked.
+#
+# It also asks the question check 8 answers only indirectly, and at the wrong moment. Check
+# 8 fires on a DEPLOY; the drift it detects is created by editing the catalog or the model,
+# neither of which is a deploy. This one makes "the image is behind" a fact you can read
+# rather than a symptom you hit.
+#
+# Compared by CONTENT, not by timestamps: an image built from a dirty tree, or rebuilt with
+# no changes, is not distinguishable by date. `LC_ALL=C` on both sides is load-bearing --
+# without it the container sorts under C and this host under UTF-8, the file lists come back
+# in different orders, and the check alarms forever on identical content (measured while
+# writing it).
+PKG_FIND="find src/omegahive -type f -name '*.py' ! -path '*__pycache__*'"
+HOST_PKG=$(eval "$PKG_FIND" | LC_ALL=C sort | xargs sha256sum | LC_ALL=C sha256sum | cut -c1-16)
+IMG_PKG=$("${DC[@]}" run --rm -T --entrypoint sh cli -c \
+  "cd /app && $PKG_FIND | LC_ALL=C sort | xargs sha256sum | LC_ALL=C sha256sum | cut -c1-16" \
+  2>/dev/null | grep -oE '^[0-9a-f]{16}' | head -1)
+if [ -z "$IMG_PKG" ]; then
+  bad "12. image currency: could not read the package hash out of the deployed image.
+       Check that the image exists and starts:  ${DC[*]} run --rm -T cli true"
+elif [ "$HOST_PKG" = "$IMG_PKG" ]; then
+  ok "12. image currency: the image was built from this working tree ($HOST_PKG)"
+else
+  bad "12. image currency: the deployed image does NOT match this working tree.
+       working tree $HOST_PKG   image $IMG_PKG
+       Everything that reads the spine through the container — hive-routes, board-view,
+       report — is running older code than the scripts beside it. Rebuild and recreate:
+         ${DC[*]} build && ${DC[*]} up -d
+       Note that this compares the WORKING TREE, so it also fails when the tree carries
+       uncommitted changes the image cannot have; that is the honest answer, not a bug."
+fi
+
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

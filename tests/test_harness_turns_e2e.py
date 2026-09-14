@@ -2015,7 +2015,13 @@ def launch_with_reviewer(dep, task: str, host_env=None, **route_over) -> dict:
 
 
 def fake_claude_dir(tmp_path: Path, tag: str) -> tuple[Path, Path]:
-    """A `claude` on PATH that records that it was reached, and what it was reached with."""
+    """A `claude` on PATH that records that it was reached, and what it was reached with.
+
+    Records STDIN as well as argv. The prompt used to be an argument; it travels on stdin
+    since 2026-09-14, because `codex exec review` takes exactly one prompt and refuses it
+    alongside `--base` — so one stream now serves every reviewer, and a stub that only
+    watched argv would report the prompt missing when it is merely elsewhere.
+    """
     bin_dir = tmp_path / f"{tag}-bin"
     bin_dir.mkdir()
     marker = tmp_path / f"{tag}-claude-was-reached.txt"
@@ -2026,7 +2032,8 @@ def fake_claude_dir(tmp_path: Path, tag: str) -> tuple[Path, Path]:
         'echo "BASE=${ANTHROPIC_BASE_URL-<unset>}"; '
         'echo "KEY=${ANTHROPIC_API_KEY-<unset>}"; '
         'echo "TOKEN=${ANTHROPIC_AUTH_TOKEN-<unset>}"; '
-        'echo "CFG=${CLAUDE_CONFIG_DIR-<unset>}"; }'
+        'echo "CFG=${CLAUDE_CONFIG_DIR-<unset>}"; '
+        'echo "stdin:"; cat; }'
         f' > "{marker}"\n'
     )
     claude.chmod(0o755)
@@ -2160,17 +2167,33 @@ def test_the_review_command_blocks_rather_than_reviewing_on_the_worker_credentia
     assert not marker.exists(), "a review with no login must not reach the harness at all"
 
 
-def test_a_host_reviewer_is_named_and_gets_no_in_vm_command(deployment):
-    """The two host reviewers are harnesses the worker already reaches. Issuing a
-    routing-stripped Opus wrapper for them would offer a second, wrong reviewer."""
-    for task, reviewer, expected in [
-        ("review-codex", "codex-plugin", "Codex, via the codex-review skill"),
-        ("review-skill", "claude-skill", "Claude, via the claude-review skill"),
-    ]:
-        got = launch_with_reviewer(deployment, task, reviewer=reviewer)
-        assert not got["review"].exists()
-        assert expected in got["prompt"]
-        assert RELATIVE_REVIEW not in got["prompt"]
+def test_the_claude_skill_reviewer_is_named_rather_than_issued(deployment):
+    """`claude-skill` is a harness the worker already reaches from inside its own session.
+    Issuing a routing-stripped wrapper for it would offer a second, wrong reviewer."""
+    got = launch_with_reviewer(deployment, "review-skill", reviewer="claude-skill")
+    assert not got["review"].exists()
+    assert "Claude, via the claude-review skill" in got["prompt"]
+    assert RELATIVE_REVIEW not in got["prompt"]
+
+
+def test_the_codex_reviewer_is_issued_as_a_command_rather_than_named(deployment):
+    """Changed on 2026-09-14, and it is the default route's protocol that changed with it.
+
+    `codex-plugin` used to be described — "Codex, via the codex-review skill" — leaving the
+    worker to choose how to invoke it. That plugin maps to a built-in reviewer taking no
+    custom text and knows nothing of HIVE_REVIEW_DIR, so `claude-opus` had no round cap, no
+    saved reviews, and no way to be handed its order. `codex exec review` is the same
+    reviewer with the instruction slot open, so it is issued as a command like the others —
+    and a command is the one form of instruction a worker cannot read and then not follow.
+    """
+    got = launch_with_reviewer(deployment, "review-codex", reviewer="codex-plugin")
+    assert got["review"].is_file() and os.access(got["review"], os.X_OK)
+    assert f"{RELATIVE_REVIEW} \"<prompt>\"" in got["prompt"]
+    assert "Codex reviewing your diff" in got["prompt"]
+    no_absolute_worker_command(got["prompt"], got["task_root"])
+    body = got["review"].read_text()
+    assert "codex exec -s read-only review -" in body
+    assert ".codex/auth.json" in body
 
 
 def test_a_route_that_names_no_reviewer_says_so_rather_than_defaulting_to_one(deployment):
