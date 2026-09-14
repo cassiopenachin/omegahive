@@ -653,3 +653,30 @@ class TestDispatch:
         ev = extract(name, [])
         assert ev.usage.status == "unavailable"
         assert "no usage extractor named" not in (ev.usage.reason or "")
+
+
+class TestSyntheticIsNotAModel:
+    """`<synthetic>` is Claude Code's marker for a message it generated locally — an API
+    error surfaced as an assistant turn, most often. It is not a model id, and reporting
+    it as the resolved model gets the whole fact refused: the gateway rules that a
+    resolved model which does not match the pinned one cannot be a success."""
+
+    def test_the_transcript_reader_does_not_report_it_as_a_model(self) -> None:
+        lines = [
+            assistant("m1", model="<synthetic>"),
+            assistant("m2", model="claude-opus-5"),
+        ]
+        ev = extract_claude_code_transcript(lines)
+        assert ev.main_chain_models == ["claude-opus-5"]
+
+    def test_its_tokens_still_count(self) -> None:
+        """Whatever produced it, the tokens on the record were consumed."""
+        lines = [assistant("m1", model="<synthetic>", out=7)]
+        ev = extract_claude_code_transcript(lines)
+        assert ev.usage.output_tokens == 7
+
+    def test_the_cost_state_reader_does_not_report_it_either(self) -> None:
+        lines = [cost_state(**{"<synthetic>": usage_block(0, 0, 0, 0),
+                               "claude-opus-5": usage_block(1, 2, 3, 4)})]
+        ev = extract_claude_code_cost_state(lines)
+        assert ev.main_chain_models == ["claude-opus-5"]

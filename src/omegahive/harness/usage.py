@@ -32,11 +32,22 @@ class UsageEvidence:
     main_chain_models: list[str] = field(default_factory=list)
     # Everything the extractor noticed that a reader would want in the record.
     notes: list[str] = field(default_factory=list)
+    # When this evidence was last written, `...Z`. Set by the harvest, which knows where
+    # the files are; an extractor reads lines and has no file to stat.
+    finished_at: str = ""
 
 
 def unavailable(reason: str) -> UsageEvidence:
     """The honest empty result. `reason` is required and becomes part of the fact."""
     return UsageEvidence(usage=ExecutionUsage(status="unavailable", reason=reason))
+
+
+# Claude Code's marker for a message it generated locally rather than received from a
+# model — an API error surfaced as an assistant turn is the common case. Its TOKENS are
+# real and count; its "model" is not a model, and reporting it as the resolved one gets
+# the whole execution fact refused, since the gateway rules that a resolved model which
+# does not match the pinned one cannot be a success.
+_NOT_A_MODEL = frozenset({"<synthetic>"})
 
 
 def _iter_json_lines(lines: Iterable[str]) -> tuple[list[dict], int]:
@@ -137,8 +148,11 @@ def extract_claude_code_transcript(lines: Iterable[str]) -> UsageEvidence:
 
     main_models: list[str] = []
     for r in rows:
-        if not r["sidechain"] and isinstance(r["model"], str) and r["model"] not in main_models:
-            main_models.append(r["model"])
+        model = r["model"]
+        if r["sidechain"] or not isinstance(model, str) or model in _NOT_A_MODEL:
+            continue
+        if model not in main_models:
+            main_models.append(model)
 
     notes = [f"{seen_records} usage record(s) deduplicated to {len(rows)} message(s)"]
     if bad:
@@ -400,7 +414,10 @@ def extract_claude_code_cost_state(lines: Iterable[str]) -> UsageEvidence:
             **totals,
         ),
         rows=rows,
-        main_chain_models=[str(r["model"]) for r in rows if r["model"]],
+        main_chain_models=[
+            str(r["model"]) for r in rows
+            if r["model"] and str(r["model"]) not in _NOT_A_MODEL
+        ],
         notes=notes,
     )
 

@@ -529,3 +529,117 @@ def test_a_route_with_no_sandbox_at_all_is_silent_about_it(tmp_path):
         sandbox="hive-t", staging=tmp_path / "s", runner=runner)
     assert sources == []
     assert notes == []
+
+
+def test_finished_at_is_the_utc_shape_the_gateway_accepts(tmp_path):
+    """`finished_at must be ISO-8601 UTC ('...Z')` — the gateway refuses `+00:00`, and a
+    payload refused at emit time is a harvest that ran and recorded nothing."""
+    import os
+    root = task_root(tmp_path)
+    export = opencode_export(tmp_path / "vm" / "opencode-messages.jsonl")
+    os.utime(export, (1_789_000_000, 1_789_000_000))
+    res = run(root, sandbox_sources=[Source("opencode-export", export)])
+    assert res.finished_at.endswith("Z"), res.finished_at
+    assert "+00:00" not in res.finished_at
+
+
+def test_a_generated_export_is_stamped_from_its_contents_not_from_now(tmp_path):
+    """The opencode export does not exist until the harvest writes it, so its mtime is
+    always "now" — and `finished_at` derived from that changes on every run, which defeats
+    the content-addressed idempotency that makes re-harvesting safe."""
+    from omegahive.harness.harvest import pull_sandbox_sources
+    rows = "\n".join(json.dumps({
+        "id": f"m{i}", "role": "assistant", "modelID": "x", "cost": 0.0,
+        "time_completed": 1_789_000_000_000 + i * 1000,
+        "tokens": {"input": 1, "output": 1, "reasoning": 0, "cache": {"read": 0, "write": 0}},
+    }) for i in range(3))
+    runner, _ = _fake_sbx(tmp_path, export=rows + "\n")
+    sources, _ = pull_sandbox_sources(
+        sandbox="hive-t", staging=tmp_path / "s", runner=runner)
+    export = next(s for s in sources if s.surface == "opencode-export")
+    assert export.path.stat().st_mtime == 1_789_000_002.0
+
+
+def test_harvesting_twice_does_not_count_the_evidence_twice(tmp_path):
+    """The whole point of a re-runnable harvest. Keeping the first copy AND a suffixed
+    second one would double every total on the second run — silently, and in the
+    direction that makes everything look twice as expensive."""
+    root = task_root(tmp_path)
+    export = opencode_export(tmp_path / "vm" / "opencode-messages.jsonl")
+    first = run(root, sandbox_sources=[Source("opencode-export", export)])
+    second = run(root, sandbox_sources=[Source("opencode-export", export)])
+    assert second.work.usage.output_tokens == first.work.usage.output_tokens
+    kept = list((root / "run" / "usage" / "raw").rglob("*.jsonl"))
+    assert len(kept) == 1, [p.name for p in kept]
+
+
+def test_two_sources_sharing_a_name_in_one_harvest_are_both_kept(tmp_path):
+    """Within one run a collision is two different files, and losing one silently is the
+    failure this module exists to stop. Across runs it is the same file again."""
+    a = transcript(tmp_path / "one" / "same.jsonl", msg="a", out=10)
+    b = transcript(tmp_path / "two" / "same.jsonl", msg="b", out=20)
+    root = task_root(tmp_path)
+    res = run(root, work_identity={**IDENTITY, "harness": "claude-code"},
+              host_sources=[Source("claude-session", a), Source("claude-session", b)])
+    kept = sorted(p.name for p in (root / "run" / "usage" / "raw").rglob("*.jsonl"))
+    assert len(kept) == 2, kept
+    assert res.work.usage.output_tokens == 30
+
+
+# --- which model actually ran ----------------------------------------------------------
+#
+# The gateway refuses a `success` whose resolved model does not match the pinned one, so
+# this choice decides whether the fact lands at all. A session routinely names more than
+# one model — the quota and title calls run on a cheaper one — and taking whichever came
+# first is a coin toss that loses.
+
+def _evidence(models: list[str]):
+    from omegahive.events.types import ExecutionUsage
+    from omegahive.harness.usage import UsageEvidence
+    return UsageEvidence(
+        usage=ExecutionUsage(status="reported", source="s", input_tokens=1,
+                             cache_read_tokens=0, cache_write_tokens=0, output_tokens=1),
+        rows=[], main_chain_models=models,
+    )
+
+
+def test_the_pinned_model_wins_when_the_evidence_names_it():
+    """The harness DID report running it; the auxiliary traffic beside it is not the
+    execution's model."""
+    p = finished_payload(execution_id="e", purpose="work", attempt=1, identity=IDENTITY,
+                         evidence=_evidence(["claude-haiku-4-5", "z-ai/glm-5.3"]))
+    assert p["model_resolved"] == "z-ai/glm-5.3"
+    assert p["model_evidence"] == "harness-reported"
+
+
+def test_a_single_reported_model_is_used_even_when_it_is_not_the_pinned_one():
+    """A genuine mismatch is a fact worth recording, not one to round away — the gateway
+    will refuse it, and being refused is the correct outcome for an execution that ran
+    something other than what was approved."""
+    p = finished_payload(execution_id="e", purpose="work", attempt=1, identity=IDENTITY,
+                         evidence=_evidence(["some-other-model"]))
+    assert p["model_resolved"] == "some-other-model"
+
+
+def test_several_models_none_of_them_the_pinned_one_resolves_to_nothing():
+    """Picking one would be a guess, and a guess here is either a false mismatch or a
+    false confirmation."""
+    p = finished_payload(execution_id="e", purpose="work", attempt=1, identity=IDENTITY,
+                         evidence=_evidence(["a", "b"]))
+    assert p["model_resolved"] is None
+    assert p["model_evidence"] == "none"
+
+
+def test_each_purpose_is_stamped_from_its_own_evidence(tmp_path):
+    """A task-wide timestamp would say the review finished when the worker last wrote,
+    which on a task whose reviews ran hours later is simply false."""
+    import os
+    export = opencode_export(tmp_path / "vm" / "opencode-messages.jsonl")
+    os.utime(export, (1_789_000_000, 1_789_000_000))
+    reviewed = transcript(tmp_path / "vm" / "c" / "r1.jsonl")
+    os.utime(reviewed, (1_789_090_000, 1_789_090_000))
+    root = task_root(tmp_path, reviews={"review-1.txt": [reviewed]})
+    res = run(root, sandbox_sources=[Source("opencode-export", export),
+                                     Source("claude-session", reviewed)])
+    assert res.work.finished_at != res.review.finished_at
+    assert res.work.finished_at < res.review.finished_at

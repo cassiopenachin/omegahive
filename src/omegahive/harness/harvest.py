@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -252,6 +253,20 @@ def pull_sandbox_sources(
     if status == 0 and out.strip():
         local = staging / "opencode-messages.jsonl"
         local.write_text(out)
+        # Stamp it from its own contents. Every other source is copied with its mtime
+        # intact, but this one does not exist until now — so its mtime would be "now",
+        # `finished_at` would move on every run, and the content-addressed idempotency
+        # that makes re-harvesting safe would never collapse two harvests of one task.
+        newest_ms = 0
+        for line in out.splitlines():
+            try:
+                t = json.loads(line).get("time_completed")
+            except json.JSONDecodeError:
+                continue
+            if isinstance(t, (int, float)):
+                newest_ms = max(newest_ms, int(t))
+        if newest_ms:
+            os.utime(local, (newest_ms / 1000, newest_ms / 1000))
         sources.append(Source("opencode-export", local, origin=f"{sandbox}:{db}"))
     elif status == 3:
         pass
@@ -281,6 +296,7 @@ for (data,) in c.execute("select data from message order by time_created"):
         "modelID": o.get("modelID"),
         "cost": o.get("cost"),
         "tokens": o.get("tokens"),
+        "time_completed": (o.get("time") or {}).get("completed"),
     }))
 """
 
@@ -291,21 +307,30 @@ def _usage_dir(task_root: Path) -> Path:
     return d
 
 
-def _copy_in(task_root: Path, origin: Path, subdir: str) -> Path:
-    """Copy a source into the task root, keeping its name and refusing to collide.
+def _copy_in(task_root: Path, origin: Path, subdir: str, taken: set[Path]) -> Path:
+    """Copy a source into the task root, keeping its name.
 
-    The name is kept because it is the only link back to the session it came from; a
-    collision is resolved by suffixing rather than overwriting, since two sandboxes can
-    legitimately produce the same session id and losing one silently is the failure this
-    whole module exists to stop.
+    The name is kept because it is the only link back to the session it came from, which
+    makes the two collision cases mean opposite things.
+
+    WITHIN one harvest, two sources with one name are two different files, and losing
+    either silently is the failure this module exists to stop — so the second is suffixed.
+
+    ACROSS harvests it is the same source again, and this command is meant to be re-run:
+    at close, and by hand afterwards. Suffixing there would leave the first copy AND a
+    second beside it, both matching the same surface, and every total would double on the
+    second run — silently, in the direction that makes everything look twice as expensive.
+    So a name this run has not already taken is overwritten. Transcripts only grow, so the
+    newer copy is a superset of the one it replaces.
     """
     dest_dir = _usage_dir(task_root) / "raw" / subdir
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / origin.name
     n = 1
-    while dest.exists():
+    while dest in taken:
         dest = dest_dir / f"{origin.stem}.{n}{origin.suffix}"
         n += 1
+    taken.add(dest)
     shutil.copy2(origin, dest)
     return dest
 
@@ -363,6 +388,25 @@ def _merge(parts: list[UsageEvidence], source: str) -> UsageEvidence:
     )
 
 
+def _stamp(evidence: UsageEvidence, raw_root: Path) -> str:
+    """When this execution's own evidence was last written, `...Z`.
+
+    Per purpose rather than per task: a task-wide timestamp would say the review finished
+    when the worker last wrote, which on a task whose reviews ran hours later is simply
+    false. Derived from the files the rows actually cite, and from their mtimes rather
+    than from the clock, so two harvests of one finished task produce byte-identical
+    payloads and the gateway's content-addressed idempotency can collapse them.
+    """
+    names = {str(r.get("source_file")) for r in evidence.rows if r.get("source_file")}
+    newest = 0.0
+    for name in names:
+        for path in raw_root.rglob(name):
+            newest = max(newest, path.stat().st_mtime)
+    if not newest:
+        return ""
+    return datetime.fromtimestamp(newest, tz=UTC).isoformat().replace("+00:00", "Z")
+
+
 def _write_evidence(usage_dir: Path, purpose: str, evidence: UsageEvidence) -> Path | None:
     """The rows behind a total, written where `evidence_ref` can point at them.
 
@@ -403,11 +447,14 @@ def harvest(req: HarvestRequest) -> HarvestResult:
     # 1. Copy first. Everything after this reads the copy, so a VM removed between the
     #    harvest and the next question costs nothing.
     copied: list[tuple[str, str, Path]] = []   # (surface, origin key, kept copy)
+    taken: set[Path] = set()
     for src, subdir in [(s, "host") for s in req.host_sources] + [
         (s, "vm") for s in req.sandbox_sources
     ]:
         if src.path.is_file():
-            copied.append((src.surface, src.key(), _copy_in(req.task_root, src.path, subdir)))
+            copied.append(
+                (src.surface, src.key(), _copy_in(req.task_root, src.path, subdir, taken))
+            )
 
     by_origin = {origin: (surface, kept) for surface, origin, kept in copied}
 
@@ -540,6 +587,10 @@ def harvest(req: HarvestRequest) -> HarvestResult:
             + ", ".join(sorted(unattributed))
         )
 
+    raw_root = usage_dir / "raw"
+    work.finished_at = _stamp(work, raw_root)
+    review.finished_at = _stamp(review, raw_root)
+
     work_ref = _write_evidence(usage_dir, "work", work)
     review_ref = _write_evidence(usage_dir, "review", review)
     if work_ref:
@@ -548,7 +599,12 @@ def harvest(req: HarvestRequest) -> HarvestResult:
         review.usage.evidence_ref = str(review_ref)
 
     newest = max((k.stat().st_mtime for _, _, k in copied), default=0.0)
-    finished_at = datetime.fromtimestamp(newest, tz=UTC).isoformat() if newest else ""
+    # `...Z`, not `+00:00`: the gateway validates the shape and refuses the latter, and a
+    # payload refused at emit time is a harvest that ran and recorded nothing.
+    finished_at = (
+        datetime.fromtimestamp(newest, tz=UTC).isoformat().replace("+00:00", "Z")
+        if newest else ""
+    )
 
     manifest = usage_dir / "harvest.json"
     manifest.write_text(
@@ -606,7 +662,25 @@ def finished_payload(
     and a harvest inventing one now would attach today's rates to a week-old execution —
     the precise error the field's docstring exists to prevent.
     """
-    model_resolved = evidence.main_chain_models[0] if evidence.main_chain_models else None
+    # WHICH model, when the evidence names several. A session's quota and title calls run
+    # on a cheaper model beside the pinned one, so "whichever came first" is a coin toss —
+    # and the gateway refuses a success whose resolved model does not match the pinned
+    # one, so losing that toss loses the whole fact.
+    #
+    # The pinned model wins when the evidence names it: the harness DID report running it,
+    # and the auxiliary traffic beside it is not what the execution ran. A single reported
+    # model that is NOT the pinned one is reported as itself — a genuine mismatch is a
+    # fact, and being refused is the correct outcome for an execution that ran something
+    # other than what was approved. Several models, none of them pinned, resolves to
+    # nothing: picking one would be either a false mismatch or a false confirmation.
+    models = evidence.main_chain_models
+    pinned = identity.get("model")
+    if pinned and pinned in models:
+        model_resolved: str | None = str(pinned)
+    elif len(models) == 1:
+        model_resolved = models[0]
+    else:
+        model_resolved = None
     return {
         "execution_id": execution_id,
         "purpose": purpose,
@@ -726,7 +800,7 @@ def main(argv: list[str] | None = None) -> int:
             payloads["work"] = finished_payload(
                 execution_id=args.execution_id, purpose="work", attempt=args.attempt,
                 identity=work_identity, evidence=result.work,
-                finished_at=result.finished_at,
+                finished_at=result.work.finished_at or result.finished_at,
             )
         elif result.work.usage.status == "reported":
             notes.append("the work surface was read but has no identity to attribute it to")
@@ -738,7 +812,7 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 purpose="review", attempt=args.attempt,
                 identity=reviewer_identity, evidence=result.review,
-                finished_at=result.finished_at,
+                finished_at=result.review.finished_at or result.finished_at,
             )
         elif result.review.usage.status == "reported":
             notes.append("the reviews were read but have no identity to attribute them to")
