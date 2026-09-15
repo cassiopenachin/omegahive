@@ -7,6 +7,18 @@
         "worker": {
           "title": "Worker",
           "type": "string"
+        },
+        "reviewer_route": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reviewer Route"
         }
       },
       "required": [

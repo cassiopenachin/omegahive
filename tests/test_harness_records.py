@@ -22,6 +22,7 @@ from omegahive.harness.records import (
     catalog_digest,
     is_hive_authority_env,
     load_catalog,
+    resolve_reviewer_route,
     resolve_route,
 )
 
@@ -361,3 +362,71 @@ def test_the_reasoning_effort_is_outside_the_runner_fingerprint():
     a = load_catalog(catalog_bytes(route())).routes[0]
     b = load_catalog(catalog_bytes(route(reasoning_effort="high"))).routes[0]
     assert a.runner.fingerprint() == b.runner.fingerprint()
+
+
+# --- the reviewer's own identity ------------------------------------------------------
+#
+# A review consumes a model too, and until now nothing in the catalog said WHICH. The
+# `reviewer` field on each route names the MECHANISM (`opus-in-sandbox`, `codex-plugin`),
+# which is not an identity: it does not say the vendor, the model id, the billing market
+# or the credential pool, and `ExecutionIdentity` forbids synthesizing any of them. So
+# recording what a review consumed needs a route name, and `defaults.reviewer_route` is
+# where the deployment states it.
+#
+# Optional, because a catalog written before this field must keep loading and a
+# deployment that has not decided must be able to say nothing rather than guess.
+
+def test_a_catalog_without_a_reviewer_route_still_loads():
+    """Every catalog on disk predates this field. Loading them is not optional."""
+    cat = load_catalog(catalog_bytes())
+    assert cat.defaults.reviewer_route is None
+
+
+def test_the_reviewer_route_resolves_like_any_other_route():
+    cat = load_catalog(catalog_bytes(
+        route(), route(name="reviewer-route"),
+        **{"defaults": {"worker": "fake-subscription", "reviewer_route": "reviewer-route"}},
+    ))
+    entry = resolve_reviewer_route(cat)
+    assert entry.name == "reviewer-route"
+
+
+def test_an_unset_reviewer_route_refuses_with_its_own_code():
+    """Distinct from every other refusal here, because the remedy is distinct: the
+    operator adds one line to the catalog. A generic ROUTE_UNKNOWN would send them
+    looking for a route that was never named."""
+    cat = load_catalog(catalog_bytes())
+    with pytest.raises(RefusalError) as exc:
+        resolve_reviewer_route(cat)
+    assert exc.value.code == "REVIEWER_ROUTE_UNSET"
+    assert "defaults.reviewer_route" in exc.value.message
+
+
+def test_a_reviewer_route_pointing_nowhere_refuses_as_a_catalog_problem():
+    cat = load_catalog(catalog_bytes(
+        route(), **{"defaults": {"worker": "fake-subscription", "reviewer_route": "ghost"}},
+    ))
+    with pytest.raises(RefusalError) as exc:
+        resolve_reviewer_route(cat)
+    assert exc.value.code == "REVIEWER_ROUTE_UNKNOWN"
+    assert "fake-subscription" in exc.value.message
+
+
+def test_a_disabled_reviewer_route_refuses():
+    """A disabled route is not authorized to run, and that holds whichever purpose it
+    would have run for."""
+    cat = load_catalog(catalog_bytes(
+        route(), route(name="off", enabled=False),
+        **{"defaults": {"worker": "fake-subscription", "reviewer_route": "off"}},
+    ))
+    with pytest.raises(RefusalError) as exc:
+        resolve_reviewer_route(cat)
+    assert exc.value.code == "ROUTE_DISABLED"
+
+
+def test_a_malformed_reviewer_route_name_refuses_at_load():
+    with pytest.raises(RefusalError):
+        load_catalog(catalog_bytes(
+            route(),
+            **{"defaults": {"worker": "fake-subscription", "reviewer_route": "no spaces"}},
+        ))

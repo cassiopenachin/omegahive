@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# hive-usage <task> [--project <p>] [--no-emit] [--quiet]
+#
+# What one task consumed, harvested from the harnesses' own files and recorded on the
+# spine. Run by `hive-close` as a by-product; run by hand for a task that closed before
+# this existed, or to re-read one whose evidence has since been copied in.
+#
+# WHY THIS IS A SEPARATE COMMAND AND NOT PART OF THE LAUNCHER. `execution.started` and
+# `execution.finished` were instrument observations made by the turn runner. With the turn
+# runner off the production path nothing observes a launch, and a launcher emitting them
+# would be self-report wearing an instrument's role (hive-launch, the emit block). That
+# argument still holds for the LAUNCHER. It does not hold for reading, after the fact, the
+# file a harness wrote about itself: that is evidence, and it is the same evidence
+# `source: "claude-code-transcript"` always named. So this command exists, it runs at
+# close, and it records `outcome_certainty: uncertain` on everything it writes — because a
+# harvest finds a process already gone and saying so is the honest record.
+#
+# WHY IT RUNS ON THE HOST. The four surfaces live in `~/.claude`, `~/.codex`, and inside
+# the sandbox VM. The containerised CLI can reach none of them, and the VM is the urgent
+# case: `sbx prune` removes every stopped sandbox, and with it the only copy of what every
+# review cost. This command copies the evidence into the task root before reading it.
+
+# Same deliberate redundancy as every other script here: hive-common.sh sets these during
+# the source below, and stating them makes this script's own contract readable.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=scripts/hive-common.sh
+source "$SCRIPT_DIR/hive-common.sh"
+
+usage() {
+  echo "usage: hive-usage <task> [--project <p>] [--no-emit] [--quiet]" >&2
+  exit 2
+}
+
+TASK=""; PROJECT_ARG=""; EMIT=1; QUIET=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --project) shift; [ $# -gt 0 ] || usage; PROJECT_ARG="$1" ;;
+    --no-emit) EMIT=0 ;;
+    --quiet) QUIET=1 ;;
+    -h|--help) usage ;;
+    -*) usage ;;
+    *) [ -z "$TASK" ] || usage; TASK="$1" ;;
+  esac
+  shift
+done
+[ -n "$TASK" ] || usage
+
+# The host python that can import omegahive. A seam for the same reason HIVE_CLI_CMD is
+# one: this cannot be the containerised CLI (it sees neither the operator's home nor
+# `sbx`), and a host without `uv` needs somewhere to say so.
+: "${HIVE_HOST_PY_CMD:=uv run --project $REPO_DIR python}"
+: "${HIVE_ROUTE_CATALOG:=$HOME/.config/omegahive/routes.json}"
+
+REL=$(find_order "$TASK")
+PROJECT="${PROJECT_ARG:-$(project_from_order "$REL")}"
+load_project_conf "$PROJECT"
+
+# The spine is the authority on which worker ran this and under what identity, and both
+# answers must come from it rather than from the filesystem: a task root can be guessed
+# from a naming convention, and a guess that lands on a REASSIGNED task's stranded root
+# would harvest the attempt that failed and file it as the one that worked.
+SPINE=$(hive report "$RUN" --json 2>/dev/null) \
+  || die "could not read run '$RUN' from the spine"
+
+WORKER=$(printf '%s' "$SPINE" | jq -r --arg t "$TASK" '
+  [ .[] | select(.event_type == "task.assigned" and .task_id == $t) ]
+  | last | .payload.worker // empty')
+[ -n "$WORKER" ] || die "no task.assigned for '$TASK' on run '$RUN' — nothing says which worker ran it"
+TASK_ROOT="$WORK_ROOT/$WORKER"
+[ -d "$TASK_ROOT" ] || die "the task root $TASK_ROOT is gone; its evidence went with it"
+
+ROUTE_EVENT=$(printf '%s' "$SPINE" | jq -c --arg t "$TASK" '
+  [ .[] | select(.event_type == "execution.route_approved" and .task_id == $t) ]
+  | last // {} | .payload // {}')
+IDENTITY=$(printf '%s' "$ROUTE_EVENT" | jq -c '.identity // empty')
+EXEC_ID=$(printf '%s' "$ROUTE_EVENT" | jq -r '.execution_id // empty')
+ORDER_REF=$(printf '%s' "$ROUTE_EVENT" | jq -r '.order_ref // empty')
+ATTEMPT=$(printf '%s' "$ROUTE_EVENT" | jq -r '.attempt // 1')
+
+# Same derivation as the launcher's, so a harvest looks for the sandbox the launch made.
+SANDBOX="hive-${TASK//_/-}"
+
+HARVEST_ARGS=(--task "$TASK" --task-root "$TASK_ROOT" --worker "$WORKER"
+              --attempt "$ATTEMPT" --catalog "$HIVE_ROUTE_CATALOG" --sandbox "$SANDBOX")
+[ -z "$IDENTITY" ]  || HARVEST_ARGS+=(--identity "$IDENTITY")
+[ -z "$EXEC_ID" ]   || HARVEST_ARGS+=(--execution-id "$EXEC_ID")
+[ -z "$ORDER_REF" ] || HARVEST_ARGS+=(--order-ref "$ORDER_REF")
+
+# shellcheck disable=SC2086  # HIVE_HOST_PY_CMD is legitimately several words
+OUT=$($HIVE_HOST_PY_CMD -m omegahive.harness.harvest "${HARVEST_ARGS[@]}") \
+  || die "the harvest failed; nothing was emitted and the task root is unchanged"
+
+if [ "$QUIET" -eq 0 ]; then
+  echo "hive-usage: task=$TASK  worker=$WORKER  sandbox=$SANDBOX"
+  printf '%s' "$OUT" | jq -r '
+    "  work:   \(.work_status)" + (if .work_reason then " — \(.work_reason)" else "" end),
+    "  review: \(.review_status)" + (if .review_reason then " — \(.review_reason)" else "" end),
+    "  manifest: \(.manifest)",
+    (.notes[]? | "  note: \(.)")'
+fi
+
+if [ "$EMIT" -eq 0 ]; then
+  echo "hive-usage: --no-emit — the evidence is harvested and nothing was written to the spine."
+  exit 0
+fi
+
+# One emit per purpose, each independent: a review that cannot be attributed must not cost
+# the work fact, and the other way round. `instrument` is the authoring role because an
+# execution's consumption is an observation, not the worker's account of itself — the same
+# blessed human-tier borrowing `hive-close` uses for review.passed.
+WROTE=0
+for PURPOSE in work review; do
+  PAYLOAD=$(printf '%s' "$OUT" | jq -c --arg p "$PURPOSE" '.[$p] // empty')
+  [ -n "$PAYLOAD" ] || continue
+  # In a SUBSHELL, because `emit` dies on a rejection and this loop must not. The two
+  # purposes are independent facts: a review the gateway refuses must not cost the work
+  # fact that already landed, and vice versa. Without the subshell the else branch below
+  # is unreachable and the first refusal takes the script with it.
+  if ( emit instrument "$OPERATOR_ACTOR" execution.finished --task "$TASK" \
+       --payload "$PAYLOAD" >/dev/null ); then
+    WROTE=$((WROTE + 1))
+    printf '  recorded execution.finished (%s) %s\n' "$PURPOSE" \
+      "$(printf '%s' "$PAYLOAD" | jq -r '.usage.status')"
+  else
+    echo >&2
+    echo "hive-usage: WARNING the $PURPOSE fact was REJECTED (the reason is above)." >&2
+    echo "  The evidence is harvested and durable under $TASK_ROOT/run/usage, so" >&2
+    echo "  re-running this command once the cause is fixed will record it. The other" >&2
+    echo "  purpose is unaffected, and nothing else is in doubt." >&2
+  fi
+done
+[ "$WROTE" -gt 0 ] || echo "hive-usage: nothing could be attributed, so nothing was emitted."

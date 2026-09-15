@@ -39,8 +39,11 @@ from pydantic import ValidationError
 from omegahive.events.types import ExecutionUsage
 from omegahive.harness.usage import (
     extract,
+    extract_claude_code_cost_state,
     extract_claude_code_transcript,
+    extract_codex_rollout,
     extract_fake_usage_file,
+    extract_opencode_messages,
     unavailable,
 )
 
@@ -476,3 +479,204 @@ def test_the_committed_fixture_writes_what_the_parser_reads(tmp_path: Path):
     assert ev.usage.output_tokens == 200, "the fixture's own docstring pins 200, not 300"
     assert ev.usage.evidence_records == 2
     assert ev.main_chain_models == ["fixture-model"]
+
+
+# --- the three surfaces added by the close-time harvest ----------------------
+#
+# One property governs all three and it is the same one the module opened with: a
+# number here is what a harness said, or it is absent. What changes per surface is
+# WHICH record is authoritative, and each of the three gets that wrong in its own way
+# if summed naively:
+#
+#   * Claude Code writes a running `cost-state` record. Summing them double-counts;
+#     the LAST one is the total.
+#   * opencode writes one row per message, each already deduplicated by the harness.
+#     Summing rows is correct here — the opposite of the transcript surface.
+#   * codex writes a CUMULATIVE `total_token_usage` on every turn. Summing turns
+#     squares the bill; the last cumulative record is the total.
+#
+# Getting these three backwards is a silent 2-10x, so each has an explicit test that
+# states the wrong answer it is guarding against.
+
+def cost_state(**models: dict[str, Any]) -> str:
+    return json.dumps({"type": "cost-state", "totalCostUSD": 1.0, "modelUsage": models})
+
+
+def usage_block(inp: int, out: int, cr: int, cw: int, cost: float = 1.0) -> dict[str, Any]:
+    return {
+        "inputTokens": inp, "outputTokens": out, "cacheReadInputTokens": cr,
+        "cacheCreationInputTokens": cw, "thinkingTokens": 0, "webSearchRequests": 0,
+        "costUSD": cost,
+    }
+
+
+class TestClaudeCostState:
+    def test_last_record_wins_rather_than_the_sum(self) -> None:
+        """Claude Code rewrites cost-state as the session grows. It is a running total,
+        so the file holds several and only the last is true. Summing three records of a
+        session that consumed 100 output tokens reports 600."""
+        lines = [
+            cost_state(**{"m": usage_block(10, 100, 1000, 10)}),
+            cost_state(**{"m": usage_block(20, 200, 2000, 20)}),
+            cost_state(**{"m": usage_block(30, 300, 3000, 30)}),
+        ]
+        ev = extract_claude_code_cost_state(lines)
+        assert ev.usage.status == "reported"
+        assert ev.usage.output_tokens == 300, "expected the LAST cost-state, not the sum (600)"
+        assert ev.usage.cache_read_tokens == 3000
+        assert ev.usage.source == "claude-code-cost-state"
+
+    def test_every_model_in_the_session_is_counted(self) -> None:
+        """A session's quota and title traffic runs on a cheaper model. Those tokens were
+        consumed by this task and belong in the total, even though the route pinned one
+        model."""
+        lines = [cost_state(
+            **{"claude-opus-5": usage_block(10, 100, 1000, 10),
+               "claude-haiku-4-5": usage_block(1, 5, 0, 0)}
+        )]
+        ev = extract_claude_code_cost_state(lines)
+        assert ev.usage.output_tokens == 105
+        assert ev.usage.input_tokens == 11
+        assert set(ev.main_chain_models) == {"claude-opus-5", "claude-haiku-4-5"}
+
+    def test_reported_dollars_are_kept_as_evidence_and_never_as_a_count(self) -> None:
+        """The harness reports a dollar figure and it is the best one available — but
+        `ExecutionUsage` structurally holds no currency, so it lives on the evidence row
+        and in the notes, never in the payload."""
+        lines = [cost_state(**{"m": usage_block(10, 100, 1000, 10, cost=4.25)})]
+        ev = extract_claude_code_cost_state(lines)
+        assert not hasattr(ev.usage, "cost_usd")
+        assert ev.rows[0]["reported_cost_usd"] == pytest.approx(4.25)
+        assert any("4.25" in n for n in ev.notes)
+
+    def test_a_session_with_no_cost_state_is_unavailable_not_zero(self) -> None:
+        ev = extract_claude_code_cost_state([json.dumps({"type": "assistant"})])
+        assert ev.usage.status == "unavailable"
+        assert ev.usage.reason
+        assert ev.usage.output_tokens is None
+
+
+class TestOpencodeMessages:
+    def test_rows_are_summed_because_the_harness_already_deduplicated_them(self) -> None:
+        """The opposite of the Claude transcript: opencode stores ONE row per assistant
+        message with the message's own totals, so summing is correct and deduplicating
+        would drop real traffic."""
+        lines = [
+            json.dumps({"id": "msg_1", "role": "assistant", "modelID": "z-ai/glm-5.3",
+                        "cost": 0.5,
+                        "tokens": {"input": 10, "output": 100, "reasoning": 7,
+                                   "cache": {"read": 1000, "write": 5}}}),
+            json.dumps({"id": "msg_2", "role": "assistant", "modelID": "z-ai/glm-5.3",
+                        "cost": 0.25,
+                        "tokens": {"input": 20, "output": 200, "reasoning": 3,
+                                   "cache": {"read": 2000, "write": 0}}}),
+        ]
+        ev = extract_opencode_messages(lines)
+        assert ev.usage.status == "reported"
+        assert ev.usage.input_tokens == 30
+        assert ev.usage.output_tokens == 300
+        assert ev.usage.cache_read_tokens == 3000
+        assert ev.usage.cache_write_tokens == 5
+        assert ev.usage.evidence_records == 2
+        assert ev.main_chain_models == ["z-ai/glm-5.3"]
+
+    def test_reasoning_is_kept_on_the_row_and_not_added_to_output(self) -> None:
+        """Same call as codex: opencode's `reasoning` is a subset of `output`. Adding it
+        would report 107 for a message that emitted 100."""
+        lines = [json.dumps({"id": "m", "role": "assistant", "modelID": "x", "cost": 0,
+                             "tokens": {"input": 0, "output": 100, "reasoning": 7,
+                                        "cache": {"read": 0, "write": 0}}})]
+        ev = extract_opencode_messages(lines)
+        assert ev.usage.output_tokens == 100
+        assert ev.rows[0]["reasoning_output_tokens"] == 7
+
+    def test_user_messages_carry_no_usage_and_are_skipped(self) -> None:
+        lines = [
+            json.dumps({"id": "u", "role": "user"}),
+            json.dumps({"id": "a", "role": "assistant", "modelID": "x", "cost": 0,
+                        "tokens": {"input": 1, "output": 2, "reasoning": 0,
+                                   "cache": {"read": 0, "write": 0}}}),
+        ]
+        ev = extract_opencode_messages(lines)
+        assert ev.usage.evidence_records == 1
+
+    def test_no_assistant_rows_is_unavailable(self) -> None:
+        ev = extract_opencode_messages([json.dumps({"id": "u", "role": "user"})])
+        assert ev.usage.status == "unavailable"
+        assert ev.usage.input_tokens is None
+
+
+class TestCodexRollout:
+    def test_the_last_cumulative_total_wins_rather_than_the_sum(self) -> None:
+        """codex reports `total_token_usage` cumulatively on EVERY turn. A three-turn
+        session that consumed 300 output tokens reports 600 if the turns are summed."""
+        def tc(total_out: int, total_in: int, cached: int) -> str:
+            return json.dumps({"type": "event_msg", "payload": {
+                "type": "token_count",
+                "info": {"total_token_usage": {
+                    "input_tokens": total_in, "cached_input_tokens": cached,
+                    "cache_write_input_tokens": 0, "output_tokens": total_out,
+                    "reasoning_output_tokens": 0}}}})
+        ev = extract_codex_rollout([tc(100, 1100, 1000), tc(200, 2200, 2000), tc(300, 3300, 3000)])
+        assert ev.usage.status == "reported"
+        assert ev.usage.output_tokens == 300, \
+            "expected the LAST cumulative total, not the sum (600)"
+        assert ev.usage.cache_read_tokens == 3000
+
+    def test_input_is_recorded_net_of_the_cached_part(self) -> None:
+        """codex reports `input_tokens` INCLUSIVE of the cached part. Left as-is the
+        cached tokens are billed twice — once at the input rate and once at the cache
+        rate — which is the same defect this module fixed for the turn stream."""
+        line = json.dumps({"type": "event_msg", "payload": {
+            "type": "token_count",
+            "info": {"total_token_usage": {
+                "input_tokens": 3300, "cached_input_tokens": 3000,
+                "cache_write_input_tokens": 0, "output_tokens": 100,
+                "reasoning_output_tokens": 0}}}})
+        ev = extract_codex_rollout([line])
+        assert ev.usage.input_tokens == 300
+        assert ev.usage.cache_read_tokens == 3000
+
+    def test_a_rollout_with_no_token_count_is_unavailable(self) -> None:
+        ev = extract_codex_rollout([json.dumps({"type": "session_meta", "payload": {}})])
+        assert ev.usage.status == "unavailable"
+        assert ev.usage.output_tokens is None
+
+
+class TestDispatch:
+    @pytest.mark.parametrize("name", [
+        "claude-code-cost-state", "opencode-messages", "codex-rollout",
+    ])
+    def test_each_new_surface_is_reachable_by_name(self, name: str) -> None:
+        """`extract` is the only entry point the harvest uses, so a surface that exists
+        but is not registered is a surface that silently records `unavailable`."""
+        ev = extract(name, [])
+        assert ev.usage.status == "unavailable"
+        assert "no usage extractor named" not in (ev.usage.reason or "")
+
+
+class TestSyntheticIsNotAModel:
+    """`<synthetic>` is Claude Code's marker for a message it generated locally — an API
+    error surfaced as an assistant turn, most often. It is not a model id, and reporting
+    it as the resolved model gets the whole fact refused: the gateway rules that a
+    resolved model which does not match the pinned one cannot be a success."""
+
+    def test_the_transcript_reader_does_not_report_it_as_a_model(self) -> None:
+        lines = [
+            assistant("m1", model="<synthetic>"),
+            assistant("m2", model="claude-opus-5"),
+        ]
+        ev = extract_claude_code_transcript(lines)
+        assert ev.main_chain_models == ["claude-opus-5"]
+
+    def test_its_tokens_still_count(self) -> None:
+        """Whatever produced it, the tokens on the record were consumed."""
+        lines = [assistant("m1", model="<synthetic>", out=7)]
+        ev = extract_claude_code_transcript(lines)
+        assert ev.usage.output_tokens == 7
+
+    def test_the_cost_state_reader_does_not_report_it_either(self) -> None:
+        lines = [cost_state(**{"<synthetic>": usage_block(0, 0, 0, 0),
+                               "claude-opus-5": usage_block(1, 2, 3, 4)})]
+        ev = extract_claude_code_cost_state(lines)
+        assert ev.main_chain_models == ["claude-opus-5"]

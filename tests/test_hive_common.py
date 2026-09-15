@@ -1075,3 +1075,157 @@ def test_no_generated_wrapper_line_carries_a_shell_metacharacter(tmp_path):
             continue
         assert "`" not in line, f"backtick in a generated assignment: {line}"
         assert "$(" not in line.split("=", 1)[1], f"substitution in a generated value: {line}"
+
+
+# --- what a review CONSUMED, and how a harvest finds it later -------------------------
+#
+# A review's token usage lives in the reviewer harness's own transcript, in the reviewer's
+# home — not in the review text, and not anywhere the task root can see. Nothing recorded
+# WHICH transcript belonged to which round, so a later harvest had to guess by timestamp
+# and could not tell a review's session from the worker's own.
+#
+# The wrapper knows exactly: it holds the review's start time and the worker is blocked on
+# its pipe throughout. So it writes the list beside the `.head` sidecar it already writes.
+# The list may legitimately hold more than one path, and it is recorded as found rather
+# than narrowed to a best guess — an ambiguous attribution has to reach the harvest as
+# ambiguous.
+
+def _transcript_writing_reviewer(bin_dir: Path, home: Path, repo: Path,
+                                 *, sessions: int = 1) -> None:
+    """A stand-in reviewer that writes a Claude Code transcript the way the real one does.
+
+    Into the project directory named for the REPO, because that is the cwd the reviewer
+    runs in and the wrapper now scopes its scan to exactly that directory.
+    """
+    proj = home / ".claude" / "projects" / str(repo).replace("/", "-")
+    fake = bin_dir / "claude"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f"mkdir -p '{proj}'\n"
+        f"for i in $(seq 1 {sessions}); do\n"
+        f"  echo '{{\"type\":\"assistant\"}}' > '{proj}'/sess-$$-$i.jsonl\n"
+        "done\n"
+        'echo "VERDICT: PASS"\n'
+    )
+    fake.chmod(0o755)
+
+
+def test_a_review_records_the_transcript_it_produced(tmp_path):
+    """Without this the harvest cannot say what a review cost — only that one happened."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    _transcript_writing_reviewer(bin_dir, home, repo)
+    reviews = tmp_path / "reviews"
+    r = _review(run_dir, repo, bin_dir, home, reviews)
+    assert r.returncode == 0, r.stderr
+
+    saved = [p for p in reviews.iterdir() if p.is_file()]
+    assert len(saved) == 1
+    sidecar = reviews / "meta" / f"{saved[0].name}.transcripts"
+    assert sidecar.exists(), "the review recorded no transcript list"
+    listed = [ln for ln in sidecar.read_text().splitlines() if ln.strip()]
+    assert len(listed) == 1
+    assert listed[0].endswith(".jsonl")
+    assert Path(listed[0]).exists()
+
+
+def test_a_transcript_written_before_the_review_is_not_claimed_by_it(tmp_path):
+    """The worker's own session lives in the same directory. Listing it would bill the
+    worker's whole run to the review, which is the loudest possible wrong answer."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    stale = home / ".claude" / "projects" / str(repo).replace("/", "-")
+    stale.mkdir(parents=True)
+    worker_session = stale / "the-workers-own.jsonl"
+    worker_session.write_text('{"type":"assistant"}\n')
+    os.utime(worker_session, (1_600_000_000, 1_600_000_000))
+
+    _transcript_writing_reviewer(bin_dir, home, repo)
+    reviews = tmp_path / "reviews"
+    assert _review(run_dir, repo, bin_dir, home, reviews).returncode == 0
+
+    saved = [p for p in reviews.iterdir() if p.is_file()][0]
+    listed = (reviews / "meta" / f"{saved.name}.transcripts").read_text()
+    assert "the-workers-own.jsonl" not in listed
+
+
+def test_several_transcripts_are_all_recorded_rather_than_one_being_chosen(tmp_path):
+    """Choosing would be a guess. The harvest needs to see the ambiguity to refuse."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    _transcript_writing_reviewer(bin_dir, home, repo, sessions=3)
+    reviews = tmp_path / "reviews"
+    assert _review(run_dir, repo, bin_dir, home, reviews).returncode == 0
+    saved = [p for p in reviews.iterdir() if p.is_file()][0]
+    listed = [ln for ln in (reviews / "meta" / f"{saved.name}.transcripts")
+              .read_text().splitlines() if ln.strip()]
+    assert len(listed) == 3
+
+
+def test_a_failed_review_records_no_transcript_list(tmp_path):
+    """A failed review spends no round and writes no canonical file; a sidecar naming a
+    round that does not exist would be counted by nothing and confuse everything."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    fake = bin_dir / "claude"
+    fake.write_text('#!/bin/sh\necho "half a review"\nexit 4\n')
+    fake.chmod(0o755)
+    reviews = tmp_path / "reviews"
+    r = _review(run_dir, repo, bin_dir, home, reviews)
+    assert r.returncode == 4
+    meta = reviews / "meta"
+    assert not meta.exists() or not list(meta.glob("*.transcripts"))
+
+
+def test_the_transcript_list_ignores_sessions_from_other_directories(tmp_path):
+    """On a host route the reviewer's home is the OPERATOR's home, holding their own live
+    session and 40+ other task roots' sessions. Any of them written during the review
+    window matched the mtime scan and was listed — and a sidecar naming two transcripts is
+    refused as ambiguous by the harvest, so a review that ran fine recorded no cost. The
+    worker being blocked on this pipe rules out this worker, not the whole machine."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    mine = home / ".claude" / "projects" / str(repo).replace("/", "-")
+    theirs = home / ".claude" / "projects" / "-home-cassio-workspaces-hive"
+    fake = bin_dir / "claude"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f"mkdir -p '{mine}' '{theirs}'\n"
+        f"echo '{{\"type\":\"assistant\"}}' > '{mine}'/review-session.jsonl\n"
+        f"echo '{{\"type\":\"assistant\"}}' > '{theirs}'/the-operators-own.jsonl\n"
+        'echo "VERDICT: PASS"\n'
+    )
+    fake.chmod(0o755)
+    reviews = tmp_path / "reviews"
+    assert _review(run_dir, repo, bin_dir, home, reviews).returncode == 0
+
+    saved = [p for p in reviews.iterdir() if p.is_file()][0]
+    listed = [ln for ln in (reviews / "meta" / f"{saved.name}.transcripts")
+              .read_text().splitlines() if ln.strip()]
+    assert [Path(p).name for p in listed] == ["review-session.jsonl"], listed
+
+
+def test_an_uncounted_review_survives_a_reviewer_that_does_not_read_stdin(tmp_path):
+    """A reviewer is free to answer without draining its input, and most do once they have
+    what they need. The producer then takes SIGPIPE — and under `set -e` with `pipefail`
+    that killed the wrapper with 141 before its own `exit "${PIPESTATUS[1]}"` could run, so
+    a review that completed normally was reported as a failure. It only surfaced once the
+    contract made the producer big enough to block; the exposure was there all along, and
+    the counted path had been guarding against it with `set +e` since it was written.
+    """
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    fake = bin_dir / "claude"
+    fake.write_text('#!/bin/sh\necho "VERDICT: PASS"\n')   # never reads stdin
+    fake.chmod(0o755)
+    # A review directory that cannot be created, which is what puts this review on the
+    # UNCOUNTED path — the one that lacked the guard.
+    blocked = tmp_path / "not-a-dir"
+    blocked.write_text("I am a file\n")
+    # A diff larger than a pipe buffer, through stdin, which is the documented way this
+    # wrapper is called. It guarantees the producer is still writing when the reviewer
+    # exits; without it the test is a race that a fast machine wins and CI loses, which is
+    # exactly how the defect got here with a green local suite.
+    r = subprocess.run(
+        [str(run_dir / "review"), "review this"],
+        input="context line\n" * 20000,
+        capture_output=True, text=True, cwd=str(repo), timeout=120,
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(home),
+             "HIVE_REVIEW_DIR": str(blocked)},
+    )
+    assert r.returncode == 0, f"exit {r.returncode}\n{r.stderr}"
+    assert "VERDICT: PASS" in r.stdout

@@ -139,8 +139,14 @@ branch_is_merged() {  # branch_is_merged <canon-checkout> <branch>
 }
 
 # Reviews are copied here before their root is deleted. Outside the work root on purpose:
-# everything under it is disposable by construction, and this is the one thing in a task root
-# that is evidence rather than scaffolding.
+# everything under it is disposable by construction, and this is the one thing in a task
+# root that is evidence rather than scaffolding.
+#
+# The usage harvest is the other piece of evidence a finished task leaves, and it is NOT
+# archived here because it was never written here: `hive-usage` writes it straight to
+# $OMEGAHIVE_USAGE_ARCHIVE, precisely so that this command cannot destroy what the spine's
+# `evidence_ref` points at. Copying it at delete time would have left every ref naming the
+# path it had just been moved away from.
 REVIEW_ARCHIVE="${OMEGAHIVE_REVIEW_ARCHIVE:-$HOME/omegahive-reviews}"
 
 now=$(date +%s)
@@ -148,6 +154,7 @@ keep_secs=$(( KEEP_DAYS * 86400 ))
 n_removed=0 n_held=0 bytes_freed=0
 
 echo "hive-cleanup: reviews are archived to $REVIEW_ARCHIVE before a root is removed"
+echo "hive-cleanup: the usage harvest is NOT here to lose — hive-usage writes it to ${OMEGAHIVE_USAGE_ARCHIVE:-$HOME/omegahive-usage}"
 echo "hive-cleanup: work root $WORK_ROOT · keep ${KEEP_DAYS}d · $([ -n "$APPLY" ] && echo APPLY || echo 'dry run (no --apply)')"
 
 for root in "$WORK_ROOT"/sess-*/; do

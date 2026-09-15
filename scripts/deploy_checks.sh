@@ -473,6 +473,55 @@ else
          install -m 0755 deploy/<script>.sh $HELPER_DIR/<installed-name>"
 fi
 
+# --- 11b. every operator command is reachable by the name the runbook uses -------------
+#
+# `~/bin/hive-*` are SYMLINKS into this checkout's scripts/, and nothing creates them: a
+# new command is reachable only once someone makes the link by hand. On 2026-09-14
+# `hive-usage` shipped without one. Every path that used it internally worked, because
+# `hive-close` calls it by its own $SCRIPT_DIR — so the gap was invisible until an
+# operator typed the recovery command the failure message told them to type, and got
+# `command not found`. In that case during the exact window the command exists to beat,
+# with the evidence one `sbx prune` from gone.
+#
+# A GLOB rather than a list, deliberately: a list is a second place to forget the new
+# command, which is the defect this check is for. So a new scripts/hive-* is in scope by
+# default and only leaves it by being named below.
+#
+# Three things are not operator commands and are excluded by pattern rather than by name,
+# so their successors are excluded too: the sourced library, which is never run by name;
+# the drills, which are run from the checkout against a scratch envelope; and the one-time
+# bootstrap, which runs once on a new host before there is a ~/bin to link into.
+LINK_DIR="${OMEGAHIVE_COMMAND_BIN:-$HOME/bin}"
+LINK_MISSING=""
+LINK_WRONG=""
+LINK_SEEN=0
+for _cmd in scripts/hive-*; do
+  _name=$(basename "$_cmd")
+  case "$_name" in
+    hive-common.sh|*-drill.sh|hive-init-*) continue ;;
+  esac
+  [ -x "$_cmd" ] || continue
+  LINK_SEEN=$((LINK_SEEN + 1))
+  _link="$LINK_DIR/$_name"
+  if [ ! -e "$_link" ]; then
+    LINK_MISSING="$LINK_MISSING $_name"
+  elif [ "$(readlink -f "$_link")" != "$(readlink -f "$_cmd")" ]; then
+    # A link pointing at another checkout is worse than a missing one: it runs, and it
+    # runs code nobody here is looking at.
+    LINK_WRONG="$LINK_WRONG $_name(-> $(readlink "$_link"))"
+  fi
+done
+if [ ! -d "$LINK_DIR" ]; then
+  echo "[SKIP] 11b. operator commands: no $LINK_DIR on this host."
+elif [ -z "$LINK_MISSING" ] && [ -z "$LINK_WRONG" ]; then
+  ok "11b. operator commands: all $LINK_SEEN reachable through $LINK_DIR"
+else
+  bad "11b. operator commands not reachable by name in $LINK_DIR:${LINK_MISSING}${LINK_WRONG}
+       These are symlinks nothing creates automatically, so a new command is unreachable
+       until one is made. A runbook line naming it is then false. Fix each:
+         ln -s $PWD/scripts/<name> $LINK_DIR/<name>"
+fi
+
 # --- 12. the deployed image was built from the source in this working tree --------------
 #
 # Check 8 asks whether the image can read the CATALOG, which catches drift the catalog
@@ -492,9 +541,14 @@ fi
 # writing it).
 PKG_FIND="find src/omegahive -type f -name '*.py' ! -path '*__pycache__*'"
 HOST_PKG=$(eval "$PKG_FIND" | LC_ALL=C sort | xargs sha256sum | LC_ALL=C sha256sum | cut -c1-16)
+# `|| IMG_PKG=""` is load-bearing under `set -euo pipefail`: when the container will not
+# start, or grep matches nothing, the pipeline status is non-zero and a bare assignment
+# would abort the whole script -- before the empty-value branch below, before every later
+# check, and before the pass/fail summary. The branch that explains the failure was
+# unreachable in exactly the case it was written for.
 IMG_PKG=$("${DC[@]}" run --rm -T --entrypoint sh cli -c \
   "cd /app && $PKG_FIND | LC_ALL=C sort | xargs sha256sum | LC_ALL=C sha256sum | cut -c1-16" \
-  2>/dev/null | grep -oE '^[0-9a-f]{16}' | head -1)
+  2>/dev/null | grep -oE '^[0-9a-f]{16}' | head -1) || IMG_PKG=""
 if [ -z "$IMG_PKG" ]; then
   bad "12. image currency: could not read the package hash out of the deployed image.
        Check that the image exists and starts:  ${DC[*]} run --rm -T cli true"
