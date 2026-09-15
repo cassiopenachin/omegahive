@@ -1231,7 +1231,11 @@ echo "  bridge: $BRIDGE  (sync workspace | publish workspace | publish code)"
 # record rather than only in the worker's prompt: an operator reading back a session needs
 # to be able to see whether an in-VM reviewer existed for it.
 if [ -f "$RUN_DIR/review" ]; then
-  echo "  review: $RUN_DIR/review  (opus on the subscription, this route's routing stripped)"
+  # The reviewer BY NAME. This line used to read "opus on the subscription" for every
+  # route that had a wrapper, which was true while only the in-VM Claude reviewer got one.
+  # A codex-plugin route now gets one too, and it runs codex on the Codex account -- so an
+  # operator reading the session back was told the wrong reviewer and the wrong account.
+  echo "  review: $RUN_DIR/review  (${R_REVIEWER:-unstated}, this route's routing stripped)"
 else
   echo "  review: ${R_REVIEWER:-unstated} (no in-VM command; the worker reaches its reviewer itself)"
 fi

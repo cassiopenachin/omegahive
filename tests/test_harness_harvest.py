@@ -83,7 +83,9 @@ def task_root(tmp_path: Path, *, reviews: dict[str, list[Path]] | None = None) -
 
 def run(root: Path, **over) -> object:
     req = HarvestRequest(
-        task="t", task_root=root, worker_id="sess-t-0914",
+        task="t", task_root=root,
+        evidence_dir=over.pop("evidence_dir", root.parent.parent / "usage-archive" / "t"),
+        worker_id="sess-t-0914",
         work_identity=over.pop("work_identity", IDENTITY),
         reviewer_identity=over.pop("reviewer_identity", REVIEWER_IDENTITY),
         execution_id=over.pop("execution_id", "t-a1-abc"),
@@ -168,16 +170,19 @@ def test_a_harness_with_no_usage_surface_says_which_one(tmp_path):
 
 # --- durability --------------------------------------------------------------------
 
-def test_every_source_is_copied_into_the_task_root(tmp_path):
-    """`sbx prune` removes every stopped sandbox. A recorded path is not a record."""
+def test_every_source_is_copied_somewhere_that_outlives_the_task(tmp_path):
+    """`sbx prune` removes every stopped sandbox and `hive-cleanup` removes the task root.
+    A recorded path is not a record, and a record inside the thing cleanup deletes is not
+    one either."""
     reviewed = transcript(tmp_path / "vm" / "c" / "r1.jsonl")
     root = task_root(tmp_path, reviews={"review-1.txt": [reviewed]})
     export = opencode_export(tmp_path / "vm" / "opencode-messages.jsonl")
     res = run(root, sandbox_sources=[Source("opencode-export", export),
                                      Source("claude-session", reviewed)])
-    kept = sorted(p.name for p in (root / "run" / "usage" / "raw").rglob("*.jsonl"))
+    raw = root.parent.parent / "usage-archive" / "t" / "raw"
+    kept = sorted(p.name for p in raw.rglob("*.jsonl"))
     assert len(kept) == 2
-    for p in (root / "run" / "usage" / "raw").rglob("*.jsonl"):
+    for p in (root.parent.parent / "usage-archive" / "t" / "raw").rglob("*.jsonl"):
         assert p.stat().st_size > 0
     assert res.manifest_path.exists()
 
@@ -270,7 +275,7 @@ def test_a_task_with_no_recorded_route_attributes_nothing_to_work(tmp_path):
     assert "no recorded route" in (res.work.usage.reason or "")
     assert res.work.usage.output_tokens is None
     assert "stray.jsonl" in res.unattributed
-    assert (root / "run" / "usage" / "raw" / "vm" / "stray.jsonl").exists(), (
+    assert (root.parent.parent / "usage-archive" / "t" / "raw" / "vm" / "stray.jsonl").exists(), (
         "an unattributable file is still kept"
     )
 
@@ -569,7 +574,7 @@ def test_harvesting_twice_does_not_count_the_evidence_twice(tmp_path):
     first = run(root, sandbox_sources=[Source("opencode-export", export)])
     second = run(root, sandbox_sources=[Source("opencode-export", export)])
     assert second.work.usage.output_tokens == first.work.usage.output_tokens
-    kept = list((root / "run" / "usage" / "raw").rglob("*.jsonl"))
+    kept = list((root.parent.parent / "usage-archive" / "t" / "raw").rglob("*.jsonl"))
     assert len(kept) == 1, [p.name for p in kept]
 
 
@@ -581,7 +586,8 @@ def test_two_sources_sharing_a_name_in_one_harvest_are_both_kept(tmp_path):
     root = task_root(tmp_path)
     res = run(root, work_identity={**IDENTITY, "harness": "claude-code"},
               host_sources=[Source("claude-session", a), Source("claude-session", b)])
-    kept = sorted(p.name for p in (root / "run" / "usage" / "raw").rglob("*.jsonl"))
+    raw = root.parent.parent / "usage-archive" / "t" / "raw"
+    kept = sorted(p.name for p in raw.rglob("*.jsonl"))
     assert len(kept) == 2, kept
     assert res.work.usage.output_tokens == 30
 
@@ -676,3 +682,141 @@ def test_only_review_files_count_as_rounds(tmp_path):
     assert res.review.usage.status == "reported"
     manifest = json.loads(res.manifest_path.read_text())
     assert [r["round"] for r in manifest["review_rounds"]] == ["review-1.txt"]
+
+
+# --- what the review of 2026-09-15 found ------------------------------------------------
+
+def test_the_transcript_listing_swallows_an_empty_glob(tmp_path):
+    """`ls *.jsonl` on a glob that matches nothing exits 2 with its stderr discarded, so
+    "no transcripts here" and "this VM cannot be read" arrived as the same answer. The
+    inner failure is swallowed in the shell, which leaves a non-zero status meaning only
+    that `sbx exec` itself failed — the case actually worth naming."""
+    from omegahive.harness.harvest import pull_sandbox_sources
+    seen = []
+
+    def runner(argv):
+        seen.append(argv[-1])
+        return 3, ""
+
+    pull_sandbox_sources(sandbox="hive-t", staging=tmp_path / "s", runner=runner)
+    listing = next(c for c in seen if c.startswith("ls -1"))
+    assert listing.endswith("|| true"), listing
+
+
+def test_a_sandbox_that_holds_no_transcript_still_gets_its_opencode_export(tmp_path):
+    """The first close of any opencode task looks like this — no review has run in the VM
+    yet. It used to lose 100% of its worker usage, silently, in the one window before
+    `sbx prune`."""
+    from omegahive.harness.harvest import pull_sandbox_sources
+    row = json.dumps({"id": "m", "role": "assistant", "modelID": "z-ai/glm-5.3",
+                      "cost": 0.5, "tokens": {"input": 1, "output": 2, "reasoning": 0,
+                                              "cache": {"read": 0, "write": 0}}})
+
+    def runner(argv):
+        if "base64 -d | python3 -" in argv[-1]:
+            return 0, row + "\n"
+        return 0, ""          # the listing succeeded and matched nothing
+
+    sources, notes = pull_sandbox_sources(
+        sandbox="hive-t", staging=tmp_path / "s", runner=runner)
+    assert any(s.surface == "opencode-export" for s in sources)
+    assert notes == [], notes
+
+
+def test_a_real_sandbox_failure_is_named_and_does_not_abort_the_export(tmp_path):
+    """Naming it must not cost the other surface: the export is a separate call and may
+    still answer even when the listing could not."""
+    from omegahive.harness.harvest import pull_sandbox_sources
+    row = json.dumps({"id": "m", "role": "assistant", "modelID": "x", "cost": 0,
+                      "tokens": {"input": 1, "output": 2, "reasoning": 0,
+                                 "cache": {"read": 0, "write": 0}}})
+
+    def runner(argv):
+        if "base64 -d | python3 -" in argv[-1]:
+            return 0, row + "\n"
+        return 1, "Error: could not connect to the sandbox daemon"
+
+    sources, notes = pull_sandbox_sources(
+        sandbox="hive-t", staging=tmp_path / "s", runner=runner)
+    assert notes and "hive-t" in notes[0]
+    assert any(s.surface == "opencode-export" for s in sources)
+
+
+def test_a_reharvest_reads_the_evidence_it_copied_in_last_time(tmp_path):
+    """`hive-close` tells the operator to recover with `hive-usage <task>`, and the header
+    says it can re-read a task whose evidence has since been copied in. It could not: the
+    sources came only from the live locations. After `sbx prune` a re-run therefore found
+    nothing, and emitted a SECOND fact reading `unavailable` that overwrote a good
+    measurement already on the spine."""
+    root = task_root(tmp_path)
+    export = opencode_export(tmp_path / "vm" / "opencode-messages.jsonl")
+    first = run(root, sandbox_sources=[Source("opencode-export", export)])
+    assert first.work.usage.status == "reported"
+
+    export.unlink()                       # the VM is gone
+    second = run(root, sandbox_sources=[])
+    assert second.work.usage.status == "reported", second.work.usage.reason
+    assert second.work.usage.output_tokens == first.work.usage.output_tokens
+    assert second.work.usage.evidence_ref
+
+
+def test_a_reharvest_after_pruning_keeps_the_review_attribution(tmp_path):
+    """The recovered sources must keep the ORIGIN they were harvested under, or the review
+    sidecars — which name in-VM paths — stop matching and every review goes unattributed
+    on the second run."""
+    pulled = transcript(tmp_path / "pulled" / "abc.jsonl", out=42)
+    in_vm = "/home/agent/.claude/projects/-x/abc.jsonl"
+    root = task_root(tmp_path, reviews={"review-1.txt": [Path(in_vm)]})
+    first = run(root, work_identity={**IDENTITY, "harness": "claude-code"},
+                sandbox_sources=[Source("claude-session", pulled, origin=in_vm)])
+    assert first.review.usage.output_tokens == 42
+
+    pulled.unlink()
+    second = run(root, work_identity={**IDENTITY, "harness": "claude-code"})
+    assert second.review.usage.status == "reported"
+    assert second.review.usage.output_tokens == 42
+
+
+def test_evidence_records_counts_rows_not_files(tmp_path):
+    """It is the one field that lets a reader check the evidence file against the spine
+    number. Counting files made it disagree with the file it points at by construction."""
+    r1 = tmp_path / "vm" / "c" / "r1.jsonl"
+    transcript(r1, msg="a")
+    with r1.open("a") as fh:          # a second message in the SAME transcript
+        fh.write(json.dumps({
+            "type": "assistant", "isSidechain": False,
+            "message": {"id": "a2", "model": "claude-opus-5", "usage": {
+                "input_tokens": 1, "output_tokens": 5,
+                "cache_read_input_tokens": 1, "cache_creation_input_tokens": 0}}}) + "\n")
+    r2 = transcript(tmp_path / "vm" / "c" / "r2.jsonl", msg="b")
+    root = task_root(tmp_path, reviews={"review-1.txt": [r1], "review-2.txt": [r2]})
+    res = run(root, work_identity={**IDENTITY, "harness": "antigravity"},
+              sandbox_sources=[Source("claude-session", r1), Source("claude-session", r2)])
+    rows = json.loads(Path(res.review.usage.evidence_ref).read_text())["rows"]
+    assert len(rows) == 3, "two transcripts, three messages"
+    assert res.review.usage.evidence_records == len(rows)
+
+
+def test_the_default_timestamp_is_the_shape_the_gateway_accepts():
+    """Latent today because `main()` always supplies one, but this is a public helper and
+    the default is the exact shape `_UTC_TS_SHAPE` refuses."""
+    import re
+
+    from omegahive.events.types import ExecutionUsage
+    from omegahive.harness.usage import UsageEvidence
+    ev = UsageEvidence(usage=ExecutionUsage(status="unavailable", reason="x"))
+    p = finished_payload(execution_id="e", purpose="work", attempt=1,
+                         identity=IDENTITY, evidence=ev)
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z", p["finished_at"])
+
+
+def test_the_evidence_does_not_live_where_cleanup_deletes(tmp_path):
+    """`hive-cleanup` removes the whole task root. Nothing the spine references may be
+    inside it."""
+    root = task_root(tmp_path)
+    export = opencode_export(tmp_path / "vm" / "opencode-messages.jsonl")
+    res = run(root, sandbox_sources=[Source("opencode-export", export)])
+    ref = Path(res.work.usage.evidence_ref)
+    assert not str(ref).startswith(str(root)), ref
+    assert ref.exists()
+    assert not (root / "run" / "usage").exists()

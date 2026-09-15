@@ -541,9 +541,14 @@ fi
 # writing it).
 PKG_FIND="find src/omegahive -type f -name '*.py' ! -path '*__pycache__*'"
 HOST_PKG=$(eval "$PKG_FIND" | LC_ALL=C sort | xargs sha256sum | LC_ALL=C sha256sum | cut -c1-16)
+# `|| IMG_PKG=""` is load-bearing under `set -euo pipefail`: when the container will not
+# start, or grep matches nothing, the pipeline status is non-zero and a bare assignment
+# would abort the whole script -- before the empty-value branch below, before every later
+# check, and before the pass/fail summary. The branch that explains the failure was
+# unreachable in exactly the case it was written for.
 IMG_PKG=$("${DC[@]}" run --rm -T --entrypoint sh cli -c \
   "cd /app && $PKG_FIND | LC_ALL=C sort | xargs sha256sum | LC_ALL=C sha256sum | cut -c1-16" \
-  2>/dev/null | grep -oE '^[0-9a-f]{16}' | head -1)
+  2>/dev/null | grep -oE '^[0-9a-f]{16}' | head -1) || IMG_PKG=""
 if [ -z "$IMG_PKG" ]; then
   bad "12. image currency: could not read the package hash out of the deployed image.
        Check that the image exists and starts:  ${DC[*]} run --rm -T cli true"

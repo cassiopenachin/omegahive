@@ -138,18 +138,23 @@ branch_is_merged() {  # branch_is_merged <canon-checkout> <branch>
   git -C "$canon" merge-base --is-ancestor "refs/remotes/origin/$br" "refs/remotes/origin/main" 2>/dev/null
 }
 
-# Reviews and the usage harvest are copied here before their root is deleted. Outside the
-# work root on purpose: everything under it is disposable by construction, and these are the
-# two things in a task root that are evidence rather than scaffolding.
+# Reviews are copied here before their root is deleted. Outside the work root on purpose:
+# everything under it is disposable by construction, and this is the one thing in a task
+# root that is evidence rather than scaffolding.
+#
+# The usage harvest is the other piece of evidence a finished task leaves, and it is NOT
+# archived here because it was never written here: `hive-usage` writes it straight to
+# $OMEGAHIVE_USAGE_ARCHIVE, precisely so that this command cannot destroy what the spine's
+# `evidence_ref` points at. Copying it at delete time would have left every ref naming the
+# path it had just been moved away from.
 REVIEW_ARCHIVE="${OMEGAHIVE_REVIEW_ARCHIVE:-$HOME/omegahive-reviews}"
-USAGE_ARCHIVE="${OMEGAHIVE_USAGE_ARCHIVE:-$HOME/omegahive-usage}"
 
 now=$(date +%s)
 keep_secs=$(( KEEP_DAYS * 86400 ))
 n_removed=0 n_held=0 bytes_freed=0
 
 echo "hive-cleanup: reviews are archived to $REVIEW_ARCHIVE before a root is removed"
-echo "hive-cleanup: the usage harvest is archived to $USAGE_ARCHIVE (the spine's evidence_ref)"
+echo "hive-cleanup: the usage harvest is NOT here to lose — hive-usage writes it to ${OMEGAHIVE_USAGE_ARCHIVE:-$HOME/omegahive-usage}"
 echo "hive-cleanup: work root $WORK_ROOT · keep ${KEEP_DAYS}d · $([ -n "$APPLY" ] && echo APPLY || echo 'dry run (no --apply)')"
 
 for root in "$WORK_ROOT"/sess-*/; do
@@ -212,23 +217,6 @@ for root in "$WORK_ROOT"/sess-*/; do
     cp -p "$root"/run/reviews/* "$dest"/ 2>/dev/null \
       && echo "          reviews archived -> $dest ($(ls -1 "$dest" | wc -l) file(s))" \
       || echo "          WARNING could not archive reviews from $root" >&2
-  fi
-  # The usage harvest outlives the root for a stronger reason than the reviews do: the
-  # spine POINTS at it. Every `execution.finished` this task recorded carries an
-  # `evidence_ref` naming a file under run/usage, and that ref is what makes a token count
-  # a measurement rather than a claim. Two of the surfaces behind it came out of a sandbox
-  # this same command removes a few lines up, so after this the archive is the only copy
-  # that exists anywhere.
-  #
-  # Recursively, unlike the reviews: run/usage holds the raw per-session evidence under
-  # raw/ as well as the normalized rows beside it, and the raw copies are what let a total
-  # be re-derived rather than believed.
-  if [ -d "$root/run/usage" ]; then
-    dest="$USAGE_ARCHIVE/$task"
-    mkdir -p "$dest"
-    cp -a "$root"/run/usage/. "$dest"/ 2>/dev/null \
-      && echo "          usage archived  -> $dest ($(du -sh "$dest" | cut -f1))" \
-      || echo "          WARNING could not archive the usage harvest from $root" >&2
   fi
   rm -rf "$root"
   echo "          root removed"

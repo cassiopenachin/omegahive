@@ -1090,9 +1090,14 @@ def test_no_generated_wrapper_line_carries_a_shell_metacharacter(tmp_path):
 # than narrowed to a best guess — an ambiguous attribution has to reach the harvest as
 # ambiguous.
 
-def _transcript_writing_reviewer(bin_dir: Path, home: Path, *, sessions: int = 1) -> None:
-    """A stand-in reviewer that writes a Claude Code transcript the way the real one does."""
-    proj = home / ".claude" / "projects" / "-some-repo"
+def _transcript_writing_reviewer(bin_dir: Path, home: Path, repo: Path,
+                                 *, sessions: int = 1) -> None:
+    """A stand-in reviewer that writes a Claude Code transcript the way the real one does.
+
+    Into the project directory named for the REPO, because that is the cwd the reviewer
+    runs in and the wrapper now scopes its scan to exactly that directory.
+    """
+    proj = home / ".claude" / "projects" / str(repo).replace("/", "-")
     fake = bin_dir / "claude"
     fake.write_text(
         "#!/bin/sh\n"
@@ -1108,7 +1113,7 @@ def _transcript_writing_reviewer(bin_dir: Path, home: Path, *, sessions: int = 1
 def test_a_review_records_the_transcript_it_produced(tmp_path):
     """Without this the harvest cannot say what a review cost — only that one happened."""
     run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
-    _transcript_writing_reviewer(bin_dir, home)
+    _transcript_writing_reviewer(bin_dir, home, repo)
     reviews = tmp_path / "reviews"
     r = _review(run_dir, repo, bin_dir, home, reviews)
     assert r.returncode == 0, r.stderr
@@ -1127,13 +1132,13 @@ def test_a_transcript_written_before_the_review_is_not_claimed_by_it(tmp_path):
     """The worker's own session lives in the same directory. Listing it would bill the
     worker's whole run to the review, which is the loudest possible wrong answer."""
     run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
-    stale = home / ".claude" / "projects" / "-some-repo"
+    stale = home / ".claude" / "projects" / str(repo).replace("/", "-")
     stale.mkdir(parents=True)
     worker_session = stale / "the-workers-own.jsonl"
     worker_session.write_text('{"type":"assistant"}\n')
     os.utime(worker_session, (1_600_000_000, 1_600_000_000))
 
-    _transcript_writing_reviewer(bin_dir, home)
+    _transcript_writing_reviewer(bin_dir, home, repo)
     reviews = tmp_path / "reviews"
     assert _review(run_dir, repo, bin_dir, home, reviews).returncode == 0
 
@@ -1145,7 +1150,7 @@ def test_a_transcript_written_before_the_review_is_not_claimed_by_it(tmp_path):
 def test_several_transcripts_are_all_recorded_rather_than_one_being_chosen(tmp_path):
     """Choosing would be a guess. The harvest needs to see the ambiguity to refuse."""
     run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
-    _transcript_writing_reviewer(bin_dir, home, sessions=3)
+    _transcript_writing_reviewer(bin_dir, home, repo, sessions=3)
     reviews = tmp_path / "reviews"
     assert _review(run_dir, repo, bin_dir, home, reviews).returncode == 0
     saved = [p for p in reviews.iterdir() if p.is_file()][0]
@@ -1166,3 +1171,30 @@ def test_a_failed_review_records_no_transcript_list(tmp_path):
     assert r.returncode == 4
     meta = reviews / "meta"
     assert not meta.exists() or not list(meta.glob("*.transcripts"))
+
+
+def test_the_transcript_list_ignores_sessions_from_other_directories(tmp_path):
+    """On a host route the reviewer's home is the OPERATOR's home, holding their own live
+    session and 40+ other task roots' sessions. Any of them written during the review
+    window matched the mtime scan and was listed — and a sidecar naming two transcripts is
+    refused as ambiguous by the harvest, so a review that ran fine recorded no cost. The
+    worker being blocked on this pipe rules out this worker, not the whole machine."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    mine = home / ".claude" / "projects" / str(repo).replace("/", "-")
+    theirs = home / ".claude" / "projects" / "-home-cassio-workspaces-hive"
+    fake = bin_dir / "claude"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f"mkdir -p '{mine}' '{theirs}'\n"
+        f"echo '{{\"type\":\"assistant\"}}' > '{mine}'/review-session.jsonl\n"
+        f"echo '{{\"type\":\"assistant\"}}' > '{theirs}'/the-operators-own.jsonl\n"
+        'echo "VERDICT: PASS"\n'
+    )
+    fake.chmod(0o755)
+    reviews = tmp_path / "reviews"
+    assert _review(run_dir, repo, bin_dir, home, reviews).returncode == 0
+
+    saved = [p for p in reviews.iterdir() if p.is_file()][0]
+    listed = [ln for ln in (reviews / "meta" / f"{saved.name}.transcripts")
+              .read_text().splitlines() if ln.strip()]
+    assert [Path(p).name for p in listed] == ["review-session.jsonl"], listed

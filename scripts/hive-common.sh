@@ -685,7 +685,12 @@ trap 'rm -f "$PREAMBLE"' EXIT
 # reviewer has exited -- a half-written review is indistinguishable from a failed one, and a
 # worker that concludes "failed" re-runs, which is a round spent on nothing.
 if [ -z "$CANONICAL" ]; then
-  { [ -z "${HIVE_REVIEW_SCOPE:-}" ] || printf '%s\n\n' "$HIVE_REVIEW_SCOPE"
+  # The preamble goes in HERE too. It used to be built and then dropped on this path, so a
+  # review run without a usable review directory got neither the order's scope nor the
+  # "SCOPE IS NOT CHECKED" fallback -- and silently invented its own bar, which is the
+  # exact failure the contract exists to prevent. An uncounted review is still a review.
+  { cat "$PREAMBLE"
+    [ -z "${HIVE_REVIEW_SCOPE:-}" ] || printf '%s\n\n' "$HIVE_REVIEW_SCOPE"
     [ "$#" -eq 0 ] || printf '%s\n\n' "$*"
     [ -t 0 ] || cat
   } | "${HIVE_REVIEW_CMD[@]}" "${HIVE_REVIEW_POSTURE[@]}"
@@ -700,7 +705,9 @@ fi
 # does not exist until the review is complete, and it inflated the review counts that
 # `hive-cleanup` archives and `hive-score` reads.
 PARTIAL=$(mktemp "${TMPDIR:-/tmp}/hive-review-partial.XXXXXX") || exit 1
-trap 'rm -f "$PARTIAL"' EXIT
+# BOTH temp files. Traps are not additive, so this used to replace the preamble's trap and
+# leak one preamble per round, on every task, forever.
+trap 'rm -f "$PREAMBLE" "$PARTIAL"' EXIT
 # When this review started, to the second. What a review CONSUMED is not in the review
 # text and not anywhere under this task root: it is in the reviewer harness's own
 # transcript, in the reviewer's home, under a session id nothing here chose. A later
@@ -741,6 +748,7 @@ if [ "$STATUS" -ne 0 ] && [ -s "$PARTIAL" ] && [ -n "$CANONICAL" ]; then
   mkdir -p "$FAILED_DIR" 2>/dev/null || true
   FAILED="$FAILED_DIR/$(basename "$CANONICAL")"
   mv -f "$PARTIAL" "$FAILED" 2>/dev/null || true
+  rm -f "$PREAMBLE"
   trap - EXIT
   echo "review: the reviewer exited $STATUS. Its output is at $FAILED and NO round was" >&2
   echo "        spent -- a reviewer that failed did not review. Fix the cause and retry." >&2
@@ -771,11 +779,24 @@ git rev-parse HEAD > "$HIVE_REVIEW_DIR/meta/$(basename "$CANONICAL").head" 2>/de
 #
 # Non-fatal throughout. The review is the deliverable; failing to note what it consumed
 # must never lose it, and a missing sidecar is read downstream as "not recorded".
+# Scoped to THIS directory, not to the whole reviewer home. On a host route that home is
+# the operator's own, holding their live session and every other task root's sessions; any
+# of them written during the window matched a bare mtime scan and got listed. A sidecar
+# naming two transcripts is refused by the harvest as ambiguous, so a review that ran
+# perfectly well recorded no cost at all. Being blocked on this pipe rules out THIS
+# worker, which is not the same as ruling out the machine.
+#
+# Claude Code files a session under a directory named for the cwd with its separators
+# flattened, so the cwd names the directory exactly. Codex files by date instead, so its
+# rollouts are filtered on the `cwd` in each header record.
 {
-  find "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" -type f -name '*.jsonl' \
-       -newermt "@$REVIEW_T0" 2>/dev/null
+  find "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$(pwd | tr '/' '-')" \
+       -type f -name '*.jsonl' -newermt "@$REVIEW_T0" 2>/dev/null
   find "${CODEX_HOME:-$HOME/.codex}/sessions" -type f -name 'rollout-*.jsonl' \
-       -newermt "@$REVIEW_T0" 2>/dev/null
+       -newermt "@$REVIEW_T0" 2>/dev/null \
+    | while IFS= read -r _roll; do
+        head -1 "$_roll" 2>/dev/null | grep -qF "\"cwd\":\"$(pwd)\"" && printf '%s\n' "$_roll"
+      done
 } > "$HIVE_REVIEW_DIR/meta/$(basename "$CANONICAL").transcripts" 2>/dev/null || true
 mv -f "$PARTIAL" "$CANONICAL" || {
   echo "review: the review is complete and above, on stdout, but could not be saved to" >&2

@@ -186,7 +186,14 @@ fi
 # Launches keep working throughout, which is what makes it confusing: `hive-launch` parses
 # the catalog with jq and never through the model. So this is usually the first and only
 # place the drift shows.
-if ! ROUTES_OUT=$(printf '%s' "$REQ" | hive harness-routes ${AS_JSON:+--json} 2>&1); then
+# The two streams are captured SEPARATELY. Folding stderr into the capture put compose
+# noise and any runtime warning inside what `--json` promises is machine-readable, and one
+# such line is enough for `jq` to refuse the whole document. stderr is still kept, because
+# the diagnostic below is read out of it — it is just never reprinted as output.
+ROUTES_ERR=$(mktemp "${TMPDIR:-/tmp}/hive-routes-err.XXXXXX") || exit 1
+trap 'rm -f "$ROUTES_ERR"' EXIT
+if ! ROUTES_OUT=$(printf '%s' "$REQ" | hive harness-routes ${AS_JSON:+--json} 2>"$ROUTES_ERR"); then
+  ROUTES_OUT="$ROUTES_OUT$(cat "$ROUTES_ERR")"
   printf '%s\n' "$ROUTES_OUT" >&2
   case "$ROUTES_OUT" in
     *CATALOG_MALFORMED*Extra\ inputs*|*CATALOG_MALFORMED*extra_forbidden*)

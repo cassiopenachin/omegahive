@@ -21,9 +21,16 @@ whose sidecar lists two, a harness with no usage surface — each records `unava
 a named reason. A total that quietly contains an unknown is worse than one that says it is
 missing, and a zero is worse than both.
 
-**Evidence is copied, not cited.** Sources are copied into the task root before anything is
-read, because the two most expensive surfaces live inside VMs the next cleanup deletes. A
-recorded path to a destroyed file is not a record.
+**Evidence is copied, not cited — and copied OUT of the task root.** The two most
+expensive surfaces live inside VMs that `sbx prune` deletes, so they are copied before
+anything is read. They are copied to `~/omegahive-usage/<task>/` rather than into
+`run/usage/`, because `hive-cleanup` removes the task root wholesale: evidence kept there
+would be destroyed by a routine cleanup while the `evidence_ref` on the spine went on
+naming it. A recorded path to a deleted file is not a record.
+
+That location is also what makes the harvest RE-RUNNABLE after the sandbox is gone. A
+second run reads back what the first one copied, so recovering a task whose VM has since
+been pruned reproduces the measurement instead of downgrading it to `unavailable`.
 
 Nothing here emits. It returns payloads for `hive-usage` to hand to the gateway, so the
 whole of the decision-making is testable without a spine, a sandbox or a network.
@@ -114,6 +121,11 @@ class HarvestRequest:
 
     task: str
     task_root: Path
+    # Where the harvested evidence lives, and where `evidence_ref` will point. OUTSIDE the
+    # work root: `hive-cleanup` deletes task roots, and the spine's references have to
+    # survive that. Required rather than derived, so a caller cannot accidentally get the
+    # perishable location back by omitting it.
+    evidence_dir: Path
     worker_id: str
     # The catalog identity of the work execution, or None when the spine has no
     # `execution.route_approved` to read one from. None is a real case — a hand-recovered
@@ -213,18 +225,26 @@ def pull_sandbox_sources(
     sources: list[Source] = []
     staging.mkdir(parents=True, exist_ok=True)
 
+    # `|| true` so the INNER command always succeeds, which is what makes the two cases
+    # distinguishable. `ls` on a glob that matches nothing exits 2 with its stderr
+    # discarded, and reading that as a failure used to abort the whole pull before the
+    # opencode export — so an opencode task with no in-VM review yet, which is every such
+    # task at its first close, lost all of its worker usage in the one window before
+    # `sbx prune`. With the inner failure swallowed, a non-zero status can only come from
+    # `sbx exec` itself, which is the failure actually worth naming.
     status, out = runner(["exec", sandbox, "--", "sh", "-lc",
-                          "ls -1 /home/agent/.claude/projects/*/*.jsonl 2>/dev/null"])
+                          "ls -1 /home/agent/.claude/projects/*/*.jsonl 2>/dev/null || true"])
     if status != 0:
         # A host route never had a sandbox, and saying so on every harvest of one would
-        # be a note nobody reads. Anything ELSE that stops the listing is a real failure
-        # — a VM that exists and cannot be entered is exactly the case worth naming.
+        # be a note nobody reads. Anything ELSE is real — a VM that exists and cannot be
+        # entered is exactly the case worth naming. Not a return: the opencode export is
+        # a separate call and may still answer.
         if "no sandbox named" not in out:
             notes.append(
                 f"sandbox {sandbox!r} could not be read ({out.strip().splitlines()[0]})"
                 if out.strip() else f"sandbox {sandbox!r} could not be read (exit {status})"
             )
-        return sources, notes
+        out = ""
     for line in out.splitlines():
         in_vm = line.strip()
         if not in_vm.endswith(".jsonl"):
@@ -270,7 +290,10 @@ def pull_sandbox_sources(
         sources.append(Source("opencode-export", local, origin=f"{sandbox}:{db}"))
     elif status == 3:
         pass
-    elif status != 0:
+    elif status != 0 and "no sandbox named" not in out:
+        # Same suppression as the listing above, and for the same reason: a host route has
+        # no VM, both calls fail identically, and two notes saying so on every host
+        # harvest is two notes nobody reads.
         detail = out.strip().splitlines()[-1] if out.strip() else f"exit {status}"
         notes.append(f"opencode export from {sandbox} failed ({detail})")
     return sources, notes
@@ -301,13 +324,12 @@ for (data,) in c.execute("select data from message order by time_created"):
 """
 
 
-def _usage_dir(task_root: Path) -> Path:
-    d = task_root / "run" / "usage"
-    (d / "raw").mkdir(parents=True, exist_ok=True)
-    return d
+def _usage_dir(evidence_dir: Path) -> Path:
+    (evidence_dir / "raw").mkdir(parents=True, exist_ok=True)
+    return evidence_dir
 
 
-def _copy_in(task_root: Path, origin: Path, subdir: str, taken: set[Path]) -> Path:
+def _copy_in(evidence_dir: Path, origin: Path, subdir: str, taken: set[Path]) -> Path:
     """Copy a source into the task root, keeping its name.
 
     The name is kept because it is the only link back to the session it came from, which
@@ -323,7 +345,7 @@ def _copy_in(task_root: Path, origin: Path, subdir: str, taken: set[Path]) -> Pa
     So a name this run has not already taken is overwritten. Transcripts only grow, so the
     newer copy is a superset of the one it replaces.
     """
-    dest_dir = _usage_dir(task_root) / "raw" / subdir
+    dest_dir = _usage_dir(evidence_dir) / "raw" / subdir
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / origin.name
     n = 1
@@ -386,7 +408,10 @@ def _merge(parts: list[UsageEvidence], source: str) -> UsageEvidence:
     }
     return UsageEvidence(
         usage=ExecutionUsage(
-            status="reported", source=source, evidence_records=len(reported), **totals
+            # ROWS, not files. This is the one field that lets a reader check the
+            # evidence file against the number on the spine, so counting sources made it
+            # disagree with the file it points at by construction.
+            status="reported", source=source, evidence_records=len(rows), **totals
         ),
         rows=rows,
         main_chain_models=models,
@@ -445,9 +470,36 @@ def _write_evidence(usage_dir: Path, purpose: str, evidence: UsageEvidence) -> P
     return path
 
 
+def _recovered_sources(usage_dir: Path) -> list[tuple[str, str, Path]]:
+    """What a previous harvest copied here, read back with the origins it recorded.
+
+    `hive-close` tells the operator to recover with `hive-usage <task>`, and the sandbox
+    is routinely gone by then. Without this a second run finds nothing live, and emits a
+    second fact reading `unavailable` that supersedes a good measurement already on the
+    spine — a re-run that makes the record worse.
+
+    The ORIGIN has to come back with the file. The review sidecars name in-VM paths, so a
+    recovered source keyed on its local path would stop matching them and every review
+    would go unattributed on the second run.
+    """
+    manifest = usage_dir / "harvest.json"
+    if not manifest.is_file():
+        return []
+    try:
+        doc = json.loads(manifest.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    out = []
+    for row in doc.get("sources") or []:
+        kept = usage_dir / str(row.get("kept") or "")
+        if kept.is_file() and row.get("surface") and row.get("origin"):
+            out.append((str(row["surface"]), str(row["origin"]), kept))
+    return out
+
+
 def harvest(req: HarvestRequest) -> HarvestResult:
-    """Copy every source into the task root, attribute it, and total each purpose."""
-    usage_dir = _usage_dir(req.task_root)
+    """Copy every source into the evidence directory, attribute it, and total each purpose."""
+    usage_dir = _usage_dir(req.evidence_dir)
     notes: list[str] = []
 
     # 1. Copy first. Everything after this reads the copy, so a VM removed between the
@@ -459,8 +511,24 @@ def harvest(req: HarvestRequest) -> HarvestResult:
     ]:
         if src.path.is_file():
             copied.append(
-                (src.surface, src.key(), _copy_in(req.task_root, src.path, subdir, taken))
+                (src.surface, src.key(), _copy_in(req.evidence_dir, src.path, subdir, taken))
             )
+
+    # Then whatever a previous harvest left here that is not live any more. Live wins on a
+    # conflict: the source still on disk is at least as complete as the copy of it, since
+    # transcripts only grow.
+    live = {origin for _, origin, _ in copied}
+    recovered = 0
+    for surface, origin, kept in _recovered_sources(usage_dir):
+        if origin in live:
+            continue
+        copied.append((surface, origin, kept))
+        recovered += 1
+    if recovered:
+        notes.append(
+            f"{recovered} source(s) were read back from a previous harvest because they "
+            "are no longer live — the sandbox has been pruned, or the session was cleaned"
+        )
 
     by_origin = {origin: (surface, kept) for surface, origin, kept in copied}
 
@@ -627,7 +695,7 @@ def harvest(req: HarvestRequest) -> HarvestResult:
                 "order_ref": req.order_ref,
                 "finished_at": finished_at,
                 "sources": [
-                    {"surface": e, "origin": o, "kept": str(k.relative_to(req.task_root))}
+                    {"surface": e, "origin": o, "kept": str(k.relative_to(usage_dir))}
                     for e, o, k in copied
                 ],
                 "review_rounds": [{"round": n, "transcripts": t} for n, t in rounds],
@@ -698,7 +766,12 @@ def finished_payload(
         "identity": identity,
         "outcome": "success",
         "outcome_certainty": "uncertain",
-        "finished_at": finished_at or datetime.now(UTC).isoformat(),
+        # `...Z`, which is the only shape `_UTC_TS_SHAPE` accepts. Latent while `main()`
+        # always supplies a derived value, and a payload refused at emit time for any
+        # other caller of this public helper.
+        "finished_at": (
+            finished_at or datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        ),
         "model_resolved": model_resolved,
         "model_evidence": "harness-reported" if model_resolved else "none",
         "usage": evidence.usage.model_dump(),
@@ -746,6 +819,12 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="omegahive-harvest", description=__doc__)
     ap.add_argument("--task", required=True)
     ap.add_argument("--task-root", required=True, type=Path)
+    ap.add_argument(
+        "--evidence-root", type=Path,
+        default=Path(os.environ.get(
+            "OMEGAHIVE_USAGE_ARCHIVE", os.path.expanduser("~/omegahive-usage"))),
+        help="where harvested evidence lives; must outlive the task root",
+    )
     ap.add_argument("--worker", required=True)
     ap.add_argument("--attempt", type=int, default=1)
     ap.add_argument("--order-ref", default=None)
@@ -789,7 +868,8 @@ def main(argv: list[str] | None = None) -> int:
         notes.extend(pull_notes)
 
     result = harvest(HarvestRequest(
-        task=args.task, task_root=args.task_root, worker_id=args.worker,
+        task=args.task, task_root=args.task_root,
+        evidence_dir=args.evidence_root / args.task, worker_id=args.worker,
         work_identity=work_identity, reviewer_identity=reviewer_identity,
         execution_id=args.execution_id, attempt=args.attempt, order_ref=args.order_ref,
         host_sources=host_sources, sandbox_sources=sandbox_sources,
