@@ -251,7 +251,8 @@ def test_the_launcher_and_the_model_compute_the_same_runner_fingerprint():
 # --- the review round cap ---------------------------------------------------------------
 
 
-def _issue_review_wrapper(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+def _issue_review_wrapper(tmp_path: Path, reviewer: str = "opus-in-sandbox"
+                          ) -> tuple[Path, Path, Path, Path]:
     """Issue the SHIPPED sandboxed review wrapper against a throwaway repo."""
     run_dir, repo = tmp_path / "run", tmp_path / "repo"
     repo.mkdir(parents=True)
@@ -278,7 +279,7 @@ def _issue_review_wrapper(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
          f'set -euo pipefail; source "{COMMON}"; '
          'issue_worker_interface "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}"',
          "bash", str(run_dir), str(repo), str(repo), "worker/x", "run1", "w1",
-         "opus-in-sandbox", "", order_rel, sha],
+         reviewer, "", order_rel, sha],
         capture_output=True, text=True, cwd=str(REPO), timeout=120,
         env={**os.environ, "OMEGA_DIR": str(REPO)})
     assert r.returncode == 0, r.stdout + r.stderr
@@ -808,23 +809,44 @@ def test_a_reattach_verifies_the_credential_name_it_cannot_re_apply():
     assert "authenticate as nobody" in reattach
 
 
-def test_the_review_credential_directory_is_created_before_the_copy():
-    """`sbx cp` does not create parent directories, and only the claude-derived agent
-    images ship a `~/.claude`.
+def test_the_session_credential_is_never_copied_into_a_sandbox():
+    """It used to be, and that is the bug this replaced.
 
-    That stayed invisible for as long as every sandboxed route ran the claude agent or a
-    kit built on its image. The opencode image has no such directory, so the first launch
-    of an opencode route died here — after the VM was built — with "could not copy the
-    Claude subscription credential". The reviewer needs that login whatever the worker is,
-    so the path it lands on cannot be assumed from the worker's image.
+    `~/.claude/.credentials.json` is a ROTATING OAuth session. A copy carries whatever is
+    left of an 8-hour access token, and the host's next refresh rotates the copy's refresh
+    token away — so the VM could not authenticate, roughly one task in seven and always
+    overnight. The race is symmetric too: had the VM refreshed first it would have
+    invalidated the operator's own login.
     """
     launch = (REPO / "scripts" / "hive-launch").read_text()
-    # Anchored on the Claude credential's own copy, not merely the next `sbx cp`: the
-    # Antigravity token is copied a few lines above it, and matching that one would pass
-    # while proving nothing about this directory.
-    copy_at = launch.index('sbx cp "$HOME/.claude/.credentials.json"')
-    mkdir_at = launch.index("mkdir -p /home/agent/.claude")
-    assert mkdir_at < copy_at, "the credential is copied before its directory exists"
+    body = "\n".join(ln for ln in launch.splitlines() if not ln.lstrip().startswith("#"))
+    assert "sbx cp \"$HOME/.claude/.credentials.json\"" not in body
+    assert ".credentials.json" not in body, "no code path may reference the session login"
+
+
+def test_the_reviewer_token_reaches_the_sandbox_through_its_env_file():
+    """The 0600 env file, not an argument: a credential on a command line is visible in
+    `ps` to every process on the host for as long as the create runs."""
+    launch = (REPO / "scripts" / "hive-launch").read_text()
+    assert "printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\\n' \"$CLAUDE_CODE_OAUTH_TOKEN\"" in launch
+    env_at = launch.index("CLAUDE_CODE_OAUTH_TOKEN=%s")
+    file_at = launch.index('} > "$SBX_ENV_FILE"')
+    assert env_at < file_at, "the token must be written inside the env-file redirection"
+
+
+def test_the_reviewer_token_is_not_a_route_name_and_so_survives_the_strip():
+    """The review wrapper unsets every name the ROUTE declares, so that an `or-*` review
+    runs on the subscription rather than the account under test. The token must not be
+    among them, or the strip that makes the review independent would also delete its
+    login."""
+    launch = (REPO / "scripts" / "hive-launch").read_text()
+    strip = launch[launch.index("ROUTE_ENV_NAMES=$("):]
+    strip = strip[:strip.index("ROUTE_ENV_NAMES=\"${ROUTE_ENV_NAMES% }\"")]
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in strip
+    catalog = (REPO / "schemas" / "route-catalog.example.json").read_text()
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in catalog, (
+        "a route declaring it would put it in the strip list and delete the reviewer's login"
+    )
 
 
 def test_a_failed_reviewer_keeps_its_output_without_spending_a_round(tmp_path):
@@ -1229,3 +1251,92 @@ def test_an_uncounted_review_survives_a_reviewer_that_does_not_read_stdin(tmp_pa
     )
     assert r.returncode == 0, f"exit {r.returncode}\n{r.stderr}"
     assert "VERDICT: PASS" in r.stdout
+
+
+# --- the reviewer's own credential ------------------------------------------------------
+#
+# Until 2026-09-15 the review ran on a COPY of the operator's `~/.claude/.credentials.json`,
+# taken at launch. That is a rotating OAuth session: the copy carries whatever is left of an
+# 8-hour access token, and the moment the host refreshes, the copy's refresh token is
+# rotated away and the VM cannot authenticate at all. Measured at roughly 1 task in 6-8,
+# and certain for anything left overnight.
+#
+# A long-lived `claude setup-token` credential replaces it, so the wrapper has to accept a
+# login that is an environment variable rather than a file. Only for the CLAUDE reviewers:
+# a Claude token must never satisfy the codex reviewer's `~/.codex/auth.json`.
+
+def test_a_claude_reviewer_accepts_the_long_lived_token_instead_of_a_file(tmp_path):
+    run_dir, repo, bin_dir, _home = _issue_review_wrapper(tmp_path)
+    _transcript_writing_reviewer(bin_dir, tmp_path / "tokhome", repo)
+    home = tmp_path / "tokhome"           # deliberately no .claude/.credentials.json
+    home.mkdir(exist_ok=True)
+    r = subprocess.run(
+        [str(run_dir / "review"), "review this"],
+        capture_output=True, text=True, cwd=str(repo), timeout=120,
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(home),
+             "HIVE_REVIEW_DIR": str(tmp_path / "reviews"),
+             "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-test"},
+    )
+    assert r.returncode == 0, r.stderr
+    assert "VERDICT" in r.stdout
+
+
+def test_neither_a_file_nor_a_token_still_refuses(tmp_path):
+    """The refusal this replaces exists because falling back to plain `claude` reviews the
+    worker on the account under test. Losing it would be worse than the staleness."""
+    run_dir, repo, bin_dir, _ = _issue_review_wrapper(tmp_path)
+    home = tmp_path / "nothing"
+    home.mkdir()
+    r = subprocess.run(
+        [str(run_dir / "review"), "review this"],
+        capture_output=True, text=True, cwd=str(repo), timeout=120,
+        env={k: v for k, v in
+             {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(home),
+              "HIVE_REVIEW_DIR": str(tmp_path / "reviews")}.items()
+             if k != "CLAUDE_CODE_OAUTH_TOKEN"},
+    )
+    assert r.returncode != 0
+    assert "no login" in r.stderr.lower() or "credentials.json" in r.stderr
+
+
+def test_the_codex_reviewer_is_not_satisfied_by_a_claude_token(tmp_path):
+    """Its credential is `~/.codex/auth.json`. A Claude token standing in for it would send
+    the codex reviewer at a login it cannot use, and the refusal that says so would be
+    gone."""
+    run_dir, repo, bin_dir, _ = _issue_review_wrapper(tmp_path, reviewer="codex-plugin")
+    home = tmp_path / "codexhome"
+    home.mkdir()
+    r = subprocess.run(
+        [str(run_dir / "review"), "review this"],
+        capture_output=True, text=True, cwd=str(repo), timeout=120,
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(home),
+             "HIVE_REVIEW_DIR": str(tmp_path / "reviews"),
+             "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-test"},
+    )
+    assert r.returncode != 0
+    assert "auth.json" in r.stderr
+
+
+def test_an_auth_failure_names_the_remedy_the_worker_cannot_reach(tmp_path):
+    """A worker in a VM cannot fix a credential. On 2026-09-15 one met "OAuth session
+    expired", diagnosed it correctly and blocked — the right answer, reached the slow way.
+    One that guessed would have retried into the same wall."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    fake = bin_dir / "claude"
+    fake.write_text('#!/bin/sh\necho "Failed to authenticate: OAuth session expired"\nexit 1\n')
+    fake.chmod(0o755)
+    r = _review(run_dir, repo, bin_dir, home, tmp_path / "reviews")
+    assert r.returncode != 0
+    assert "CREDENTIAL failure" in r.stderr
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in r.stderr
+    assert "NO round was" in r.stderr
+
+
+def test_an_ordinary_failure_does_not_claim_to_be_a_credential_problem(tmp_path):
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    fake = bin_dir / "claude"
+    fake.write_text('#!/bin/sh\necho "the diff was too large to read"\nexit 1\n')
+    fake.chmod(0o755)
+    r = _review(run_dir, repo, bin_dir, home, tmp_path / "reviews")
+    assert r.returncode != 0
+    assert "CREDENTIAL failure" not in r.stderr

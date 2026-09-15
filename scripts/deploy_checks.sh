@@ -564,5 +564,43 @@ else
        uncommitted changes the image cannot have; that is the honest answer, not a bug."
 fi
 
+# --- 13. the reviewer's login still authenticates ---------------------------------------
+#
+# Every sandboxed route's review runs on CLAUDE_CODE_OAUTH_TOKEN. It is a long-lived
+# credential, so this fails about once a year — and when it does it fails for EVERY such
+# route at once, and the way a worker learns is by doing the whole order and then being
+# unable to review it. That is the trade this check exists to invert.
+#
+# It is the only check here that spends a model call, because it is the only question that
+# cannot be answered locally: the token is opaque (`sk-ant-oat…`, one segment, no readable
+# expiry), so nothing can be inspected and the only way to know it still works is to use
+# it. `--no-session-persistence` keeps the probe out of the operator's session history.
+#
+# The Anthropic names are UNSET for the probe, exactly as the review wrapper unsets them:
+# with ANTHROPIC_API_KEY in the environment — which Claude Code itself injects into every
+# child process it spawns — a dead token would pass this check on someone else's credential.
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  echo "[SKIP] 13. reviewer login: CLAUDE_CODE_OAUTH_TOKEN is not set on this host."
+  echo "       Sandboxed reviews need it. Mint one with 'claude setup-token' and export it"
+  echo "       from ~/.secrets."
+elif ! command -v claude >/dev/null 2>&1; then
+  echo "[SKIP] 13. reviewer login: no 'claude' on PATH to test the token with."
+else
+  # `|| REVIEW_PROBE=""` under `set -e`: a non-zero probe must reach the verdict below
+  # rather than abort the script before the summary.
+  REVIEW_PROBE=$(env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL \
+    timeout 180 claude -p --no-session-persistence "Reply with exactly: REVIEWER OK" 2>&1) \
+    || REVIEW_PROBE="${REVIEW_PROBE:-}"
+  case "$REVIEW_PROBE" in
+    *"REVIEWER OK"*)
+      ok "13. reviewer login: CLAUDE_CODE_OAUTH_TOKEN authenticates" ;;
+    *)
+      bad "13. reviewer login: CLAUDE_CODE_OAUTH_TOKEN did not authenticate.
+       Every sandboxed route's review will fail, after its worker has done the work.
+       Mint a replacement with 'claude setup-token' and update ~/.secrets.
+       The probe said: $(printf '%s' "$REVIEW_PROBE" | head -2 | tr '\n' ' ')" ;;
+  esac
+fi
+
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

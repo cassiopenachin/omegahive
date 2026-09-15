@@ -462,8 +462,15 @@ CONTRACTBODY
   # A second body for the codex reviewer would be two implementations of one semantics, which
   # is the shape that produced seventeen review rounds on 2026-09-10.
   local review_posture="" review_cmd="" review_cred="" review_cred_hint="" review_scope=""
+  # An environment variable that may stand in for the credential FILE, per reviewer. The
+  # Claude reviewers accept a long-lived `claude setup-token` credential, which is what a
+  # sandbox is given instead of a copy of the operator's rotating session login. Per
+  # reviewer and not globally: a Claude token must never satisfy the codex reviewer, whose
+  # credential is ~/.codex/auth.json and which cannot use it.
+  local review_cred_env=""
   case "$REVIEWER" in
     opus-in-sandbox)
+      review_cred_env='CLAUDE_CODE_OAUTH_TOKEN'
       review_posture='--permission-mode bypassPermissions'
       review_cmd='claude -p --model "${HIVE_REVIEW_MODEL:-opus}"'
       review_cred='$HOME/.claude/.credentials.json'
@@ -473,6 +480,7 @@ CONTRACTBODY
     # put the review's own prompt in tool position and depend on the parser being lenient
     # about where the list ends. One argument cannot be misread.
     claude-cli)
+      review_cred_env='CLAUDE_CODE_OAUTH_TOKEN'
       review_posture='--allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*)"'
       review_cmd='claude -p --model "${HIVE_REVIEW_MODEL:-opus}"'
       review_cred='$HOME/.claude/.credentials.json'
@@ -521,6 +529,7 @@ HIVE_REVIEW_STRIP="${unset_flags# }"
 HIVE_REVIEW_POSTURE=($review_posture)
 HIVE_REVIEW_CONTRACT="\${HIVE_REVIEW_CONTRACT:-$CONTRACT}"
 HIVE_REVIEW_CRED="$review_cred"
+HIVE_REVIEW_CRED_ENV="$review_cred_env"
 HIVE_REVIEW_CRED_HINT="$review_cred_hint"
 HIVE_REVIEW_SCOPE="$review_scope"
 HIVE_REVIEW_CMD=($review_cmd)
@@ -537,8 +546,23 @@ if [ -z "${HIVE_REVIEW_STRIPPED:-}" ]; then
 fi
 
 # Phase two: this environment is the reviewer's.
-if [ -n "$HIVE_REVIEW_CRED" ] && [ ! -f "$HIVE_REVIEW_CRED" ]; then
-  echo "review: there is no $HIVE_REVIEW_CRED here, so this review has no login to use." >&2
+# A login is a FILE or, for the Claude reviewers, a long-lived token in the environment.
+# The token is what a sandbox now carries: copying the operator's ~/.claude/.credentials.json
+# shipped a rotating OAuth session whose access token lasts 8 hours and whose refresh token
+# the host invalidates the moment it refreshes its own -- so the copy died mid-task, roughly
+# one task in seven, and always overnight.
+#
+# The refusal itself is unchanged in strength, and must stay that way: without a login this
+# command would otherwise fall back to plain `claude` and review the worker on the very
+# account under test, producing something that reads as a clean independent review.
+HIVE_REVIEW_CRED_OK=""
+[ -z "$HIVE_REVIEW_CRED" ] || [ ! -f "$HIVE_REVIEW_CRED" ] || HIVE_REVIEW_CRED_OK=1
+if [ -n "${HIVE_REVIEW_CRED_ENV:-}" ] && [ -n "${!HIVE_REVIEW_CRED_ENV:-}" ]; then
+  HIVE_REVIEW_CRED_OK=1
+fi
+if [ -n "$HIVE_REVIEW_CRED" ] && [ -z "$HIVE_REVIEW_CRED_OK" ]; then
+  echo "review: this review has no login to use." >&2
+  echo "        Looked for the file $HIVE_REVIEW_CRED${HIVE_REVIEW_CRED_ENV:+ and the environment variable $HIVE_REVIEW_CRED_ENV}." >&2
   echo "        Block and tell the operator. $HIVE_REVIEW_CRED_HINT" >&2
   exit 1
 fi
@@ -765,6 +789,16 @@ if [ "$STATUS" -ne 0 ] && [ -s "$PARTIAL" ] && [ -n "$CANONICAL" ]; then
   trap - EXIT
   echo "review: the reviewer exited $STATUS. Its output is at $FAILED and NO round was" >&2
   echo "        spent -- a reviewer that failed did not review. Fix the cause and retry." >&2
+  # Name the one cause a worker cannot fix from in here. On 2026-09-15 a worker met
+  # "OAuth session expired and could not be refreshed", diagnosed it correctly and blocked
+  # -- which was the right answer, and took it a round of reasoning to reach. A worker that
+  # guessed instead would have retried into the same wall.
+  if grep -qiE "authenticat|oauth|expired|invalid api key" "$FAILED" 2>/dev/null; then
+    echo "        This one is a CREDENTIAL failure and nothing you do in here will fix it." >&2
+    echo "        Ask the operator to check CLAUDE_CODE_OAUTH_TOKEN for this sandbox, then" >&2
+    echo "        emit question.asked and task.blocked. Do not retry first: it costs nothing" >&2
+    echo "        from your budget, but it will fail the same way." >&2
+  fi
   exit "$STATUS"
 fi
 if [ ! -s "$PARTIAL" ]; then
