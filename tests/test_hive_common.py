@@ -1405,7 +1405,8 @@ def test_a_token_reviewer_drops_the_anthropic_names_even_when_the_route_does_not
     fake = bin_dir / "claude"
     fake.write_text(
         "#!/bin/sh\n"
-        f'{{ echo "KEY=${{ANTHROPIC_API_KEY:-<unset>}}"; echo "BASE=${{ANTHROPIC_BASE_URL:-<unset>}}";'
+        f'{{ echo "KEY=${{ANTHROPIC_API_KEY:-<unset>}}";'
+        f'  echo "BASE=${{ANTHROPIC_BASE_URL:-<unset>}}";'
         f'  echo "TOK=${{CLAUDE_CODE_OAUTH_TOKEN:-<unset>}}"; }} > "{reached}"\n'
         'echo "VERDICT: PASS"\n')
     fake.chmod(0o755)
