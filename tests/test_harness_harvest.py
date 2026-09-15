@@ -643,3 +643,36 @@ def test_each_purpose_is_stamped_from_its_own_evidence(tmp_path):
                                      Source("claude-session", reviewed)])
     assert res.work.finished_at != res.review.finished_at
     assert res.work.finished_at < res.review.finished_at
+
+
+def test_a_worker_that_writes_nothing_still_gets_its_reviews_attributed(tmp_path):
+    """The antigravity routes. Gating the entailment on the worker having a READABLE
+    surface disabled it precisely where it is strongest: a harness that writes no usage
+    at all cannot be the author of a Claude transcript in its own sandbox, so every one
+    of them is a review. Knowing the route is what the entailment needs — not the route
+    happening to be measurable."""
+    r1 = transcript(tmp_path / "vm" / "c" / "r1.jsonl", msg="a", out=70)
+    r2 = transcript(tmp_path / "vm" / "c" / "r2.jsonl", msg="b", out=30)
+    root = task_root(tmp_path, reviews={"review-1.txt": [], "review-2.txt": []})
+    res = run(root, work_identity={**IDENTITY, "harness": "antigravity"},
+              sandbox_sources=[Source("claude-session", r1), Source("claude-session", r2)])
+    assert res.work.usage.status == "unavailable"
+    assert "antigravity" in (res.work.usage.reason or "")
+    assert res.review.usage.status == "reported"
+    assert res.review.usage.output_tokens == 100
+    assert res.unattributed == []
+
+
+def test_only_review_files_count_as_rounds(tmp_path):
+    """`run/reviews/` also holds the worker's `disposition.md`. Counting it as a round
+    made it an unattributable one, which turned a clean harvest into a partial and put a
+    refusal about a file that is not a review in front of the operator. Same rule the
+    wrapper's own round counter uses: the name has to contain `review`."""
+    reviewed = transcript(tmp_path / "vm" / "c" / "r1.jsonl")
+    root = task_root(tmp_path, reviews={"review-1.txt": [reviewed]})
+    (root / "run" / "reviews" / "disposition.md").write_text("B1: rebutted\n")
+    res = run(root, work_identity={**IDENTITY, "harness": "antigravity"},
+              sandbox_sources=[Source("claude-session", reviewed)])
+    assert res.review.usage.status == "reported"
+    manifest = json.loads(res.manifest_path.read_text())
+    assert [r["round"] for r in manifest["review_rounds"]] == ["review-1.txt"]

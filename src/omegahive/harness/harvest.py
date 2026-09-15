@@ -341,12 +341,18 @@ def _review_rounds(task_root: Path) -> list[tuple[str, list[str]]]:
     `run/reviews/` is the counted directory and `meta/` holds the sidecars — the same
     split the review wrapper enforces, for the same reason: a sidecar in the counted
     directory would match the round-counting glob and inflate the budget.
+
+    A round is a file whose NAME contains `review`, which is the wrapper's own counting
+    rule and has to stay the same rule. The directory also holds the worker's
+    `disposition.md`; counting that made it an unattributable round, turned a clean
+    harvest into a partial one, and put a refusal about a file that is not a review in
+    front of the operator.
     """
     reviews = task_root / "run" / "reviews"
     if not reviews.is_dir():
         return []
     rounds = []
-    for path in sorted(p for p in reviews.iterdir() if p.is_file()):
+    for path in sorted(p for p in reviews.iterdir() if p.is_file() and "review" in p.name):
         sidecar = reviews / "meta" / f"{path.name}.transcripts"
         listed: list[str] = []
         if sidecar.is_file():
@@ -511,7 +517,11 @@ def harvest(req: HarvestRequest) -> HarvestResult:
     # 4. On a route the entailment covers, every remaining reviewer-shaped source is a
     #    review — including the rounds whose sidecars predate this mechanism.
     entailed = 0
-    if want is not None:
+    # Gated on knowing the ROUTE, not on the route being measurable. Requiring a readable
+    # worker surface disabled the entailment exactly where it is strongest: an antigravity
+    # worker writes no usage at all, so it cannot be the author of a Claude transcript in
+    # its own sandbox and every one of them is a review.
+    if req.work_identity is not None:
         for surface, origin, kept in copied:
             if origin in claimed or surface == want:
                 continue
