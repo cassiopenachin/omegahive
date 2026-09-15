@@ -1340,3 +1340,110 @@ def test_an_ordinary_failure_does_not_claim_to_be_a_credential_problem(tmp_path)
     r = _review(run_dir, repo, bin_dir, home, tmp_path / "reviews")
     assert r.returncode != 0
     assert "CREDENTIAL failure" not in r.stderr
+
+
+def test_a_credential_failure_on_stderr_alone_is_still_diagnosed(tmp_path):
+    """The diagnosis used to read only the captured STDOUT, so a reviewer that failed to
+    authenticate and said so on stderr — writing no review at all — reached the
+    produced-nothing branch and the worker was told nothing. The one failure the hint
+    exists for could arrive on the channel it was not watching."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    fake = bin_dir / "claude"
+    fake.write_text('#!/bin/sh\necho "Failed to authenticate: OAuth session expired" >&2\nexit 1\n')
+    fake.chmod(0o755)
+    r = _review(run_dir, repo, bin_dir, home, tmp_path / "reviews")
+    assert r.returncode != 0
+    assert "produced no output" in r.stderr
+    assert "CREDENTIAL failure" in r.stderr
+
+
+def test_a_review_that_discusses_authentication_is_not_called_a_credential_failure(tmp_path):
+    """Matching the whole review body means a reviewer that dies part-way through
+    reviewing code ABOUT authentication is diagnosed from its own subject matter — told to
+    block on a transient. The commit that added the hint is itself full of these words."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    fake = bin_dir / "claude"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'echo "VERDICT: REWORK"\n'
+        'echo "B1: the oauth refresh path does not handle an expired token, and"\n'
+        'echo "    authenticate() returns before the invalid api key is reported."\n'
+        'for i in $(seq 1 40); do echo "    more review text about the auth flow"; done\n'
+        'echo "    the diff is otherwise clean."\n'
+        "exit 1\n")
+    fake.chmod(0o755)
+    r = _review(run_dir, repo, bin_dir, home, tmp_path / "reviews")
+    assert r.returncode != 0
+    assert "CREDENTIAL failure" not in r.stderr, (
+        "a review ABOUT authentication must not be diagnosed as an authentication failure"
+    )
+
+
+def test_the_codex_reviewer_is_pointed_at_its_own_credential(tmp_path):
+    """Naming the Claude token at a reviewer whose login is ~/.codex/auth.json sends both
+    the worker and the operator at the wrong credential."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path, reviewer="codex-plugin")
+    (home / ".codex").mkdir(parents=True, exist_ok=True)
+    (home / ".codex" / "auth.json").write_text("{}\n")
+    fake = bin_dir / "codex"
+    fake.write_text('#!/bin/sh\necho "Failed to authenticate: 401"\nexit 1\n')
+    fake.chmod(0o755)
+    r = _review(run_dir, repo, bin_dir, home, tmp_path / "reviews")
+    assert "CREDENTIAL failure" in r.stderr
+    assert "auth.json" in r.stderr
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in r.stderr
+
+
+def test_a_token_reviewer_drops_the_anthropic_names_even_when_the_route_does_not(tmp_path):
+    """Measured 2026-09-15: Claude Code given both a valid CLAUDE_CODE_OAUTH_TOKEN and an
+    ANTHROPIC_API_KEY does not pick one — it HANGS, silent on both streams until killed. A
+    review that hangs is worse than one that fails, because nothing tells the worker to
+    stop waiting. The route-derived strip only covers names the route DECLARES; a host
+    review inherits ANTHROPIC_API_KEY from the Claude Code session that spawned it."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    reached = tmp_path / "reached.txt"
+    fake = bin_dir / "claude"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f'{{ echo "KEY=${{ANTHROPIC_API_KEY:-<unset>}}"; echo "BASE=${{ANTHROPIC_BASE_URL:-<unset>}}";'
+        f'  echo "TOK=${{CLAUDE_CODE_OAUTH_TOKEN:-<unset>}}"; }} > "{reached}"\n'
+        'echo "VERDICT: PASS"\n')
+    fake.chmod(0o755)
+    r = subprocess.run(
+        [str(run_dir / "review"), "review this"],
+        capture_output=True, text=True, cwd=str(repo), timeout=120,
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(home),
+             "HIVE_REVIEW_DIR": str(tmp_path / "reviews"),
+             "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-test",
+             "ANTHROPIC_API_KEY": "sk-ant-the-account-under-test",
+             "ANTHROPIC_BASE_URL": "https://openrouter.ai/api"},
+    )
+    assert r.returncode == 0, r.stderr
+    got = reached.read_text()
+    assert "KEY=<unset>" in got, got
+    assert "BASE=<unset>" in got, got
+    assert "TOK=sk-ant-oat-test" in got, "the reviewer's own login must survive the strip"
+
+
+def test_the_re_attach_path_verifies_the_reviewer_token_in_the_VM():
+    """`.sandbox-env` is consumed only by `sbx create --env-file`, so rewriting it does
+    nothing to a VM that already exists — the launcher's own comment says so. A re-attach
+    therefore has to VERIFY the token rather than assume the write reached it. Two ways it
+    reaches this with the wrong one: the operator re-minted the token, or the VM predates
+    the token entirely and no longer gets the copied credential file either. Both end with
+    a worker that does the whole order and cannot review it."""
+    launch = (REPO / "scripts" / "hive-launch").read_text()
+    attach_at = launch.index("(exists — re-attaching")
+    create_at = launch.index("sbx create", attach_at)
+    window = launch[attach_at:create_at]
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in window, "the re-attach path does not check the token"
+    assert "sbx rm $SANDBOX" in window, "the refusal must name the only repair"
+    # By digest, never by value: neither token may reach the launcher's output or `ps`.
+    assert "sha256" in window
+
+
+def test_no_comment_claims_a_re_attach_refreshes_the_sandbox_environment():
+    """It does not, and saying so would send the next reader looking for a repair path that
+    is not there."""
+    launch = (REPO / "scripts" / "hive-launch").read_text()
+    assert "RE-ATTACH refreshes it" not in launch

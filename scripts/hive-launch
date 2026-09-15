@@ -1482,11 +1482,14 @@ SBXENV
       # IS a git clone — so a file in the task root above it would never be found. Setting
       # it MERGES with the sandbox template's global config rather than replacing it.
       [ -z "$SBX_OPENCODE_CFG" ] || printf 'OPENCODE_CONFIG=%s\n' "$SBX_OPENCODE_CFG"
-      # The reviewer's login. In the env file rather than copied to a path, so it travels the
-      # way every other credential does -- 0600, never an argument `ps` can read -- and so a
-      # RE-ATTACH refreshes it, which a file copied once at create time never did. It is not
-      # a route env name, so the review wrapper's strip list leaves it alone: that is what
-      # lets an `or-*` review drop the worker's routing and keep its own login.
+      # The reviewer's login. In the env file rather than copied to a path, so it travels
+      # the way every other credential does: 0600, never an argument `ps` can read. It is
+      # not a route env name, so the review wrapper's strip list leaves it alone -- that is
+      # what lets an `or-*` review drop the worker's routing and keep its own login.
+      #
+      # This file is consumed ONLY by `sbx create --env-file`, so rewriting it does nothing
+      # to a VM that already exists. The re-attach path therefore VERIFIES the token in the
+      # VM rather than assuming this write reached it; see the guard below.
       [ -z "$SBX_REVIEW_TOKEN" ] || printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$CLAUDE_CODE_OAUTH_TOKEN"
       # The route's own environment facts, in the one place a value can travel without
       # appearing on a command line that `ps` can read.
@@ -1530,6 +1533,26 @@ SBXENV
     # VM. It cannot be re-applied after create — `--env-file` is a create-time argument —
     # so it is verified instead of assumed, exactly as the Claude credential posture is a
     # few lines down. The check reads whether the name is set, never its value.
+    # The reviewer's login, same reasoning and the same impossibility of repair. Two ways a
+    # re-attach reaches this with the wrong one, and both end the same way -- the worker
+    # does the whole order and cannot review it:
+    #   * the operator re-minted the token, and this VM still holds the revoked one;
+    #   * the VM was created before the token existed, when the login was a copied file,
+    #     and it no longer gets that file either.
+    # Compared by DIGEST, never by value: the comparison has to be exact, and neither token
+    # may appear in the launcher's output or in `ps`.
+    if [ -n "$SBX_REVIEW_TOKEN" ]; then
+      VM_TOK_SHA=$(sbx exec "$SANDBOX" bash -lc \
+        'printf "%s" "${CLAUDE_CODE_OAUTH_TOKEN:-}" | sha256sum | cut -c1-16' 2>/dev/null \
+        | tr -d '\r' || true)
+      HOST_TOK_SHA=$(printf '%s' "$CLAUDE_CODE_OAUTH_TOKEN" | sha256_hex | cut -c1-16)
+      [ "$VM_TOK_SHA" = "$HOST_TOK_SHA" ] || die "sandbox '$SANDBOX' already exists and does
+  not hold the CLAUDE_CODE_OAUTH_TOKEN this launch would give it. A sandbox's environment is
+  fixed at create time, so re-launching cannot repair it: the worker would start, do the
+  whole order, and have no login to review it with. Rebuild it:
+      sbx rm $SANDBOX"
+    fi
+
     if [ -n "$SBX_OPENCODE_CFG" ] \
        && ! sbx exec "$SANDBOX" bash -lc "[ -n \"\${$OPENCODE_KEY_NAME+set}\" ]" >/dev/null 2>&1; then
       die "sandbox '$SANDBOX' already exists and does not hold '$OPENCODE_KEY_NAME', which is

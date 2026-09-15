@@ -588,17 +588,33 @@ elif ! command -v claude >/dev/null 2>&1; then
 else
   # `|| REVIEW_PROBE=""` under `set -e`: a non-zero probe must reach the verdict below
   # rather than abort the script before the summary.
+  # `|| REVIEW_RC=$?` under `set -e`: a non-zero probe must reach the verdict below rather
+  # than abort the script before the summary.
+  REVIEW_RC=0
   REVIEW_PROBE=$(env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL \
     timeout 180 claude -p --no-session-persistence "Reply with exactly: REVIEWER OK" 2>&1) \
-    || REVIEW_PROBE="${REVIEW_PROBE:-}"
+    || REVIEW_RC=$?
+  REVIEW_SAID=$(printf '%s' "$REVIEW_PROBE" | head -2 | tr '\n' ' ')
+  # "did not authenticate" and "could not be asked" are different claims, and only one of
+  # them is about the token. A 124 is the `timeout` firing; an empty answer with no error
+  # is the same class. Reporting either as an authentication verdict would send the
+  # operator to re-mint a credential that is fine.
   case "$REVIEW_PROBE" in
     *"REVIEWER OK"*)
       ok "13. reviewer login: CLAUDE_CODE_OAUTH_TOKEN authenticates" ;;
     *)
-      bad "13. reviewer login: CLAUDE_CODE_OAUTH_TOKEN did not authenticate.
+      if [ "$REVIEW_RC" -eq 124 ] || [ -z "${REVIEW_PROBE// /}" ]; then
+        bad "13. reviewer login: UNVERIFIED — the probe did not complete$([ "$REVIEW_RC" -eq 124 ] && echo ' (timed out after 180s)').
+       This says nothing about the token: it says the question could not be asked. Check
+       the network and re-run. Until it answers, whether sandboxed reviews can authenticate
+       is unknown.${REVIEW_SAID:+
+       The probe said: $REVIEW_SAID}"
+      else
+        bad "13. reviewer login: CLAUDE_CODE_OAUTH_TOKEN did not authenticate.
        Every sandboxed route's review will fail, after its worker has done the work.
        Mint a replacement with 'claude setup-token' and update ~/.secrets.
-       The probe said: $(printf '%s' "$REVIEW_PROBE" | head -2 | tr '\n' ' ')" ;;
+       The probe said: $REVIEW_SAID"
+      fi ;;
   esac
 fi
 

@@ -539,6 +539,18 @@ REVIEWHEAD
 # it still runs, because the check below has to see the environment the HARNESS will get
 # rather than the one this script was called in — a route that renames Claude Code's config
 # directory would otherwise leave the check reading one login while the review used another.
+#
+# A reviewer that authenticates by TOKEN also drops the three Anthropic names outright,
+# whether or not this route declares them. Measured 2026-09-15: Claude Code given both a
+# valid CLAUDE_CODE_OAUTH_TOKEN and an ANTHROPIC_API_KEY does not pick one -- it HANGS,
+# producing nothing on either stream until it is killed. A review that hangs is worse than
+# one that fails, because nothing tells the worker to stop waiting. The route-derived strip
+# covers the routes that declare those names; this covers the ones that merely inherit them,
+# including a host review running inside a Claude Code session, which injects
+# ANTHROPIC_API_KEY into every child it spawns.
+if [ -n "${HIVE_REVIEW_CRED_ENV:-}" ] && [ "${HIVE_REVIEW_CRED_ENV:-}" = "CLAUDE_CODE_OAUTH_TOKEN" ]; then
+  HIVE_REVIEW_STRIP="$HIVE_REVIEW_STRIP -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL"
+fi
 if [ -z "${HIVE_REVIEW_STRIPPED:-}" ]; then
   export HIVE_REVIEW_STRIPPED=1
   # shellcheck disable=SC2086  # HIVE_REVIEW_STRIP is a list of -u flags, and must split
@@ -742,9 +754,14 @@ fi
 # does not exist until the review is complete, and it inflated the review counts that
 # `hive-cleanup` archives and `hive-score` reads.
 PARTIAL=$(mktemp "${TMPDIR:-/tmp}/hive-review-partial.XXXXXX") || exit 1
+# The reviewer's STDERR, kept as well as passed through. A credential failure does not
+# always reach stdout, and the branch that diagnoses one used to read only the captured
+# stdout -- so the one failure the diagnosis exists for could arrive on the channel it was
+# not watching, and the worker would be told nothing.
+PARTIAL_ERR=$(mktemp "${TMPDIR:-/tmp}/hive-review-stderr.XXXXXX") || exit 1
 # BOTH temp files. Traps are not additive, so this used to replace the preamble's trap and
 # leak one preamble per round, on every task, forever.
-trap 'rm -f "$PREAMBLE" "$PARTIAL"' EXIT
+trap 'rm -f "$PREAMBLE" "$PARTIAL" "$PARTIAL_ERR"' EXIT
 # When this review started, to the second. What a review CONSUMED is not in the review
 # text and not anywhere under this task root: it is in the reviewer harness's own
 # transcript, in the reviewer's home, under a session id nothing here chose. A later
@@ -761,12 +778,34 @@ set +e
   [ "$#" -eq 0 ] || printf '%s\n\n' "$*"
   [ -t 0 ] || cat
 } \
-  | "${HIVE_REVIEW_CMD[@]}" "${HIVE_REVIEW_POSTURE[@]}" \
+  | "${HIVE_REVIEW_CMD[@]}" "${HIVE_REVIEW_POSTURE[@]}" 2> >(tee "$PARTIAL_ERR" >&2) \
   | tee "$PARTIAL"
 PIPE=("${PIPESTATUS[@]}")
 set -e
 STATUS=${PIPE[1]:-0}
 TEE_STATUS=${PIPE[2]:-0}
+# Is this failure a CREDENTIAL failure? Asked of the TAIL of each stream, never the whole
+# review: a reviewer that dies part-way through reviewing code ABOUT authentication would
+# otherwise be diagnosed from the review's own subject matter. The diff that introduced
+# this check is itself full of the words "authenticate", "oauth" and "expired", and would
+# have tripped it.
+# Takes the stdout capture as an argument: by the time the saved-failure branch asks, that
+# file has already been MOVED to failures/, and a helper reading $PARTIAL would silently
+# find nothing and diagnose nothing.
+credential_failure() {
+  { tail -5 "${1:-/dev/null}" 2>/dev/null; tail -5 "$PARTIAL_ERR" 2>/dev/null; } \
+    | grep -qiE "failed to authenticate|oauth (session|access token)|401|invalid api key|credentials? (are |is )?(expired|invalid)"
+}
+# What to tell a worker that hits one. The credential is per reviewer -- naming the Claude
+# token at a codex reviewer, whose login is ~/.codex/auth.json, would send both the worker
+# and the operator at the wrong one.
+credential_hint() {
+  echo "        This is a CREDENTIAL failure and nothing you do in here will fix it." >&2
+  echo "        Ask the operator to check ${HIVE_REVIEW_CRED_ENV:-$HIVE_REVIEW_CRED} for this" >&2
+  echo "        sandbox, then emit question.asked and task.blocked. Do not retry first: it" >&2
+  echo "        costs nothing from your budget, but it will fail the same way." >&2
+}
+
 # A review is KEPT whenever there is one, whatever the reviewer's exit status. `claude -p`
 # exits non-zero in real cases after emitting a complete response, and deleting that
 # response -- then telling the worker there was "no usable output" while it can see the
@@ -793,16 +832,16 @@ if [ "$STATUS" -ne 0 ] && [ -s "$PARTIAL" ] && [ -n "$CANONICAL" ]; then
   # "OAuth session expired and could not be refreshed", diagnosed it correctly and blocked
   # -- which was the right answer, and took it a round of reasoning to reach. A worker that
   # guessed instead would have retried into the same wall.
-  if grep -qiE "authenticat|oauth|expired|invalid api key" "$FAILED" 2>/dev/null; then
-    echo "        This one is a CREDENTIAL failure and nothing you do in here will fix it." >&2
-    echo "        Ask the operator to check CLAUDE_CODE_OAUTH_TOKEN for this sandbox, then" >&2
-    echo "        emit question.asked and task.blocked. Do not retry first: it costs nothing" >&2
-    echo "        from your budget, but it will fail the same way." >&2
-  fi
+  ! credential_failure "$FAILED" || credential_hint
+  rm -f "$PARTIAL_ERR"
   exit "$STATUS"
 fi
 if [ ! -s "$PARTIAL" ]; then
   echo "review: the reviewer exited $STATUS and produced no output; NO round was spent." >&2
+  # HERE TOO. A reviewer that cannot authenticate often says so on stderr and writes no
+  # review at all, which is precisely this branch -- so a diagnosis that lived only in the
+  # branch above was absent from the case it was written for.
+  ! credential_failure || credential_hint
   # Never exit 0 here. A review that produced nothing is a review that did not happen, and
   # zero is what a worker reads as "reviewed, nothing to fix" -- the one thing WORKER.md
   # says such a review must never be reported as.
