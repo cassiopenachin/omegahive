@@ -1198,3 +1198,34 @@ def test_the_transcript_list_ignores_sessions_from_other_directories(tmp_path):
     listed = [ln for ln in (reviews / "meta" / f"{saved.name}.transcripts")
               .read_text().splitlines() if ln.strip()]
     assert [Path(p).name for p in listed] == ["review-session.jsonl"], listed
+
+
+def test_an_uncounted_review_survives_a_reviewer_that_does_not_read_stdin(tmp_path):
+    """A reviewer is free to answer without draining its input, and most do once they have
+    what they need. The producer then takes SIGPIPE — and under `set -e` with `pipefail`
+    that killed the wrapper with 141 before its own `exit "${PIPESTATUS[1]}"` could run, so
+    a review that completed normally was reported as a failure. It only surfaced once the
+    contract made the producer big enough to block; the exposure was there all along, and
+    the counted path had been guarding against it with `set +e` since it was written.
+    """
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    fake = bin_dir / "claude"
+    fake.write_text('#!/bin/sh\necho "VERDICT: PASS"\n')   # never reads stdin
+    fake.chmod(0o755)
+    # A review directory that cannot be created, which is what puts this review on the
+    # UNCOUNTED path — the one that lacked the guard.
+    blocked = tmp_path / "not-a-dir"
+    blocked.write_text("I am a file\n")
+    # A diff larger than a pipe buffer, through stdin, which is the documented way this
+    # wrapper is called. It guarantees the producer is still writing when the reviewer
+    # exits; without it the test is a race that a fast machine wins and CI loses, which is
+    # exactly how the defect got here with a green local suite.
+    r = subprocess.run(
+        [str(run_dir / "review"), "review this"],
+        input="context line\n" * 20000,
+        capture_output=True, text=True, cwd=str(repo), timeout=120,
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(home),
+             "HIVE_REVIEW_DIR": str(blocked)},
+    )
+    assert r.returncode == 0, f"exit {r.returncode}\n{r.stderr}"
+    assert "VERDICT: PASS" in r.stdout

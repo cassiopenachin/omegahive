@@ -689,12 +689,25 @@ if [ -z "$CANONICAL" ]; then
   # review run without a usable review directory got neither the order's scope nor the
   # "SCOPE IS NOT CHECKED" fallback -- and silently invented its own bar, which is the
   # exact failure the contract exists to prevent. An uncounted review is still a review.
+  # `set +e` around the pipeline, for the same reason the counted path below has always
+  # had it: a reviewer is free to answer without draining its input, and most do once they
+  # have what they need. The producer then takes SIGPIPE, and under `set -e` with
+  # `pipefail` that killed the wrapper with 141 BEFORE the `exit` line could pick the
+  # reviewer's own status -- reporting a review that completed normally as a failure.
+  #
+  # The exposure predates the preamble; what the preamble changed is that the producer now
+  # writes enough to still be writing when the reviewer exits, so the race went from
+  # almost-never to routine. It passed a full local suite and failed in CI, which is what
+  # a race that depends on process scheduling looks like.
+  set +e
   { cat "$PREAMBLE"
     [ -z "${HIVE_REVIEW_SCOPE:-}" ] || printf '%s\n\n' "$HIVE_REVIEW_SCOPE"
     [ "$#" -eq 0 ] || printf '%s\n\n' "$*"
     [ -t 0 ] || cat
   } | "${HIVE_REVIEW_CMD[@]}" "${HIVE_REVIEW_POSTURE[@]}"
-  exit "${PIPESTATUS[1]}"
+  UNCOUNTED_PIPE=("${PIPESTATUS[@]}")
+  set -e
+  exit "${UNCOUNTED_PIPE[1]:-0}"
 fi
 # The in-progress capture lives OUTSIDE the counted directory, and is removed however this
 # command ends. Writing it inside was a quiet disaster: its name matched the counting glob
