@@ -266,8 +266,17 @@ def terminal($created; $cancel_ts):
       accepted_to_first_result_net_s: ( nn($accepted; $first_result) as $g
                                         | if $g == null then null else $g - $blk_first end ),
       blocked_before_first_result_s:  (if $accepted == null then null else $blk_first end),
-      questions: ( [ $slice[] | select(.event_type == "task.reported")
-                     | select(.payload.kind == "question") ] | length ),
+      # BOTH conventions, because the log is append-only and the tasks that used the
+      # old one are still in it. A worker asks with the dedicated `question.asked`;
+      # before that event existed it reported one as `task.reported(kind=question)`.
+      # Counting only the latter is what this did until 2026-09-15, and it read 2 across
+      # the whole of pln-benchmarks where the spine held 10 — 12 of 40 tasks wrong, and
+      # every task since the switch silently reading zero. The metric that answers
+      # "are orders underspecified" said workers almost never ask.
+      questions: ( [ $slice[]
+                     | select(.event_type == "question.asked"
+                              or (.event_type == "task.reported"
+                                  and .payload.kind == "question")) ] | length ),
       # Sum of coalesced_count, NOT the event count: the gateway folds a burst of
       # identical (actor, op, code) refusals inside its coalesce window into one
       # event whose coalesced_count carries the real number (gateway.py
