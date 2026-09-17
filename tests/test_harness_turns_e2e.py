@@ -891,6 +891,7 @@ def test_a_window_left_at_a_shell_is_refused_rather_than_executed(deployment):
     assert "not a harness" in proc.stderr, proc.stderr
 
 
+@pytest.mark.skipif(not shutil.which("tmux"), reason="tmux is the transport under test")
 def test_a_nudge_refuses_when_the_session_is_gone(deployment):
     block_the_worker(deployment)
     tmux_kill(deployment["tmux_session"], deployment)
