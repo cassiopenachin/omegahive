@@ -177,6 +177,13 @@ ev(1100, "coordinator", "operator", "task.assigned", "beta", {"worker": "w-beta1
 ev(1200, "worker", "w-beta1", "task.accepted", "beta", {})
 ev(1500, "worker", "w-beta1", "task.reported", "beta",
    {"kind": "question", "ref": "projects/drill/questions/q.md@abc1234"})
+# And once the modern way. The fixture used to model a question ONLY as
+# task.reported(kind=question), which is the retired convention -- so the drill and the
+# tool agreed with each other and both disagreed with the spine, where every worker has
+# emitted question.asked for months. beta therefore asks twice, once in each shape, and
+# the count below is what proves neither is dropped.
+ev(1505, "worker", "w-beta1", "question.asked", "beta",
+   {"text": "which of the two floors is authoritative?"})
 ev(1510, "worker", "w-beta1", "task.blocked", "beta",
    {"reason": "needs a decision", "needs": "decision",
     "ref_report": "projects/drill/questions/q.md@abc1234"})
@@ -472,7 +479,7 @@ check "beta accept->last result 3600s"  "[ \"\$(col beta accepted_to_last_result
 check "beta accept->first result 3600s" "[ \"\$(col beta accepted_to_first_result_s)\" = 3600 ]"
 check "beta blocked before first result 600s" "[ \"\$(col beta blocked_before_first_result_s)\" = 600 ]"
 check "beta net of blocked 3000s"       "[ \"\$(col beta accepted_to_first_result_net_s)\" = 3000 ]"
-check "beta 1 question"                 "[ \"\$(col beta questions)\" = 1 ]"
+check "beta 2 questions (both conventions)" "[ \"\$(col beta questions)\" = 2 ]"
 # The gateway coalesces a burst into ONE event carrying coalesced_count; counting
 # rows would say 1 where the worker really hit the gate 3 times.
 check "beta 3 rejections (coalesced)"   "[ \"\$(col beta rejections)\" = 3 ]"

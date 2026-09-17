@@ -1387,20 +1387,41 @@ if [ "$EXECUTABLE" = "sbx" ]; then
   CRED_FOR_REVIEWER=""
   [ "$R_REVIEWER" != "opus-in-sandbox" ] || CRED_FOR_REVIEWER=1
 
-  SBX_CLAUDE_CRED=""
+  # ONE long-lived token, not a copy of the operator's session login.
+  #
+  # Until 2026-09-15 this copied $HOME/.claude/.credentials.json into the VM. That file is a
+  # ROTATING OAuth session: the copy carries whatever is left of an 8-hour access token, and
+  # the moment the host refreshes its own, the copy's refresh token is rotated away and the
+  # VM cannot authenticate at all. Measured on the corpus, reviews land a median of 1.0h
+  # after launch against a remaining lifetime uniform over 0-8h, so roughly one task in
+  # seven died at review time and anything left overnight died with certainty. It happened
+  # to `folio-classical-ceiling`.
+  #
+  # The race is also SYMMETRIC, which is the half nobody had noticed: whichever install
+  # refreshes first invalidates the other, so a VM that got there first would have logged
+  # the operator out of their own machine, with nothing to connect it to a sandbox. Two
+  # Claude Code installs cannot share one rotating secret.
+  #
+  # `claude setup-token` mints a long-lived subscription credential for exactly this. It is
+  # an independent grant, so using it in a VM rotates nothing the host holds, and it is not
+  # API billing. It lives in the operator's ~/.secrets, which is where this launcher already
+  # takes every provider credential from -- NOT in $OMEGAHIVE_SECRETS_DIR, whose files are
+  # per-service env files for the compose stack, scope-scanned against secrets-manifest.yaml
+  # and never reaching a sandbox.
+  SBX_REVIEW_TOKEN=""
   if [ -n "$CRED_FOR_WORKER$CRED_FOR_REVIEWER" ]; then
-    if [ -f "$HOME/.claude/.credentials.json" ]; then
-      SBX_CLAUDE_CRED=1
+    if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+      SBX_REVIEW_TOKEN=1
     elif [ -n "$CRED_FOR_WORKER" ] && [ "$R_MARKET" = "subscription" ]; then
       # Only a subscription WORKER cannot start without it. A reviewer that has no login is a
       # review that refuses later, loudly, which is a worse outcome but not an unstartable one.
-      die "route '$ROUTE_NAME' bills a subscription, and there is no
-  $HOME/.claude/.credentials.json to hand the sandbox. Log in on the host first — launching
-  would run this worker on whatever credential the sandbox proxy supplies, and bill an
-  account the spine fact does not name. Nothing was created or emitted."
+      die "route '$ROUTE_NAME' bills a subscription and runs its worker inside the sandbox,
+  but CLAUDE_CODE_OAUTH_TOKEN is not set. Mint one with 'claude setup-token' and export it
+  from ~/.secrets. Launching would run this worker on whatever credential the sandbox proxy
+  supplies, and bill an account the spine fact does not name. Nothing was created or emitted."
     else
-      echo "  sandbox: WARNING no host Claude credential, so a review invoked inside the VM" >&2
-      echo "           on the subscription will have no login to use." >&2
+      echo "  sandbox: WARNING CLAUDE_CODE_OAUTH_TOKEN is not set, so a review invoked inside" >&2
+      echo "           the VM will have no login to use. Mint one with 'claude setup-token'." >&2
     fi
   fi
 
@@ -1461,6 +1482,15 @@ SBXENV
       # IS a git clone — so a file in the task root above it would never be found. Setting
       # it MERGES with the sandbox template's global config rather than replacing it.
       [ -z "$SBX_OPENCODE_CFG" ] || printf 'OPENCODE_CONFIG=%s\n' "$SBX_OPENCODE_CFG"
+      # The reviewer's login. In the env file rather than copied to a path, so it travels
+      # the way every other credential does: 0600, never an argument `ps` can read. It is
+      # not a route env name, so the review wrapper's strip list leaves it alone -- that is
+      # what lets an `or-*` review drop the worker's routing and keep its own login.
+      #
+      # This file is consumed ONLY by `sbx create --env-file`, so rewriting it does nothing
+      # to a VM that already exists. The re-attach path therefore VERIFIES the token in the
+      # VM rather than assuming this write reached it; see the guard below.
+      [ -z "$SBX_REVIEW_TOKEN" ] || printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$CLAUDE_CODE_OAUTH_TOKEN"
       # The route's own environment facts, in the one place a value can travel without
       # appearing on a command line that `ps` can read.
       #
@@ -1503,6 +1533,26 @@ SBXENV
     # VM. It cannot be re-applied after create — `--env-file` is a create-time argument —
     # so it is verified instead of assumed, exactly as the Claude credential posture is a
     # few lines down. The check reads whether the name is set, never its value.
+    # The reviewer's login, same reasoning and the same impossibility of repair. Two ways a
+    # re-attach reaches this with the wrong one, and both end the same way -- the worker
+    # does the whole order and cannot review it:
+    #   * the operator re-minted the token, and this VM still holds the revoked one;
+    #   * the VM was created before the token existed, when the login was a copied file,
+    #     and it no longer gets that file either.
+    # Compared by DIGEST, never by value: the comparison has to be exact, and neither token
+    # may appear in the launcher's output or in `ps`.
+    if [ -n "$SBX_REVIEW_TOKEN" ]; then
+      VM_TOK_SHA=$(sbx exec "$SANDBOX" bash -lc \
+        'printf "%s" "${CLAUDE_CODE_OAUTH_TOKEN:-}" | sha256sum | cut -c1-16' 2>/dev/null \
+        | tr -d '\r' || true)
+      HOST_TOK_SHA=$(printf '%s' "$CLAUDE_CODE_OAUTH_TOKEN" | sha256_hex | cut -c1-16)
+      [ "$VM_TOK_SHA" = "$HOST_TOK_SHA" ] || die "sandbox '$SANDBOX' already exists and does
+  not hold the CLAUDE_CODE_OAUTH_TOKEN this launch would give it. A sandbox's environment is
+  fixed at create time, so re-launching cannot repair it: the worker would start, do the
+  whole order, and have no login to review it with. Rebuild it:
+      sbx rm $SANDBOX"
+    fi
+
     if [ -n "$SBX_OPENCODE_CFG" ] \
        && ! sbx exec "$SANDBOX" bash -lc "[ -n \"\${$OPENCODE_KEY_NAME+set}\" ]" >/dev/null 2>&1; then
       die "sandbox '$SANDBOX' already exists and does not hold '$OPENCODE_KEY_NAME', which is
@@ -1530,7 +1580,7 @@ SBXENV
     # about what paid for the work.
     SBX_CREATE_ENV=()
     # Injection off for every sandbox that receives the operator's Claude login — which is
-    # what SBX_CLAUDE_CRED means, and is deliberately NOT the same test as "the worker is
+    # what SBX_REVIEW_TOKEN means, and is deliberately NOT the same test as "the worker is
     # Claude Code". The proxy substituting a stored Anthropic API key is what made a
     # mis-billed run silent rather than loud, and no route here should pay for Claude
     # traffic that way: a subscription worker uses the copied login, an OpenRouter worker
@@ -1541,7 +1591,7 @@ SBXENV
     # template wires apiKeyHelper AND SBX_CRED_ANTHROPIC_MODE=apikey. That sandbox took the
     # login, left injection on, and the line below announced "proxy injection off" about a
     # posture nothing had set.
-    if [ -n "$SBX_CLAUDE_CRED" ]; then
+    if [ -n "$SBX_REVIEW_TOKEN" ]; then
       SBX_CREATE_ENV+=(--env SBX_CRED_ANTHROPIC_MODE=off)
     fi
     SBX_KIT_ARG=()
@@ -1580,20 +1630,11 @@ SBXENV
     echo "  sandbox: antigravity login installed"
   fi
 
-  if [ -n "$SBX_CLAUDE_CRED" ]; then
-    # The destination directory first. `sbx cp` does not create parents, and only the
-    # claude-derived agent images ship a `~/.claude` — which stayed invisible for as long as
-    # every sandboxed route ran the claude agent or a kit built on its image. The opencode
-    # image does not, so the first launch of an opencode route failed here, after the VM was
-    # built, with "could not copy the Claude subscription credential". That is the same
-    # coincidence the comment above already records for credential POSTURE, showing up a
-    # second time one step further down: the reviewer needs this login whatever the worker
-    # is, so the path it lands on cannot be assumed from the worker's image.
-    sbx exec "$SANDBOX" mkdir -p /home/agent/.claude >/dev/null 2>&1 \
-      || die "could not create /home/agent/.claude in '$SANDBOX' for the review credential."
-    sbx cp "$HOME/.claude/.credentials.json" "$SANDBOX:/home/agent/.claude/.credentials.json" \
-      >/dev/null 2>&1 \
-      || die "could not copy the Claude subscription credential into '$SANDBOX'."
+  if [ -n "$SBX_REVIEW_TOKEN" ]; then
+    # Nothing is copied here any more: the login is in the VM's environment, written by
+    # write_sandbox_env above. What still has to be cleared is an apiKeyHelper the agent
+    # image may ship -- it runs and returns a key, Claude Code prefers it over the token,
+    # and the review would then silently bill whatever that helper produced.
     # shellcheck disable=SC2016  # the inner script is for the sandbox's shell, not this one
     sbx exec "$SANDBOX" bash -lc \
       'f=~/.claude/settings.json; [ -f "$f" ] || exit 0; jq "del(.apiKeyHelper)" "$f" > "$f.tmp" && mv "$f.tmp" "$f"' \
@@ -1611,7 +1652,7 @@ SBXENV
   but it holds the operator's Claude login. Credential injection is fixed at create time, so
   this VM would run its Claude traffic on the proxy's API key while the spine fact says
   subscription. Remove it and launch again:  sbx rm $SANDBOX"
-    echo "  sandbox: Claude login installed (proxy injection off, apiKeyHelper cleared)"
+    echo "  sandbox: reviewer token in the VM environment (proxy injection off, apiKeyHelper cleared)"
   fi
 
   # --- the spine tunnel, established on BOTH paths ---------------------------------------
