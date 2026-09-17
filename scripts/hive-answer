@@ -8,8 +8,8 @@
 #   ssh beastie 'hive-answer port-sha "use event time"'
 #
 # It is also the ONLY command that continues a worker, and since 2026-08-23 it does so the
-# way it originally did: `tmux send-keys` into the window that IS the task registry
-# (`2026-08-23-direction.md` §3). The worker is an interactive session that never ended, so
+# way it originally did: `tmux send-keys` into the window that IS the task registry.
+# The worker is an interactive session that never ended, so
 # continuing it is a line of text, not a lifecycle — nothing is written, no turn is
 # prepared, no native session id is resolved, and the harness does not restart.
 #
@@ -188,7 +188,7 @@ fi
 # =====================================================================================
 # The nudge half: tell this task's worker, in its own window, that something changed.
 #
-# A worker is an INTERACTIVE session again (2026-08-23-direction.md §3), so continuing one
+# A worker is an INTERACTIVE session again, so continuing one
 # is `tmux send-keys` into the window that IS the task registry — the wave-3 mechanism,
 # restored. It is not a resume in the harness's sense: nothing is written, no turn is
 # prepared, no native session id is looked up, and the harness never restarts. The worker

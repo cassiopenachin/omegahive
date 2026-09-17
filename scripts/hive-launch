@@ -12,7 +12,7 @@
 # The window is the point. A worker sits in a session the operator can type into; it
 # invokes its own cross-harness review, repairs its own CI and posts its own result from
 # inside that one session, and `hive-answer` nudges it with `send-keys`. Batch turns and
-# native resume left the production path on 2026-08-23 (`2026-08-23-direction.md` §3)
+# native resume left the production path on 2026-08-23
 # after they cost a wave: the machinery could describe a launch it could not perform.
 #
 # A route is a SHAPE — harness, sandbox, credential pool — and `runner.args` is the
@@ -91,8 +91,8 @@ usage: hive-launch <order-file> [--route <name>] [--model <id>] [--worker <id>]
   --reason "<why>"   recorded on task.reassigned.
 
 hive-launch --turn <turn-dir> still runs one prepared batch turn, and nothing on this
-path writes one any more: the production lifecycle is an interactive window
-(2026-08-23-direction.md §3). It is retained, unused, for a turn directory an earlier
+path writes one any more: the production lifecycle is an interactive window.
+It is retained, unused, for a turn directory an earlier
 build left behind; its deletion is a later cleanup, not this script's business.
 USAGE
   exit 2
@@ -310,7 +310,7 @@ KICK
 # --- resolve the route, in this shell ------------------------------------------------
 # The catalog is read HERE, with jq, and not through `hive harness-resolve`. That resolver
 # builds a BATCH argv through the adapter layer, and the production path is an interactive
-# window again (2026-08-23-direction.md §3) — so a launch that went through it would resolve
+# window again — so a launch that went through it would resolve
 # a command nobody runs. What a window actually needs is the "few fields" form: which
 # harness, which model, which executable, which static arguments, which environment names.
 # The catalog already carries every one of them, so reading it is a handful of jq calls
@@ -1864,8 +1864,7 @@ reassigned_payload=$(jq -cn --arg f "$REASSIGN_FROM" --arg t "$WORKER" --arg r "
 # path there is no instrument, and a launcher emitting them would be self-report wearing an
 # instrument's role. So they are not emitted, the executions projection shows no row for an
 # interactive launch, and that is the truthful record: nothing observed these runs. Cost
-# telemetry comes from the harness's own transcripts and the vendor dashboards
-# (2026-08-23-direction.md §3).
+# telemetry comes from the harness's own transcripts and the vendor dashboards.
 #
 # Every value below is reproducible by hand from the catalog and the pinned order, on
 # purpose — the execution id and both digests use the same construction the Python resolver
