@@ -717,7 +717,7 @@ def test_reclassifying_a_saved_turn_yields_byte_identical_evidence(deployment):
 # =====================================================================================
 # 3. The nudge — hive-answer, both modes and every refusal it owes
 #
-# A worker is an interactive session that never ended (2026-08-23-direction.md §3), so
+# A worker is an interactive session that never ended, so
 # continuing one is a line of text typed into the window that already holds it. There is no
 # turn to prepare, no native session id to resolve and no adapter to re-check: what this
 # section asserts is that the answer lands durably FIRST, that the line reaches a live
