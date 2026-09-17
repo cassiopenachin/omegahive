@@ -889,6 +889,12 @@ mv -f "$PARTIAL" "$CANONICAL" || {
   echo "        $CANONICAL -- so NO round was spent and it is not in the record." >&2
   exit 1
 }
+# The preamble and the stderr capture, before the trap that would have removed them is
+# disarmed. `trap - EXIT` here is correct -- the file it guarded has just been MOVED, so
+# cleaning up would delete the review -- but it disarmed the other two as well, leaking a
+# pair per successful review. The suite runs this wrapper ~145 times, so a single sandbox
+# ended a task with 145 of each and the host had accumulated 1,092.
+rm -f "$PREAMBLE" "$PARTIAL_ERR"
 trap - EXIT
 ROUNDS=$((ROUNDS + 1))
 {

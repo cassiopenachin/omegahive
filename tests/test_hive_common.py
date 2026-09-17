@@ -301,12 +301,27 @@ def _issue_review_wrapper(tmp_path: Path, reviewer: str = "opus-in-sandbox"
     return run_dir, repo, bin_dir, home
 
 
+def _review_env(bin_dir: Path, home: Path) -> dict[str, str]:
+    """The environment a wrapper test runs in, with the review wrapper's OWN variables
+    removed.
+
+    A sandboxed worker carries `HIVE_REVIEW_CONTRACT` from `.sandbox-env`, and a reviewer
+    exports `HIVE_REVIEW_STRIPPED` into everything it spawns. Inheriting either makes a
+    wrapper under test behave as though it were already inside a review — skipping the
+    environment strip, or reading a contract the test never wrote. Both were observed on
+    2026-09-17, on a suite run from inside a review.
+    """
+    env = {k: v for k, v in os.environ.items() if not k.startswith("HIVE_REVIEW_")}
+    env["PATH"] = f"{bin_dir}:{os.environ['PATH']}"
+    env["HOME"] = str(home)
+    return env
+
+
 def _review(run_dir: Path, repo: Path, bin_dir: Path, home: Path, review_dir: Path, **env):
     return subprocess.run(
         [str(run_dir / "review"), "review this"],
         capture_output=True, text=True, cwd=str(repo), timeout=120,
-        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
-             "HOME": str(home), "HIVE_REVIEW_DIR": str(review_dir), **env},
+        env={**_review_env(bin_dir, home), "HIVE_REVIEW_DIR": str(review_dir), **env},
     )
 
 
@@ -398,8 +413,7 @@ def test_an_interrupted_review_spends_no_round(tmp_path):
     killed = subprocess.run(
         ["timeout", "2", str(run_dir / "review"), "review this"],
         capture_output=True, text=True, cwd=str(repo), timeout=60,
-        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
-             "HOME": str(home), "HIVE_REVIEW_DIR": str(reviews)},
+        env={**_review_env(bin_dir, home), "HIVE_REVIEW_DIR": str(reviews)},
     )
     assert killed.returncode != 0
     assert not list(reviews.iterdir()), "an interrupted review left a phantom round behind"
@@ -1246,7 +1260,7 @@ def test_an_uncounted_review_survives_a_reviewer_that_does_not_read_stdin(tmp_pa
         [str(run_dir / "review"), "review this"],
         input="context line\n" * 20000,
         capture_output=True, text=True, cwd=str(repo), timeout=120,
-        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(home),
+        env={**_review_env(bin_dir, home),
              "HIVE_REVIEW_DIR": str(blocked)},
     )
     assert r.returncode == 0, f"exit {r.returncode}\n{r.stderr}"
@@ -1273,7 +1287,7 @@ def test_a_claude_reviewer_accepts_the_long_lived_token_instead_of_a_file(tmp_pa
     r = subprocess.run(
         [str(run_dir / "review"), "review this"],
         capture_output=True, text=True, cwd=str(repo), timeout=120,
-        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(home),
+        env={**_review_env(bin_dir, home),
              "HIVE_REVIEW_DIR": str(tmp_path / "reviews"),
              "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-test"},
     )
@@ -1291,7 +1305,7 @@ def test_neither_a_file_nor_a_token_still_refuses(tmp_path):
         [str(run_dir / "review"), "review this"],
         capture_output=True, text=True, cwd=str(repo), timeout=120,
         env={k: v for k, v in
-             {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(home),
+             {**_review_env(bin_dir, home),
               "HIVE_REVIEW_DIR": str(tmp_path / "reviews")}.items()
              if k != "CLAUDE_CODE_OAUTH_TOKEN"},
     )
@@ -1309,7 +1323,7 @@ def test_the_codex_reviewer_is_not_satisfied_by_a_claude_token(tmp_path):
     r = subprocess.run(
         [str(run_dir / "review"), "review this"],
         capture_output=True, text=True, cwd=str(repo), timeout=120,
-        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(home),
+        env={**_review_env(bin_dir, home),
              "HIVE_REVIEW_DIR": str(tmp_path / "reviews"),
              "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-test"},
     )
@@ -1413,7 +1427,7 @@ def test_a_token_reviewer_drops_the_anthropic_names_even_when_the_route_does_not
     r = subprocess.run(
         [str(run_dir / "review"), "review this"],
         capture_output=True, text=True, cwd=str(repo), timeout=120,
-        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(home),
+        env={**_review_env(bin_dir, home),
              "HIVE_REVIEW_DIR": str(tmp_path / "reviews"),
              "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-test",
              "ANTHROPIC_API_KEY": "sk-ant-the-account-under-test",
@@ -1448,3 +1462,51 @@ def test_no_comment_claims_a_re_attach_refreshes_the_sandbox_environment():
     is not there."""
     launch = (REPO / "scripts" / "hive-launch").read_text()
     assert "RE-ATTACH refreshes it" not in launch
+
+
+# --- the wrapper's own leavings, and the tests' hermeticity -----------------------------
+#
+# Both found by the `dead-citation` review on 2026-09-17, which ran the suite inside a
+# sandbox and hit every one of these. They share a shape: the review wrapper's own
+# environment and temp files leak into everything downstream of it.
+
+def test_a_successful_review_leaves_no_temp_files_behind(tmp_path):
+    """`trap - EXIT` after the successful move disarmed the cleanup for the preamble and
+    the stderr capture as well as for the file it had just moved. One leaked pair per
+    successful review, and the suite runs the wrapper ~145 times — measured 1,092 stale
+    preambles on the host and 145 in a single sandbox."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    tmp = tmp_path / "tmpdir"
+    tmp.mkdir()
+    fake = bin_dir / "claude"
+    fake.write_text('#!/bin/sh\ncat >/dev/null\necho "VERDICT: PASS"\n')
+    fake.chmod(0o755)
+    r = subprocess.run(
+        [str(run_dir / "review"), "review this"],
+        capture_output=True, text=True, cwd=str(repo), timeout=120,
+        env={**_review_env(bin_dir, home),
+             "HIVE_REVIEW_DIR": str(tmp_path / "reviews"), "TMPDIR": str(tmp)},
+    )
+    assert r.returncode == 0, r.stderr
+    left = sorted(p.name for p in tmp.iterdir())
+    assert left == [], f"the wrapper left temp files behind: {left}"
+
+
+def test_the_wrapper_tests_are_hermetic_against_an_ambient_review_environment(tmp_path):
+    """Every sandboxed worker runs with `HIVE_REVIEW_CONTRACT` in its environment (the
+    launcher writes it into `.sandbox-env`), and every reviewer additionally exports
+    `HIVE_REVIEW_STRIPPED`. So the suite run inside a review saw three of its own tests
+    fail — on every task, forever. Test failures that everyone learns to ignore are worse
+    than no tests."""
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    _transcript_writing_reviewer(bin_dir, home, repo)
+    r = subprocess.run(
+        [str(run_dir / "review"), "review this"],
+        capture_output=True, text=True, cwd=str(repo), timeout=120,
+        env={**_review_env(bin_dir, home), "HIVE_REVIEW_DIR": str(tmp_path / "reviews"),
+             "HIVE_REVIEW_CONTRACT": "/nonexistent/ambient-contract.md",
+             "HIVE_REVIEW_STRIPPED": "1",
+             "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-test"},
+    )
+    assert r.returncode == 0, r.stderr
+    assert "VERDICT" in r.stdout
