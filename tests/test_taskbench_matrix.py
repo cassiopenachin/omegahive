@@ -315,12 +315,12 @@ def test_the_table_names_the_model_the_gateway_served_not_the_alias():
     Printing it in a comparison table means two bundles could carry different aliases for the
     same weights, or the same alias for different ones, and the table could show neither."""
     bundle = BundleSummary(
-        label="muse", record="r", vendor="meta",
-        model="meta/muse-spark-1.2@preset/omegahive-muse-spark-1-2",
+        label="deepseek", record="r", vendor="deepseek",
+        model="deepseek/deepseek-v4.1-flash@preset/omegahive-deepseek-v4-1-flash",
         harness="claude-code", cells=[],
-        gateway_totals={"resolved_models": ["meta/muse-spark-1.2-20260805"]},
+        gateway_totals={"resolved_models": ["deepseek/deepseek-v4.1-flash-20260910"]},
     )
-    assert bundle.served_model == "meta/muse-spark-1.2-20260805"
+    assert bundle.served_model == "deepseek/deepseek-v4.1-flash-20260910"
 
 
 def test_without_receipts_the_request_is_labelled_as_a_request():

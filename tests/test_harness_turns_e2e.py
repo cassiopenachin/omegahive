@@ -2193,7 +2193,7 @@ def test_the_codex_reviewer_is_issued_as_a_command_rather_than_named(deployment)
     assert "Codex reviewing your diff" in got["prompt"]
     no_absolute_worker_command(got["prompt"], got["task_root"])
     body = got["review"].read_text()
-    assert "codex exec -s read-only review -" in body
+    assert 'codex exec -s read-only -m "${HIVE_REVIEW_MODEL:-gpt-6-sol}" review -' in body
     assert ".codex/auth.json" in body
 
 

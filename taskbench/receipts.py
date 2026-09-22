@@ -1,12 +1,10 @@
 """Gateway receipts: what OpenRouter says a call cost, captured before a harness discards it.
 
-Both DeepSeek arms and the Muse arm reach OpenRouter through its Anthropic Messages skin, and
-**neither harness preserves the fields the study is scored on**. Reasonix keeps exact
-token/cache totals but drops the generation id, the resolved upstream and the server cost.
-Claude Code keeps token/cache totals but reports a *harness-local* cost computed from its own
-price table and the protocol label `firstParty` — which describes Claude Code's request path,
-not GMICloud or Meta. A price table is not a receipt, and a transcript-derived count is not a
-receipt either.
+The DeepSeek arm reaches OpenRouter through its Anthropic Messages skin, and **the harness does
+not preserve the fields the study is scored on**: Claude Code keeps token/cache totals but
+reports a *harness-local* cost computed from its own price table and the protocol label
+`firstParty` — which describes Claude Code's request path, not BaseTen or DeepInfra. A price
+table is not a receipt, and a transcript-derived count is not a receipt either.
 
 So this module sits in the one place where the fact still exists: **between the harness and
 the gateway**. It is a transparent reverse proxy. It forwards every byte of every request and

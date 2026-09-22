@@ -140,29 +140,6 @@ def test_codex_without_the_json_flag_is_absent_not_empty():
     assert "--json" in e["missing_surface"]
 
 
-# --- Reasonix: corroboration, never evidence ------------------------------------------------
-
-
-def test_reasonix_usage_is_read_tolerantly_across_field_spellings():
-    body = json.dumps({
-        "model": "deepseek/deepseek-v4-flash-20260731", "turns": 4,
-        "usage": {"prompt_tokens": 10259, "cache_hit_tokens": 5504, "completion_tokens": 326},
-    })
-    e = parse_result_envelope("reasonix-json", f"chatter\n{body}\n")
-    assert e["available"]
-    assert e["usage"]["input_tokens"] == 10259
-    assert e["usage"]["cache_read_input_tokens"] == 5504
-    assert e["usage"]["output_tokens"] == 326
-    assert e["num_turns"] == 4
-
-
-def test_reasonix_never_supplies_a_gateway_cost():
-    body = json.dumps({"model": "m", "usage": {"prompt_tokens": 1}, "cost": 0.42})
-    e = parse_result_envelope("reasonix-json", body)
-    assert e["total_cost_usd"] is None
-    assert "gateway receipts" in e["cost_missing_surface"]
-
-
 def test_an_unknown_envelope_kind_is_still_refused():
     e = parse_result_envelope("some-future-harness", "{}")
     assert not e["available"]

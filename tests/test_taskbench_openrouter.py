@@ -1,9 +1,9 @@
-"""Route pinning: the refusals that hold the matched DeepSeek pair together.
+"""Route pinning: the refusals that hold the DeepSeek preset's identity claim together.
 
-The pair's whole claim is "same model, same silicon, one variable changed". Every test here is
-one way that claim could quietly stop being true — a preset version bump, fallback re-enabled,
-a provider that stopped serving FP8, a response resolving to something else — and asserts that
-the way is a refusal rather than a shrug.
+The claim is "one of these approved providers, at this quantization, and provably so". Every
+test here is one way that claim could quietly stop being true — a preset version bump, fallback
+re-enabled, every approved provider dropping FP8, a response resolving to something else — and
+asserts that the way is a refusal rather than a shrug.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ import pytest
 from taskbench.openrouter import (
     DEEPSEEK_MODEL,
     DEEPSEEK_PIN,
-    MUSE_PIN,
     FetchedPreset,
     canonicalize,
     check_endpoint_capability,
@@ -26,11 +25,11 @@ from taskbench.openrouter import (
 
 GOOD_CONFIG = {
     "model": DEEPSEEK_MODEL,
-    "provider": {"order": ["gmicloud/fp8"], "allow_fallbacks": False},
+    "provider": {"order": ["baseten/fp8", "deepinfra/fp8"], "allow_fallbacks": False},
 }
 
 
-def _fetched(config: dict, *, version: int | None = 3, slug: str | None = None) -> FetchedPreset:
+def _fetched(config: dict, *, version: int | None = 2, slug: str | None = None) -> FetchedPreset:
     canonical = canonicalize(config)
     doc = dict(config)
     if version is not None:
@@ -58,13 +57,13 @@ def test_a_preset_that_still_agrees_raises_nothing():
 
 def test_a_version_bump_refuses():
     pin = _pin_matching(GOOD_CONFIG)
-    problems = check_preset(pin, _fetched(GOOD_CONFIG, version=4))
-    assert any("version 4" in p and "version 3" in p for p in problems)
+    problems = check_preset(pin, _fetched(GOOD_CONFIG, version=3))
+    assert any("version 3" in p and "version 2" in p for p in problems)
 
 
 def test_re_enabled_fallback_refuses():
-    config = {"model": DEEPSEEK_MODEL, "provider": {"order": ["gmicloud/fp8"],
-                                                    "allow_fallbacks": True}}
+    config = {"model": DEEPSEEK_MODEL,
+              "provider": {"order": ["baseten/fp8", "deepinfra/fp8"], "allow_fallbacks": True}}
     problems = check_preset(_pin_matching(config), _fetched(config))
     assert any("allow_fallbacks" in p for p in problems)
 
@@ -72,7 +71,8 @@ def test_re_enabled_fallback_refuses():
 def test_a_missing_allow_fallbacks_key_is_read_as_enabled_not_as_safe():
     """OpenRouter's default is fallback ON. Reading an absent key as the safe value is how an
     unpinned upstream enters a matched pair without anyone noticing."""
-    config = {"model": DEEPSEEK_MODEL, "provider": {"order": ["gmicloud/fp8"]}}
+    config = {"model": DEEPSEEK_MODEL,
+              "provider": {"order": ["baseten/fp8", "deepinfra/fp8"]}}
     problems = check_preset(_pin_matching(config), _fetched(config))
     assert any("allow_fallbacks" in p for p in problems)
 
@@ -84,19 +84,9 @@ def test_a_changed_upstream_refuses():
     assert any("provider.order" in p for p in problems)
 
 
-def test_the_contributor_sku_is_refused_by_name():
-    config = {"model": "meta/muse-spark-1.2-contributor",
-              "provider": {"order": ["meta"], "allow_fallbacks": False}}
-    from dataclasses import replace
-
-    pin = replace(MUSE_PIN, config_sha256=sha256_of(canonicalize(config)))
-    problems = check_preset(pin, _fetched(config, version=1, slug=MUSE_PIN.slug))
-    assert any("prohibits outright" in p for p in problems)
-
-
 def test_every_disagreement_is_reported_at_once():
     """Fix one, rerun, discover the next is the slow way to learn the preset was rebuilt."""
-    config = {"model": "meta/muse-spark-1.2",
+    config = {"model": "wrong-vendor/wrong-model",
               "provider": {"order": ["deepinfra/fp4"], "allow_fallbacks": True}}
     problems = check_preset(DEEPSEEK_PIN, _fetched(config, version=9))
     assert len(problems) >= 4  # model, order, fallbacks, version, hash
@@ -147,9 +137,8 @@ def test_a_real_policy_change_still_moves_the_hash():
 @pytest.mark.parametrize(
     "requested",
     [
-        "deepseek/deepseek-v4-flash-0731@preset/omegahive-deepseek-v4-flash-0731",
-        "meta/muse-spark-1.2@preset/omegahive-muse-spark-1-2",
-        "deepseek/deepseek-v4-flash-0731",
+        "deepseek/deepseek-v4.1-flash@preset/omegahive-deepseek-v4-1-flash",
+        "deepseek/deepseek-v4.1-flash",
     ],
 )
 def test_the_allowlisted_strings_pass(requested):
@@ -159,9 +148,8 @@ def test_the_allowlisted_strings_pass(requested):
 @pytest.mark.parametrize(
     "requested",
     [
-        "deepseek/deepseek-v4-flash",          # the moving first-party alias
-        "deepseek/deepseek-v4-flash-20260731",  # canonical snapshot, not the request string
-        "meta/muse-spark-1.2-contributor",
+        "deepseek/deepseek-v4-flash",           # the retired v4 alias
+        "deepseek/deepseek-v4.1-flash-20260910",  # canonical snapshot, not the request string
         "anthropic/claude-opus-5",
     ],
 )
@@ -175,8 +163,18 @@ def test_anything_else_refuses(requested):
 def test_the_canonical_snapshot_is_an_acceptable_resolution():
     assert check_resolved_identity(
         DEEPSEEK_PIN.request_string,
-        resolved_model="deepseek/deepseek-v4-flash-20260731",
-        resolved_upstream="GMICloud",
+        resolved_model="deepseek/deepseek-v4.1-flash-20260910",
+        resolved_upstream="BaseTen",
+        pin=DEEPSEEK_PIN,
+    ) == []
+
+
+def test_either_approved_provider_is_an_acceptable_resolution():
+    """`provider_order` names two providers; either one answering is a pass, not a fallback."""
+    assert check_resolved_identity(
+        DEEPSEEK_PIN.request_string,
+        resolved_model="deepseek/deepseek-v4.1-flash-20260910",
+        resolved_upstream="DeepInfra",
         pin=DEEPSEEK_PIN,
     ) == []
 
@@ -184,8 +182,8 @@ def test_the_canonical_snapshot_is_an_acceptable_resolution():
 def test_a_fallback_upstream_is_caught_even_when_the_model_is_right():
     problems = check_resolved_identity(
         DEEPSEEK_PIN.request_string,
-        resolved_model="deepseek/deepseek-v4-flash-20260731",
-        resolved_upstream="DeepInfra",
+        resolved_model="deepseek/deepseek-v4.1-flash-20260910",
+        resolved_upstream="Novita",
         pin=DEEPSEEK_PIN,
     )
     assert any("fallback the pin exists to prevent" in p for p in problems)
@@ -203,14 +201,20 @@ def test_a_missing_receipt_leaves_identity_unproven_rather_than_assumed_good():
 # --- endpoint capability --------------------------------------------------------------------
 
 FP8_ENDPOINT = {
-    "provider_name": "GMICloud",
+    "provider_name": "BaseTen",
     "quantization": "fp8",
     "supported_parameters": ["tools", "reasoning", "temperature", "max_tokens"],
 }
+FP8_ENDPOINT_OTHER_APPROVED = {**FP8_ENDPOINT, "provider_name": "DeepInfra"}
 
 
 def test_a_healthy_endpoint_passes():
     assert check_endpoint_capability(DEEPSEEK_PIN, [FP8_ENDPOINT]) == []
+
+
+def test_either_approved_endpoint_alone_is_enough():
+    """Two approved providers means either one being reachable is a pass, not half a pin."""
+    assert check_endpoint_capability(DEEPSEEK_PIN, [FP8_ENDPOINT_OTHER_APPROVED]) == []
 
 
 def test_the_endpoint_dropping_fp8_refuses():
@@ -218,6 +222,16 @@ def test_the_endpoint_dropping_fp8_refuses():
         DEEPSEEK_PIN, [{**FP8_ENDPOINT, "quantization": "bf16"}]
     )
     assert any("different silicon" in p for p in problems)
+
+
+def test_an_approved_provider_dropping_fp8_refuses_even_if_the_other_still_has_it():
+    """A call could land on either approved provider — one silently degrading is a real risk
+    even while its partner is still fine, so both are checked, not just whichever answers."""
+    problems = check_endpoint_capability(
+        DEEPSEEK_PIN,
+        [{**FP8_ENDPOINT, "quantization": "bf16"}, FP8_ENDPOINT_OTHER_APPROVED],
+    )
+    assert any("different silicon" in p and "baseten/fp8" in p for p in problems)
 
 
 def test_the_endpoint_dropping_tool_calling_refuses():
@@ -228,9 +242,9 @@ def test_the_endpoint_dropping_tool_calling_refuses():
     assert any("'reasoning'" in p for p in problems)
 
 
-def test_the_pinned_upstream_vanishing_is_a_stop_not_a_reroute():
+def test_every_pinned_upstream_vanishing_is_a_stop_not_a_reroute():
     problems = check_endpoint_capability(
-        DEEPSEEK_PIN, [{**FP8_ENDPOINT, "provider_name": "DeepInfra", "quantization": "fp4"}]
+        DEEPSEEK_PIN, [{**FP8_ENDPOINT, "provider_name": "Novita", "quantization": "fp8"}]
     )
     assert any("not permission to load-balance" in p for p in problems)
 
@@ -278,27 +292,22 @@ def test_an_endpoint_advertising_no_parameters_at_all_is_unproven_not_agreed():
     refusal layer report the route as proved on the strength of a field the API stopped
     sending — the same drift shape `PRESET_PATHS` already anticipates one endpoint away."""
     problems = check_endpoint_capability(
-        DEEPSEEK_PIN, [{"provider_name": "GMICloud", "quantization": "fp8"}]
+        DEEPSEEK_PIN, [{"provider_name": "BaseTen", "quantization": "fp8"}]
     )
     assert any("unproven" in p and "not agreed" in p for p in problems)
 
 
 # --- the pinned hashes, reproduced from their inputs -----------------------------------------
 
-#: The live preset configs as fetched on 2026-08-16, field for field what the order pins.
+#: The live preset config as fetched on 2026-09-22, field for field what the order pins.
 LIVE_DEEPSEEK = {
-    "model": "deepseek/deepseek-v4-flash-0731",
-    "provider": {"order": ["gmicloud/fp8"], "allow_fallbacks": False},
-}
-LIVE_MUSE = {
-    "model": "meta/muse-spark-1.2",
-    "provider": {"order": ["meta"], "allow_fallbacks": False},
+    "model": "deepseek/deepseek-v4.1-flash",
+    "provider": {"order": ["baseten/fp8", "deepinfra/fp8"], "allow_fallbacks": False},
+    "max_tokens": 8192,
 }
 
 
-@pytest.mark.parametrize(
-    ("config", "pin"), [(LIVE_DEEPSEEK, DEEPSEEK_PIN), (LIVE_MUSE, MUSE_PIN)]
-)
+@pytest.mark.parametrize(("config", "pin"), [(LIVE_DEEPSEEK, DEEPSEEK_PIN)])
 def test_each_pinned_hash_is_reproducible_from_its_inputs(config, pin):
     """The defect that cost three refused preflight runs was not a wrong hash — it was a hash
     nobody could regenerate, so a disagreement could not distinguish a changed preset from a
@@ -307,9 +316,7 @@ def test_each_pinned_hash_is_reproducible_from_its_inputs(config, pin):
     assert sha256_of(canonicalize(config)) == pin.config_sha256
 
 
-@pytest.mark.parametrize(
-    ("config", "pin"), [(LIVE_DEEPSEEK, DEEPSEEK_PIN), (LIVE_MUSE, MUSE_PIN)]
-)
+@pytest.mark.parametrize(("config", "pin"), [(LIVE_DEEPSEEK, DEEPSEEK_PIN)])
 def test_a_pinned_config_also_passes_every_field_check(config, pin):
     """The hash and the field checks must agree about the same preset, or one of them is
     describing something else."""
@@ -320,9 +327,6 @@ def test_the_canonical_bytes_are_exactly_what_was_recorded():
     """Written out literally: if the rule ever changes, this fails and names the new output,
     rather than a hash changing with nothing to compare it to."""
     assert canonicalize(LIVE_DEEPSEEK) == (
-        '{"model":"deepseek/deepseek-v4-flash-0731",'
-        '"provider":{"allow_fallbacks":false,"order":["gmicloud/fp8"]}}'
-    )
-    assert canonicalize(LIVE_MUSE) == (
-        '{"model":"meta/muse-spark-1.2","provider":{"allow_fallbacks":false,"order":["meta"]}}'
+        '{"max_tokens":8192,"model":"deepseek/deepseek-v4.1-flash",'
+        '"provider":{"allow_fallbacks":false,"order":["baseten/fp8","deepinfra/fp8"]}}'
     )

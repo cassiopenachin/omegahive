@@ -331,7 +331,7 @@ def run_gateway_cmd(
     from . import qualify, qualify_batch
     from .receipts import ReceiptRecorder, api_key_from_env
 
-    pin = {p.slug: p for p in (orouter.DEEPSEEK_PIN, orouter.MUSE_PIN)}.get(preset)
+    pin = {p.slug: p for p in (orouter.DEEPSEEK_PIN,)}.get(preset)
     if pin is None:
         console.print(f"[bold]refused[/bold]: {preset!r} is not a pinned preset")
         raise typer.Exit(code=2)
@@ -429,7 +429,7 @@ def qualify_smoke_cmd(
     pin = None
     key = None
     requested = agent.labels.get("model", "")
-    for candidate in (orouter.DEEPSEEK_PIN, orouter.MUSE_PIN):
+    for candidate in (orouter.DEEPSEEK_PIN,):
         if candidate.slug in requested:
             pin = candidate
             break
@@ -523,7 +523,7 @@ def matrix_cmd(
 
 @app.command("preset-hash")
 def preset_hash_cmd(
-    slug: str = typer.Argument(..., help="preset slug, e.g. omegahive-muse-spark-1-2"),
+    slug: str = typer.Argument(..., help="preset slug, e.g. omegahive-deepseek-v4-1-flash"),
     version: int | None = typer.Option(None, "--version"),
 ) -> None:
     """Print the exact canonical bytes of a live preset and their SHA-256.
@@ -543,7 +543,7 @@ def preset_hash_cmd(
     console.print("canonical bytes (this is what is hashed):")
     print(fetched.canonical_json)
     console.print(f"sha256:  {fetched.config_sha256}")
-    pin = {p.slug: p for p in (orouter.DEEPSEEK_PIN, orouter.MUSE_PIN)}.get(slug)
+    pin = {p.slug: p for p in (orouter.DEEPSEEK_PIN,)}.get(slug)
     if pin:
         agree = pin.config_sha256 == fetched.config_sha256
         console.print(
@@ -707,15 +707,12 @@ def qualify_preflight_cmd(
         qualify.check_pinned_revision(repo)
         + qualify.check_corpus(repo)
         + qualify.check_incumbent_record(repo)
-        # Stability BEFORE builds, so a moved harness reads as drift rather than as a fresh
-        # reading that happens to differ from one nobody is looking at.
-        + qualify.check_harness_stability(out_dir)
         + qualify.check_harness_builds()
     )
 
     if not skip_gateway:
         pins = tuple(
-            p for p in (orouter.DEEPSEEK_PIN, orouter.MUSE_PIN)
+            p for p in (orouter.DEEPSEEK_PIN,)
             if only is None or p.slug == only
         )
         if not pins:

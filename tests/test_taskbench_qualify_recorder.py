@@ -27,16 +27,16 @@ MESSAGE = {
     "id": GEN_ID,
     "type": "message",
     "role": "assistant",
-    "model": "deepseek/deepseek-v4-flash-20260731",
+    "model": "deepseek/deepseek-v4.1-flash-20260910",
     "content": [{"type": "text", "text": "ready"}],
     "usage": {"input_tokens": 12, "output_tokens": 3, "cache_read_input_tokens": 0},
 }
 
 RECEIPT = {
     "id": GEN_ID,
-    "model": "deepseek/deepseek-v4-flash-20260731",
-    "provider_name": "GMICloud",
-    "preset_id": "omegahive-deepseek-v4-flash-0731",
+    "model": "deepseek/deepseek-v4.1-flash-20260910",
+    "provider_name": "BaseTen",
+    "preset_id": "omegahive-deepseek-v4-1-flash",
     "total_cost": 0.0000412,
     "native_tokens_prompt": 12,
     "native_tokens_completion": 3,
@@ -126,8 +126,8 @@ def test_it_makes_exactly_two_model_calls(gateway, tmp_path):
 
 def test_the_generation_receipt_is_reported_with_its_resolved_upstream(gateway, tmp_path):
     checks = _run(gateway, tmp_path)
-    assert "GMICloud" in checks["generation"].detail
-    assert checks["generation"].observed["receipt"]["provider_name"] == "GMICloud"
+    assert "BaseTen" in checks["generation"].detail
+    assert checks["generation"].observed["receipt"]["provider_name"] == "BaseTen"
     assert checks["generation"].observed["receipt"]["total_cost"] == RECEIPT["total_cost"]
 
 
@@ -148,7 +148,7 @@ def test_a_gateway_resolving_the_wrong_model_fails_identity(gateway, tmp_path):
 
 def test_a_fallback_upstream_fails_identity_even_with_the_right_model(gateway, tmp_path):
     _, fake = gateway
-    fake.receipt = {**RECEIPT, "provider_name": "DeepInfra"}
+    fake.receipt = {**RECEIPT, "provider_name": "Novita"}
     checks = _run(gateway, tmp_path)
     assert not checks["generation"].ok
     assert "fallback the pin exists to prevent" in checks["generation"].detail
@@ -213,8 +213,8 @@ def _preflight_record(tmp_path, *, pending: str, slug: str) -> None:
 
 
 def test_a_late_receipt_is_confirmed_with_one_read_and_the_record_is_updated(gateway, tmp_path):
-    """Observed live: a Muse receipt 404'd across the whole wait and existed on the first
-    attempt afterwards. Re-running the preflight to re-ask would charge four more probe calls."""
+    """Observed live: a receipt 404'd across the whole wait and existed on the first attempt
+    afterwards. Re-running the preflight to re-ask would charge four more probe calls."""
     from taskbench.qualify import confirm_pending
 
     origin, fake = gateway
@@ -252,7 +252,7 @@ def test_confirmation_still_runs_the_identity_check(gateway, tmp_path):
     from taskbench.qualify import confirm_pending
 
     origin, fake = gateway
-    fake.receipt = {**RECEIPT, "provider_name": "DeepInfra"}
+    fake.receipt = {**RECEIPT, "provider_name": "Novita"}
     _preflight_record(tmp_path, pending=GEN_ID, slug=DEEPSEEK_PIN.slug)
     checks = confirm_pending(tmp_path, "sk-or-test", origin=origin)
     assert not checks[0].ok

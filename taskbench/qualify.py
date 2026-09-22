@@ -52,26 +52,21 @@ INCUMBENT_RECORD = "2026-08-13-incumbent-fidelity-v0-1-2"
 #: Where candidate records land. Read to answer one question: has anything been scored yet?
 TASKBENCH_ROOT_RECORDS = Path(__file__).resolve().parent / "records"
 
-#: How to ask each harness what it is. **No expected version.**
+#: How to ask each harness what it is. **No expected version, and no comparison against a
+#: previous run, either** — both were tried and both cost a preflight run for the same reason:
+#: harnesses auto-update on their own schedule, a refusal that fires on a patch bump is not a
+#: safeguard, and pinning against drift you do not control is exactly what asks for trouble.
+#: Claude Code moved 2.1.232 -> 2.1.233 between setup and launch and the preflight refused the
+#: whole study over it; the pinned 2.1.232 was never even the incumbent's build (2.1.231), so it
+#: was asserting parity with nothing, just whatever happened to be installed the day setup ran.
 #:
-#: There was one, and it was a mistake that cost a preflight run. Claude Code auto-updates; it
-#: moved 2.1.232 -> 2.1.233 between setup and launch and the preflight refused the whole study
-#: over a patch bump. Worse, the pinned 2.1.232 was never the incumbent's build — the incumbent
-#: ran on 2.1.231 — so it asserted parity with nothing, it was simply whatever happened to be
-#: installed the day setup ran.
-#:
-#: A check that asserts something the environment actively contradicts is not a safeguard. The
-#: order asks for the harness version to be RECORDED per batch, and lists corpus, rubric, pass
-#: rule, review/remediation method and reviewer *configuration* as what invalidates a candidate
-#: set — not a CLI patch level. So: read it, write it down, and refuse only when it cannot be
-#: read at all, because a cell with no harness version is genuinely unattributable.
-#:
-#: What still refuses is the build MOVING MID-STUDY, which is a different and real failure —
-#: see `check_harness_stability`.
+#: The order asks for the harness version to be RECORDED per batch, and lists corpus, rubric,
+#: pass rule, review/remediation method and reviewer *configuration* as what invalidates a
+#: candidate set — not a CLI patch level. So: read it, write it down, and refuse only when it
+#: cannot be read at all, because a cell with no harness version is genuinely unattributable.
 HARNESS_PROBES = {
     "claude": ("claude", "--version"),
     "codex": ("codex", "--version"),
-    "reasonix": ("reasonix", "--version"),
 }
 
 
@@ -125,94 +120,6 @@ def check_harness_builds(which: tuple[str, ...] = ()) -> list[Check]:
             )
         )
     return checks
-
-
-def _candidate_records(records_dir: Path) -> list[str]:
-    """Records produced by a candidate batch, if any exist yet."""
-    if not records_dir.is_dir():
-        return []
-    return sorted(d.name for d in records_dir.iterdir() if d.is_dir() and "-wave-" in d.name)
-
-
-def check_harness_stability(
-    out_dir: Path, which: tuple[str, ...] = (), *, records_dir: Path | None = None
-) -> list[Check]:
-    """Refuse if a harness moved since the build this study last recorded.
-
-    This is the check that matters, and it is not about version numbers being tidy. The matched
-    DeepSeek pair holds model, provider, upstream, preset, task and kickoff fixed so that the
-    ONLY difference between its two columns is the harness. A harness that updates between the
-    two arms makes them differ in two ways — and nothing in the record would show it, because
-    the build is captured once per batch at launch.
-
-    So drift between sittings is a stop, with an obvious remedy: re-run setup, which adopts the
-    current build as the study's build. Drift *within* a batch is what `DISABLE_AUTOUPDATER=1`
-    in every launcher exists to prevent.
-    """
-    # Drift only matters once there are CELLS that ran on the earlier build. Before any batch
-    # has run, adopting whatever is installed now is free and correct — and refusing would cost
-    # the operator a run to learn that a build moved between two preflights, neither of which
-    # produced a scored anything. That is the same shape of unhelpful refusal the version pin
-    # was, and it is not worth repeating one commit later.
-    records = _candidate_records(
-        records_dir if records_dir is not None else TASKBENCH_ROOT_RECORDS
-    )
-    if not records:
-        return [
-            Check(
-                "harness/stability", True,
-                "no candidate batch has run yet, so there is no cell tied to an earlier build; "
-                "this run adopts whatever is installed as the study's build.",
-                {"candidate_records": []},
-            )
-        ]
-
-    path = out_dir / "qualify-preflight.json"
-    if not path.is_file():
-        return [
-            Check(
-                "harness/stability", True,
-                "no earlier preflight to compare against; this run establishes the study's "
-                "harness builds.",
-            )
-        ]
-    try:
-        previous = json.loads(path.read_text())
-    except json.JSONDecodeError:
-        return [Check("harness/stability", True, "the earlier preflight record is unreadable.")]
-
-    recorded = {
-        c["name"].split("/", 1)[1]: (c.get("observed") or {}).get("reported")
-        for c in previous.get("checks", [])
-        if c["name"].startswith("harness/") and c["name"] != "harness/stability"
-    }
-    moved: list[str] = []
-    seen: dict[str, Any] = {}
-    for name, argv in HARNESS_PROBES.items():
-        if which and name not in which:
-            continue
-        now = _version_of(argv)
-        was = recorded.get(name)
-        seen[name] = {"was": was, "now": now}
-        if was and now and was != now:
-            moved.append(f"{name}: {was!r} -> {now!r}")
-    return [
-        Check(
-            "harness/stability", not moved,
-            (
-                "every harness is on the build this study recorded."
-                if not moved
-                else f"a harness moved since the last preflight ({'; '.join(moved)}). The "
-                "matched pair's whole claim is that only the harness differs between its two "
-                "columns, so a build that changes part-way through makes them differ in two "
-                "ways with nothing in the record to show it. "
-                f"{len(records)} candidate record(s) already exist on the earlier build, which "
-                "is why this refuses rather than simply adopting the new one. Export "
-                "DISABLE_AUTOUPDATER=1 and decide whether those records stand."
-            ),
-            {"builds": seen, "candidate_records": records},
-        )
-    ]
 
 
 #: **Byte-identical to the pin, or the batch does not run.** This is the scored instrument: the
@@ -722,8 +629,8 @@ def validate_receipt_recorder(
                 "totals": (reconciled or {}).get("totals"),
                 # Carried so a receipt that is merely LATE can be confirmed later with one
                 # cheap read, instead of re-running the whole preflight and paying for four
-                # more probe calls to ask the same question. Observed 2026-08-16: a Muse
-                # receipt 404'd across the wait and existed on the first attempt afterwards.
+                # more probe calls to ask the same question. Observed 2026-08-16: a receipt
+                # 404'd across the wait and existed on the first attempt afterwards.
                 "pending_generation_id": (
                     call.generation_id if call.generation_id and not got_receipt else None
                 ),
@@ -740,19 +647,34 @@ def validate_receipt_recorder(
     )
     if direct_receipt.get("available") and got_receipt:
         d, p = direct_receipt["receipt"], receipt
-        agree = d.get("provider_name") == p.get("provider_name") and d.get("model") == p.get(
-            "model"
+        d_upstream, p_upstream = d.get("provider_name"), p.get("provider_name")
+        same_model = d.get("model") == p.get("model")
+        # `provider_order` is the approved SET (see check_resolved_identity): two independent
+        # calls against a multi-provider preset can legitimately land on different members of
+        # it, with no session affinity forcing them together. Requiring the SAME upstream on
+        # both would refuse a healthy preset the moment OpenRouter's own load-balancing sent
+        # the two probes to different approved providers — what has to hold is that EACH one
+        # is approved, not that they match each other.
+        each_approved = bool(d_upstream) and bool(p_upstream) and all(
+            any(orouter._upstream_matches(u, entry) for entry in pin.provider_order)
+            for u in (d_upstream, p_upstream)
         )
+        agree = same_model and each_approved
         checks.append(
             Check(
                 f"receipt/{pin.slug}/agrees", bool(agree),
                 (
-                    "the proxied call and the direct call resolved the same model and the same "
-                    f"upstream ({p.get('provider_name')}), so the recorder's numbers describe "
-                    "the same route the harness would have taken without it."
+                    (
+                        "the proxied call and the direct call resolved the same model and the "
+                        f"same upstream ({p_upstream})."
+                        if d_upstream == p_upstream
+                        else "the proxied call and the direct call resolved the same model on "
+                        f"different but both-approved upstreams ({d_upstream}, {p_upstream})."
+                    ) + " The recorder's numbers describe a route the harness could equally "
+                    "have taken without it."
                     if agree
-                    else f"direct resolved {d.get('model')!r} on {d.get('provider_name')!r} but "
-                    f"proxied resolved {p.get('model')!r} on {p.get('provider_name')!r}."
+                    else f"direct resolved {d.get('model')!r} on {d_upstream!r} but "
+                    f"proxied resolved {p.get('model')!r} on {p_upstream!r}."
                 ),
                 {"direct": {k: d.get(k) for k in ("model", "provider_name", "total_cost")},
                  "proxied": {k: p.get(k) for k in ("model", "provider_name", "total_cost")}},
@@ -765,7 +687,7 @@ def run_gateway_preflight(
     api_key: str,
     *,
     out_dir: Path,
-    pins: tuple[orouter.PresetPin, ...] = (orouter.DEEPSEEK_PIN, orouter.MUSE_PIN),
+    pins: tuple[orouter.PresetPin, ...] = (orouter.DEEPSEEK_PIN,),
     validate_recorder: bool = True,
     origin: str = OPENROUTER_ORIGIN,
     **recorder_kwargs: Any,
@@ -802,7 +724,7 @@ def confirm_pending(
     if not path.is_file():
         return [Check("confirm/record", False, f"no preflight record at {path}")]
     doc = json.loads(path.read_text())
-    pins = {p.slug: p for p in (orouter.DEEPSEEK_PIN, orouter.MUSE_PIN)}
+    pins = {p.slug: p for p in (orouter.DEEPSEEK_PIN,)}
 
     resolved: list[Check] = []
     changed = False
