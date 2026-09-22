@@ -51,13 +51,6 @@ codex_harness_version() {
   printf 'codex-cli-%s' "$(printf '%s' "$raw" | awk '{print $NF}')"
 }
 
-reasonix_harness_version() {
-  local raw
-  raw="$(reasonix --version 2>/dev/null | head -1)" || true
-  [ -n "$raw" ] || die "\`reasonix --version\` printed nothing; cannot pin the harness"
-  printf 'reasonix-%s' "$(printf '%s' "$raw" | awk '{print $NF}')"
-}
-
 # The resolver's runtime directory, when /etc/resolv.conf points into it. Without this bind the
 # reviewer's sandbox resolves nothing and every review leg hangs until its timeout. Found the
 # hard way during the seed; preflight proves reachability, this is what makes it pass.

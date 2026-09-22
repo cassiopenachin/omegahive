@@ -28,9 +28,9 @@ set -euo pipefail
 readonly SOURCE_AUTH="$CODEX_AUTH_SOURCE"
 readonly CELL_HOME="$BENCH_CELL_ROOT/.codex-home"
 
-# As in cell-reasonix.sh: NO `exec` below. `exec` replaces this shell's process image and
-# discards the EXIT trap, which left a copy of the operator's ChatGPT subscription credential
-# sitting in every cell root — and cell roots are retained with the record.
+# NO `exec` below. `exec` replaces this shell's process image and discards the EXIT trap,
+# which left a copy of the operator's ChatGPT subscription credential sitting in every cell
+# root — and cell roots are retained with the record.
 #
 # Cleanup removes the CREDENTIAL, not the evidence. Codex writes a session rollout under the
 # home it is given, and that rollout is the only place it records which model it ran; deleting

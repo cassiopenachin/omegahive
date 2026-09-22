@@ -468,69 +468,6 @@ def _parse_codex_jsonl(stdout_text: str) -> dict[str, Any]:
     }
 
 
-def _parse_reasonix_json(stdout_text: str) -> dict[str, Any]:
-    """Reasonix `-p --output-format json` writes one object; field names are read tolerantly.
-
-    Deliberately forgiving, and safe to be: this arm reaches DeepSeek through OpenRouter, so
-    its *scored* accounting comes from the gateway receipts, not from here. What this adds is
-    the harness's own view — turn count, its token totals — which is useful for the matched
-    comparison and load-bearing for nothing. A field it cannot find is reported absent.
-    """
-    envelope = None
-    for line in reversed(stdout_text.splitlines()):
-        line = line.strip()
-        if line.startswith("{") and line.endswith("}"):
-            try:
-                candidate = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(candidate, dict):
-                envelope = candidate
-                break
-    if envelope is None:
-        return {
-            "available": False,
-            "missing_surface": (
-                "no JSON object on stdout (did the command run with --output-format json?)"
-            ),
-        }
-    usage = None
-    for key in ("usage", "tokens", "metrics"):
-        if isinstance(envelope.get(key), dict):
-            usage = envelope[key]
-            break
-
-    def pick(*names: str) -> Any:
-        for name in names:
-            if usage and name in usage:
-                return usage[name]
-        return None
-
-    return {
-        "available": True,
-        "resolved_model": envelope.get("model") or envelope.get("resolved_model"),
-        "provider": envelope.get("provider"),
-        "usage": {
-            "input_tokens": pick("input_tokens", "prompt_tokens", "prompt"),
-            "output_tokens": pick("output_tokens", "completion_tokens", "completion"),
-            "cache_read_input_tokens": pick("cache_read_input_tokens", "cache_hit_tokens",
-                                            "cached_tokens"),
-            "cache_creation_input_tokens": pick("cache_creation_input_tokens",
-                                                "cache_write_tokens"),
-        } if usage else None,
-        "usage_raw": usage,
-        "total_cost_usd": None,
-        "cost_missing_surface": (
-            "Reasonix does not report OpenRouter's server cost; this arm's spend comes from the "
-            "gateway receipts, and a harness-local figure would not be one"
-        ),
-        "num_turns": envelope.get("turns") or envelope.get("steps"),
-        "is_error": bool(envelope.get("error")),
-        "terminal_reason": envelope.get("error"),
-        "how_primary_chosen": "the last JSON object on stdout is Reasonix's run summary",
-    }
-
-
 def parse_result_envelope(kind: str | None, stdout_text: str) -> dict[str, Any]:
     """Read the harness's own end-of-run report, when it writes one.
 
@@ -547,8 +484,6 @@ def parse_result_envelope(kind: str | None, stdout_text: str) -> dict[str, Any]:
         return {"available": False, "missing_surface": "launch config declared no result_envelope"}
     if kind == "codex-jsonl":
         return _parse_codex_jsonl(stdout_text)
-    if kind == "reasonix-json":
-        return _parse_reasonix_json(stdout_text)
     if kind != "claude-code-json":
         return {"available": False, "missing_surface": f"unknown result_envelope kind {kind!r}"}
 

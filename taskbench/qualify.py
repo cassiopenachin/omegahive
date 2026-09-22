@@ -52,26 +52,21 @@ INCUMBENT_RECORD = "2026-08-13-incumbent-fidelity-v0-1-2"
 #: Where candidate records land. Read to answer one question: has anything been scored yet?
 TASKBENCH_ROOT_RECORDS = Path(__file__).resolve().parent / "records"
 
-#: How to ask each harness what it is. **No expected version.**
+#: How to ask each harness what it is. **No expected version, and no comparison against a
+#: previous run, either** — both were tried and both cost a preflight run for the same reason:
+#: harnesses auto-update on their own schedule, a refusal that fires on a patch bump is not a
+#: safeguard, and pinning against drift you do not control is exactly what asks for trouble.
+#: Claude Code moved 2.1.232 -> 2.1.233 between setup and launch and the preflight refused the
+#: whole study over it; the pinned 2.1.232 was never even the incumbent's build (2.1.231), so it
+#: was asserting parity with nothing, just whatever happened to be installed the day setup ran.
 #:
-#: There was one, and it was a mistake that cost a preflight run. Claude Code auto-updates; it
-#: moved 2.1.232 -> 2.1.233 between setup and launch and the preflight refused the whole study
-#: over a patch bump. Worse, the pinned 2.1.232 was never the incumbent's build — the incumbent
-#: ran on 2.1.231 — so it asserted parity with nothing, it was simply whatever happened to be
-#: installed the day setup ran.
-#:
-#: A check that asserts something the environment actively contradicts is not a safeguard. The
-#: order asks for the harness version to be RECORDED per batch, and lists corpus, rubric, pass
-#: rule, review/remediation method and reviewer *configuration* as what invalidates a candidate
-#: set — not a CLI patch level. So: read it, write it down, and refuse only when it cannot be
-#: read at all, because a cell with no harness version is genuinely unattributable.
-#:
-#: What still refuses is the build MOVING MID-STUDY, which is a different and real failure —
-#: see `check_harness_stability`.
+#: The order asks for the harness version to be RECORDED per batch, and lists corpus, rubric,
+#: pass rule, review/remediation method and reviewer *configuration* as what invalidates a
+#: candidate set — not a CLI patch level. So: read it, write it down, and refuse only when it
+#: cannot be read at all, because a cell with no harness version is genuinely unattributable.
 HARNESS_PROBES = {
     "claude": ("claude", "--version"),
     "codex": ("codex", "--version"),
-    "reasonix": ("reasonix", "--version"),
 }
 
 
@@ -125,94 +120,6 @@ def check_harness_builds(which: tuple[str, ...] = ()) -> list[Check]:
             )
         )
     return checks
-
-
-def _candidate_records(records_dir: Path) -> list[str]:
-    """Records produced by a candidate batch, if any exist yet."""
-    if not records_dir.is_dir():
-        return []
-    return sorted(d.name for d in records_dir.iterdir() if d.is_dir() and "-wave-" in d.name)
-
-
-def check_harness_stability(
-    out_dir: Path, which: tuple[str, ...] = (), *, records_dir: Path | None = None
-) -> list[Check]:
-    """Refuse if a harness moved since the build this study last recorded.
-
-    This is the check that matters, and it is not about version numbers being tidy. The matched
-    DeepSeek pair holds model, provider, upstream, preset, task and kickoff fixed so that the
-    ONLY difference between its two columns is the harness. A harness that updates between the
-    two arms makes them differ in two ways — and nothing in the record would show it, because
-    the build is captured once per batch at launch.
-
-    So drift between sittings is a stop, with an obvious remedy: re-run setup, which adopts the
-    current build as the study's build. Drift *within* a batch is what `DISABLE_AUTOUPDATER=1`
-    in every launcher exists to prevent.
-    """
-    # Drift only matters once there are CELLS that ran on the earlier build. Before any batch
-    # has run, adopting whatever is installed now is free and correct — and refusing would cost
-    # the operator a run to learn that a build moved between two preflights, neither of which
-    # produced a scored anything. That is the same shape of unhelpful refusal the version pin
-    # was, and it is not worth repeating one commit later.
-    records = _candidate_records(
-        records_dir if records_dir is not None else TASKBENCH_ROOT_RECORDS
-    )
-    if not records:
-        return [
-            Check(
-                "harness/stability", True,
-                "no candidate batch has run yet, so there is no cell tied to an earlier build; "
-                "this run adopts whatever is installed as the study's build.",
-                {"candidate_records": []},
-            )
-        ]
-
-    path = out_dir / "qualify-preflight.json"
-    if not path.is_file():
-        return [
-            Check(
-                "harness/stability", True,
-                "no earlier preflight to compare against; this run establishes the study's "
-                "harness builds.",
-            )
-        ]
-    try:
-        previous = json.loads(path.read_text())
-    except json.JSONDecodeError:
-        return [Check("harness/stability", True, "the earlier preflight record is unreadable.")]
-
-    recorded = {
-        c["name"].split("/", 1)[1]: (c.get("observed") or {}).get("reported")
-        for c in previous.get("checks", [])
-        if c["name"].startswith("harness/") and c["name"] != "harness/stability"
-    }
-    moved: list[str] = []
-    seen: dict[str, Any] = {}
-    for name, argv in HARNESS_PROBES.items():
-        if which and name not in which:
-            continue
-        now = _version_of(argv)
-        was = recorded.get(name)
-        seen[name] = {"was": was, "now": now}
-        if was and now and was != now:
-            moved.append(f"{name}: {was!r} -> {now!r}")
-    return [
-        Check(
-            "harness/stability", not moved,
-            (
-                "every harness is on the build this study recorded."
-                if not moved
-                else f"a harness moved since the last preflight ({'; '.join(moved)}). The "
-                "matched pair's whole claim is that only the harness differs between its two "
-                "columns, so a build that changes part-way through makes them differ in two "
-                "ways with nothing in the record to show it. "
-                f"{len(records)} candidate record(s) already exist on the earlier build, which "
-                "is why this refuses rather than simply adopting the new one. Export "
-                "DISABLE_AUTOUPDATER=1 and decide whether those records stand."
-            ),
-            {"builds": seen, "candidate_records": records},
-        )
-    ]
 
 
 #: **Byte-identical to the pin, or the batch does not run.** This is the scored instrument: the

@@ -48,7 +48,7 @@ WAVES = {
     "wave-2-luna-codex.sh": "gpt-5.6-luna",
     "wave-3-deepseek.sh": WAVE_3_DEEPSEEK_REQUEST,
 }
-ALL_SCRIPTS = [*WAVES, "qualify-setup.sh", "cell-codex.sh", "cell-reasonix.sh",
+ALL_SCRIPTS = [*WAVES, "qualify-setup.sh", "cell-codex.sh",
                "cell-claude-openrouter.sh", "lib.sh"]
 
 
@@ -118,24 +118,13 @@ def test_no_script_reads_a_secrets_file_or_prints_a_key(name):
     body = (LAUNCH / name).read_text()
     for forbidden in (". ~/.secrets", "source ~/.secrets", "cat ~/.secrets"):
         assert forbidden not in body, f"{name} must never read a secrets file"
-    # Two scripts expand the key, both because the order says they may, and both under a
-    # stated condition: `cell-reasonix.sh` writes the one mandated per-cell `.env` (0600,
-    # removed on every exit path), and `cell-claude-openrouter.sh` derives the
-    # harness-compatibility name process-locally without persisting a duplicate. Every other
-    # script must never touch the value at all.
-    if name not in ("cell-reasonix.sh", "cell-claude-openrouter.sh"):
+    # One script expands the key, because the order says it may, under a stated condition:
+    # `cell-claude-openrouter.sh` derives the harness-compatibility name process-locally
+    # without persisting a duplicate. Every other script must never touch the value at all.
+    if name != "cell-claude-openrouter.sh":
         assert "$OPENROUTER_API_KEY" not in body.replace(
             '"${OPENROUTER_API_KEY:-}"', ""
         ).replace("${OPENROUTER_API_KEY:-}", ""), f"{name} must not expand the key"
-
-
-def test_the_reasonix_wrapper_removes_its_env_on_every_exit_path():
-    """The one bounded exception the order grants, and the condition attached to it."""
-    body = (LAUNCH / "cell-reasonix.sh").read_text()
-    assert "trap cleanup EXIT INT TERM HUP" in body
-    assert "rm -rf" in body
-    assert "umask 077" in body, "the file must never be briefly world-readable"
-    assert "chmod 600" in body
 
 
 def test_the_codex_wrapper_seeds_the_cell_home_with_auth_and_nothing_else():
@@ -243,31 +232,14 @@ def test_the_wrapper_derives_the_harness_key_without_persisting_a_duplicate():
     assert "$HOME" not in body, "the derivation must not touch a profile or home file"
 
 
-# --- settings alignment on the matched pair -------------------------------------------------
+# --- settings alignment -----------------------------------------------------------------------
 
 
-def test_the_reasonix_arm_switches_off_the_optional_subsystems_by_name():
-    """By name rather than by hoping a default holds: the order requires web, MCP, memory,
-    planner and subagent behaviour off for both arms."""
-    body = (LAUNCH / "cell-reasonix.sh").read_text()
-    # The invocation, not the comment that explains it.
-    line = next(ln for ln in body.splitlines() if ln.strip().startswith("--ablate"))
-    for subsystem in ("evidence", "planner", "subagent", "retrieval", "compaction"):
-        assert subsystem in line, f"{subsystem} must be ablated"
-    assert "--preset balanced" in body, (
-        "the execution preset must be pinned explicitly, so a changed default cannot move the arm"
-    )
-    assert "--metrics" in body, "the harness-side token totals must be a recorded fact"
-
-
-
-def test_neither_deepseek_arm_overrides_the_output_cap():
-    """Aligned by both leaving it to the endpoint, which then decides identically for each.
-    An override on one side only would be the confound this pair exists to avoid."""
-    for name in ("cell-reasonix.sh", "cell-claude-openrouter.sh"):
-        body = (LAUNCH / name).read_text()
-        for override in ("--max-tokens", "MAX_OUTPUT_TOKENS", "max_tokens"):
-            assert override not in body, f"{name} overrides the output cap on one side only"
+def test_the_deepseek_arm_does_not_override_the_output_cap():
+    """Left to the endpoint rather than overridden, so the pinned preset decides it."""
+    body = (LAUNCH / "cell-claude-openrouter.sh").read_text()
+    for override in ("--max-tokens", "MAX_OUTPUT_TOKENS", "max_tokens"):
+        assert override not in body, "cell-claude-openrouter.sh overrides the output cap"
 
 
 @pytest.mark.parametrize("name", WAVES)
@@ -283,15 +255,13 @@ def test_every_wave_smokes_the_bundle_before_it_spends(name):
     )
 
 
-
 # --- regressions from the independent review -------------------------------------------------
 
 
-@pytest.mark.parametrize("name", ["cell-reasonix.sh", "cell-codex.sh"])
+@pytest.mark.parametrize("name", ["cell-codex.sh"])
 def test_a_wrapper_with_a_cleanup_trap_never_execs(name):
     """`exec` replaces the shell's process image and DISCARDS the EXIT trap. With `exec`, the
-    reasonix wrapper left a 0600 file containing the operator's OpenRouter key in every cell
-    root, and the codex wrapper left a copy of the ChatGPT credential — and cell roots are
+    codex wrapper left a copy of the ChatGPT credential in every cell root — and cell roots are
     retained with the record. Verified: `bash -c 'trap "echo X" EXIT; exec /bin/echo hi'` prints
     only `hi`."""
     body = code(name)
