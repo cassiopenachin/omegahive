@@ -647,19 +647,34 @@ def validate_receipt_recorder(
     )
     if direct_receipt.get("available") and got_receipt:
         d, p = direct_receipt["receipt"], receipt
-        agree = d.get("provider_name") == p.get("provider_name") and d.get("model") == p.get(
-            "model"
+        d_upstream, p_upstream = d.get("provider_name"), p.get("provider_name")
+        same_model = d.get("model") == p.get("model")
+        # `provider_order` is the approved SET (see check_resolved_identity): two independent
+        # calls against a multi-provider preset can legitimately land on different members of
+        # it, with no session affinity forcing them together. Requiring the SAME upstream on
+        # both would refuse a healthy preset the moment OpenRouter's own load-balancing sent
+        # the two probes to different approved providers — what has to hold is that EACH one
+        # is approved, not that they match each other.
+        each_approved = bool(d_upstream) and bool(p_upstream) and all(
+            any(orouter._upstream_matches(u, entry) for entry in pin.provider_order)
+            for u in (d_upstream, p_upstream)
         )
+        agree = same_model and each_approved
         checks.append(
             Check(
                 f"receipt/{pin.slug}/agrees", bool(agree),
                 (
-                    "the proxied call and the direct call resolved the same model and the same "
-                    f"upstream ({p.get('provider_name')}), so the recorder's numbers describe "
-                    "the same route the harness would have taken without it."
+                    (
+                        "the proxied call and the direct call resolved the same model and the "
+                        f"same upstream ({p_upstream})."
+                        if d_upstream == p_upstream
+                        else "the proxied call and the direct call resolved the same model on "
+                        f"different but both-approved upstreams ({d_upstream}, {p_upstream})."
+                    ) + " The recorder's numbers describe a route the harness could equally "
+                    "have taken without it."
                     if agree
-                    else f"direct resolved {d.get('model')!r} on {d.get('provider_name')!r} but "
-                    f"proxied resolved {p.get('model')!r} on {p.get('provider_name')!r}."
+                    else f"direct resolved {d.get('model')!r} on {d_upstream!r} but "
+                    f"proxied resolved {p.get('model')!r} on {p_upstream!r}."
                 ),
                 {"direct": {k: d.get(k) for k in ("model", "provider_name", "total_cost")},
                  "proxied": {k: p.get(k) for k in ("model", "provider_name", "total_cost")}},
