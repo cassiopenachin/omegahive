@@ -500,9 +500,16 @@ CONTRACTBODY
       # - -s read-only` is rejected with "unexpected argument '-s'". So this reviewer's
       # posture travels inside its command rather than appended after it, and the append
       # below is a no-op for it. Found by running it; the wrapper would have failed on its
-      # first real review.
+      # first real review. `-m` belongs there too, for the same reason.
+      #
+      # Unlike the Claude reviewers, `-m` here is not optional cosmetics: with no `--model`,
+      # `codex exec` falls back to whatever `~/.codex/config.toml` happens to hold, which is
+      # the operator's personal interactive default and nothing this catalog controls — a
+      # harness invoked for review must be told its model like any other harness is, or it
+      # drifts silently with an unrelated file. `HIVE_REVIEW_MODEL` is the same escape hatch
+      # the Claude reviewers already accept.
       review_posture=''
-      review_cmd='codex exec -s read-only review -'
+      review_cmd='codex exec -s read-only -m "${HIVE_REVIEW_MODEL:-gpt-6-sol}" review -'
       review_scope='Review the diff of the current branch against its merge-base with main.'
       review_cred='$HOME/.codex/auth.json'
       review_cred_hint="Do NOT review your own diff with your own harness; that is not an independent review." ;;

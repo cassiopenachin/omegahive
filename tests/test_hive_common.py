@@ -1058,10 +1058,12 @@ def test_the_codex_reviewer_gets_the_same_wrapper_as_every_other():
     """
     common = COMMON.read_text()
     block = common.split("codex-plugin)", 1)[1].split("esac", 1)[0]
-    assert "codex exec -s read-only review -" in block
+    assert 'codex exec -s read-only -m "${HIVE_REVIEW_MODEL:-gpt-6-sol}" review -' in block
     assert "-s read-only" in block, "a host-side reviewer must not be able to write"
-    # the flag belongs to `codex exec`, before the subcommand, or it is rejected
+    # the flags belong to `codex exec`, before the subcommand, or they are rejected
     assert block.index("-s read-only") < block.index("review -")
+    assert block.index("-m ") < block.index("review -")
+    assert "HIVE_REVIEW_MODEL" in block, "a reviewer harness must be told its model explicitly"
     assert ".codex/auth.json" in block, "no credential is checked before reviewing"
 
 
