@@ -12,7 +12,7 @@ import json
 
 from taskbench.record import _headline_identity, rehydrate_config_from_cells
 
-REQUESTED = "meta/muse-spark-1.2@preset/omegahive-muse-spark-1-2"
+REQUESTED = "deepseek/deepseek-v4.1-flash@preset/omegahive-deepseek-v4-1-flash"
 
 
 def _cell(root, name, task, *, first_green, remediated, model_key="resolved_model"):
@@ -74,14 +74,14 @@ def test_a_gateway_receipt_outranks_whatever_the_harness_says():
         {
             "resolved_models": [REQUESTED],
             "gateway_resolved": {
-                "models": ["meta/muse-spark-1.2-20260805"],
-                "upstreams": ["Meta"],
+                "models": ["deepseek/deepseek-v4.1-flash-20260910"],
+                "upstreams": ["BaseTen"],
             },
         },
-        {"vendor": "meta", "model": REQUESTED},
+        {"vendor": "deepseek", "model": REQUESTED},
     )
-    assert identity.name == "meta/muse-spark-1.2-20260805"
-    assert "served by Meta" in identity.provenance
+    assert identity.name == "deepseek/deepseek-v4.1-flash-20260910"
+    assert "served by BaseTen" in identity.provenance
     assert "gateway's own per-generation receipts" in identity.provenance
 
 
@@ -91,7 +91,7 @@ def test_a_harness_echoing_the_alias_back_says_it_cannot_identify_the_server():
     the calls, and the headline must not let those read the same."""
     identity = _headline_identity(
         {"resolved_models": [REQUESTED]},
-        {"vendor": "meta", "model": REQUESTED},
+        {"vendor": "deepseek", "model": REQUESTED},
     )
     assert identity.name == REQUESTED
     assert "reported back exactly the alias it was given" in identity.provenance
@@ -122,12 +122,13 @@ def test_a_resolution_that_differs_from_the_request_carries_no_caveat():
 
 
 def test_the_vendor_prefix_is_not_doubled_onto_a_qualified_id():
-    """`meta` + `meta/muse-spark-1.2` read as `meta/meta/muse-spark-1.2` in wave 4."""
+    """`deepseek` + `deepseek/deepseek-v4.1-flash-20260910` would read
+    `deepseek/deepseek/deepseek-v4.1-flash-20260910` if doubled, as wave 4 once did for Meta."""
     identity = _headline_identity(
-        {"resolved_models": ["meta/muse-spark-1.2-20260805"]},
-        {"vendor": "meta", "model": REQUESTED},
+        {"resolved_models": ["deepseek/deepseek-v4.1-flash-20260910"]},
+        {"vendor": "deepseek", "model": REQUESTED},
     )
-    assert identity.name == "meta/muse-spark-1.2-20260805"
+    assert identity.name == "deepseek/deepseek-v4.1-flash-20260910"
 
 
 def test_no_resolution_at_all_says_so():

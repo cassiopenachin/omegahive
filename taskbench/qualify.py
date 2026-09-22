@@ -722,8 +722,8 @@ def validate_receipt_recorder(
                 "totals": (reconciled or {}).get("totals"),
                 # Carried so a receipt that is merely LATE can be confirmed later with one
                 # cheap read, instead of re-running the whole preflight and paying for four
-                # more probe calls to ask the same question. Observed 2026-08-16: a Muse
-                # receipt 404'd across the wait and existed on the first attempt afterwards.
+                # more probe calls to ask the same question. Observed 2026-08-16: a receipt
+                # 404'd across the wait and existed on the first attempt afterwards.
                 "pending_generation_id": (
                     call.generation_id if call.generation_id and not got_receipt else None
                 ),
@@ -765,7 +765,7 @@ def run_gateway_preflight(
     api_key: str,
     *,
     out_dir: Path,
-    pins: tuple[orouter.PresetPin, ...] = (orouter.DEEPSEEK_PIN, orouter.MUSE_PIN),
+    pins: tuple[orouter.PresetPin, ...] = (orouter.DEEPSEEK_PIN,),
     validate_recorder: bool = True,
     origin: str = OPENROUTER_ORIGIN,
     **recorder_kwargs: Any,
@@ -802,7 +802,7 @@ def confirm_pending(
     if not path.is_file():
         return [Check("confirm/record", False, f"no preflight record at {path}")]
     doc = json.loads(path.read_text())
-    pins = {p.slug: p for p in (orouter.DEEPSEEK_PIN, orouter.MUSE_PIN)}
+    pins = {p.slug: p for p in (orouter.DEEPSEEK_PIN,)}
 
     resolved: list[Check] = []
     changed = False

@@ -45,7 +45,7 @@ MESSAGE_BODY = {
 SSE_STREAM = (
     b'event: message_start\n'
     b'data: {"type":"message_start","message":{"id":"gen-stream1",'
-    b'"model":"meta/muse-spark-1.2-20260805",'
+    b'"model":"deepseek/deepseek-v4.1-flash-20260910",'
     b'"usage":{"input_tokens":100,"cache_read_input_tokens":40,"output_tokens":1}}}\n\n'
     b'event: content_block_delta\n'
     b'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n'
@@ -192,7 +192,7 @@ def test_streaming_is_passed_through_and_usage_is_merged_across_events(recorder)
     with httpx.stream(
         "POST",
         f"{recorder.base_url}/v1/messages/stream",
-        json={"model": "meta/muse-spark-1.2@preset/p", "messages": [], "stream": True},
+        json={"model": "deepseek/deepseek-v4.1-flash@preset/p", "messages": [], "stream": True},
         timeout=30,
     ) as resp:
         assert resp.status_code == 200
@@ -204,7 +204,7 @@ def test_streaming_is_passed_through_and_usage_is_merged_across_events(recorder)
     (call,) = recorder.calls
     assert call.streamed is True
     assert call.generation_id == "gen-stream1"
-    assert call.response_model == "meta/muse-spark-1.2-20260805"
+    assert call.response_model == "deepseek/deepseek-v4.1-flash-20260910"
     assert call.usage == {
         "input_tokens": 100,
         "cache_read_input_tokens": 40,

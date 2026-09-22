@@ -15,9 +15,17 @@ from pathlib import Path
 import pytest
 from taskbench import CORPUS_ROOT
 from taskbench.manifest import load_corpus
-from taskbench.openrouter import DEEPSEEK_PIN, MUSE_PIN
 
 LAUNCH = Path(__file__).resolve().parents[1] / "taskbench/launch"
+
+# wave-3-deepseek.sh is a closed, dated study (taskbench/records/2026-08-16-wave-3-deepseek-
+# claude-code/): it is pinned forever to the preset it actually ran on, not to whatever
+# taskbench.openrouter.DEEPSEEK_PIN names today. Its own literal is the fact under test here,
+# so it is written out rather than read live off the module.
+WAVE_3_DEEPSEEK_PRESET = "omegahive-deepseek-v4-flash-0731"
+WAVE_3_DEEPSEEK_REQUEST = (
+    "deepseek/deepseek-v4-flash-0731@preset/omegahive-deepseek-v4-flash-0731"
+)
 
 
 def code(name: str) -> str:
@@ -38,8 +46,7 @@ def code(name: str) -> str:
 WAVES = {
     "wave-1-haiku-claude-code.sh": "claude-haiku-4-5",
     "wave-2-luna-codex.sh": "gpt-5.6-luna",
-    "wave-3-deepseek.sh": DEEPSEEK_PIN.request_string,
-    "wave-4-muse-claude-code.sh": MUSE_PIN.request_string,
+    "wave-3-deepseek.sh": WAVE_3_DEEPSEEK_REQUEST,
 }
 ALL_SCRIPTS = [*WAVES, "qualify-setup.sh", "cell-codex.sh", "cell-reasonix.sh",
                "cell-claude-openrouter.sh", "lib.sh"]
@@ -157,26 +164,12 @@ def test_the_codex_wrapper_seeds_the_cell_home_with_auth_and_nothing_else():
 
 
 
-
-
-
 def test_both_deepseek_arms_use_the_same_preset_and_upstream():
     """The pair's entire claim. Two presets would make it two unrelated runs."""
     body = (LAUNCH / "wave-3-deepseek.sh").read_text()
-    assert body.count(f'PRESET="{DEEPSEEK_PIN.slug}"') == 1
+    assert body.count(f'PRESET="{WAVE_3_DEEPSEEK_PRESET}"') == 1
     assert "gmicloud/fp8" in body
     assert "--preset \"$PRESET\"" in body
-
-
-def test_the_muse_wave_records_its_substitution_and_its_context_bound():
-    """Two facts the report must carry, written where they cannot be quietly dropped."""
-    body = (LAUNCH / "wave-4-muse-claude-code.sh").read_text()
-    assert "unreachable" in body, "the Muse Code arm's disposition must be stated"
-    assert "provider-openrouter" in body, "and the reason it is unreachable"
-    assert "200k" in body and "1,048,576" in body, (
-        "the harness-effective context must be reported against the advertised one"
-    )
-    assert "contributor" in body, "the prohibited SKU must be named, not merely omitted"
 
 
 @pytest.mark.parametrize("name", WAVES)
@@ -230,7 +223,7 @@ def test_the_openrouter_claude_arms_go_through_the_bare_wrapper():
     wrapper = (LAUNCH / "cell-claude-openrouter.sh").read_text()
     assert "--bare" in wrapper
     assert "--strict-mcp-config" in wrapper
-    for name in ("wave-3-deepseek.sh", "wave-4-muse-claude-code.sh"):
+    for name in ("wave-3-deepseek.sh",):
         body = (LAUNCH / name).read_text()
         assert "cell-claude-openrouter.sh" in body, f"{name} must use the wrapper"
         assert "$CLAUDE_BIN" not in body, f"{name} must not invoke claude directly"
@@ -318,7 +311,7 @@ def test_the_claude_wrapper_may_exec_because_it_has_no_cleanup_to_lose():
     assert "exec claude" in body
 
 
-@pytest.mark.parametrize("name", ["wave-3-deepseek.sh", "wave-4-muse-claude-code.sh"])
+@pytest.mark.parametrize("name", ["wave-3-deepseek.sh"])
 def test_the_json_flags_stay_where_preflight_can_see_them(name):
     """`preflight.check_agent_command` refuses a config declaring the claude-code-json envelope
     whose argv never asks for JSON. Hiding those flags inside the wrapper made preflight refuse
@@ -367,8 +360,7 @@ def test_every_launcher_stops_the_harness_updating_under_it(name):
 # --- the pause point, and why it is only advisory ---------------------------------------------
 
 
-@pytest.mark.parametrize("name", ["wave-1-haiku-claude-code.sh", "wave-2-luna-codex.sh",
-                                  "wave-4-muse-claude-code.sh"])
+@pytest.mark.parametrize("name", ["wave-1-haiku-claude-code.sh", "wave-2-luna-codex.sh",])
 def test_a_wave_declares_the_whole_held_in_set(name):
     """`preflight.check_corpus` receives the launch's task list as `expect_held_in` and refuses
     unless it equals the corpus's held-in set. A launch that silently narrows the study is what
@@ -385,8 +377,7 @@ def test_a_wave_declares_the_whole_held_in_set(name):
         )
 
 
-@pytest.mark.parametrize("name", ["wave-1-haiku-claude-code.sh", "wave-2-luna-codex.sh",
-                                  "wave-4-muse-claude-code.sh"])
+@pytest.mark.parametrize("name", ["wave-1-haiku-claude-code.sh", "wave-2-luna-codex.sh",])
 def test_the_advisory_pause_states_its_reason(name):
     """A limitation stated is one a reader can weigh; left implicit it reads as an oversight the
     next time somebody trips over it."""
@@ -400,7 +391,7 @@ def test_the_advisory_pause_states_its_reason(name):
 
 
 @pytest.mark.parametrize("name", ["wave-1-haiku-claude-code.sh", "wave-3-deepseek.sh",
-                                  "wave-4-muse-claude-code.sh", "lib.sh"])
+                                  "lib.sh"])
 def test_no_claude_invocation_uses_the_auto_permission_mode(name):
     """On 2.1.231 `auto` let a cell read, edit and run — every incumbent cell invoked
     bin/bench-verify. On 2.1.233 it denies edits outright, so a candidate cannot write a single
@@ -408,8 +399,7 @@ def test_no_claude_invocation_uses_the_auto_permission_mode(name):
     assert '"--permission-mode", "auto"' not in code(name)
 
 
-@pytest.mark.parametrize("name", ["wave-1-haiku-claude-code.sh", "wave-3-deepseek.sh",
-                                  "wave-4-muse-claude-code.sh"])
+@pytest.mark.parametrize("name", ["wave-1-haiku-claude-code.sh", "wave-3-deepseek.sh",])
 def test_every_claude_arm_uses_the_shared_tool_grant(name):
     """One helper, so four launchers and the reviewer cannot drift into different capabilities —
     which would be a confound sitting directly on top of the thing being measured."""
@@ -463,7 +453,7 @@ def test_wave_3_is_a_single_arm_on_the_pinned_deepseek_route():
     body = code("wave-3-deepseek.sh")
     assert "ARM_ORDER=(claude-code)" in body
     assert "gmicloud/fp8" in body
-    assert DEEPSEEK_PIN.request_string in body
+    assert WAVE_3_DEEPSEEK_REQUEST in body
 
 
 def test_no_executable_line_names_an_arm_outside_arm_order():

@@ -85,7 +85,6 @@ case "$status" in
     say "  taskbench/launch/wave-1-haiku-claude-code.sh"
     say "  taskbench/launch/wave-2-luna-codex.sh"
     say "  taskbench/launch/wave-3-deepseek-paired.sh     # both arms, one signed batch"
-    say "  taskbench/launch/wave-4-muse-claude-code.sh"
     say ""
     say "Each re-runs the preset and endpoint checks itself, per cell, so a preset edited"
     say "between batches stops the batch rather than quietly changing the experiment."

@@ -443,8 +443,8 @@ def _headline_identity(config: dict, labels: dict) -> _Identity:
     whatever string the harness thinks in. When that string is a concrete model name
     (`claude-haiku-4-5`), the map is real evidence — a silent fallback to a different model
     would show up as a different key. When it is the alias the launch supplied, preset suffix
-    and all (`meta/muse-spark-1.2@preset/omegahive-muse-spark-1-2`), the map cannot
-    distinguish anything: it echoes the request back. Both are still the harness's own
+    and all (`deepseek/deepseek-v4.1-flash@preset/omegahive-deepseek-v4-1-flash`), the map
+    cannot distinguish anything: it echoes the request back. Both are still the harness's own
     accounting and both are reported as such, but the second is explicitly marked as unable
     to identify what actually served the call — which is exactly why a gateway arm needs
     tier 1.
@@ -467,7 +467,7 @@ def _headline_identity(config: dict, labels: dict) -> _Identity:
     resolved = [m for m in (config.get("resolved_models") or []) if m]
     if resolved:
         # Only prefix the vendor when the model id does not already carry one, or the
-        # headline reads `meta/meta/muse-spark-1.2`.
+        # headline reads `deepseek/deepseek/deepseek-v4.1-flash`.
         names = ", ".join(
             m if (not vendor or "/" in m) else f"{vendor}/{m}" for m in resolved
         )

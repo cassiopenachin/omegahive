@@ -1,11 +1,11 @@
 """Model identity and route pinning at the gateway.
 
-The order's whole DeepSeek comparison rests on one claim: both arms ran *the same model on the
-same silicon*. The same OpenRouter slug is served by providers at different quantizations —
-DeepInfra is FP4, GMICloud is FP8 — so a slug alone does not pin an experiment. What pins it is
-an operator-owned preset whose only routing rule is a single provider endpoint with fallback
-disabled, plus a check that the endpoint still advertises the quantization and the parameters
-the study needs.
+The whole claim behind any of this rests on one fact: what actually served a call is provable,
+not assumed. The same OpenRouter slug is served by providers at different quantizations — the
+same vendor can even offer both — so a slug alone does not pin an experiment. What pins it is an
+operator-owned preset whose routing rule is a named, approved set of upstreams with fallback to
+anything outside that set disabled, plus a check that every currently-reachable approved
+upstream still advertises the quantization and the parameters the study needs.
 
 This module is the refusal layer for that. It fetches the live preset, canonicalizes it, hashes
 it, and compares it against a pin — and it checks the pin *semantically as well*, field by
@@ -31,22 +31,19 @@ from .receipts import OPENROUTER_ORIGIN
 
 #: Exact request strings. The order allowlists these and refuses everything else — a moving
 #: first-party alias would let the study measure a model nobody chose.
-DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731"
-DEEPSEEK_CANONICAL = "deepseek/deepseek-v4-flash-20260731"
-MUSE_MODEL = "meta/muse-spark-1.2"
-MUSE_CANONICAL = "meta/muse-spark-1.2-20260805"
+DEEPSEEK_MODEL = "deepseek/deepseek-v4.1-flash"
+DEEPSEEK_CANONICAL = "deepseek/deepseek-v4.1-flash-20260910"
 
-#: Prohibited outright by the order, and worth naming rather than merely omitting: a
-#: contributor SKU trains on the traffic, which is the reason it is refused and not a detail.
-PROHIBITED_MODELS = frozenset({"meta/muse-spark-1.2-contributor"})
+#: Nothing is prohibited outright at the moment. Kept as a named, typed set rather than
+#: deleted, so a future order can add a refused SKU without re-introducing the shape.
+PROHIBITED_MODELS: frozenset[str] = frozenset()
 
-ALLOWED_MODELS = frozenset({DEEPSEEK_MODEL, MUSE_MODEL})
+ALLOWED_MODELS = frozenset({DEEPSEEK_MODEL})
 
 #: Canonical ids a resolved response is allowed to report for each requested string. A
 #: response naming anything else is a different model and stops the cell.
 CANONICAL_FOR = {
     DEEPSEEK_MODEL: {DEEPSEEK_MODEL, DEEPSEEK_CANONICAL},
-    MUSE_MODEL: {MUSE_MODEL, MUSE_CANONICAL},
 }
 
 
@@ -69,37 +66,26 @@ class PresetPin:
         return f"{self.model}@preset/{self.slug}"
 
 
-#: The two pins the order fixes. Version and hash are re-fetched and re-verified at launch;
-#: they are written here so that drift is a refusal rather than a shrug.
+#: The pin the order fixes. Version and hash are re-fetched and re-verified at launch; it is
+#: written here so that drift is a refusal rather than a shrug.
 #:
-#: **The hashes were re-pinned on 2026-08-16, by operator decision.** The order carried two
-#: values computed by an earlier session under a canonicalization rule nobody wrote down, and a
-#: live re-fetch agreed with the pin on every field it names — model, single upstream,
-#: fallback-off, version — while disagreeing on both hashes. That is two rules over identical
-#: content, not a drifted preset, and it cost three refused preflight runs.
-#:
-#: The lesson is not "the hash was wrong". It is that **a tripwire nobody can reproduce is not a
-#: tripwire.** So the rule is now executable: `taskbench preset-hash <slug>` prints the exact
-#: canonical bytes and their SHA-256, and the values below were reproduced from those bytes
-#: offline before being written here. Anyone can check them in one command; nobody has to trust
-#: this comment.
+#: **Re-pinned on 2026-09-22, moving from GMICloud-only to two approved providers (BaseTen,
+#: DeepInfra), both confirmed serving `deepseek/deepseek-v4.1-flash` at FP8 via a live
+#: `/endpoints` read before the preset was built.** `taskbench preset-hash <slug>` prints the
+#: exact canonical bytes and their SHA-256, and the values below were reproduced from those
+#: bytes after creating the preset. Anyone can check them in one command; nobody has to trust
+#: this comment. Because `provider_order` now names more than one upstream,
+#: `check_endpoint_capability` and `check_resolved_identity` treat it as the approved SET —
+#: any one of them is an acceptable answer, and only every named provider being absent, or the
+#: resolved upstream matching none of them, is the refusal.
 DEEPSEEK_PIN = PresetPin(
-    slug="omegahive-deepseek-v4-flash-0731",
-    version=3,
+    slug="omegahive-deepseek-v4-1-flash",
+    version=2,
     model=DEEPSEEK_MODEL,
-    provider_order=("gmicloud/fp8",),
+    provider_order=("baseten/fp8", "deepinfra/fp8"),
     allow_fallbacks=False,
-    config_sha256="0405308a1902574fa6e9733e6a6686997c438d06e62ce33a939d0f1bedd33168",
+    config_sha256="829a79434d97c0b3874e49cea6653e8cd0908ce7e6bdee1bb1ce0e7fd657d7fc",
     quantization="fp8",
-)
-
-MUSE_PIN = PresetPin(
-    slug="omegahive-muse-spark-1-2",
-    version=1,
-    model=MUSE_MODEL,
-    provider_order=("meta",),
-    allow_fallbacks=False,
-    config_sha256="32f1d575af716bdebe7f796bc29b6b267976575adfa240b608b0d3b0b0ec371b",
 )
 
 
@@ -361,16 +347,22 @@ def check_resolved_identity(
             f"not among {sorted(allowed)}."
         )
 
-    expected_upstream = pin.provider_order[0] if pin.provider_order else None
+    # `provider_order` is the approved SET, not a single preferred upstream with the rest read
+    # as an unwanted fallback — a preset naming more than one provider means any one of them is
+    # an acceptable answer, and only an upstream outside the whole set is the fallback the pin
+    # exists to prevent.
+    expected_upstreams = pin.provider_order
     if resolved_upstream is None:
         problems.append(
             "no resolved upstream for this call: without it, fallback to another provider "
             "cannot be ruled out, which is the DeepSeek pair's central claim."
         )
-    elif expected_upstream and not _upstream_matches(resolved_upstream, expected_upstream):
+    elif expected_upstreams and not any(
+        _upstream_matches(resolved_upstream, e) for e in expected_upstreams
+    ):
         problems.append(
             f"the gateway resolved upstream {resolved_upstream!r}, but the preset pins "
-            f"{expected_upstream!r}. This is the fallback the pin exists to prevent."
+            f"{list(expected_upstreams)!r}. This is the fallback the pin exists to prevent."
         )
     return problems
 
@@ -415,54 +407,68 @@ def check_endpoint_capability(
     *,
     require_parameters: tuple[str, ...] = ("tools", "reasoning"),
 ) -> list[str]:
-    """The pinned upstream must still be served, and still advertise what the study needs.
+    """Every pinned upstream must still be served, and still advertise what the study needs.
+
+    `provider_order` is the approved SET, not a single preferred upstream with the rest as an
+    unchecked fallback: `allow_fallbacks=False` stops the gateway reaching outside it, but
+    within it OpenRouter's own routing decides which named provider actually answers a given
+    call, and this code cannot know which in advance. So every provider in the set that is
+    CURRENTLY reachable is held to the pin's quantization and parameter requirements
+    individually — a call could land on any of them — and only every named provider vanishing
+    at once is a stop.
 
     An endpoint that quietly stops offering FP8, tool calling or a reasoning control has not
     disappeared — it has become a different measurement wearing the same name.
     """
     if not pin.provider_order:
         return ["the pin names no provider order; there is nothing to check against."]
-    wanted = pin.provider_order[0]
-    vendor = wanted.split("/")[0]
-    matches = [
-        e for e in endpoints
-        if _upstream_matches(str(e.get("provider_name") or e.get("name") or ""), vendor)
-    ]
-    if not matches:
-        seen = sorted({str(e.get("provider_name") or e.get("name")) for e in endpoints})
-        return [
-            f"the pinned upstream {wanted!r} is not currently serving {pin.model}. Available: "
-            f"{seen}. This is a stop, not permission to load-balance onto another provider."
-        ]
 
     problems: list[str] = []
-    if pin.quantization:
-        quants = {str(e.get("quantization") or "").lower() for e in matches}
-        if pin.quantization.lower() not in quants:
+    reachable = False
+    for wanted in pin.provider_order:
+        vendor = wanted.split("/")[0]
+        matches = [
+            e for e in endpoints
+            if _upstream_matches(str(e.get("provider_name") or e.get("name") or ""), vendor)
+        ]
+        if not matches:
+            continue
+        reachable = True
+        if pin.quantization:
+            quants = {str(e.get("quantization") or "").lower() for e in matches}
+            if pin.quantization.lower() not in quants:
+                problems.append(
+                    f"the {wanted!r} endpoint advertises quantization {sorted(quants)}, pinned "
+                    f"as {pin.quantization!r}. The same slug at a different quantization is "
+                    "different silicon, which is precisely what this pin exists to hold fixed."
+                )
+        supported: set[str] = set()
+        for endpoint in matches:
+            params = endpoint.get("supported_parameters")
+            if isinstance(params, list):
+                supported.update(str(p) for p in params)
+        if not supported:
+            # An absent surface is not an agreement. Reading "no `supported_parameters` field"
+            # as "everything is supported" would let a refusal layer report the route as proved
+            # on the strength of a field the API stopped sending — the exact shape of drift
+            # `PRESET_PATHS` already anticipates one endpoint away from here.
             problems.append(
-                f"the {wanted!r} endpoint advertises quantization {sorted(quants)}, pinned as "
-                f"{pin.quantization!r}. The same slug at a different quantization is different "
-                "silicon, which is precisely what this pin exists to hold fixed."
+                f"the {wanted!r} endpoint advertises no supported_parameters at all, so "
+                f"{list(require_parameters)} cannot be confirmed. An absent surface is "
+                "unproven, not agreed."
             )
-    supported: set[str] = set()
-    for endpoint in matches:
-        params = endpoint.get("supported_parameters")
-        if isinstance(params, list):
-            supported.update(str(p) for p in params)
-    if not supported:
-        # An absent surface is not an agreement. Reading "no `supported_parameters` field" as
-        # "everything is supported" would let a refusal layer report the route as proved on the
-        # strength of a field the API stopped sending — the exact shape of drift `PRESET_PATHS`
-        # already anticipates one endpoint away from here.
-        problems.append(
-            f"the {wanted!r} endpoint advertises no supported_parameters at all, so "
-            f"{list(require_parameters)} cannot be confirmed. An absent surface is unproven, "
-            "not agreed."
-        )
-    for needed in require_parameters:
-        if supported and needed not in supported:
-            problems.append(
-                f"the {wanted!r} endpoint does not advertise {needed!r} "
-                f"(advertises {sorted(supported)}). The study's cells need it."
-            )
+        for needed in require_parameters:
+            if supported and needed not in supported:
+                problems.append(
+                    f"the {wanted!r} endpoint does not advertise {needed!r} "
+                    f"(advertises {sorted(supported)}). The study's cells need it."
+                )
+
+    if not reachable:
+        seen = sorted({str(e.get("provider_name") or e.get("name")) for e in endpoints})
+        return [
+            f"none of the pinned upstreams {list(pin.provider_order)!r} is currently serving "
+            f"{pin.model}. Available: {seen}. This is a stop, not permission to load-balance "
+            "onto another provider."
+        ]
     return problems
