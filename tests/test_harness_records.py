@@ -334,6 +334,32 @@ def test_a_non_openrouter_model_may_be_a_bare_token():
     assert load_catalog(catalog_bytes(route(model="m"))).routes[0].model == "m"
 
 
+def test_an_openrouter_model_may_carry_a_preset_pin():
+    """The same `@preset/<slug>` suffix a taskbench study pins its upstream with — a route
+    can pin an approved-provider preset instead of trusting OpenRouter's own default
+    routing across whatever upstream answers first."""
+    model = "deepseek/deepseek-v4.1-flash@preset/omegahive-deepseek-v4-1-flash"
+    cat = load_catalog(catalog_bytes(route(provider="openrouter", model=model)))
+    assert cat.routes[0].model == model
+
+
+def test_a_preset_pin_still_needs_its_vendor():
+    """A preset suffix does not exempt the model from naming a vendor first."""
+    with pytest.raises(RefusalError) as exc:
+        load_catalog(catalog_bytes(route(
+            provider="openrouter",
+            model="deepseek-v4.1-flash@preset/omegahive-deepseek-v4-1-flash")))
+    assert exc.value.code == "CATALOG_MALFORMED"
+
+
+def test_a_model_with_two_preset_suffixes_refuses():
+    """One pin, not a chain of them: a second `@preset/` is not a shape this rule accepts."""
+    with pytest.raises(RefusalError):
+        load_catalog(catalog_bytes(route(
+            provider="openrouter",
+            model="deepseek/deepseek-v4.1-flash@preset/a@preset/b")))
+
+
 def test_a_reasoning_effort_is_optional_and_absence_is_absence():
     """A catalog predating the field loads, and a route that states no effort records
     that rather than acquiring a default one."""

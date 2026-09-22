@@ -73,7 +73,11 @@ _ENDPOINT_SHAPE = re.compile(r"^https?://[^\s\x00]+$")
 # 2026-08-28 and was misread as a provider outage.
 _MODEL_SHAPE = re.compile(r"\S+\Z")
 
-_OPENROUTER_MODEL_SHAPE = re.compile(r"~?[^/\s]+/[^/\s]+\Z")
+# `vendor/slug`, optionally followed by `@preset/<preset-slug>` — the same suffix
+# OpenRouter's own preset endpoints take (`taskbench.openrouter.PresetPin.request_string`),
+# so a route can pin an approved-provider preset the same way a taskbench study does, rather
+# than trusting OpenRouter's own default routing across whatever upstream answers first.
+_OPENROUTER_MODEL_SHAPE = re.compile(r"~?[^/\s@]+/[^/\s@]+(?:@preset/[^/\s@]+)?\Z")
 
 # A reasoning-effort level, as a SHAPE rather than an allowlist, for the same reason model
 # ids are: providers name their effort levels and Hive does not. `opencode` validates this
