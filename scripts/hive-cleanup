@@ -40,7 +40,7 @@
 # debris into a decision queue.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=scripts/hive-common.sh
 source "$SCRIPT_DIR/hive-common.sh"
 
@@ -93,7 +93,7 @@ done
 
 # A task is finished when the board says so. Anything else — including a task the board
 # has never heard of, which is what a scratch or drill root looks like — is not.
-TERMINAL_RE='^(done|closed|completed|abandoned|failed|rejected)$'
+TERMINAL_RE='^(done|closed|completed|abandoned|cancelled|failed|rejected)$'
 
 task_from_root() {  # task_from_root <basename> -> prints the task id
   local b="$1"

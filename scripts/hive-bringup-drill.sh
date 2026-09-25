@@ -47,7 +47,7 @@
 #   scripts/hive-bringup-drill.sh --no-stack      # A-E only (no container runtime needed)
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 DRY=""; KEEP=""; NO_STACK=""

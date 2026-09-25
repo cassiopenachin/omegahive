@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/hive-metrics-drill.XXXXXX")"
 
 PASS=0; FAIL=0

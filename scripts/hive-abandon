@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# hive-abandon <task> --reason <text>
+#
+# Human-only, task-scoped terminalization. This never cascades to dependents,
+# reassigns work, or discards the task's result/review/attempt evidence.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=scripts/hive-common.sh
+source "$SCRIPT_DIR/hive-common.sh"
+
+usage() {
+  echo "usage: hive-abandon <task> --reason <text>" >&2
+  exit 2
+}
+
+TASK=""
+REASON=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --reason) shift; [ $# -gt 0 ] || usage; REASON="$1" ;;
+    -h|--help) usage ;;
+    -*) usage ;;
+    *) [ -z "$TASK" ] || usage; TASK="$1" ;;
+  esac
+  shift
+done
+[ -n "$TASK" ] || usage
+[ -n "$REASON" ] || die "hive-abandon requires a non-empty --reason"
+
+REL=$(find_order "$TASK")
+PROJECT=$(project_from_order "$REL")
+load_project_conf "$PROJECT"
+
+BOARD=$(board_json)
+STATUS=$(printf '%s' "$BOARD" | jq -r --arg t "$TASK" \
+  '[.[] | select(.task == $t)] | if length == 1 then .[0].status else empty end')
+[ -n "$STATUS" ] || die "task '$TASK' is not on the board for run '$RUN'"
+case "$STATUS" in
+  created|ready|assigned|in_progress|blocked|in_review|reopened) ;;
+  *) die "task '$TASK' is '$STATUS', not in an abandonable state" ;;
+esac
+
+AFFECTED=$(printf '%s' "$BOARD" | jq -r --arg t "$TASK" \
+  '.[] | select((.depends_on // []) | index($t))
+   | select((.status | IN("done", "failed", "cancelled") | not) and (.pruned != true))
+   | .task' | sort)
+payload=$(jq -cn --arg s cancelled --arg r "$REASON" '{status:$s, reason:$r}')
+emit human "$OPERATOR_ACTOR" task.status_override --task "$TASK" --payload "$payload" >/dev/null
+
+echo "hive-abandon: task=$TASK status=cancelled reason=$REASON"
+if [ -n "$AFFECTED" ]; then
+  echo "hive-abandon: affected dependents remain waiting (no cascade):"
+  printf '  %s\n' $AFFECTED
+else
+  echo "hive-abandon: no dependents are affected"
+fi

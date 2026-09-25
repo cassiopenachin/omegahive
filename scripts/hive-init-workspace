@@ -41,7 +41,7 @@
 #   --clone <path>     operator clone     (default: $OPS_WS,  else ~/workspaces/hive)
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 TEMPLATE_DIR="$ROOT/deploy/workspace-template"
 
 die() { echo "hive-init-workspace: $*" >&2; exit 1; }

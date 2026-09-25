@@ -1672,6 +1672,20 @@ predictions_classify() {  # predictions_classify <order-file>
   esac
 }
 
+# Bring the operator's workspace up to the hub, fast-forward only, before a close writes
+# into it. The hub's post-receive hook keeps it current only for pushes made on this host:
+# a sandboxed worker pushes from inside its VM, where the hook runs with the agent's $HOME
+# and cannot see this clone, so after such a push the workspace is behind and
+# commit_metrics's push is refused (S0 inspection report, finding 8). A fast-forward
+# cannot resolve a conflict, so this does not relax commit_metrics's refusal to rebase: a
+# workspace that has diverged is refused here, loudly, before anything is emitted.
+ff_ops_workspace() {  # ff_ops_workspace  -> 0 current or fast-forwarded; dies otherwise
+  git -C "$OPS_WS" pull --ff-only --quiet \
+    || die "$OPS_WS cannot fast-forward to the hub (diverged, no upstream, or a local change
+  in the way — git says why above). Nothing was emitted. Resolve by hand, then re-run:
+      cd $OPS_WS && git status && git pull --rebase"
+}
+
 # Commit + push a project's regenerated metrics artifacts. Shared by hive-metrics
 # and hive-score, which write only under projects/<project>/metrics/.
 #
