@@ -35,7 +35,12 @@ _HEAD_FOR_EVENT = {
 
 def _refused_head(event_type: str, payload: dict) -> str:
     if event_type == "task.status_override":
-        return "reopen" if payload.get("status") == "reopened" else "close"
+        status = payload.get("status")
+        if status == "reopened":
+            return "reopen"
+        if status == "cancelled":
+            return "abandon"
+        return "close"
     return _HEAD_FOR_EVENT.get(event_type, event_type)
 
 

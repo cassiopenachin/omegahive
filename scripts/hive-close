@@ -114,7 +114,8 @@ echo "hive-close: task=$TASK  result=$REF"
 # 3. review.passed (instrument — blessed human-tier borrowing), then
 #    status_override(done). The done-gate requires latest review == passed, so
 #    this order is load-bearing.
-passed_payload=$(jq -cn --arg r "$REF" '{ref_result:$r}')
+passed_payload=$(jq -cn --arg r "$REF" \
+  '{ref_result:$r, review_kind:"operator_acceptance"}')
 done_payload=$(jq -cn --arg s 'done' --arg r "$REASON" '{status:$s, reason:$r}')
 
 emit instrument "$OPERATOR_ACTOR" review.passed --task "$TASK" --payload "$passed_payload" >/dev/null
