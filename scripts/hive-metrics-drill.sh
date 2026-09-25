@@ -292,6 +292,18 @@ ev(41100, "instrument", "operator", "review.passed", "iota",
    {"ref_result": "projects/drill/reports/iota.md@abc1234"})
 closed(41200, "iota")
 
+# kappa — accepted, never produced a result, then abandoned by the operator with
+# hive-abandon: a human task-scoped status_override(cancelled). It is a terminal
+# event, so the attempt is measured as closed (shape `abandoned`, final_status
+# `cancelled`) rather than left looking like work still in flight.
+created(50000, "kappa")
+ev(50005, "human", "operator", "worker.registered", None, {"worker_id": "w-kappa"})
+ev(50100, "coordinator", "operator", "task.assigned", "kappa", {"worker": "w-kappa"})
+ev(50200, "worker", "w-kappa", "task.accepted", "kappa", {})
+ev(60000, "human", "operator", "task.status_override", "kappa",
+   {"status": "cancelled", "reason": "worker died; nobody will finish it",
+    "decision_ref": None})
+
 json.dump(rows, open(sys.argv[1], "w"), indent=2, sort_keys=True)
 PY
 FIXTURE_SUM="$(sha256_hex < "$FIXTURE")"
@@ -494,6 +506,11 @@ check "gamma has no accept duration"    "[ -z \"\$(col gamma accepted_to_first_r
 check "epsilon measured (closed by task.failed)" "[ \"\$(col epsilon shape)\" = worked ]"
 check "epsilon final_status=failed"     "[ \"\$(col epsilon final_status)\" = failed ]"
 check "epsilon not listed as open"      "! grep -q '\`epsilon\`' '$MD'"
+# kappa: abandoned by a human (status_override(cancelled)). A terminal event, so
+# the attempt is measured, not left open.
+check "kappa measured (closed by human abandon)" "[ \"\$(col kappa shape)\" = abandoned ]"
+check "kappa final_status=cancelled"   "[ \"\$(col kappa final_status)\" = cancelled ]"
+check "kappa not listed as open"       "! grep -q '\`kappa\`' '$MD'"
 # Its one block opens AFTER the result and never closes: charging it back to the
 # result would be negative, so blocked_s (the full-task figure) charges it forward
 # to the terminal event — but blocked_before_first_result_s excludes it entirely,
