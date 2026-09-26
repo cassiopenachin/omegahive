@@ -29,6 +29,10 @@ done
 [ -n "$TASK" ] || usage
 [ -n "$REASON" ] || die "hive-abandon requires a non-empty --reason"
 
+# The workspace must be at the hub before anything is written: this command's metrics
+# refresh commits from it (ff_ops_workspace says why). Refuses with nothing emitted.
+ff_ops_workspace
+
 REL=$(find_order "$TASK")
 PROJECT=$(project_from_order "$REL")
 load_project_conf "$PROJECT"
@@ -51,6 +55,12 @@ if tmux list-windows -t "$HIVE_TMUX_SESSION" -F '#{window_name}' 2>/dev/null \
       tmux kill-window -t $HIVE_TMUX_SESSION:$TASK"
 fi
 
+# Whether a worker ever held this task, read from the spine before anything is written: a
+# task abandoned from created/ready has no usage to harvest, and saying "recover with
+# hive-usage" would send the operator after a command that cannot succeed.
+ASSIGNED=$( hive report "$RUN" --json 2>/dev/null | jq -r --arg t "$TASK" '
+  any(.[]; .event_type == "task.assigned" and .task_id == $t)' ) || ASSIGNED="unknown"
+
 AFFECTED=$(printf '%s' "$BOARD" | jq -r --arg t "$TASK" \
   '.[] | select((.depends_on // []) | index($t))
    | select((.status | IN("done", "failed", "cancelled") | not) and (.pruned != true))
@@ -59,11 +69,20 @@ payload=$(jq -cn --arg s cancelled --arg r "$REASON" '{status:$s, reason:$r}')
 emit human "$OPERATOR_ACTOR" task.status_override --task "$TASK" --payload "$payload" >/dev/null
 
 echo "hive-abandon: task=$TASK status=cancelled reason=$REASON"
+if [ -n "$AFFECTED" ]; then
+  echo "hive-abandon: affected dependents remain waiting (no cascade):"
+  printf '  %s\n' $AFFECTED
+else
+  echo "hive-abandon: no dependents are affected"
+fi
 
 # Harvest what the task consumed, as hive-close does: a cancelled root is now eligible for
-# hive-cleanup, and two of the four usage surfaces live inside the sandbox it prunes.
-# Non-fatal and loud: the abandon is already durable on the spine.
-if ! "$SCRIPT_DIR/hive-usage" "$TASK" --project "$PROJECT" </dev/null; then
+# hive-cleanup, and two of the four usage surfaces live inside the sandbox it prunes. Then
+# refresh the project's metrics so the committed record includes this close. Both are
+# non-fatal and loud: the abandon is already durable on the spine.
+if [ "$ASSIGNED" = "false" ]; then
+  echo "hive-abandon: no worker was ever assigned to '$TASK'; there is no usage to harvest"
+elif ! "$SCRIPT_DIR/hive-usage" "$TASK" --project "$PROJECT" </dev/null; then
   {
     echo
     echo "hive-abandon: WARNING the abandon SUCCEEDED and is durable on the spine — harvesting"
@@ -72,9 +91,11 @@ if ! "$SCRIPT_DIR/hive-usage" "$TASK" --project "$PROJECT" </dev/null; then
     echo "      hive-usage $TASK --project $PROJECT"
   } >&2
 fi
-if [ -n "$AFFECTED" ]; then
-  echo "hive-abandon: affected dependents remain waiting (no cascade):"
-  printf '  %s\n' $AFFECTED
-else
-  echo "hive-abandon: no dependents are affected"
+if ! "$SCRIPT_DIR/hive-metrics" "$PROJECT" </dev/null; then
+  {
+    echo
+    echo "hive-abandon: WARNING the abandon SUCCEEDED and is durable on the spine — refreshing"
+    echo "  $PROJECT's metrics did not. Recover with one command:"
+    echo "      hive-metrics $PROJECT"
+  } >&2
 fi
