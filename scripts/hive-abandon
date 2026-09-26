@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# hive-abandon <task> --reason <text>
+#
+# Human-only, task-scoped terminalization. This never cascades to dependents,
+# reassigns work, or discards the task's result/review/attempt evidence.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=scripts/hive-common.sh
+source "$SCRIPT_DIR/hive-common.sh"
+
+usage() {
+  echo "usage: hive-abandon <task> --reason <text>" >&2
+  exit 2
+}
+
+TASK=""
+REASON=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --reason) shift; [ $# -gt 0 ] || usage; REASON="$1" ;;
+    -h|--help) usage ;;
+    -*) usage ;;
+    *) [ -z "$TASK" ] || usage; TASK="$1" ;;
+  esac
+  shift
+done
+[ -n "$TASK" ] || usage
+[ -n "$REASON" ] || die "hive-abandon requires a non-empty --reason"
+
+# The workspace must be at the hub before anything is written: this command's metrics
+# refresh commits from it (ff_ops_workspace says why). Refuses with nothing emitted.
+ff_ops_workspace
+
+REL=$(find_order "$TASK")
+PROJECT=$(project_from_order "$REL")
+load_project_conf "$PROJECT"
+
+BOARD=$(board_json)
+STATUS=$(printf '%s' "$BOARD" | jq -r --arg t "$TASK" \
+  '[.[] | select(.task == $t)] | if length == 1 then .[0].status else empty end')
+[ -n "$STATUS" ] || die "task '$TASK' is not on the board for run '$RUN'"
+case "$STATUS" in
+  created|ready|assigned|in_progress|blocked|in_review|reopened) ;;
+  *) die "task '$TASK' is '$STATUS', not in an abandonable state" ;;
+esac
+
+# A live worker is stopped by the operator first, never by this command: abandoning only
+# clears ownership, so a harness still running in its window would keep spending and
+# writing while every emit it tried was refused. Same test hive-cleanup uses for "live".
+# No tmux server or no session means no registered worker (after a reboot every dangling
+# worker is dead, which is exactly when abandon is needed); any other tmux failure leaves
+# liveness unverified, so it refuses.
+if WINDOWS=$(tmux list-windows -t "$HIVE_TMUX_SESSION" -F '#{window_name}' 2>&1); then
+  if printf '%s\n' "$WINDOWS" | grep -qxF "$TASK"; then
+    die "task '$TASK' still has a live window; stop the worker first, then abandon:
+      tmux kill-window -t $HIVE_TMUX_SESSION:$TASK"
+  fi
+else
+  case "$WINDOWS" in
+    *"(No such file or directory)"*|*"no server running"*|*"can't find session"*) ;;
+    *) die "cannot tell whether '$TASK' has a live worker window; tmux said: $WINDOWS
+  Nothing was emitted. Fix tmux access, or stop the worker, and re-run." ;;
+  esac
+fi
+
+# Whether a worker ever held this task, read from the spine before anything is written: a
+# task abandoned from created/ready has no usage to harvest, and saying "recover with
+# hive-usage" would send the operator after a command that cannot succeed.
+ASSIGNED=$( hive report "$RUN" --json 2>/dev/null | jq -r --arg t "$TASK" '
+  any(.[]; .event_type == "task.assigned" and .task_id == $t)' ) || ASSIGNED="unknown"
+
+AFFECTED=$(printf '%s' "$BOARD" | jq -r --arg t "$TASK" \
+  '.[] | select((.depends_on // []) | index($t))
+   | select((.status | IN("done", "failed", "cancelled") | not) and (.pruned != true))
+   | .task' | sort)
+payload=$(jq -cn --arg s cancelled --arg r "$REASON" '{status:$s, reason:$r}')
+emit human "$OPERATOR_ACTOR" task.status_override --task "$TASK" --payload "$payload" >/dev/null
+
+echo "hive-abandon: task=$TASK status=cancelled reason=$REASON"
+if [ -n "$AFFECTED" ]; then
+  echo "hive-abandon: affected dependents remain waiting (no cascade):"
+  printf '  %s\n' $AFFECTED
+else
+  echo "hive-abandon: no dependents are affected"
+fi
+
+# Harvest what the task consumed, as hive-close does: a cancelled root is now eligible for
+# hive-cleanup, and two of the four usage surfaces live inside the sandbox it prunes. Then
+# refresh the project's metrics so the committed record includes this close. Both are
+# non-fatal and loud: the abandon is already durable on the spine.
+if [ "$ASSIGNED" = "false" ]; then
+  echo "hive-abandon: no worker was ever assigned to '$TASK'; there is no usage to harvest"
+elif ! "$SCRIPT_DIR/hive-usage" "$TASK" --project "$PROJECT" </dev/null; then
+  {
+    echo
+    echo "hive-abandon: WARNING the abandon SUCCEEDED and is durable on the spine — harvesting"
+    echo "  what task '$TASK' consumed did not. Recover with one command, before its sandbox"
+    echo "  is pruned:"
+    echo "      hive-usage $TASK --project $PROJECT"
+  } >&2
+fi
+if ! "$SCRIPT_DIR/hive-metrics" "$PROJECT" </dev/null; then
+  {
+    echo
+    echo "hive-abandon: WARNING the abandon SUCCEEDED and is durable on the spine — refreshing"
+    echo "  $PROJECT's metrics did not. Recover with one command:"
+    echo "      hive-metrics $PROJECT"
+  } >&2
+fi

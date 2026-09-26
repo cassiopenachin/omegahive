@@ -182,13 +182,21 @@ class TaskReported(BaseModel):
 
 # --- Instrument payloads ---
 
+# What kind of review a verdict records. `operator_acceptance` is the operator reading
+# the result report at close (hive-close); `independent` is a reviewer's verdict on the
+# work itself. Optional, so every event logged before the field existed still validates.
+ReviewKind = Literal["independent", "operator_acceptance"]
+
+
 class ReviewPassed(BaseModel):
     ref_result: str
+    review_kind: ReviewKind | None = None
 
 
 class ReviewFailed(BaseModel):
     ref_result: str
     reason: str | None = None
+    review_kind: ReviewKind | None = None
 
 
 class MetricThresholdCrossed(BaseModel):

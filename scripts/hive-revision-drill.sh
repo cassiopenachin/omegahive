@@ -24,7 +24,7 @@
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 OMEGA_DIR_REAL="${OMEGA_DIR:-$HOME/src/SNET/omegahive}"
 
 # Point compose at the rootless podman socket ONLY when that socket actually

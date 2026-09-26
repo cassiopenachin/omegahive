@@ -60,7 +60,7 @@
 # contract readable without opening another file.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=scripts/hive-common.sh
 source "$SCRIPT_DIR/hive-common.sh"
 
@@ -203,13 +203,15 @@ def blocked_upto($cutoff):
     | $r.total + (if $r.open != null then $cutoff - $r.open else 0 end)
   end;
 
-# Terminal events per the legality table: status_override(done), task.failed, and
-# a run-scoped plan.revised(cancel). status_override(cancelled|failed) is
-# gateway-refused and can never be logged; reopened un-terminates.
+# Terminal events per the legality table: status_override(done), human task-scoped
+# status_override(cancelled), task.failed, and a run-scoped plan.revised(cancel).
+# reopened un-terminates.
 def terminal($created; $cancel_ts):
   ( reduce .[] as $e (null;
       if $e.event_type == "task.status_override" and $e.payload.status == "done"
         then {status: "done", ts: $e.logical_ts}
+      elif $e.event_type == "task.status_override" and $e.payload.status == "cancelled"
+        then {status: "cancelled", ts: $e.logical_ts}
       elif $e.event_type == "task.status_override" and $e.payload.status == "reopened"
         then null
       elif $e.event_type == "task.failed"

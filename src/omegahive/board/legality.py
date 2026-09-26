@@ -145,12 +145,42 @@ def _from_state(*allowed: str) -> Guard:
 
 def _g_done(board: Board, actor: Actor, payload: dict, task_id: str | None) -> Rejection | None:
     ts = _task(board, task_id)
+    if ts is not None and ts.status == "cancelled":
+        return Rejection(
+            ILLEGAL_TRANSITION,
+            f"cannot close cancelled task {task_id!r}",
+        )
     if ts is None or ts.latest_review != "passed":
         have = None if ts is None else ts.latest_review
         return Rejection(
             ILLEGAL_TRANSITION,
             f"status_override(done) on {task_id!r} requires latest review == 'passed' "
             f"(have {have!r})",
+        )
+    return None
+
+
+def _g_cancelled(
+    board: Board, actor: Actor, payload: dict, task_id: str | None
+) -> Rejection | None:
+    """A task-scoped abandon is an explicit human terminal decision."""
+    ts = _task(board, task_id)
+    if ts is None:
+        return Rejection(UNKNOWN_TASK, f"no such task {task_id!r}")
+    if actor.role != "human":
+        return Rejection(NOT_AUTHORIZED, "only a human may abandon a task")
+    reason = payload.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        return Rejection(ILLEGAL_TRANSITION, "abandon requires a non-empty reason")
+    if ts.pruned:
+        return Rejection(ILLEGAL_TRANSITION, f"cannot abandon pruned task {task_id!r}")
+    allowed = {
+        "created", "ready", "assigned", "in_progress", "blocked", "in_review", "reopened"
+    }
+    if ts.status not in allowed:
+        return Rejection(
+            ILLEGAL_TRANSITION,
+            f"cannot abandon {task_id!r} from status {ts.status!r}",
         )
     return None
 
@@ -339,6 +369,18 @@ def _e_reopened(board: Board, ev: Event) -> None:
     _change(here, ev)
 
 
+def _e_cancelled(board: Board, ev: Event) -> None:
+    here = _task(board, ev.task_id)
+    if here is None:
+        return
+    here.status = "cancelled"
+    here.owner = None
+    here.blocker_reason = None
+    here.blocker_needs = None
+    # Preserve attempt/result/review/escalation evidence for the operator record.
+    _change(here, ev)
+
+
 def _e_failed(board: Board, ev: Event) -> None:
     here = _task(board, ev.task_id)
     if here is None or here.status not in ("in_progress", "blocked"):
@@ -394,6 +436,8 @@ RULES: list[LegalityRule] = [
     LegalityRule("task.status_override", _is("status", "done"), _g_done, _e_done),
     LegalityRule("task.status_override", _is("status", "reopened"), _from_state("in_review"),
                  _e_reopened),
+    LegalityRule("task.status_override", _is("status", "cancelled"), _g_cancelled,
+                 _e_cancelled),
     LegalityRule("task.failed", None, _from_state("in_progress", "blocked"), _e_failed),
     LegalityRule("task.escalated", None, _g_needs_task, _e_escalated),
     LegalityRule("task.pruned", None, _g_prune, _e_pruned),

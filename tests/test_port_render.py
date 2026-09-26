@@ -53,6 +53,10 @@ def test_status_override_rejection_maps_to_close_or_reopen():
     board = Board(tasks={"t1": TaskState("t1", "created")})
     ev = _rejected(et="task.status_override", payload={"status": "done"}, code="ILLEGAL_TRANSITION")
     assert "(op close t1)" in render_view(board, [ev])
+    abandoned = _rejected(
+        et="task.status_override", payload={"status": "cancelled"}, code="NOT_AUTHORIZED"
+    )
+    assert "(op abandon t1)" in render_view(board, [abandoned])
 
 
 def test_notes_are_appended_to_the_view():

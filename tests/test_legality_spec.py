@@ -28,6 +28,7 @@ COORD = Actor(role="coordinator", id="coordinator")
 PLANNER = Actor(role="planner", id="planner")
 W1 = Actor(role="worker", id="w1")
 REVIEW = Actor(role="instrument", id="review")
+HUMAN = Actor(role="human", id="operator")
 
 
 def ev(event_type, payload, *, task_id=None, actor=COORD) -> Event:
@@ -118,6 +119,11 @@ CASES = [
     (board_with(TaskState("t1", "in_review")),
      ev("task.status_override", {"status": "reopened"}, task_id="t1"),
      board_with(TaskState("t1", "assigned", owner="w1"))),  # wrong from-state
+    # status_override{cancelled}
+    (board_with(TaskState("t1", "in_progress", owner="w1")),
+     ev("task.status_override", {"status": "cancelled", "reason": "stop"},
+        task_id="t1", actor=HUMAN),
+     board_with(TaskState("t1", "in_progress", owner="w1", pruned=True))),
     # task.failed
     (board_with(TaskState("t1", "in_progress", owner="w1")),
      ev("task.failed", {"reason": "x"}, task_id="t1", actor=W1),

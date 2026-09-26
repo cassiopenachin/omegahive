@@ -579,12 +579,22 @@ fi
 # The Anthropic names are UNSET for the probe, exactly as the review wrapper unsets them:
 # with ANTHROPIC_API_KEY in the environment — which Claude Code itself injects into every
 # child process it spawns — a dead token would pass this check on someone else's credential.
-if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-  echo "[SKIP] 13. reviewer login: CLAUDE_CODE_OAUTH_TOKEN is not set on this host."
-  echo "       Sandboxed reviews need it. Mint one with 'claude setup-token' and export it"
-  echo "       from ~/.secrets."
+#
+# A check that cannot run FAILS: this script is the deploy gate, and a SKIP here let
+# "0 failed" stand while sandboxed reviews could not authenticate (S0 inspection report,
+# finding 4 — a non-interactive shell does not source ~/.secrets). A shell that
+# legitimately has no reviewer login opts out by name, and the output says it did.
+if [ -n "${OMEGAHIVE_CHECKS_SKIP_REVIEWER_LOGIN:-}" ]; then
+  echo "[SKIP] 13. reviewer login: not tested — OMEGAHIVE_CHECKS_SKIP_REVIEWER_LOGIN is set."
+  echo "       Unset it to test the token; this run does not show sandboxed reviews work."
+elif [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  bad "13. reviewer login: CLAUDE_CODE_OAUTH_TOKEN is not set in this shell, so it cannot be tested.
+       Sandboxed reviews need it. Mint one with 'claude setup-token' and export it from
+       ~/.secrets (source it first if this shell does not), or set
+       OMEGAHIVE_CHECKS_SKIP_REVIEWER_LOGIN=1 to skip this check deliberately."
 elif ! command -v claude >/dev/null 2>&1; then
-  echo "[SKIP] 13. reviewer login: no 'claude' on PATH to test the token with."
+  bad "13. reviewer login: no 'claude' on PATH to test the token with.
+       Put claude on PATH, or set OMEGAHIVE_CHECKS_SKIP_REVIEWER_LOGIN=1 to skip deliberately."
 else
   # `|| REVIEW_PROBE=""` under `set -e`: a non-zero probe must reach the verdict below
   # rather than abort the script before the summary.

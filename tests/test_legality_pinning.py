@@ -23,6 +23,7 @@ COORD = Actor(role="coordinator", id="coordinator")
 W1 = Actor(role="worker", id="w1")
 W2 = Actor(role="worker", id="w2")
 REVIEW = Actor(role="instrument", id="review")
+HUMAN = Actor(role="human", id="operator")
 
 
 def attempt(gateway, *, actor, event_type, task_id=None, payload=None):
@@ -122,6 +123,81 @@ def test_pin_done_allowed_after_passed_review(make_gateway):
     assert board_of(store).awaiting_close() == ["t1"]
     attempt(gateway, actor=COORD, event_type="task.status_override", task_id="t1",
             payload={"status": "done", "reason": "review passed"})
+    assert board_of(store).tasks["t1"].status == "done"
+
+
+# --- human abandon: task-scoped, terminal, evidence preserved ------------------
+
+def test_human_abandon_is_task_scoped_and_preserves_evidence(make_gateway):
+    gateway, store = make_gateway()
+    _drive_to_in_review(gateway)
+    gateway.emit(actor=REVIEW, event_type="review.failed", task_id="t1",
+                 payload={"ref_result": "a"})
+    gateway.emit(actor=COORD, event_type="task.escalated", task_id="t1",
+                 payload={"reason": "needs attention"})
+    gateway.emit(actor=HUMAN, event_type="task.status_override", task_id="t1",
+                 payload={"status": "cancelled", "reason": "operator stopped this task"})
+
+    board = board_of(store)
+    task = board.tasks["t1"]
+    assert task.status == "cancelled"
+    assert task.owner is None
+    assert task.last_result_ref == "a"
+    assert task.latest_review == "failed"
+    assert task.tried_by == {"w1"}
+    assert task.escalated is True
+    assert board.tasks["t2"].status == "created"   # no cascade to the dependent
+
+
+def test_abandon_requires_human_reason_and_cannot_be_revived_by_worker(make_gateway):
+    gateway, store = make_gateway()
+    _plan(gateway)
+    _assign_accept(gateway)
+    assert attempt(gateway, actor=COORD, event_type="task.status_override", task_id="t1",
+                   payload={"status": "cancelled", "reason": "no"}) is None
+    assert attempt(gateway, actor=HUMAN, event_type="task.status_override", task_id="t1",
+                   payload={"status": "cancelled", "reason": ""}) is None
+    assert attempt(gateway, actor=HUMAN, event_type="task.status_override", task_id="t1",
+                   payload={"status": "cancelled", "reason": "   "}) is None
+    assert attempt(gateway, actor=HUMAN, event_type="task.status_override", task_id="t1",
+                   payload={"status": "cancelled"}) is None
+    assert board_of(store).tasks["t1"].status == "in_progress"
+    gateway.emit(actor=HUMAN, event_type="task.status_override", task_id="t1",
+                 payload={"status": "cancelled", "reason": "stop"})
+    assert attempt(gateway, actor=W1, event_type="task.result_posted", task_id="t1",
+                   payload={"artifact_refs": [{"ref": "late", "quality": "ok"}],
+                            "cost": 1}) is None
+    assert board_of(store).tasks["t1"].status == "cancelled"
+
+
+def test_cancelled_task_cannot_be_closed_reopened_or_abandoned_again(make_gateway):
+    gateway, store = make_gateway()
+    _drive_to_in_review(gateway)
+    gateway.emit(actor=REVIEW, event_type="review.passed", task_id="t1",
+                 payload={"ref_result": "r"})
+    gateway.emit(actor=HUMAN, event_type="task.status_override", task_id="t1",
+                 payload={"status": "cancelled", "reason": "stop"})
+    # a passed review is on record, and still the close is refused
+    assert attempt(gateway, actor=HUMAN, event_type="task.status_override", task_id="t1",
+                   payload={"status": "done"}) is None
+    assert attempt(gateway, actor=COORD, event_type="task.status_override", task_id="t1",
+                   payload={"status": "reopened"}) is None
+    assert attempt(gateway, actor=HUMAN, event_type="task.status_override", task_id="t1",
+                   payload={"status": "cancelled", "reason": "again"}) is None
+    assert attempt(gateway, actor=COORD, event_type="task.assigned", task_id="t1",
+                   payload={"worker": "w2"}) is None
+    assert board_of(store).tasks["t1"].status == "cancelled"
+
+
+def test_done_task_cannot_be_abandoned(make_gateway):
+    gateway, store = make_gateway()
+    _drive_to_in_review(gateway)
+    gateway.emit(actor=REVIEW, event_type="review.passed", task_id="t1",
+                 payload={"ref_result": "r"})
+    gateway.emit(actor=COORD, event_type="task.status_override", task_id="t1",
+                 payload={"status": "done"})
+    assert attempt(gateway, actor=HUMAN, event_type="task.status_override", task_id="t1",
+                   payload={"status": "cancelled", "reason": "too late"}) is None
     assert board_of(store).tasks["t1"].status == "done"
 
 

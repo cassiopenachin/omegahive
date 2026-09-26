@@ -1,7 +1,7 @@
 """Pure UI projection helpers: language and grouping are deterministic over log facts."""
 
 from omegahive.board import fold
-from omegahive.board.state import TaskState
+from omegahive.board.state import Board, TaskState
 from omegahive.ui.demo import demo_events
 from omegahive.ui.presenters import board_lanes, board_summary, event_sentence, filter_events
 
@@ -60,3 +60,14 @@ def test_event_filters_only_select_supported_event_fields():
 
     assert len(filtered) == 1
     assert filtered[0].task_id == "T1"
+
+
+def test_a_cancelled_task_is_abandoned_work_not_ready_or_attention():
+    board = Board(tasks={
+        "plain": TaskState("plain", "cancelled"),
+        "escalated": TaskState("escalated", "cancelled", escalated=True),
+    })
+    lanes = board_lanes(board)
+    assert [t.task_id for t in lanes["abandoned"]] == ["escalated", "plain"]
+    assert board_summary(board)["abandoned"] == 2
+    assert board_summary(board)["attention"] == 0

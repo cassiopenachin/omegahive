@@ -60,7 +60,7 @@
 # contract readable without opening another file.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=scripts/hive-common.sh
 source "$SCRIPT_DIR/hive-common.sh"
 
@@ -163,13 +163,11 @@ def blocked($result; $terminal):
     end;
 
 # A task's terminal event, scanning its slice in seq order. The legality table
-# (board/legality.py) admits exactly three ways to reach a terminal state, and
-# `status_override` is only registered for `done` and `reopened` — a
-# status_override(cancelled|failed) is gateway-refused and can never appear in a
-# log, so matching on those would be dead code while the real terminal events went
-# unseen. `reopened` un-terminates: a task reopened out of review is back in
+# (board/legality.py) admits four ways to reach a terminal state. `reopened`
+# un-terminates: a task reopened out of review is back in
 # flight until it closes again.
 #   task.status_override(done)  -> done
+#   task.status_override(cancelled) -> cancelled (human task-scoped abandon)
 #   task.failed                 -> failed   (worker-emitted, from in_progress/blocked)
 #   plan.revised(action=cancel) -> cancelled (run-scoped: no task_id, cancels the board)
 # $cancel_ts is the run-level plan cancel, applied only to a task that both exists
@@ -203,6 +201,8 @@ def terminal($created; $cancel_ts):
   ( reduce .[] as $e (null;
       if $e.event_type == "task.status_override" and $e.payload.status == "done"
         then {status: "done", ts: $e.logical_ts}
+      elif $e.event_type == "task.status_override" and $e.payload.status == "cancelled"
+        then {status: "cancelled", ts: $e.logical_ts}
       elif $e.event_type == "task.status_override" and $e.payload.status == "reopened"
         then null
       elif $e.event_type == "task.failed"
@@ -570,9 +570,10 @@ stat("accept→last result (gross, full cycle)"; "mixed"; $worked; "accepted_to_
 "  actor. For a reassigned task the whole span is attributed to the final worker; the",
 "  reassignment count is the flag that the span is not one session's.",
 "- **Closed only.** A task enters this table at its terminal event, and work in flight",
-"  is never measured. There are three terminal events, matching the legality table:",
-"  `task.status_override(done)`, `task.failed` (worker-emitted — failed work is",
-"  counted, not hidden), and a run-scoped `plan.revised(action=cancel)`.",
+"  is never measured. There are four terminal events, matching the legality table:",
+"  `task.status_override(done)`, human task-scoped `task.status_override(cancelled)`,",
+"  `task.failed` (worker-emitted — failed work is counted, not hidden), and a",
+"  run-scoped `plan.revised(action=cancel)`.",
 "  `task.status_override(reopened)` un-terminates a task: it is back in flight until",
 "  it closes again, and only the final close is measured.",
 "- **One divergence from the board fold**, deliberate: a whole-plan cancel relabels",

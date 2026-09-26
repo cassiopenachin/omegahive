@@ -46,7 +46,7 @@
 # contract readable without opening another file.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=scripts/hive-common.sh
 source "$SCRIPT_DIR/hive-common.sh"
 
@@ -85,6 +85,12 @@ if [ -n "$REVIEW_VERDICT" ]; then
   REVIEW_VERDICT=$(validate_review_verdict "$REVIEW_VERDICT")
 fi
 
+# 0a. The operator workspace must be at the hub before anything is written: the close's
+#     own metrics and score commits are pushed from it, and a worker that published from
+#     a sandbox leaves it behind (ff_ops_workspace says why). Before any spine write, so a
+#     workspace that cannot fast-forward refuses the close with nothing emitted.
+ff_ops_workspace
+
 # 0. Resolve the task to its order across every project (refusing cross-project
 #    ambiguity), then load that project's committed identity so RUN is the task's
 #    own run — never a global default that could point close at the wrong spine.
@@ -114,7 +120,8 @@ echo "hive-close: task=$TASK  result=$REF"
 # 3. review.passed (instrument — blessed human-tier borrowing), then
 #    status_override(done). The done-gate requires latest review == passed, so
 #    this order is load-bearing.
-passed_payload=$(jq -cn --arg r "$REF" '{ref_result:$r}')
+passed_payload=$(jq -cn --arg r "$REF" \
+  '{ref_result:$r, review_kind:"operator_acceptance"}')
 done_payload=$(jq -cn --arg s 'done' --arg r "$REASON" '{status:$s, reason:$r}')
 
 emit instrument "$OPERATOR_ACTOR" review.passed --task "$TASK" --payload "$passed_payload" >/dev/null

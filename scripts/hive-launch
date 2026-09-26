@@ -50,7 +50,7 @@
 # contract readable without opening another file.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # Where this script REALLY lives, symlinks resolved. SCRIPT_DIR above is deliberately not
 # resolved — it is how the sibling library is sourced, and on this deployment `~/bin` holds a
 # symlink per script, so both names work there. Repository ASSETS are different: they are not
