@@ -42,6 +42,15 @@ case "$STATUS" in
   *) die "task '$TASK' is '$STATUS', not in an abandonable state" ;;
 esac
 
+# A live worker is stopped by the operator first, never by this command: abandoning only
+# clears ownership, so a harness still running in its window would keep spending and
+# writing while every emit it tried was refused. Same test hive-cleanup uses for "live".
+if tmux list-windows -t "$HIVE_TMUX_SESSION" -F '#{window_name}' 2>/dev/null \
+     | grep -qxF "$TASK"; then
+  die "task '$TASK' still has a live window; stop the worker first, then abandon:
+      tmux kill-window -t $HIVE_TMUX_SESSION:$TASK"
+fi
+
 AFFECTED=$(printf '%s' "$BOARD" | jq -r --arg t "$TASK" \
   '.[] | select((.depends_on // []) | index($t))
    | select((.status | IN("done", "failed", "cancelled") | not) and (.pruned != true))
@@ -50,6 +59,19 @@ payload=$(jq -cn --arg s cancelled --arg r "$REASON" '{status:$s, reason:$r}')
 emit human "$OPERATOR_ACTOR" task.status_override --task "$TASK" --payload "$payload" >/dev/null
 
 echo "hive-abandon: task=$TASK status=cancelled reason=$REASON"
+
+# Harvest what the task consumed, as hive-close does: a cancelled root is now eligible for
+# hive-cleanup, and two of the four usage surfaces live inside the sandbox it prunes.
+# Non-fatal and loud: the abandon is already durable on the spine.
+if ! "$SCRIPT_DIR/hive-usage" "$TASK" --project "$PROJECT" </dev/null; then
+  {
+    echo
+    echo "hive-abandon: WARNING the abandon SUCCEEDED and is durable on the spine — harvesting"
+    echo "  what task '$TASK' consumed did not. Recover with one command, before its sandbox"
+    echo "  is pruned:"
+    echo "      hive-usage $TASK --project $PROJECT"
+  } >&2
+fi
 if [ -n "$AFFECTED" ]; then
   echo "hive-abandon: affected dependents remain waiting (no cascade):"
   printf '  %s\n' $AFFECTED
