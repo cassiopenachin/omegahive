@@ -10,7 +10,7 @@ from ..events.envelope import Event
 
 
 def task_lane(task: TaskState) -> str:
-    if task.pruned:
+    if task.pruned or task.status == "cancelled":
         return "abandoned"
     if task.status == "done":
         return "completed"
