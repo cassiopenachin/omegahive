@@ -52,7 +52,9 @@ def rig(tmp_path):
     shims = tmp_path / "shims"
     shims.mkdir()
     (shims / "tmux").write_text(
-        '#!/bin/sh\n[ "$1" = list-windows ] && printf "%s\\n" $FAKE_WINDOWS\nexit 0\n')
+        '#!/bin/sh\n'
+        'if [ -n "$FAKE_TMUX_ERR" ]; then echo "$FAKE_TMUX_ERR" >&2; exit 1; fi\n'
+        '[ "$1" = list-windows ] && printf "%s\\n" $FAKE_WINDOWS\nexit 0\n')
     (shims / "tmux").chmod(0o755)
 
     hub, ws = tmp_path / "hub.git", tmp_path / "ws"
@@ -152,3 +154,24 @@ def test_abandon_refuses_a_workspace_that_cannot_fast_forward(rig):
     proc = run("t1", "--reason", "stop")
     assert proc.returncode != 0
     assert calls() == []                          # refused before any emit
+
+
+@pytest.mark.parametrize("err", [
+    "error connecting to /tmp/tmux-1000/default (No such file or directory)",  # no server
+    "no server running on /tmp/tmux-1000/default",                           # stale socket
+    "can't find session: hive",
+])
+def test_no_tmux_server_or_session_means_no_live_window(rig, err):
+    # After a reboot there is no server at all, and every dangling worker is dead:
+    # exactly when abandon is needed, so this must not block it.
+    run, _ = rig
+    assert run("t1", "--reason", "stop", FAKE_TMUX_ERR=err).returncode == 0
+
+
+def test_an_unverifiable_window_check_refuses_with_nothing_emitted(rig):
+    run, calls = rig
+    proc = run("t1", "--reason", "stop",
+               FAKE_TMUX_ERR="error connecting to /tmp/tmux-1000/default (Permission denied)")
+    assert proc.returncode != 0
+    assert "Permission denied" in proc.stderr
+    assert calls() == []

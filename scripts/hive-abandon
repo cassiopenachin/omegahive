@@ -49,10 +49,20 @@ esac
 # A live worker is stopped by the operator first, never by this command: abandoning only
 # clears ownership, so a harness still running in its window would keep spending and
 # writing while every emit it tried was refused. Same test hive-cleanup uses for "live".
-if tmux list-windows -t "$HIVE_TMUX_SESSION" -F '#{window_name}' 2>/dev/null \
-     | grep -qxF "$TASK"; then
-  die "task '$TASK' still has a live window; stop the worker first, then abandon:
+# No tmux server or no session means no registered worker (after a reboot every dangling
+# worker is dead, which is exactly when abandon is needed); any other tmux failure leaves
+# liveness unverified, so it refuses.
+if WINDOWS=$(tmux list-windows -t "$HIVE_TMUX_SESSION" -F '#{window_name}' 2>&1); then
+  if printf '%s\n' "$WINDOWS" | grep -qxF "$TASK"; then
+    die "task '$TASK' still has a live window; stop the worker first, then abandon:
       tmux kill-window -t $HIVE_TMUX_SESSION:$TASK"
+  fi
+else
+  case "$WINDOWS" in
+    *"(No such file or directory)"*|*"no server running"*|*"can't find session"*) ;;
+    *) die "cannot tell whether '$TASK' has a live worker window; tmux said: $WINDOWS
+  Nothing was emitted. Fix tmux access, or stop the worker, and re-run." ;;
+  esac
 fi
 
 # Whether a worker ever held this task, read from the spine before anything is written: a
