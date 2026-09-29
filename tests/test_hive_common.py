@@ -1021,15 +1021,15 @@ def test_the_second_round_leads_with_the_previous_one_and_the_increment(tmp_path
     reviews = tmp_path / "reviews"
     first = _review(run_dir, repo, bin_dir, home, reviews)
     assert first.returncode == 0, first.stderr
-    assert "The previous round is at" not in first.stdout
+    assert "## The previous round" not in first.stdout
 
     (repo / "f").write_text("changed\n")
     subprocess.run(["git", "-C", str(repo), "commit", "-aqm", "repair"], check=True, timeout=30)
-    (reviews / "disposition.md").write_text("finding 1: fixed\n")
+    (reviews / "dispositions.md").write_text("round 1 · B1 blocking · fixed abc1234\n")
     second = _review(run_dir, repo, bin_dir, home, reviews)
-    assert "The previous round is at" in second.stdout
+    assert "## The previous round" in second.stdout
     assert "git diff" in second.stdout, "no incremental range was named"
-    assert "disposition.md" in second.stdout
+    assert "round 1 · B1 blocking · fixed abc1234" in second.stdout
 
 
 def test_the_head_sidecar_is_not_counted_as_a_round(tmp_path):

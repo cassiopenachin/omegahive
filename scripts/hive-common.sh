@@ -419,6 +419,20 @@ Then give exactly one verdict line, as the first non-empty line of your response
 Work outside Scope, or across a Stop-line, goes under a heading **OUT OF SCOPE**. Name it;
 do not require it to be removed, and do not require it to be perfected. Whether to cut or
 keep it is the operator's decision, and yours only to surface.
+
+## Findings are numbered, and a closed finding stays closed
+
+Number every finding by its class: B1, B2... blocking; N1, N2... notes; O1, O2... out of
+scope. A finding you raise again keeps its number.
+
+From round 2 you are handed the previous round and the worker's dispositions, one line per
+finding: `fixed` (with the commit), `listed` (kept in the report, not fixed), or `escalated`
+(put to the operator as a question). A finding dispositioned `listed` or `escalated` is closed
+for this task. Re-raising it without a new argument that answers the disposition is a defect
+in your review, not in the code. An escalated finding does not count toward your verdict:
+the operator's answer decides it, and if the answer is to fix it, check the fix. A blocking
+finding may only be `fixed` or `escalated`; one dispositioned `listed` is itself a blocking
+finding, and you say so.
 CONTRACTBODY
       } > "$CONTRACT"
     fi
@@ -694,8 +708,8 @@ trap 'rm -f "$PREAMBLE"' EXIT
   fi
   PREV=$(ls -1t "${HIVE_REVIEW_DIR:-/nonexistent}"/*review* 2>/dev/null | head -1 || true)
   if [ -n "$PREV" ]; then
-    echo "The previous round is at $PREV. Read it first: your first job this round is"
-    echo "whether its findings were addressed, not to re-derive the whole branch."
+    echo "Your first job this round is whether the previous round's findings were addressed,"
+    echo "not to re-derive the whole branch."
     PREV_HEAD=""
     PREV_META="${HIVE_REVIEW_DIR:-}/meta/$(basename "$PREV").head"
     [ ! -r "$PREV_META" ] || PREV_HEAD=$(cat "$PREV_META" 2>/dev/null || true)
@@ -704,8 +718,32 @@ trap 'rm -f "$PREAMBLE"' EXIT
       echo "    git diff $PREV_HEAD..HEAD"
       echo "The full branch diff stays available and is secondary."
     fi
-    DISP="${HIVE_REVIEW_DIR:-}/disposition.md"
-    [ ! -r "$DISP" ] || echo "The worker recorded what it did with those findings in $DISP."
+    # QUOTED, not named. A path is an invitation a reviewer can decline, and on 2026-09-25
+    # a rebutted finding came back four rounds running from a reviewer that was never shown
+    # the rebuttal. The contract's rule that a closed finding stays closed is only
+    # enforceable against text the reviewer was actually handed.
+    echo
+    echo "## The previous round"
+    echo
+    echo "----- begin $(basename "$PREV") -----"
+    cat "$PREV"
+    echo "----- end $(basename "$PREV") -----"
+    echo
+    echo "## The worker's dispositions"
+    echo
+    DISP="${HIVE_REVIEW_DIR:-}/dispositions.md"
+    if [ -r "$DISP" ]; then
+      echo "----- begin dispositions.md -----"
+      cat "$DISP"
+      echo "----- end dispositions.md -----"
+    else
+      echo "The worker recorded no dispositions for the previous round ($DISP is missing)."
+      echo "Treat every previous finding as open, and say in your review that none were recorded."
+      # Reported to the worker too, not tolerated in silence: WORKER.md makes the file its
+      # duty before the next round, and a round without it cannot close anything.
+      echo "review: WARNING no dispositions file at $DISP; every previous finding is treated" >&2
+      echo "        as open. Write one line per finding before the next round (WORKER.md)." >&2
+    fi
   fi
   echo
 } > "$PREAMBLE"
