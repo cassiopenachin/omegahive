@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+
 from test_hive_common import _issue_review_wrapper, _review
 
 WRAPPER_REVIEWERS = ["opus-in-sandbox", "claude-cli", "codex-plugin"]
