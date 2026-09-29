@@ -261,8 +261,6 @@ def terminal($created; $cancel_ts):
     gross_last_s: (if $accepted == null or $last_result == null then null
                     else ($last_result - $accepted) end),
     revised: ($first_result != null and $last_result != null and $first_result != $last_result),
-    questions: ( [ $slice[] | select(.event_type == "task.reported")
-                   | select(.payload.kind == "question") ] | length ),
     review_failed: ( [ $slice[] | select(.event_type == "review.failed") ] | length ),
     reassignments: ( [ $slice[] | select(.event_type == "task.reassigned") ] | length )
   }
@@ -278,7 +276,6 @@ g() { printf '%s' "$OUT" | jq -r --arg k "$1" '.[$k] // empty'; }
 HEAD_SEQ=$(g head_seq)
 CLOSED_DAY=$(g closed_day)
 FINAL_STATUS=$(g final_status)
-ACT_QUESTIONS=$(g questions)
 ACT_REVIEW_FAILED=$(g review_failed)
 NET_S=$(g net_s)
 GROSS_LAST_S=$(g gross_last_s)
@@ -365,10 +362,10 @@ fi
 # order file at all is a real, and interesting, case: it scores as unpredicted.
 # predictions_classify (hive-common.sh) is the SAME parser hive-launch's gate
 # calls — a gate that can disagree with the scorer is the defect D1 already was
-# — and it sets PRED_EFFORT_TXT/PRED_QUESTIONS_TXT/PRED_REVIEW_TXT/
-# PRED_FIELDS_PARSED as a side effect.
+# — and it sets PRED_EFFORT_TXT/PRED_REVIEW_TXT/PRED_FIELDS_PARSED as a side
+# effect.
 PRED_VERDICT="absent"
-PRED_EFFORT_TXT=""; PRED_QUESTIONS_TXT=""; PRED_REVIEW_TXT=""; PRED_FIELDS_PARSED=0
+PRED_EFFORT_TXT=""; PRED_REVIEW_TXT=""; PRED_FIELDS_PARSED=0
 if [ -n "$ORDER_REL" ]; then
   predictions_classify "$OPS_WS/$ORDER_REL"
 else
@@ -408,20 +405,10 @@ fi
 # The one narrow override (validated above, before any spine read): the derived
 # hit/under/over/unpredicted/unscorable verdict above is replaced, never blended
 # with. ACT_EFFORT is left exactly as measured — "retain the measured first-result
-# span as context" — only the VERDICT changes, and only for effort; questions and
-# review outcome are untouched by this flag.
+# span as context" — only the VERDICT changes, and only for effort; the review
+# outcome is untouched by this flag.
 if [ -n "$EFFORT_UNINTERP" ]; then
   V_EFFORT="uninterpretable ($EFFORT_UNINTERP)"
-fi
-
-if [ -n "$PRED_QUESTIONS_TXT" ]; then
-  read -r Q_LO Q_HI <<<"$(parse_range "$PRED_QUESTIONS_TXT")"
-  PRED_QUESTIONS="$PRED_QUESTIONS_TXT"
-  if   [ "$ACT_QUESTIONS" -lt "${Q_LO%.*}" ]; then V_QUESTIONS="under"
-  elif [ "$ACT_QUESTIONS" -gt "${Q_HI%.*}" ]; then V_QUESTIONS="over"
-  else V_QUESTIONS="hit"; fi
-else
-  PRED_QUESTIONS="$NOT_PREDICTED"; V_QUESTIONS="unpredicted"
 fi
 
 # The spine records review.failed; it does not record "the PR needed two rounds of
@@ -446,8 +433,8 @@ FIELDS=$PRED_FIELDS_PARSED
 case "$PRED_VERDICT" in
   absent)   COVERAGE="unpredicted (no \`## Predictions\` section)" ;;
   full)     COVERAGE="full" ;;
-  partial*) COVERAGE="partial ($FIELDS of 3 fields predicted; missing: $(predictions_missing_fields))" ;;
-  *)        COVERAGE="unpredicted (section present, 0 of 3 fields parsed)" ;;
+  partial*) COVERAGE="partial ($FIELDS of 2 fields predicted; missing: $(predictions_missing_fields))" ;;
+  *)        COVERAGE="unpredicted (section present, 0 of 2 fields parsed)" ;;
 esac
 
 # --- write ---------------------------------------------------------------------
@@ -471,8 +458,7 @@ seat's act; this file only records.
 
 **Verdict rules.** *effort* — \`hit\` when the actual elapsed worker span (net of
 answer wait) falls within the predicted range widened by the greater of 0.5h and
-25% of its low bound; otherwise \`under\`/\`over\`. *questions* — \`hit\` when the
-count falls inside the predicted range, exactly. *review outcome* — never inferred:
+25% of its low bound; otherwise \`under\`/\`over\`. *review outcome* — never inferred:
 the spine records \`review.failed\`, not whether a PR needed another round, so the
 verdict stays \`unscored\` until a human supplies one with \`--review\`.
 
@@ -496,7 +482,7 @@ reads \`uninterpretable (<cause>)\` instead of hit/under/over, because the two
 decided cause classes leave no trace on the spine for anything here to detect —
 this is never inferred from elapsed time, however extreme, only ever set by an
 explicit human call. Excluded from any over-prediction factor computed from this
-file. Questions and review outcome are untouched by it.
+file. The review outcome is untouched by it.
 
 A session that idles looks like a session that works; the scored span is a proxy,
 and predictions should be read against it as one.
@@ -544,7 +530,6 @@ trap 'rm -f "$ENTRY_TMP" ${CAL_TMP:+"$CAL_TMP"}' EXIT
   echo "| field | predicted | actual | verdict |"
   echo "|---|---|---|---|"
   echo "| effort | $PRED_EFFORT | $ACT_EFFORT | $V_EFFORT |"
-  echo "| questions | $PRED_QUESTIONS | $ACT_QUESTIONS | $V_QUESTIONS |"
   echo "| review outcome | $PRED_REVIEW | $ACT_REVIEW | $V_REVIEW |"
   echo
   echo "- coverage: $COVERAGE"
@@ -598,7 +583,6 @@ rm -f "$ENTRY_TMP"
 
 echo "hive-score: $TASK — coverage: $COVERAGE"
 echo "  effort     predicted $PRED_EFFORT · actual $ACT_EFFORT · $V_EFFORT"
-echo "  questions  predicted $PRED_QUESTIONS · actual $ACT_QUESTIONS · $V_QUESTIONS"
 echo "  review     predicted $PRED_REVIEW · $V_REVIEW"
 if [ -n "$CARRIED_VERDICT" ]; then
   echo "  review verdict carried forward from the newest prior entry: $CARRIED_VERDICT"

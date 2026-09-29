@@ -1603,37 +1603,33 @@ predictions_declared_unpredicted() {  # predictions_declared_unpredicted <block-
   printf '%s' "$1" | grep -qiE 'deliberately unpredicted'
 }
 
-# parse_predictions <block-text> -- extracts the three SCORED fields (Named
-# risks is a fourth, required-but-unscored bullet — R2's correction to the
-# retro's "N of 4 fields" framing: hive-score has only ever scored three).
-# Sets PRED_EFFORT_TXT / PRED_QUESTIONS_TXT / PRED_REVIEW_TXT (empty when that
-# field did not parse) and PRED_FIELDS_PARSED (0-3).
+# parse_predictions <block-text> -- extracts the two SCORED fields (Named risks
+# is a third, required-but-unscored bullet). An "Expected questions" field was
+# scored until 2026-09-14: no order filled it in thirty tries, so it was deleted
+# (retro 2026-09-14). The actual question count is still measured, in
+# hive-metrics' own worker-clock table.
+# Sets PRED_EFFORT_TXT / PRED_REVIEW_TXT (empty when that field did not parse)
+# and PRED_FIELDS_PARSED (0-2).
 parse_predictions() {  # parse_predictions <block-text>
   local block="$1" t
   PRED_EFFORT_TXT=$( { printf '%s' "$block" \
     | grep -oiE 'Expected effort:[[:space:]]*[0-9][0-9.–—-]*[[:space:]]*worker-hours?' \
     | head -1 | sed -E 's/^[Ee]xpected effort:[[:space:]]*//'; } || true )
-  PRED_QUESTIONS_TXT=$( { printf '%s' "$block" \
-    | grep -oiE 'Expected questions:[[:space:]]*[0-9][0-9–—-]*' \
-    | head -1 | sed -E 's/^[Ee]xpected questions:[[:space:]]*//'; } || true )
   PRED_REVIEW_TXT=$( { printf '%s' "$block" \
     | grep -oiE 'Expected review outcome:[[:space:]]*[^.]+' \
     | head -1 | sed -E 's/^[Ee]xpected review outcome:[[:space:]]*//'; } || true )
   PRED_FIELDS_PARSED=0
-  for t in "$PRED_EFFORT_TXT" "$PRED_QUESTIONS_TXT" "$PRED_REVIEW_TXT"; do
+  for t in "$PRED_EFFORT_TXT" "$PRED_REVIEW_TXT"; do
     if [ -n "$t" ]; then PRED_FIELDS_PARSED=$((PRED_FIELDS_PARSED + 1)); fi
   done
 }
 
 # predictions_missing_fields -- comma-joined names of the scored fields NOT
-# parsed by the last parse_predictions call (e.g. "questions, review outcome").
+# parsed by the last parse_predictions call (e.g. "effort, review outcome").
 # Reads the PRED_*_TXT globals parse_predictions just set.
 predictions_missing_fields() {
   local out=""
   [ -n "$PRED_EFFORT_TXT" ]    || out="effort"
-  if [ -z "$PRED_QUESTIONS_TXT" ]; then
-    [ -z "$out" ] && out="questions" || out="$out, questions"
-  fi
   if [ -z "$PRED_REVIEW_TXT" ]; then
     [ -z "$out" ] && out="review outcome" || out="$out, review outcome"
   fi
@@ -1645,10 +1641,10 @@ predictions_missing_fields() {
 # to one of:
 #   absent                 -- no `## Predictions` heading at all
 #   declared-unpredicted   -- the heading, with the one-line disposition
-#   unparsed               -- heading present, 0 of 3 scored fields parse
-#   partial <n>            -- heading present, 1-2 of 3 fields parse
-#   full                   -- heading present, 3 of 3 fields parse
-# Also leaves PRED_EFFORT_TXT/PRED_QUESTIONS_TXT/PRED_REVIEW_TXT/
+#   unparsed               -- heading present, 0 of 2 scored fields parse
+#   partial <n>            -- heading present, 1 of 2 fields parses
+#   full                   -- heading present, 2 of 2 fields parse
+# Also leaves PRED_EFFORT_TXT/PRED_REVIEW_TXT/
 # PRED_FIELDS_PARSED set (via parse_predictions), e.g. to quote the verbatim
 # prediction text in a calibration entry. A plain call, never `$(...)`: a
 # command substitution runs in a subshell, and every one of these globals would
@@ -1657,14 +1653,14 @@ predictions_missing_fields() {
 predictions_classify() {  # predictions_classify <order-file>
   local f="$1" block
   if ! predictions_present "$f"; then
-    PRED_EFFORT_TXT=""; PRED_QUESTIONS_TXT=""; PRED_REVIEW_TXT=""; PRED_FIELDS_PARSED=0
+    PRED_EFFORT_TXT=""; PRED_REVIEW_TXT=""; PRED_FIELDS_PARSED=0
     PRED_VERDICT="absent"
     return 0
   fi
   block=$(predictions_block "$f")
   parse_predictions "$block"
   case "$PRED_FIELDS_PARSED" in
-    3) PRED_VERDICT="full" ;;
+    2) PRED_VERDICT="full" ;;
     0)
       if predictions_declared_unpredicted "$block"; then PRED_VERDICT="declared-unpredicted"
       else PRED_VERDICT="unparsed"; fi ;;

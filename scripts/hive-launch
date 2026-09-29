@@ -35,10 +35,10 @@
 # worker id defaults to sess-<task>-<MMDD>.
 #
 # It also refuses an order whose `## Predictions` section is present but does
-# not parse (0 of 3 scored fields) — the same parser hive-score uses, so the
+# not parse (0 of 2 scored fields) — the same parser hive-score uses, so the
 # gate can never disagree with the scorer (retro 2026-07-29 D1). An order with
 # no section at all, or the one-line declared-unpredicted disposition, launches
-# clean; a partial section (1-2 of 3) warns and launches. `--anyway` overrides
+# clean; a partial section (1 of 2) warns and launches. `--anyway` overrides
 # the refusal (same spelling as the review-WIP throttle override below).
 
 # Deliberate redundancy with hive-common.sh:26, which sets exactly the same three
@@ -1129,11 +1129,10 @@ case "$PRED_VERDICT" in
       echo "  section. The gate applies at LAUNCH; this task is already on the board." >&2
     elif [ -z "$ANYWAY" ]; then
       {
-        echo "hive-launch: refusing to launch '$TASK' — its '## Predictions' section does not parse (0 of 3 scored fields)."
+        echo "hive-launch: refusing to launch '$TASK' — its '## Predictions' section does not parse (0 of 2 scored fields)."
         echo "  hive-score parses these bullet labels verbatim, case-insensitively, and nothing else"
         echo "  (design-partner PROTOCOL.md order-authoring rules — copy exactly):"
         echo "    - Expected effort: <range> — <median x multiplier, justified>"
-        echo "    - Expected questions: <count or range> — <named seams, or a designed round-trip>"
         echo "    - Expected review outcome: <clean | minor rework | rework> — <why>"
         echo "    - Named risks: <what could turn the shape of the work>   (required by protocol; not scored)"
         echo "  The section as written in $REL:"
@@ -1147,7 +1146,7 @@ case "$PRED_VERDICT" in
     ;;
   partial*)
     N="${PRED_VERDICT#partial }"
-    echo "hive-launch: WARNING '$TASK' predicts only $N of 3 scored fields (missing: $(predictions_missing_fields))." >&2
+    echo "hive-launch: WARNING '$TASK' predicts only $N of 2 scored fields (missing: $(predictions_missing_fields))." >&2
     echo "  Launching anyway — partial coverage is a metric hive-score already reports." >&2
     ;;
   absent|declared-unpredicted|full) : ;;   # nothing to say — a clean launch
