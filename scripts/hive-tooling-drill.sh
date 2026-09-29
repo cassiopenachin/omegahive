@@ -787,7 +787,7 @@ EOF
 git -C "$WS" add -A && git -C "$WS" commit --quiet -m "drill: order $BADTASK"
 git -C "$WS" push --quiet origin HEAD:main
 expect_fail_msg "an order in the D1 dialect refuses at launch" \
-  "does not parse (0 of 3 scored fields)" \
+  "does not parse (0 of 2 scored fields)" \
   "$SCRIPT_DIR/hive-launch" "$BADREL" --worker "sess-predbad-${STAMP}"
 expect_fail_msg "the refusal names the four literal labels (effort)" \
   "Expected effort:" "$SCRIPT_DIR/hive-launch" "$BADREL" --worker "sess-predbad-${STAMP}"
@@ -811,7 +811,7 @@ cat > "$WS/$PARTREL" <<'EOF'
 # Order: predictions partial
 
 ## Scope
-Drill fixture: 1 of 3 scored fields.
+Drill fixture: 1 of 2 scored fields.
 
 ## Predictions
 
@@ -821,25 +821,26 @@ git -C "$WS" add -A && git -C "$WS" commit --quiet -m "drill: order $PARTTASK"
 git -C "$WS" push --quiet origin HEAD:main
 PARTOUT="$("$SCRIPT_DIR/hive-launch" "$PARTREL" --worker "sess-predpartial-${STAMP}" 2>&1)"
 printf '%s\n' "$PARTOUT"
-check "a 1-of-3 order launches (warns, does not refuse)" "[ \"\$(bstatus '$ARUN' '$PARTTASK')\" = assigned ]"
+check "a 1-of-2 order launches (warns, does not refuse)" "[ \"\$(bstatus '$ARUN' '$PARTTASK')\" = assigned ]"
 check "the warning says WARNING"            "printf '%s' \"\$PARTOUT\" | grep -F 'WARNING' >/dev/null"
 check "the warning names the missing fields" \
-  "printf '%s' \"\$PARTOUT\" | grep -F 'missing: questions, review outcome' >/dev/null"
+  "printf '%s' \"\$PARTOUT\" | grep -F 'missing: review outcome' >/dev/null"
 
-# DoD (b) names this case specifically: 2 of 3, not just "partial" in general —
-# the same code branch as the 1-of-3 case above, exercised at the other edge.
+# The other edge of the same branch: with the questions field deleted (retro
+# 2026-09-14) a complete section is 2 of 2, so this fixture asserts the FULL
+# case — a clean launch with no partial warning — rather than a wider partial.
 PART2TASK="drill-predictions-partial2"
 PART2REL="projects/$APROJ/orders/2026-07-13-$PART2TASK.md"
 cat > "$WS/$PART2REL" <<'EOF'
 # Order: predictions partial2
 
 ## Scope
-Drill fixture: 2 of 3 scored fields.
+Drill fixture: 2 of 2 scored fields — complete.
 
 ## Predictions
 
 - Expected effort: 1 worker-hour.
-- Expected questions: 0.
+- Expected review outcome: clean.
 EOF
 git -C "$WS" add -A && git -C "$WS" commit --quiet -m "drill: order $PART2TASK"
 git -C "$WS" push --quiet origin HEAD:main
@@ -888,15 +889,15 @@ check "the declared disposition needed no --anyway" "! printf '%s' \"\$DECOUT\" 
 echo
 echo "== one parser, two callers: the D1-dialect order agrees at launch and at score =="
 # DoD (c): the SAME input yields the SAME verdict from both callers. The launch
-# above already refused this order as unparseable (0 of 3 fields); driving it
+# above already refused this order as unparseable (0 of 2 fields); driving it
 # to a close now proves hive-score's independently-computed coverage agrees.
 BADWRAP="$WORK/sess-predbad-${STAMP}/run/emit"
 "$BADWRAP" --type task.accepted --task "$BADTASK" >/dev/null
 "$BADWRAP" --type task.result_posted --task "$BADTASK" \
   --payload "$(jq -cn --arg r "projects/$APROJ/reports/2026-07-13-$BADTASK-result.md@0123456789abcdef0123456789abcdef01234567" '{artifact_refs:[{ref:$r, quality:"ok"}]}')" >/dev/null
 "$SCRIPT_DIR/hive-close" "$BADTASK" --review clean --reason "predictions-gate drill close" >/dev/null
-check "the same D1-dialect order scores 'section present, 0 of 3 fields parsed'" \
-  "cal_entry '$APROJ' '$BADTASK' | grep -F 'coverage: unpredicted (section present, 0 of 3 fields parsed)' >/dev/null"
+check "the same D1-dialect order scores 'section present, 0 of 2 fields parsed'" \
+  "cal_entry '$APROJ' '$BADTASK' | grep -F 'coverage: unpredicted (section present, 0 of 2 fields parsed)' >/dev/null"
 
 echo
 echo "== adopt a pre-seeded ready task (register + assign only, no task.created) =="
@@ -1350,7 +1351,6 @@ seed_legacy_row() {  # seed_legacy_row <project> <task> <verdict-text>
     echo "| field | predicted | actual | verdict |"
     echo "|---|---|---|---|"
     echo "| effort | *not predicted* | 0.1h | unpredicted |"
-    echo "| questions | *not predicted* | 0 | unpredicted |"
     echo "| review outcome | *not predicted* | review.failed x0 on the spine (PR-level rework is not an event) | $verdict |"
     echo
     echo "- coverage: unpredicted (no usable \`## Predictions\` section)"

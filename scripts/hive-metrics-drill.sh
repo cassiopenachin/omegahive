@@ -253,8 +253,8 @@ ev(1600, "worker", "w-beta1", "task.reported", "probe|x",
    {"kind": "question", "ref": "projects/drill/questions/p.md@abc1234"})
 
 # eta — closed debris (mirrors gamma's shape); its order carries a `##
-# Predictions` heading in the D1 dialect (mislabeled bullets, 0 of 3 fields
-# parse). Coverage must read "section present, 0 of 3 fields parsed" — a
+# Predictions` heading in the D1 dialect (mislabeled bullets, 0 of 2 fields
+# parse). Coverage must read "section present, 0 of 2 fields parsed" — a
 # DIFFERENT string from gamma's "no section" — even though both currently
 # score unpredicted (instrument-teeth item 3 / DoD (d)).
 created(14000, "eta")
@@ -310,9 +310,9 @@ FIXTURE_SUM="$(sha256_hex < "$FIXTURE")"
 
 # --- 2. the order files -------------------------------------------------------
 # Between them these exercise every verdict branch, so a broken comparison cannot
-# pass: alpha effort `hit` / questions `hit`; epsilon effort `over`; zeta effort
-# `under` and questions `under` (via a predicted RANGE, so the range parser is
-# exercised too). beta is partial (effort only), gamma has no Predictions section,
+# pass: alpha effort `hit`; epsilon effort `over`; zeta effort `under` (via a
+# predicted RANGE, so the range parser is exercised too). beta is partial
+# (effort only), gamma has no Predictions section,
 # delta is complete but not closed, so scoring it must be refused.
 cat > "$ORDERS/2026-07-20-alpha.md" <<'EOF'
 # Order: alpha
@@ -345,7 +345,7 @@ Do the zeta thing, twice.
 
 ## Predictions
 
-- Expected effort: 8 worker-hours. Expected questions: 1-2. Expected review outcome: minor rework.
+- Expected effort: 8-9 worker-hours. Expected questions: 1-2. Expected review outcome: minor rework.
 EOF
 
 cat > "$ORDERS/2026-07-20-beta.md" <<'EOF'
@@ -645,7 +645,6 @@ check "alpha actual effort scored"    "entry alpha | grep '1.0h' >/dev/null"
 # All three verdict branches are exercised across alpha/epsilon/zeta, so an
 # inverted or short-circuited comparison cannot pass this drill.
 check "alpha effort verdict = hit"    "[ \"\$(verdict alpha effort)\" = hit ]"
-check "alpha questions verdict = hit" "[ \"\$(verdict alpha questions)\" = hit ]"
 check "alpha review left unscored"    "verdict alpha 'review outcome' | grep '^unscored' >/dev/null"
 check "alpha coverage full"           "entry alpha | grep '^- coverage: full$' >/dev/null"
 # Scoring records the score: the entry is committed and pushed as part of the same
@@ -686,8 +685,7 @@ check "epsilon scorable (task.failed closed it)" "entry epsilon | grep 'final st
 
 "$S" zeta >/dev/null
 check "zeta effort verdict = under"      "[ \"\$(verdict zeta effort)\" = under ]"
-check "zeta questions verdict = under"   "[ \"\$(verdict zeta questions)\" = under ]"
-check "zeta predicted range quoted"      "entry zeta | grep '1-2' >/dev/null"
+check "zeta predicted range quoted"      "entry zeta | grep '8-9' >/dev/null"
 
 # iota: the retro 3 Verdict 4 case. Predicted 1 worker-hour; accept->FIRST result
 # net is exactly 3600s (1.0h) -> hit. Had hive-score still scored the OLD
@@ -709,13 +707,10 @@ expect_fail_msg "--effort-uninterpretable requires --note" "requires --note" \
   "$S" iota --effort-uninterpretable scope-amendment --again
 expect_fail_msg "--effort-uninterpretable rejects an undecided cause class" "must be one of" \
   "$S" iota --effort-uninterpretable weather --note "nope" --again
-IOTA_Q_BEFORE="$(verdict iota questions)"
 "$S" iota --effort-uninterpretable host-incident --note "beastie tmux kill mid-run, 2026-08-13" --again >/dev/null
 check "uninterpretable verdict names the cause class"     "[ \"\$(verdict iota effort)\" = 'uninterpretable (host-incident)' ]"
 check "uninterpretable retains the measured span as context" "entry iota | grep '1.0h' >/dev/null"
 check "uninterpretable cause note recorded verbatim"      "entry iota | grep -F 'beastie tmux kill mid-run' >/dev/null"
-check "uninterpretable never inferred — questions verdict unaffected" \
-  "[ \"\$(verdict iota questions)\" = '$IOTA_Q_BEFORE' ]"
 check "uninterpretable never inferred — review verdict unaffected (still unscored)" \
   "verdict iota 'review outcome' | grep '^unscored' >/dev/null"
 check "still one row (uninterpretable rides --again, not a second entry)" \
@@ -728,14 +723,14 @@ check "a plain --again afterward returns to the derived verdict (not sticky)" \
 check "beta recorded as partial"      "entry beta | grep '^- coverage: partial' >/dev/null"
 check "beta effort prediction quoted" "entry beta | grep '4 worker-hours' >/dev/null"
 check "beta absent fields marked"     "entry beta | grep 'not predicted' >/dev/null"
-check "beta absent field unpredicted" "[ \"\$(verdict beta questions)\" = unpredicted ]"
+check "beta absent field unpredicted" "verdict beta 'review outcome' | grep '^unpredicted' >/dev/null"
 
 "$S" gamma >/dev/null
 check "gamma recorded as unpredicted" "entry gamma | grep '^- coverage: unpredicted' >/dev/null"
 check "gamma effort unpredicted"      "[ \"\$(verdict gamma effort)\" = unpredicted ]"
 check "gamma coverage: no section, verbatim" "entry gamma | grep '^- coverage: unpredicted (no \`## Predictions\` section)\$' >/dev/null"
 
-# eta: a `## Predictions` heading present, D1's mislabeled dialect, 0 of 3
+# eta: a `## Predictions` heading present, D1's mislabeled dialect, 0 of 2
 # fields parse — absent and unparsed must NOT read the same (D1's whole cost
 # was that they did). One parser (predictions_classify, hive-common.sh) is
 # what makes this and hive-launch's gate agree on the same input — asserted
@@ -744,7 +739,7 @@ check "gamma coverage: no section, verbatim" "entry gamma | grep '^- coverage: u
 "$S" eta >/dev/null
 check "eta recorded as unpredicted"   "entry eta | grep '^- coverage: unpredicted' >/dev/null"
 check "eta coverage: section present, unparsed, verbatim" \
-  "entry eta | grep '^- coverage: unpredicted (section present, 0 of 3 fields parsed)\$' >/dev/null"
+  "entry eta | grep '^- coverage: unpredicted (section present, 0 of 2 fields parsed)\$' >/dev/null"
 check "absent and unparsed are DIFFERENT strings" \
   "[ \"\$(entry gamma | grep '^- coverage:')\" != \"\$(entry eta | grep '^- coverage:')\" ]"
 check "eta effort unpredicted"        "[ \"\$(verdict eta effort)\" = unpredicted ]"
