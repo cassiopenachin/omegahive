@@ -203,10 +203,11 @@ require_executable() {  # require_executable <executable> <route-name>
 
 # Only the three sections a reviewer is measured against. The rest of an order is context
 # for the worker -- refs, predictions, prose -- and handing it over invites a review of the
-# order instead of the work.
+# order instead of the work. Headings match exactly: a prefix match let `## Scope creep`
+# into a contract as though it were part of the bar.
 review_contract_sections() {  # review_contract_sections <<<"$markdown"  -> Scope, Stop-lines, DoD
   awk '
-    /^## (Scope|Stop-lines|Definition of done)/ { keep = 1; print; next }
+    /^## (Scope|Stop-lines|Definition of done)[[:space:]]*$/ { keep = 1; print; next }
     /^## / { keep = 0 }
     keep { print }
   '

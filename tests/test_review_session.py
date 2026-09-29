@@ -130,3 +130,13 @@ def test_a_heading_that_only_starts_like_a_section_does_not_count(rig):
     r = run("r", scope_file=lookalike)
     assert r.returncode != 0
     assert "## Scope" in r.stderr
+
+
+def test_a_lookalike_section_beside_the_real_ones_stays_out_of_the_contract(rig):
+    run, _, session, tmp_path = rig
+    mixed = tmp_path / "mixed.md"
+    mixed.write_text(SCOPE + "\n## Scope creep\n\nLOOKALIKE-SECTION-TEXT\n")
+    assert run("r", scope_file=mixed).returncode == 0
+    contract = (session / "review-contract.md").read_text()
+    assert "1. Add the flag." in contract
+    assert "LOOKALIKE-SECTION-TEXT" not in contract
