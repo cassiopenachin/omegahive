@@ -71,6 +71,8 @@ def test_round_two_quotes_the_previous_review_and_the_dispositions(tmp_path, rev
     (reviews / "dispositions.md").write_text(DISPOSITIONS)
     review()
     second = prompt(2)
+    # The contract is re-sent every round, not only the first: round 2 is judged by it too.
+    assert "Findings are numbered" in second and "## How to decide the verdict" in second
     # Quoted, not merely named: a reviewer that is handed a path can decline to open it, and
     # the Codex-side reviewer is told not to inspect the repository at all.
     assert "B1 the floor constant is read before it is set" in second
