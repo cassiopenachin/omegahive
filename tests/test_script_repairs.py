@@ -26,7 +26,7 @@ COMMON = SCRIPTS / "hive-common.sh"
 # relative to itself, so each one breaks the same way when that is computed beside a link.
 OPERATOR_COMMANDS = [
     "hive-abandon", "hive-answer", "hive-cleanup", "hive-close", "hive-launch",
-    "hive-metrics", "hive-routes", "hive-score", "hive-usage",
+    "hive-metrics", "hive-review-session", "hive-routes", "hive-score", "hive-usage",
 ]
 
 

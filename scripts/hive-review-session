@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# hive-review-session <session-dir> <scope-file> [--reviewer <name>] [<prompt>]
+#
+# The contracted review for a working session that is not a hive task -- a salvage step
+# worked in an agentic session, say. It is the SAME review a task gets: the same wrapper
+# (issue_review_command), the same verdict rules and dispositions contract
+# (review_contract_body), the same round cap, the same quoted previous round and
+# dispositions. Only the source of Scope, Stop-lines and Definition of done differs: a
+# scope file holding those three sections, taken from the plan step, instead of an order.
+#
+# It exists because the alternative was the Codex companion's bare `review` command, which
+# carries no contract, no verdict and no rounds. On 2026-09-25 a portability nit that the
+# contract would have classed as out of scope came back as a P1 in four consecutive rounds,
+# because nothing told the reviewer what the step was for or what had been answered.
+#
+# Run it from the repository under review, on the session's branch. <session-dir> holds the
+# contract, the issued command and reviews/ (the rounds, and dispositions.md, which the
+# session writes after each round). The default reviewer is Sol through `codex exec`; a
+# session outside a sandbox may choose claude-cli instead.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=scripts/hive-common.sh
+source "$SCRIPT_DIR/hive-common.sh"
+
+usage() {
+  echo "usage: hive-review-session <session-dir> <scope-file> [--reviewer codex-plugin|claude-cli] [<prompt>]" >&2
+  exit 2
+}
+
+REVIEWER=codex-plugin
+POS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --reviewer) shift; [ $# -gt 0 ] || usage; REVIEWER="$1" ;;
+    -h|--help) usage ;;
+    *) POS+=("$1") ;;
+  esac
+  shift
+done
+[ "${#POS[@]}" -ge 2 ] || usage
+DIR="${POS[0]}"
+SCOPE_FILE="${POS[1]}"
+PROMPT=("${POS[@]:2}")
+
+# The two host reviewers. opus-in-sandbox belongs inside a microVM, which a session is not.
+case "$REVIEWER" in
+  codex-plugin|claude-cli) ;;
+  *) die "--reviewer must be codex-plugin or claude-cli, got '$REVIEWER'" ;;
+esac
+[ -r "$SCOPE_FILE" ] || die "cannot read the scope file $SCOPE_FILE"
+
+# Refused before anything is written: a contract missing one of the three sections is a
+# review with no stated bar, and the reviewer invents one.
+SECTIONS=$(review_contract_sections <"$SCOPE_FILE")
+for heading in "Scope" "Stop-lines" "Definition of done"; do
+  grep -q "^## $heading" <<<"$SECTIONS" \
+    || die "$SCOPE_FILE has no '## $heading' section. A session is reviewed against Scope,
+  Stop-lines and Definition of done, like an order: copy them from the plan step."
+done
+
+mkdir -p "$DIR/reviews"
+DIR=$(cd "$DIR" && pwd)
+CONTRACT="$DIR/review-contract.md"
+{
+  printf '# Review contract — session %s\n\n' "$(basename "$DIR")"
+  printf 'You are reviewing a working session against the plan step it was given. The step\n'
+  printf 'is quoted below from %s (sha256 %s). It is authoritative\n' \
+    "$SCOPE_FILE" "$(sha256_hex <"$SCOPE_FILE" | cut -c1-12)"
+  printf 'about what "done" means; you are not.\n\n'
+  printf '## The step\n\n'
+  printf '%s\n' "$SECTIONS"
+  review_contract_body
+} > "$CONTRACT"
+issue_review_command "$DIR/review" "$REVIEWER" "$CONTRACT"
+
+{
+  echo "hive-review-session: $(basename "$DIR"), reviewer $REVIEWER, rounds in $DIR/reviews"
+  echo "  After each round, write one line per finding to $DIR/reviews/dispositions.md:"
+  echo "  fixed (with the commit), listed, or escalated. A session has no task to block, so"
+  echo "  escalated means: put the finding to the operator in the conversation, record the"
+  echo "  ruling on its line, and do not re-run the review to argue it."
+} >&2
+
+HIVE_REVIEW_DIR="$DIR/reviews" HIVE_REVIEW_CONTRACT="$CONTRACT" \
+  exec "$DIR/review" ${PROMPT[@]+"${PROMPT[@]}"}

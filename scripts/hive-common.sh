@@ -194,6 +194,71 @@ require_executable() {  # require_executable <executable> <route-name>
 # publication path, the process lifecycle and the terminal record all at once, and its
 # absence made a launched pane vanish (2026-08-21, prune-projection-v2).
 
+# --- the review contract's shared parts ------------------------------------------------
+#
+# A contract is a header naming what is reviewed, the three sections a reviewer is measured
+# against, and how to decide a verdict. The last two are the same whoever writes a contract
+# -- a task launch from its pinned order, or hive-review-session from a plan step -- so they
+# live here once. A second copy of this text would drift within a week.
+
+# Only the three sections a reviewer is measured against. The rest of an order is context
+# for the worker -- refs, predictions, prose -- and handing it over invites a review of the
+# order instead of the work.
+review_contract_sections() {  # review_contract_sections <<<"$markdown"  -> Scope, Stop-lines, DoD
+  awk '
+    /^## (Scope|Stop-lines|Definition of done)/ { keep = 1; print; next }
+    /^## / { keep = 0 }
+    keep { print }
+  '
+}
+
+review_contract_body() {  # review_contract_body  -> how to decide the verdict, and dispositions
+  cat <<'CONTRACTBODY'
+
+## How to decide the verdict
+
+Answer these two questions, in this order, and say which one you are answering.
+
+**1. Is the Definition of done met?** Take each item above and say met or not met, with the
+evidence you checked. The order defines done. A reviewer with no stated bar invents one, and
+the one it invents is "unassailable" — across 44 saved reviews on this deployment, not one
+returned PASS.
+
+**2. Is anything shipped incorrect?** Blocking findings only. A finding is blocking when, and
+only when, one of these holds:
+
+  - a result the work states would be wrong;
+  - a published or postable artifact asserts something false;
+  - a test claimed to guard a behaviour cannot fail when that behaviour breaks.
+
+Everything else that is correct but not blocking is a **note**. Notes are worth writing and
+do not hold up the work.
+
+Then give exactly one verdict line, as the first non-empty line of your response:
+
+    VERDICT: PASS      every Definition-of-done item met, no blocking finding (notes are fine)
+    VERDICT: REWORK    a Definition-of-done item is not met, or a blocking finding stands
+
+Work outside Scope, or across a Stop-line, goes under a heading **OUT OF SCOPE**. Name it;
+do not require it to be removed, and do not require it to be perfected. Whether to cut or
+keep it is the operator's decision, and yours only to surface.
+
+## Findings are numbered, and a closed finding stays closed
+
+Number every finding by its class: B1, B2... blocking; N1, N2... notes; O1, O2... out of
+scope. A finding you raise again keeps its number.
+
+From round 2 you are handed the previous round and the worker's dispositions, one line per
+finding: `fixed` (with the commit), `listed` (kept in the report, not fixed), or `escalated`
+(put to the operator as a question). A finding dispositioned `listed` or `escalated` is closed
+for this task. Re-raising it without a new argument that answers the disposition is a defect
+in your review, not in the code. An escalated finding does not count toward your verdict:
+the operator's answer decides it, and if the answer is to fix it, check the fix. A blocking
+finding may only be `fixed` or `escalated`; one dispositioned `listed` is itself a blocking
+finding, and you say so.
+CONTRACTBODY
+}
+
 issue_worker_interface() {
   # issue_worker_interface <run-dir> <ws-root> <code-root> <code-branch> <run> <worker>
   #                        [<reviewer>]
@@ -382,62 +447,20 @@ BRIDGEBODY
         printf 'is quoted below at the sha it was pinned to (%s). It is authoritative\n' "${ORDER_SHA:0:12}"
         printf 'about what "done" means; you are not.\n\n'
         printf '## The order\n\n'
-        # Only the three sections a reviewer is measured against. The rest of an order is
-        # context for the worker -- refs, predictions, prose -- and handing it over invites
-        # a review of the order instead of the work.
-        printf '%s\n' "$ORDER_TEXT" | awk '
-          /^## (Scope|Stop-lines|Definition of done)/ { keep = 1; print; next }
-          /^## / { keep = 0 }
-          keep { print }
-        '
-        cat <<'CONTRACTBODY'
-
-## How to decide the verdict
-
-Answer these two questions, in this order, and say which one you are answering.
-
-**1. Is the Definition of done met?** Take each item above and say met or not met, with the
-evidence you checked. The order defines done. A reviewer with no stated bar invents one, and
-the one it invents is "unassailable" — across 44 saved reviews on this deployment, not one
-returned PASS.
-
-**2. Is anything shipped incorrect?** Blocking findings only. A finding is blocking when, and
-only when, one of these holds:
-
-  - a result the work states would be wrong;
-  - a published or postable artifact asserts something false;
-  - a test claimed to guard a behaviour cannot fail when that behaviour breaks.
-
-Everything else that is correct but not blocking is a **note**. Notes are worth writing and
-do not hold up the work.
-
-Then give exactly one verdict line, as the first non-empty line of your response:
-
-    VERDICT: PASS      every Definition-of-done item met, no blocking finding (notes are fine)
-    VERDICT: REWORK    a Definition-of-done item is not met, or a blocking finding stands
-
-Work outside Scope, or across a Stop-line, goes under a heading **OUT OF SCOPE**. Name it;
-do not require it to be removed, and do not require it to be perfected. Whether to cut or
-keep it is the operator's decision, and yours only to surface.
-
-## Findings are numbered, and a closed finding stays closed
-
-Number every finding by its class: B1, B2... blocking; N1, N2... notes; O1, O2... out of
-scope. A finding you raise again keeps its number.
-
-From round 2 you are handed the previous round and the worker's dispositions, one line per
-finding: `fixed` (with the commit), `listed` (kept in the report, not fixed), or `escalated`
-(put to the operator as a question). A finding dispositioned `listed` or `escalated` is closed
-for this task. Re-raising it without a new argument that answers the disposition is a defect
-in your review, not in the code. An escalated finding does not count toward your verdict:
-the operator's answer decides it, and if the answer is to fix it, check the fix. A blocking
-finding may only be `fixed` or `escalated`; one dispositioned `listed` is itself a blocking
-finding, and you say so.
-CONTRACTBODY
+        review_contract_sections <<<"$ORDER_TEXT"
+        review_contract_body
       } > "$CONTRACT"
     fi
   fi
 
+  issue_review_command "$REVIEW" "$REVIEWER" "$CONTRACT" "$ROUTE_ENV_NAMES"
+}
+
+# The review command, issued into a task root by issue_worker_interface and into a session
+# directory by hive-review-session: one wrapper, so a task's review and a session's review
+# cannot come to mean different things.
+issue_review_command() {  # issue_review_command <path> <reviewer> <contract-path> [route-env-names]
+  local REVIEW="$1" REVIEWER="$2" CONTRACT="$3" ROUTE_ENV_NAMES="${4:-}"
   # --- the review command, for a route whose reviewer runs inside the sandbox ----------
   #
   # Issued for the two reviewers that are a COMMAND rather than an integration. The codex
