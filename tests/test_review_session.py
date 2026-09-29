@@ -120,3 +120,13 @@ def test_a_scope_file_without_the_three_sections_is_refused(rig):
     assert r.returncode != 0
     assert "Definition of done" in r.stderr
     assert not (session / "reviews").exists() or not any((session / "reviews").iterdir())
+
+
+def test_a_heading_that_only_starts_like_a_section_does_not_count(rig):
+    run, _, _, tmp_path = rig
+    lookalike = tmp_path / "lookalike.md"
+    lookalike.write_text("## Scope creep\n\nx\n\n## Stop-lines draft\n\ny\n\n"
+                         "## Definition of done later\n\nz\n")
+    r = run("r", scope_file=lookalike)
+    assert r.returncode != 0
+    assert "## Scope" in r.stderr

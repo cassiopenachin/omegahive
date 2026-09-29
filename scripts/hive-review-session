@@ -55,7 +55,7 @@ esac
 # review with no stated bar, and the reviewer invents one.
 SECTIONS=$(review_contract_sections <"$SCOPE_FILE")
 for heading in "Scope" "Stop-lines" "Definition of done"; do
-  grep -q "^## $heading" <<<"$SECTIONS" \
+  grep -qxE "## ${heading}[[:space:]]*" <<<"$SECTIONS" \
     || die "$SCOPE_FILE has no '## $heading' section. A session is reviewed against Scope,
   Stop-lines and Definition of done, like an order: copy them from the plan step."
 done

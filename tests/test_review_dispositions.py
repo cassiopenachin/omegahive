@@ -8,6 +8,9 @@ records its stdin, so nothing here calls a model.
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -92,3 +95,63 @@ def test_round_one_needs_no_dispositions_and_says_nothing_about_them(tmp_path):
     first = review()
     assert "WARNING" not in first.stderr
     assert "recorded no dispositions" not in prompt(1)
+
+
+# --- the Codex workers' reviewer: claude-review, in the dotfiles repository -----------
+#
+# The third reviewer path lives outside this repository, so this runs the installed copy
+# where there is one and skips where there is not (CI). It is told to review "only the
+# supplied diff" and not to inspect the repository, which is why quoting matters most here.
+#
+# Opt-in, by naming the script in CLAUDE_REVIEW_SCRIPT: the installed copy is a different
+# repository's current version, so running it by default would make this suite pass or fail
+# on the state of that checkout rather than on this one.
+CLAUDE_REVIEW = Path(os.environ.get("CLAUDE_REVIEW_SCRIPT", "/nonexistent"))
+
+
+@pytest.mark.skipif(not CLAUDE_REVIEW.is_file() or shutil.which("hive-review-diff") is None,
+                    reason="set CLAUDE_REVIEW_SCRIPT to a claude-review to check it")
+def test_claude_review_quotes_the_previous_round_and_the_dispositions(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    (repo / "f").write_text("x\n")
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-qm", "base"], check=True)
+    subprocess.run([*git, "checkout", "-qb", "work"], check=True)
+    (repo / "f").write_text("y\n")
+    subprocess.run([*git, "commit", "-qam", "change"], check=True)
+
+    prompts, bin_dir, reviews = tmp_path / "prompts", tmp_path / "bin", tmp_path / "reviews"
+    prompts.mkdir()
+    bin_dir.mkdir()
+    (bin_dir / "claude").write_text(
+        "#!/bin/sh\n"
+        f'n=$(ls "{prompts}" | wc -l)\n'
+        f'cat > "{prompts}/$((n + 1)).txt"\n'
+        'printf "VERDICT: REWORK\\n\\nB1 a finding\\n"\n')
+    (bin_dir / "claude").chmod(0o755)
+    contract = tmp_path / "contract.md"
+    contract.write_text("# Review contract\n\n## Scope\n\n1. Change f.\n")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("HIVE_REVIEW_")}
+    env.update(PATH=f"{bin_dir}:{os.environ['PATH']}", HIVE_REVIEW_DIR=str(reviews),
+               HIVE_REVIEW_CONTRACT=str(contract))
+
+    def review():
+        return subprocess.run([str(CLAUDE_REVIEW)], capture_output=True, text=True,
+                              cwd=str(repo), env=env, timeout=120)
+
+    assert review().returncode == 0
+    previous = next(p for p in reviews.iterdir() if p.is_file())
+    previous.write_text(PREVIOUS)
+    second = review()
+    assert second.returncode == 0, second.stderr
+    assert "WARNING" in second.stderr and "dispositions" in second.stderr
+    assert "recorded no dispositions" in (prompts / "2.txt").read_text()
+    (reviews / "dispositions.md").write_text(DISPOSITIONS)
+    assert review().returncode == 0
+    third = (prompts / "3.txt").read_text()
+    assert "B1 a finding" in third                             # the previous round, quoted
+    assert "round 1 · N1 note · listed" in third               # the dispositions, quoted
+    assert third.index("round 1 · N1 note · listed") < third.index("LOCAL DIFF")
