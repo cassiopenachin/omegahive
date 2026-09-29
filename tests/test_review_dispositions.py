@@ -155,3 +155,29 @@ def test_claude_review_quotes_the_previous_round_and_the_dispositions(tmp_path):
     assert "B1 a finding" in third                             # the previous round, quoted
     assert "round 1 · N1 note · listed" in third               # the dispositions, quoted
     assert third.index("round 1 · N1 note · listed") < third.index("LOCAL DIFF")
+
+
+def test_the_codex_reviewer_runs_as_an_agent_on_the_contract_not_the_builtin_reviewer(tmp_path):
+    # `codex exec review` is Codex's built-in reviewer, which reads the contract but writes
+    # its own fixed format: after the contract landed, 7 of its 9 saved reviews on this
+    # deployment carried no VERDICT line (claude-review: 9 of 9 did). Plain `codex exec -`
+    # takes the contract as its instructions, so the contract decides the format.
+    run_dir, _, _, _ = _issue_review_wrapper(tmp_path, "codex-plugin")
+    issued = (run_dir / "review").read_text()
+    command = next(ln for ln in issued.splitlines() if ln.startswith("HIVE_REVIEW_CMD="))
+    assert "codex exec" in command and "-s read-only" in command
+    assert " review " not in f"{command} "
+    assert command.rstrip(")").rstrip().endswith("-")
+    scope = next(ln for ln in issued.splitlines() if ln.startswith("HIVE_REVIEW_SCOPE="))
+    assert "merge-base" in scope and "VERDICT" in scope
+
+
+@pytest.mark.parametrize("reviewer", WRAPPER_REVIEWERS)
+def test_a_reviewer_scope_carries_no_shell_syntax(tmp_path, reviewer):
+    # The scope is written into the issued script inside double quotes, so a `$(...)` in it
+    # runs when the review does instead of reaching the reviewer as text.
+    run_dir, _, _, _ = _issue_review_wrapper(tmp_path, reviewer)
+    scope = next(ln for ln in (run_dir / "review").read_text().splitlines()
+                 if ln.startswith("HIVE_REVIEW_SCOPE="))
+    value = scope.split("=", 1)[1]
+    assert "$(" not in value and "`" not in value and "${" not in value

@@ -526,8 +526,13 @@ issue_review_command() {  # issue_review_command <path> <reviewer> <contract-pat
     # whole point of this reviewer. It was reached through the `/codex:review` plugin until
     # 2026-09-14, and that plugin maps to a built-in reviewer taking no custom text — so the
     # order never reached it, and nothing it did was counted, capped or kept. `codex exec
-    # review` is the same built-in reviewer with the instruction slot open, so the route
-    # joins the protocol the other nine already use.
+    # review` then opened the instruction slot, but it is still the built-in reviewer, which
+    # reads the contract and writes its OWN fixed format: of the nine it wrote on this
+    # deployment after the contract landed, seven carried no VERDICT line, where
+    # claude-review's nine all did. Plain `codex exec -` is an agent whose instructions ARE
+    # the contract, so the contract decides the format, including numbered findings. Its
+    # final message is the only thing it writes to stdout (progress goes to stderr), which
+    # is exactly what the capture below keeps.
     #
     # `-s read-only` for the reason the claude-cli posture is restrictive: this one runs on
     # the HOST, where there is no VM boundary, and a reviewer needs to read the tree and
@@ -546,8 +551,10 @@ issue_review_command() {  # issue_review_command <path> <reviewer> <contract-pat
       # drifts silently with an unrelated file. `HIVE_REVIEW_MODEL` is the same escape hatch
       # the Claude reviewers already accept.
       review_posture=''
-      review_cmd='codex exec -s read-only -m "${HIVE_REVIEW_MODEL:-gpt-6-sol}" review -'
-      review_scope='Review the diff of the current branch against its merge-base with main.'
+      review_cmd='codex exec -s read-only -m "${HIVE_REVIEW_MODEL:-gpt-6-sol}" -'
+      # Plain words only: this text is written into the issued script inside double quotes,
+      # so any shell syntax in it would run there, not be read by the reviewer.
+      review_scope='Review the diff of the current branch against its merge-base with main (git merge-base HEAD main, then git diff from that commit); read anything in the repository you need, and change nothing. Your final message is the review, and its first non-empty line is the VERDICT line.'
       review_cred='$HOME/.codex/auth.json'
       review_cred_hint="Do NOT review your own diff with your own harness; that is not an independent review." ;;
   esac

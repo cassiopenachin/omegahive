@@ -1050,19 +1050,17 @@ def test_the_codex_reviewer_gets_the_same_wrapper_as_every_other():
     It reached Codex through the `/codex:review` plugin, which maps to a built-in reviewer
     taking no custom text and knows nothing of HIVE_REVIEW_DIR — so that route had no round
     cap, no saved reviews, no round counting, no incremental narrowing and no way to hand
-    the reviewer its order. `codex exec review -` is the same built-in reviewer with the
-    instruction slot open.
+    the reviewer its order. It is now plain `codex exec -`, an agent whose instructions are
+    the contract (the built-in `review` subcommand wrote its own format and mostly dropped
+    the VERDICT line).
 
     One wrapper body, with the command swapped. A second body would be two implementations
     of one semantics, which is the shape that produced seventeen review rounds.
     """
     common = COMMON.read_text()
     block = common.split("codex-plugin)", 1)[1].split("esac", 1)[0]
-    assert 'codex exec -s read-only -m "${HIVE_REVIEW_MODEL:-gpt-6-sol}" review -' in block
+    assert 'codex exec -s read-only -m "${HIVE_REVIEW_MODEL:-gpt-6-sol}" -\'' in block
     assert "-s read-only" in block, "a host-side reviewer must not be able to write"
-    # the flags belong to `codex exec`, before the subcommand, or they are rejected
-    assert block.index("-s read-only") < block.index("review -")
-    assert block.index("-m ") < block.index("review -")
     assert "HIVE_REVIEW_MODEL" in block, "a reviewer harness must be told its model explicitly"
     assert ".codex/auth.json" in block, "no credential is checked before reviewing"
 
