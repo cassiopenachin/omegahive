@@ -194,6 +194,72 @@ require_executable() {  # require_executable <executable> <route-name>
 # publication path, the process lifecycle and the terminal record all at once, and its
 # absence made a launched pane vanish (2026-08-21, prune-projection-v2).
 
+# --- the review contract's shared parts ------------------------------------------------
+#
+# A contract is a header naming what is reviewed, the three sections a reviewer is measured
+# against, and how to decide a verdict. The last two are the same whoever writes a contract
+# -- a task launch from its pinned order, or hive-review-session from a plan step -- so they
+# live here once. A second copy of this text would drift within a week.
+
+# Only the three sections a reviewer is measured against. The rest of an order is context
+# for the worker -- refs, predictions, prose -- and handing it over invites a review of the
+# order instead of the work. Headings match exactly: a prefix match let `## Scope creep`
+# into a contract as though it were part of the bar.
+review_contract_sections() {  # review_contract_sections <<<"$markdown"  -> Scope, Stop-lines, DoD
+  awk '
+    /^## (Scope|Stop-lines|Definition of done)[[:space:]]*$/ { keep = 1; print; next }
+    /^## / { keep = 0 }
+    keep { print }
+  '
+}
+
+review_contract_body() {  # review_contract_body  -> how to decide the verdict, and dispositions
+  cat <<'CONTRACTBODY'
+
+## How to decide the verdict
+
+Answer these two questions, in this order, and say which one you are answering.
+
+**1. Is the Definition of done met?** Take each item above and say met or not met, with the
+evidence you checked. The order defines done. A reviewer with no stated bar invents one, and
+the one it invents is "unassailable" — across 44 saved reviews on this deployment, not one
+returned PASS.
+
+**2. Is anything shipped incorrect?** Blocking findings only. A finding is blocking when, and
+only when, one of these holds:
+
+  - a result the work states would be wrong;
+  - a published or postable artifact asserts something false;
+  - a test claimed to guard a behaviour cannot fail when that behaviour breaks.
+
+Everything else that is correct but not blocking is a **note**. Notes are worth writing and
+do not hold up the work.
+
+Then give exactly one verdict line, as the first non-empty line of your response:
+
+    VERDICT: PASS      every Definition-of-done item met, no blocking finding (notes are fine)
+    VERDICT: REWORK    a Definition-of-done item is not met, or a blocking finding stands
+
+Work outside Scope, or across a Stop-line, goes under a heading **OUT OF SCOPE**. Name it;
+do not require it to be removed, and do not require it to be perfected. Whether to cut or
+keep it is the operator's decision, and yours only to surface.
+
+## Findings are numbered, and a closed finding stays closed
+
+Number every finding by its class: B1, B2... blocking; N1, N2... notes; O1, O2... out of
+scope. A finding you raise again keeps its number.
+
+From round 2 you are handed the previous round and the worker's dispositions, one line per
+finding: `fixed` (with the commit), `listed` (kept in the report, not fixed), or `escalated`
+(put to the operator as a question). A finding dispositioned `listed` or `escalated` is closed
+for this task. Re-raising it without a new argument that answers the disposition is a defect
+in your review, not in the code. An escalated finding does not count toward your verdict:
+the operator's answer decides it, and if the answer is to fix it, check the fix. A blocking
+finding may only be `fixed` or `escalated`; one dispositioned `listed` is itself a blocking
+finding, and you say so.
+CONTRACTBODY
+}
+
 issue_worker_interface() {
   # issue_worker_interface <run-dir> <ws-root> <code-root> <code-branch> <run> <worker>
   #                        [<reviewer>]
@@ -382,48 +448,20 @@ BRIDGEBODY
         printf 'is quoted below at the sha it was pinned to (%s). It is authoritative\n' "${ORDER_SHA:0:12}"
         printf 'about what "done" means; you are not.\n\n'
         printf '## The order\n\n'
-        # Only the three sections a reviewer is measured against. The rest of an order is
-        # context for the worker -- refs, predictions, prose -- and handing it over invites
-        # a review of the order instead of the work.
-        printf '%s\n' "$ORDER_TEXT" | awk '
-          /^## (Scope|Stop-lines|Definition of done)/ { keep = 1; print; next }
-          /^## / { keep = 0 }
-          keep { print }
-        '
-        cat <<'CONTRACTBODY'
-
-## How to decide the verdict
-
-Answer these two questions, in this order, and say which one you are answering.
-
-**1. Is the Definition of done met?** Take each item above and say met or not met, with the
-evidence you checked. The order defines done. A reviewer with no stated bar invents one, and
-the one it invents is "unassailable" — across 44 saved reviews on this deployment, not one
-returned PASS.
-
-**2. Is anything shipped incorrect?** Blocking findings only. A finding is blocking when, and
-only when, one of these holds:
-
-  - a result the work states would be wrong;
-  - a published or postable artifact asserts something false;
-  - a test claimed to guard a behaviour cannot fail when that behaviour breaks.
-
-Everything else that is correct but not blocking is a **note**. Notes are worth writing and
-do not hold up the work.
-
-Then give exactly one verdict line, as the first non-empty line of your response:
-
-    VERDICT: PASS      every Definition-of-done item met, no blocking finding (notes are fine)
-    VERDICT: REWORK    a Definition-of-done item is not met, or a blocking finding stands
-
-Work outside Scope, or across a Stop-line, goes under a heading **OUT OF SCOPE**. Name it;
-do not require it to be removed, and do not require it to be perfected. Whether to cut or
-keep it is the operator's decision, and yours only to surface.
-CONTRACTBODY
+        review_contract_sections <<<"$ORDER_TEXT"
+        review_contract_body
       } > "$CONTRACT"
     fi
   fi
 
+  issue_review_command "$REVIEW" "$REVIEWER" "$CONTRACT" "$ROUTE_ENV_NAMES"
+}
+
+# The review command, issued into a task root by issue_worker_interface and into a session
+# directory by hive-review-session: one wrapper, so a task's review and a session's review
+# cannot come to mean different things.
+issue_review_command() {  # issue_review_command <path> <reviewer> <contract-path> [route-env-names]
+  local REVIEW="$1" REVIEWER="$2" CONTRACT="$3" ROUTE_ENV_NAMES="${4:-}"
   # --- the review command, for a route whose reviewer runs inside the sandbox ----------
   #
   # Issued for the two reviewers that are a COMMAND rather than an integration. The codex
@@ -489,8 +527,13 @@ CONTRACTBODY
     # whole point of this reviewer. It was reached through the `/codex:review` plugin until
     # 2026-09-14, and that plugin maps to a built-in reviewer taking no custom text — so the
     # order never reached it, and nothing it did was counted, capped or kept. `codex exec
-    # review` is the same built-in reviewer with the instruction slot open, so the route
-    # joins the protocol the other nine already use.
+    # review` then opened the instruction slot, but it is still the built-in reviewer, which
+    # reads the contract and writes its OWN fixed format: of the nine it wrote on this
+    # deployment after the contract landed, seven carried no VERDICT line, where
+    # claude-review's nine all did. Plain `codex exec -` is an agent whose instructions ARE
+    # the contract, so the contract decides the format, including numbered findings. Its
+    # final message is the only thing it writes to stdout (progress goes to stderr), which
+    # is exactly what the capture below keeps.
     #
     # `-s read-only` for the reason the claude-cli posture is restrictive: this one runs on
     # the HOST, where there is no VM boundary, and a reviewer needs to read the tree and
@@ -509,8 +552,10 @@ CONTRACTBODY
       # drifts silently with an unrelated file. `HIVE_REVIEW_MODEL` is the same escape hatch
       # the Claude reviewers already accept.
       review_posture=''
-      review_cmd='codex exec -s read-only -m "${HIVE_REVIEW_MODEL:-gpt-6-sol}" review -'
-      review_scope='Review the diff of the current branch against its merge-base with main.'
+      review_cmd='codex exec -s read-only -m "${HIVE_REVIEW_MODEL:-gpt-6-sol}" -'
+      # Plain words only: this text is written into the issued script inside double quotes,
+      # so any shell syntax in it would run there, not be read by the reviewer.
+      review_scope='Review the diff of the current branch against its merge-base with main (git merge-base HEAD main, then git diff from that commit); read anything in the repository you need, and change nothing. Your final message is the review, and its first non-empty line is the VERDICT line.'
       review_cred='$HOME/.codex/auth.json'
       review_cred_hint="Do NOT review your own diff with your own harness; that is not an independent review." ;;
   esac
@@ -694,8 +739,8 @@ trap 'rm -f "$PREAMBLE"' EXIT
   fi
   PREV=$(ls -1t "${HIVE_REVIEW_DIR:-/nonexistent}"/*review* 2>/dev/null | head -1 || true)
   if [ -n "$PREV" ]; then
-    echo "The previous round is at $PREV. Read it first: your first job this round is"
-    echo "whether its findings were addressed, not to re-derive the whole branch."
+    echo "Your first job this round is whether the previous round's findings were addressed,"
+    echo "not to re-derive the whole branch."
     PREV_HEAD=""
     PREV_META="${HIVE_REVIEW_DIR:-}/meta/$(basename "$PREV").head"
     [ ! -r "$PREV_META" ] || PREV_HEAD=$(cat "$PREV_META" 2>/dev/null || true)
@@ -704,8 +749,32 @@ trap 'rm -f "$PREAMBLE"' EXIT
       echo "    git diff $PREV_HEAD..HEAD"
       echo "The full branch diff stays available and is secondary."
     fi
-    DISP="${HIVE_REVIEW_DIR:-}/disposition.md"
-    [ ! -r "$DISP" ] || echo "The worker recorded what it did with those findings in $DISP."
+    # QUOTED, not named. A path is an invitation a reviewer can decline, and on 2026-09-25
+    # a rebutted finding came back four rounds running from a reviewer that was never shown
+    # the rebuttal. The contract's rule that a closed finding stays closed is only
+    # enforceable against text the reviewer was actually handed.
+    echo
+    echo "## The previous round"
+    echo
+    echo "----- begin $(basename "$PREV") -----"
+    cat "$PREV"
+    echo "----- end $(basename "$PREV") -----"
+    echo
+    echo "## The worker's dispositions"
+    echo
+    DISP="${HIVE_REVIEW_DIR:-}/dispositions.md"
+    if [ -r "$DISP" ]; then
+      echo "----- begin dispositions.md -----"
+      cat "$DISP"
+      echo "----- end dispositions.md -----"
+    else
+      echo "The worker recorded no dispositions for the previous round ($DISP is missing)."
+      echo "Treat every previous finding as open, and say in your review that none were recorded."
+      # Reported to the worker too, not tolerated in silence: WORKER.md makes the file its
+      # duty before the next round, and a round without it cannot close anything.
+      echo "review: WARNING no dispositions file at $DISP; every previous finding is treated" >&2
+      echo "        as open. Write one line per finding before the next round (WORKER.md)." >&2
+    fi
   fi
   echo
 } > "$PREAMBLE"
