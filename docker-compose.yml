@@ -191,6 +191,18 @@ services:
       - OMEGAHIVE_UI_BASE_PATH=${OMEGAHIVE_UI_BASE_PATH:-/omegahive}
       - OMEGAHIVE_ACTIVE_WINDOW_DAYS=${OMEGAHIVE_ACTIVE_WINDOW_DAYS:-7}
       - OMEGAHIVE_PORTFOLIO_EXCLUDE=${OMEGAHIVE_PORTFOLIO_EXCLUDE:-tooling-drill-*}
+      # Where the task page reads report content: empty (the page says "not configured")
+      # unless the host names its workspace hub in OMEGAHIVE_WORKSPACE_HUB_DIR.
+      - OMEGAHIVE_WORKSPACE_HUB=${OMEGAHIVE_WORKSPACE_HUB_DIR:+/workspace-hub}
+    volumes:
+      # Listing `volumes:` here replaces the anchor's list, so its basis volume is repeated.
+      - omegahive-basis:/var/lib/omegahive
+      # The workspace hub (a bare git repository on the host), read-only: the task page
+      # runs `git cat-file` against it for the report refs a task's own events carry.
+      # :z relabels the host directory for rootless Podman on SELinux; removing this line
+      # does not undo that (`restorecon -R <dir>` does). Unset, an empty placeholder
+      # directory is mounted so compose still parses on a host without a hub.
+      - ${OMEGAHIVE_WORKSPACE_HUB_DIR:-./deploy/no-workspace-hub}:/workspace-hub:ro,z
     ports:
       # host loopback only -> container 8000. This publish IS the default access path
       # (http://127.0.0.1:8811/omegahive, or over an SSH tunnel). Change the host port via

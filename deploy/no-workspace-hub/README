@@ -1,0 +1,1 @@
+Mounted at /workspace-hub in the ui service when OMEGAHIVE_WORKSPACE_HUB_DIR is unset; see docker-compose.yml.

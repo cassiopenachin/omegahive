@@ -982,6 +982,7 @@ def test_the_contract_defines_blocking_and_leaves_scope_to_the_operator(tmp_path
     assert "VERDICT: PASS" in c and "VERDICT: REWORK" in c
     assert "OUT OF SCOPE" in c
     assert "operator's decision" in c
+    assert "*(after merge)*" in c and "leave it\nout of the verdict" in c
 
 
 def test_the_reviewer_is_handed_the_contract_on_stdin(tmp_path):

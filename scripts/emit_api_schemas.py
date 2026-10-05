@@ -27,6 +27,7 @@ _RESPONSE_MODELS = [
     models.HealthResponse,
     models.PortfolioResponse,
     models.TaskDetailResponse,
+    models.OperatorContextResponse,
     models.ErrorResponse,
 ]
 
@@ -46,7 +47,9 @@ def render() -> str:
         "",
         "Routes: `GET /api/v1/health` -> `HealthResponse`; "
         "`GET /api/v1/portfolio` -> `PortfolioResponse`; "
-        "`GET /api/v1/runs/{run_id}/tasks/{task_id}` -> `TaskDetailResponse`. "
+        "`GET /api/v1/runs/{run_id}/tasks/{task_id}` -> `TaskDetailResponse`; "
+        "`GET /api/v1/runs/{run_id}/tasks/{task_id}/operator-context` -> "
+        "`OperatorContextResponse`. "
         "Every non-2xx response on every route is `ErrorResponse`.",
         "",
     ]
