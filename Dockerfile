@@ -9,6 +9,12 @@ ENV PYTHONUNBUFFERED=1 \
     UV_PYTHON_DOWNLOADS=never \
     PATH="/app/.venv/bin:$PATH"
 
+# git, for the UI's task page: it reads report content from the workspace hub with
+# `git cat-file` (operator_context.py). The slim base ships without it.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 # uv pinned to the version used to author uv.lock (host uv 0.11.6).
 RUN pip install --no-cache-dir uv==0.11.6
 

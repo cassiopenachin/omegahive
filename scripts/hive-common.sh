@@ -223,7 +223,9 @@ Answer these two questions, in this order, and say which one you are answering.
 **1. Is the Definition of done met?** Take each item above and say met or not met, with the
 evidence you checked. The order defines done. A reviewer with no stated bar invents one, and
 the one it invents is "unassailable" — across 44 saved reviews on this deployment, not one
-returned PASS.
+returned PASS. An item tagged *(after merge)* exists only once the operator has merged and
+deployed: it is the operator's, not yours — list it as "after merge, not judged" and leave it
+out of the verdict.
 
 **2. Is anything shipped incorrect?** Blocking findings only. A finding is blocking when, and
 only when, one of these holds:

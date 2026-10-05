@@ -17,7 +17,7 @@ shape, never a third invented one.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -118,6 +118,17 @@ class TaskDetailResponse(_Model):
     events_truncated: bool
     events_returned: int
     events_available: int
+
+
+class OperatorContextResponse(_Model):
+    schema_version: Literal["operator-context.v2"]
+    run_id: str
+    task_id: str
+    observation_basis: dict[str, Any]
+    task_evidence: dict[str, Any]
+    operation_history: dict[str, Any]
+    pinned_artifacts: list[dict[str, Any]]
+    worker_output: dict[str, Any]
 
 
 class HealthResponse(_Model):

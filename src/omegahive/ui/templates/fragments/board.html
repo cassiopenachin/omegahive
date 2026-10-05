@@ -23,7 +23,7 @@
           {% for task in lanes[lane] %}
             <article class="task-card priority-{{ task.priority }}">
               <div class="task-card-topline"><span class="task-id">{{ task.task_id }}</span><span class="priority">{{ task.priority }}</span></div>
-              <h3>{{ task.title or task.task_id }}</h3>
+              <h3><a class="task-link" href="{{ base_path }}/run/{{ run_id }}/task/{{ task.task_id }}">{{ task.title or task.task_id }}</a></h3>
               <p class="task-meta">{{ task.status|replace('_', ' ') }}{% if task.owner %} · {{ task.owner }}{% endif %}</p>
               {% if task.blocker_reason %}
                 <p class="blocker"><strong>Blocked:</strong> {{ task.blocker_reason }}{% if task.blocker_needs %} <span>Needs {{ task.blocker_needs }}.</span>{% endif %}</p>

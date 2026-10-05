@@ -28,6 +28,7 @@ PAIRS = [
     (server.TaskEvent, client.TaskEvent),
     (server.TaskDetail, client.TaskDetail),
     (server.TaskDetailResponse, client.TaskDetailResponse),
+    (server.OperatorContextResponse, client.OperatorContextResponse),
     (server.HealthResponse, client.HealthResponse),
     (server.ErrorResponse, client.ErrorResponse),
 ]

@@ -10,6 +10,7 @@ import asyncio
 import os
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
+from html import escape
 from pathlib import Path
 from typing import NamedTuple
 
@@ -19,9 +20,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from ..api import build_api_router, register_error_handlers
+from ..api.service import UnknownRun, UnknownTask
 from ..board.state import Board
 from ..events.envelope import Actor, Event
 from ..metrics import compute
+from ..operator_context import OperatorContextProvider, configured_workspace_hub
 from ..port import PortView
 from ..report.portfolio import active_board, configured_window_days, portfolio_runs
 from ..report.reader import (
@@ -177,6 +180,7 @@ def create_app(
     db_check: Callable[[], None] | None = None,
     poll_seconds: float = 1.5,
     base_path: str | None = None,
+    workspace_hub: Path | None = None,
 ) -> FastAPI:
     """Create an injectable app: local visual work uses `DemoPort`; production uses Port.
 
@@ -188,6 +192,9 @@ def create_app(
     independently, meant a test that injected only a fake `port_factory` still
     silently exercised the real `OMEGAHIVE_DATABASE_URL` on `/api/v1/health` — the
     two defaults must travel together.
+
+    `workspace_hub` is where the task page reads report content; it defaults to
+    `OMEGAHIVE_WORKSPACE_HUB`, and unset means the page says the content is unavailable.
     """
     demo_mode = os.environ.get("OMEGAHIVE_UI_DEMO") == "1"
     real_backend = not demo_mode and port_factory is None
@@ -207,11 +214,19 @@ def create_app(
         base_path if base_path is not None else os.environ.get("OMEGAHIVE_UI_BASE_PATH", "")
     )
 
+    operator_context = OperatorContextProvider(
+        factory, now, workspace_hub if workspace_hub is not None else configured_workspace_hub()
+    )
+
     app = FastAPI(title="OmegaHive", docs_url=None, redoc_url=None, root_path=base_path)
     app.mount("/static", StaticFiles(directory=str(_ROOT / "static")), name="static")
     app.include_router(
         build_api_router(
-            port_factory=factory, runs_factory=runs, now_factory=now, db_check=db_check
+            port_factory=factory,
+            runs_factory=runs,
+            now_factory=now,
+            db_check=db_check,
+            operator_context=operator_context,
         )
     )
     register_error_handlers(app, base_path=base_path)
@@ -319,6 +334,30 @@ def create_app(
         request: Request, run_id: str, show_all: bool = Query(default=False, alias="all")
     ) -> HTMLResponse:
         return page_response(request, "board", run_id, show_all=show_all)
+
+    @app.get("/run/{run_id}/task/{task_id}", response_class=HTMLResponse)
+    def task_page(request: Request, run_id: str, task_id: str) -> HTMLResponse:
+        try:
+            context = operator_context(run_id, task_id)
+        except UnknownRun:
+            return HTMLResponse(f"No board state for run {escape(run_id)}.", 404)
+        except UnknownTask:
+            return HTMLResponse(
+                f"No task {escape(task_id)} on run {escape(run_id)}.", 404
+            )
+        return _TEMPLATES.TemplateResponse(
+            request=request,
+            name="task_detail.html",
+            context={
+                "request": request,
+                "base_path": base_path,
+                "page": "task",
+                "run_id": run_id,
+                "task_id": task_id,
+                "operator_context": context,
+                "stream_url": None,
+            },
+        )
 
     @app.get("/run/{run_id}/events", response_class=HTMLResponse)
     def events(

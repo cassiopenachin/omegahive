@@ -1,0 +1,229 @@
+{
+  "observation_basis": {
+    "event_cursor": 13,
+    "generation": 1,
+    "observed_at": "2026-10-05T12:00:00Z"
+  },
+  "operation_history": {
+    "items": [
+      {
+        "actor_id": "cassio",
+        "actor_role": "human",
+        "decision_ref": null,
+        "event_seq": 13,
+        "event_type": "task.status_override",
+        "executed_by": null,
+        "reason": "clean",
+        "status": "done",
+        "wall_ts": "2026-10-05T12:00:00Z"
+      },
+      {
+        "actor_id": "cassio",
+        "actor_role": "instrument",
+        "decision_ref": null,
+        "event_seq": 12,
+        "event_type": "review.passed",
+        "executed_by": null,
+        "reason": null,
+        "status": null,
+        "wall_ts": "2026-10-05T12:00:00Z"
+      },
+      {
+        "actor_id": "sol",
+        "actor_role": "instrument",
+        "decision_ref": null,
+        "event_seq": 11,
+        "event_type": "review.passed",
+        "executed_by": null,
+        "reason": null,
+        "status": null,
+        "wall_ts": "2026-10-05T12:00:00Z"
+      },
+      {
+        "actor_id": "legacy",
+        "actor_role": "instrument",
+        "decision_ref": null,
+        "event_seq": 10,
+        "event_type": "review.failed",
+        "executed_by": null,
+        "reason": "untagged",
+        "status": null,
+        "wall_ts": "2026-10-05T12:00:00Z"
+      },
+      {
+        "actor_id": "w1",
+        "actor_role": "worker",
+        "decision_ref": null,
+        "event_seq": 8,
+        "event_type": "task.result_posted",
+        "executed_by": null,
+        "reason": null,
+        "status": null,
+        "wall_ts": "2026-10-05T12:00:00Z"
+      },
+      {
+        "actor_id": "cassio",
+        "actor_role": "human",
+        "decision_ref": null,
+        "event_seq": 7,
+        "event_type": "task.unblocked",
+        "executed_by": null,
+        "reason": null,
+        "status": null,
+        "wall_ts": "2026-10-05T12:00:00Z"
+      },
+      {
+        "actor_id": "w1",
+        "actor_role": "worker",
+        "decision_ref": null,
+        "event_seq": 6,
+        "event_type": "task.blocked",
+        "executed_by": null,
+        "reason": "needs answer",
+        "status": null,
+        "wall_ts": "2026-10-05T12:00:00Z"
+      },
+      {
+        "actor_id": "w1",
+        "actor_role": "worker",
+        "decision_ref": null,
+        "event_seq": 5,
+        "event_type": "question.asked",
+        "executed_by": null,
+        "reason": null,
+        "status": null,
+        "wall_ts": "2026-10-05T12:00:00Z"
+      },
+      {
+        "actor_id": "w1",
+        "actor_role": "worker",
+        "decision_ref": null,
+        "event_seq": 4,
+        "event_type": "task.accepted",
+        "executed_by": null,
+        "reason": null,
+        "status": null,
+        "wall_ts": "2026-10-05T12:00:00Z"
+      },
+      {
+        "actor_id": "coordinator",
+        "actor_role": "coordinator",
+        "decision_ref": null,
+        "event_seq": 3,
+        "event_type": "task.assigned",
+        "executed_by": null,
+        "reason": null,
+        "status": null,
+        "wall_ts": "2026-10-05T12:00:00Z"
+      },
+      {
+        "actor_id": "coordinator",
+        "actor_role": "coordinator",
+        "decision_ref": null,
+        "event_seq": 1,
+        "event_type": "task.created",
+        "executed_by": null,
+        "reason": null,
+        "status": null,
+        "wall_ts": "2026-10-05T12:00:00Z"
+      }
+    ],
+    "truncated": false
+  },
+  "pinned_artifacts": [
+    {
+      "available": false,
+      "content": null,
+      "media_type": "text/markdown",
+      "ref": "r/result.md@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "truncated": false,
+      "unavailable_reason": "the workspace hub is not configured (OMEGAHIVE_WORKSPACE_HUB)"
+    }
+  ],
+  "run_id": "r",
+  "schema_version": "operator-context.v2",
+  "task_evidence": {
+    "blocker": {
+      "available": false,
+      "event_seq": null,
+      "needs": null,
+      "reason": null,
+      "ref": null,
+      "unavailable_reason": "task is not currently blocked"
+    },
+    "cancellation": {
+      "actor_id": null,
+      "available": false,
+      "decision_ref": null,
+      "event_seq": null,
+      "reason": null,
+      "unavailable_reason": "task is not cancelled"
+    },
+    "effort": {
+      "available": false,
+      "cost_usd": null,
+      "elapsed_seconds": null,
+      "tokens": null,
+      "unavailable_reason": "no durable consumption evidence was recorded"
+    },
+    "independent_review": {
+      "available": true,
+      "rounds": [
+        {
+          "actor_id": "sol",
+          "event_seq": 11,
+          "reason": null,
+          "ref_result": "r/result.md@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "verdict": "passed"
+        }
+      ],
+      "unavailable_reason": null
+    },
+    "operator_acceptance": {
+      "actor_id": "cassio",
+      "available": true,
+      "current": true,
+      "event_seq": 12,
+      "reason": "clean",
+      "ref_result": "r/result.md@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "unavailable_reason": null
+    },
+    "owner": "w1",
+    "question": {
+      "available": true,
+      "event_seq": 5,
+      "ref": "q/1.md@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "text": "Which base branch?",
+      "unavailable_reason": null
+    },
+    "result": {
+      "artifact_refs": [
+        {
+          "quality": "ok",
+          "ref": "r/result.md@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "available": true,
+      "cost": null,
+      "event_seq": 8,
+      "unavailable_reason": null
+    },
+    "status": "done",
+    "title": "Port the page",
+    "unclassified_reviews": [
+      {
+        "actor_id": "legacy",
+        "event_seq": 10,
+        "reason": "untagged",
+        "ref_result": "r/result.md@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "verdict": "failed"
+      }
+    ]
+  },
+  "task_id": "t",
+  "worker_output": {
+    "available": false,
+    "lines": [],
+    "unavailable_reason": "the worker's pane is read through the host operation socket, which is not installed yet (salvage step S3)"
+  }
+}

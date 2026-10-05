@@ -13,7 +13,7 @@ Nothing here accepts a request; these are outputs only.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -170,3 +170,21 @@ class ErrorResponse(_Model):
 
     error: Literal["unknown_run", "unknown_task", "database_unavailable", "invalid_request"]
     detail: str
+
+
+class OperatorContextResponse(_Model):
+    """Bounded evidence for one task, as the task page shows it (`operator_context`).
+
+    The groups stay additive dictionaries, versioned by `schema_version`: each optional
+    piece of evidence carries `available` and, when false, a non-empty
+    `unavailable_reason` instead of an empty value.
+    """
+
+    schema_version: Literal["operator-context.v2"]
+    run_id: str
+    task_id: str
+    observation_basis: dict[str, Any]
+    task_evidence: dict[str, Any]
+    operation_history: dict[str, Any]
+    pinned_artifacts: list[dict[str, Any]]
+    worker_output: dict[str, Any]

@@ -8,7 +8,7 @@ Source of truth: `src/omegahive/api/models.py`. Regenerate after any change:
 uv run python scripts/emit_api_schemas.py
 ```
 
-Routes: `GET /api/v1/health` -> `HealthResponse`; `GET /api/v1/portfolio` -> `PortfolioResponse`; `GET /api/v1/runs/{run_id}/tasks/{task_id}` -> `TaskDetailResponse`. Every non-2xx response on every route is `ErrorResponse`.
+Routes: `GET /api/v1/health` -> `HealthResponse`; `GET /api/v1/portfolio` -> `PortfolioResponse`; `GET /api/v1/runs/{run_id}/tasks/{task_id}` -> `TaskDetailResponse`; `GET /api/v1/runs/{run_id}/tasks/{task_id}/operator-context` -> `OperatorContextResponse`. Every non-2xx response on every route is `ErrorResponse`.
 
 ## `HealthResponse`
 
@@ -732,6 +732,70 @@ Routes: `GET /api/v1/health` -> `HealthResponse`; `GET /api/v1/portfolio` -> `Po
     "events_available"
   ],
   "title": "TaskDetailResponse",
+  "type": "object"
+}
+```
+
+## `OperatorContextResponse`
+
+```json
+{
+  "additionalProperties": false,
+  "description": "Bounded evidence for one task, as the task page shows it (`operator_context`).\n\nThe groups stay additive dictionaries, versioned by `schema_version`: each optional\npiece of evidence carries `available` and, when false, a non-empty\n`unavailable_reason` instead of an empty value.",
+  "properties": {
+    "observation_basis": {
+      "additionalProperties": true,
+      "title": "Observation Basis",
+      "type": "object"
+    },
+    "operation_history": {
+      "additionalProperties": true,
+      "title": "Operation History",
+      "type": "object"
+    },
+    "pinned_artifacts": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Pinned Artifacts",
+      "type": "array"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "operator-context.v2",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "task_evidence": {
+      "additionalProperties": true,
+      "title": "Task Evidence",
+      "type": "object"
+    },
+    "task_id": {
+      "title": "Task Id",
+      "type": "string"
+    },
+    "worker_output": {
+      "additionalProperties": true,
+      "title": "Worker Output",
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "run_id",
+    "task_id",
+    "observation_basis",
+    "task_evidence",
+    "operation_history",
+    "pinned_artifacts",
+    "worker_output"
+  ],
+  "title": "OperatorContextResponse",
   "type": "object"
 }
 ```
