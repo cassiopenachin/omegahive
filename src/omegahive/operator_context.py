@@ -205,8 +205,10 @@ class OperatorContextProvider:
         question_event: Any | None,
         question_report: Any | None,
     ) -> str | None:
+        # `task.reported(kind=question)` is the retired way of asking; its ref belongs to the
+        # current question only when no `question.asked` came after it.
         reported_ref = _payload(question_report).get("ref")
-        if isinstance(reported_ref, str):
+        if isinstance(reported_ref, str) and _seq(question_report) >= _seq(question_event):
             return reported_ref
         if question_event is None:
             ref = _payload(_last(events, "task.blocked")).get("ref_report")

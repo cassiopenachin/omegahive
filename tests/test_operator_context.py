@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +19,7 @@ from omegahive.port import PortView
 from omegahive.ui.demo import DEMO_RUN_ID, DemoPort
 
 NOW = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
+FIXTURE = Path(__file__).parent / "fixtures" / "operator_context_v2.json"
 SHA_A = "a" * 40
 SHA_B = "b" * 40
 RESULT = f"r/result.md@{SHA_A}"
@@ -97,6 +99,27 @@ def test_demo_blocked_task_validates_and_says_why_each_unavailable_card_is_empty
     for card in (context.worker_output, evidence["independent_review"]):
         assert card["available"] is False
         assert card["unavailable_reason"]
+
+
+def test_golden_context_is_the_clients_stub():
+    """The fixture is what a client (the page, later Slack) can build against. When the
+    shape changes on purpose, regenerate it from `_closed_task()` and bump the version."""
+    golden = json.loads(FIXTURE.read_text())
+
+    assert OperatorContextResponse.model_validate(golden).schema_version == "operator-context.v2"
+    assert _provider(_closed_task())("r", "t") == golden
+
+
+def test_an_older_reported_question_ref_does_not_attach_to_a_newer_question():
+    events = _closed_task()[:4] + [
+        _event(5, "task.reported", {"kind": "question", "ref": f"q/old.md@{SHA_A}"}),
+        _event(6, "question.asked", {"text": "New question?"}),
+        _event(7, "task.blocked", {"reason": "needs answer", "ref_report": f"q/new.md@{SHA_B}"}),
+    ]
+
+    question = _provider(events)("r", "t")["task_evidence"]["question"]
+
+    assert (question["text"], question["ref"]) == ("New question?", f"q/new.md@{SHA_B}")
 
 
 def test_unknown_task_is_refused_not_partially_shown():
