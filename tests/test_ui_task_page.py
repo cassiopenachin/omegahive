@@ -72,8 +72,11 @@ def test_report_content_from_the_hub_is_shown_escaped(tmp_path):
     assert "<script>alert(1)" not in html
 
 
-def test_unknown_task_is_a_404():
-    assert _client().get(f"/omegahive/run/{DEMO_RUN_ID}/task/nope").status_code == 404
+def test_unknown_task_is_a_404_that_does_not_echo_markup():
+    response = _client().get(f"/omegahive/run/{DEMO_RUN_ID}/task/<img src=x onerror=alert(1)>")
+
+    assert response.status_code == 404
+    assert "&lt;img" in response.text and "<img" not in response.text
 
 
 def test_api_serves_the_same_context_and_404s_unknown_tasks():

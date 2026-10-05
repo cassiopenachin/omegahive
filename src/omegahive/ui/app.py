@@ -10,6 +10,7 @@ import asyncio
 import os
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
+from html import escape
 from pathlib import Path
 from typing import NamedTuple
 
@@ -339,9 +340,11 @@ def create_app(
         try:
             context = operator_context(run_id, task_id)
         except UnknownRun:
-            return HTMLResponse(f"No board state for run {run_id}.", status_code=404)
+            return HTMLResponse(f"No board state for run {escape(run_id)}.", 404)
         except UnknownTask:
-            return HTMLResponse(f"No task {task_id} on run {run_id}.", status_code=404)
+            return HTMLResponse(
+                f"No task {escape(task_id)} on run {escape(run_id)}.", 404
+            )
         return _TEMPLATES.TemplateResponse(
             request=request,
             name="task_detail.html",
