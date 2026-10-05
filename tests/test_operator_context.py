@@ -122,6 +122,18 @@ def test_an_older_reported_question_ref_does_not_attach_to_a_newer_question():
     assert (question["text"], question["ref"]) == ("New question?", f"q/new.md@{SHA_B}")
 
 
+def test_a_newer_reported_question_does_not_borrow_an_older_questions_text():
+    events = _closed_task()[:4] + [
+        _event(5, "question.asked", {"text": "Old question?"}),
+        _event(6, "task.reported", {"kind": "question", "ref": f"q/new.md@{SHA_B}"}),
+    ]
+
+    question = _provider(events)("r", "t")["task_evidence"]["question"]
+
+    assert question["ref"] == f"q/new.md@{SHA_B}" and question["event_seq"] == 6
+    assert question["text"] is None and question["available"] is False
+
+
 def test_unknown_task_is_refused_not_partially_shown():
     with pytest.raises(UnknownTask):
         _provider(_closed_task())("r", "nope")

@@ -38,6 +38,7 @@ def test_blocked_task_page_shows_the_blocker_and_says_why_cards_are_unavailable(
     assert "Worker output unavailable: the worker&#39;s pane is read through" in html
     assert "Independent review unavailable: independent reviews are recorded as files" in html
     assert "Operator acceptance unavailable:" in html
+    assert "Effort · latest work execution" in html
     assert "data-stream-url" not in html, "the page is a snapshot, not a live stream"
     assert "<form" not in html, "read-only: no write path before S3"
 

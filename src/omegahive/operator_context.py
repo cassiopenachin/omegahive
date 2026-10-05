@@ -97,20 +97,24 @@ class OperatorContextProvider:
             raise UnknownTask(task_id)
 
         events = sorted((e for e in view.events if e.task_id == task_id), key=_seq)
-        question_event = _last(events, "question.asked")
-        question_report = _last(
+        # The newest way the task asked supplies both the text and the ref, so the card never
+        # pairs one question's text with another's report. `task.reported(kind=question)` is
+        # the retired way of asking: it carries a ref and no text.
+        asking = _last(
             (
                 e
                 for e in events
-                if e.event_type == "task.reported" and _payload(e).get("kind") == "question"
+                if e.event_type == "question.asked"
+                or (e.event_type == "task.reported" and _payload(e).get("kind") == "question")
             ),
+            "question.asked",
             "task.reported",
         )
         blocked_event = _last(events, "task.blocked")
         result_event = _last(events, "task.result_posted")
 
-        question_ref = self._question_ref(events, question_event, question_report)
-        question_text = _payload(question_event).get("text")
+        question_ref = self._question_ref(events, asking)
+        question_text = _payload(asking).get("text")
         if not isinstance(question_text, str) or not question_text:
             question_text = None
 
@@ -125,10 +129,7 @@ class OperatorContextProvider:
             ):
                 question_text = question_artifact["content"]
 
-        question_seq = max(
-            (_seq(e) for e in (question_event, question_report) if e is not None),
-            default=None,
-        )
+        question_seq = _seq(asking) if asking is not None else None
         question = (
             _available(text=question_text, ref=question_ref, event_seq=question_seq)
             if question_text is not None
@@ -200,20 +201,15 @@ class OperatorContextProvider:
         }
 
     @staticmethod
-    def _question_ref(
-        events: list[Any],
-        question_event: Any | None,
-        question_report: Any | None,
-    ) -> str | None:
-        # `task.reported(kind=question)` is the retired way of asking; its ref belongs to the
-        # current question only when no `question.asked` came after it.
-        reported_ref = _payload(question_report).get("ref")
-        if isinstance(reported_ref, str) and _seq(question_report) >= _seq(question_event):
-            return reported_ref
-        if question_event is None:
+    def _question_ref(events: list[Any], asking: Any | None) -> str | None:
+        """The report for the newest question: its own ref, or its blocking episode's."""
+        if asking is None:
             ref = _payload(_last(events, "task.blocked")).get("ref_report")
             return ref if isinstance(ref, str) else None
-        question_seq = _seq(question_event)
+        if asking.event_type == "task.reported":
+            ref = _payload(asking).get("ref")
+            return ref if isinstance(ref, str) else None
+        question_seq = _seq(asking)
         next_unblocked_seq = min(
             (
                 _seq(e)
