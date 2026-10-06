@@ -269,12 +269,16 @@ services:
       # (e.g. https://<host>:8443/omegahive — the same :8443 the UI is served behind). Config,
       # not a secret; empty default = links absent, render unchanged. Same pattern as above.
       OMEGAHIVE_UI_BASE_URL: ${OMEGAHIVE_UI_BASE_URL:-}
+      # Where messages go: slack (the default; reads SLACK_BOT_TOKEN + SLACK_CHANNEL_ID from
+      # notifier.env) or telegram (reads TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID). Rollback to
+      # Telegram is OMEGAHIVE_NOTIFIER_TRANSPORT=telegram in .env and a notifier restart.
+      OMEGAHIVE_NOTIFIER_TRANSPORT: ${OMEGAHIVE_NOTIFIER_TRANSPORT:-slack}
     env_file:
       # OMEGAHIVE_DATABASE_URL (the read path) plus the shared portfolio run cut
       # (OMEGAHIVE_PORTFOLIO_EXCLUDE / OMEGAHIVE_ACTIVE_WINDOW_DAYS).
       - .env
       # required:false so an unconfigured host doesn't break `compose config`/other services;
-      # the notifier fails fast at startup if the token/chat are absent.
+      # the notifier fails fast at startup if the selected transport's pair is absent.
       #
       # OMEGAHIVE_SECRETS_DIR carries a DEFAULT here (deployment spec §4's canonical
       # location) because it previously had none: unset, this path interpolated to a bare
@@ -288,7 +292,7 @@ services:
       # skipped in silence again. systemd USER units and cron both provide HOME, so the
       # shipped scheduling paths are fine; a systemd SYSTEM unit or a bare container is not.
       # Set OMEGAHIVE_SECRETS_DIR explicitly in any HOME-less context.
-      - path: ${OMEGAHIVE_SECRETS_DIR:-${HOME}/.config/omegahive/secrets}/notifier.env   # TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
+      - path: ${OMEGAHIVE_SECRETS_DIR:-${HOME}/.config/omegahive/secrets}/notifier.env   # the Slack pair and/or the Telegram pair
         required: false
     volumes:
       # :z — shared SELinux label so the cursors survive container replacement. Without it,

@@ -16,6 +16,11 @@ The same file also carries the portfolio heartbeat state (one send schedule + a 
 tally) under a `heartbeat` key. It is independent of the read cursors — a failed heartbeat
 send never touches them — but shares the file so there is no second volume.
 
+The Slack transport keeps its thread map here too, under `threads`: `"<run>/<task>"` -> the
+`ts` of that task's parent message. It is a cache, not a record: lost, the next event about
+a task starts a new thread, and the spine is missing nothing. Saving cursors carries the map
+over unchanged, and saving the map carries the cursors over, so neither write drops the other.
+
 **Cutover from the single-run notifier.** A legacy file (`{"cursor": …, "generation": …}`)
 carries a cursor for whichever run that instance followed. It is deliberately **not**
 adopted: every run re-arms at its current head on first sight, so the cutover is silent.
@@ -73,12 +78,17 @@ class CursorStore:
     def load_heartbeat(self) -> PortfolioHeartbeat:
         return PortfolioHeartbeat.from_dict(self._read().get("heartbeat"))
 
+    def load_threads(self) -> dict[str, str]:
+        raw = self._read().get("threads")
+        if not isinstance(raw, dict):
+            return {}
+        return {str(k): v for k, v in raw.items() if isinstance(v, str) and v}
+
     def save(
         self,
         cursors: dict[str, RunCursor],
         heartbeat: PortfolioHeartbeat | None = None,
     ) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
         blob: dict = {
             "runs": {
                 run_id: {"cursor": rc.cursor, "generation": rc.generation}
@@ -87,6 +97,18 @@ class CursorStore:
         }
         if heartbeat is not None:
             blob["heartbeat"] = heartbeat.to_dict()
+        threads = self._read().get("threads")
+        if isinstance(threads, dict):
+            blob["threads"] = threads
+        self._write(blob)
+
+    def save_threads(self, threads: dict[str, str]) -> None:
+        blob = self._read()
+        blob["threads"] = dict(threads)
+        self._write(blob)
+
+    def _write(self, blob: dict) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._path.with_suffix(self._path.suffix + ".tmp")
         tmp.write_text(json.dumps(blob))
         os.replace(tmp, self._path)  # atomic on POSIX — never a half-written state

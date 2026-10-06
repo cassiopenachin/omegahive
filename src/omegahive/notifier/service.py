@@ -7,8 +7,10 @@ empty acceptance run for a week (decisions.md 2026-07-28) has no surface left to
 Each tick: discover the active runs from the spine's own registry (the *same* cut the
 portfolio board applies — `report.portfolio.portfolio_runs`, so the two surfaces can never
 disagree about which runs exist), then read `(cursor, head]` on each, keep the trigger
-events, send (one message each, or one summary when a burst lands **across the portfolio**),
-then advance and persist that run's cursor. A cursor advances only past events actually
+events, send (one message each, or — on a transport that summarises — one summary when a
+burst lands **across the portfolio**), then advance and persist that run's cursor. Where a
+message goes and how it is marked up is the transport's business (`transport.py`).
+A cursor advances only past events actually
 delivered, so a send failure leaves it put and those events retry next tick — at-least-once,
 and no duplicate across a clean restart.
 
@@ -34,6 +36,7 @@ import logging
 import time
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
+from functools import partial
 from typing import Protocol, TypeVar
 
 from psycopg import OperationalError
@@ -45,9 +48,8 @@ from ..port.wire import PortView
 from ..report.portfolio import configured_window_days, portfolio_runs
 from .cursor import CursorStore, RunCursor
 from .events import Notification, notification_from
-from .format import render_batch, render_heartbeat, render_one
 from .heartbeat import RunDelta, RunHeartbeat
-from .telegram import Sender, TelegramError
+from .transport import Sender, SendError, TelegramTransport, Transport
 
 log = logging.getLogger("omegahive.notifier")
 
@@ -132,7 +134,7 @@ class NotifierService:
     def __init__(
         self,
         reader: SpineReader,
-        sender: Sender,
+        sender: Sender | Transport,
         cursor_store: CursorStore,
         *,
         batch_threshold: int = 3,
@@ -142,13 +144,18 @@ class NotifierService:
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._reader = reader
-        self._sender = sender
         self._store = cursor_store
         self._batch_threshold = max(1, batch_threshold)  # a burst is >= 1 event, never 0
         self._hb_hour = heartbeat_hour
         # External UI base URL for deep links (config, not a secret). None/empty = no links,
         # render byte-identical to before. The render layer normalizes the trailing slash.
         self._ui_base_url = ui_base_url or None
+        # A bare Sender is the Telegram behaviour; a Transport (Slack) brings its own markup,
+        # links and destination, and ignores `ui_base_url` here.
+        self._out = (
+            sender if isinstance(sender, Transport)
+            else TelegramTransport(sender, self._ui_base_url)
+        )
         self._max_run_lines = max_run_lines
         self._now = now or _utcnow
         self._cursors: dict[str, RunCursor] = cursor_store.load()
@@ -203,10 +210,10 @@ class NotifierService:
         triggers.sort(key=lambda t: t.seq or 0)
 
         delivered = 0
-        if len(triggers) >= self._batch_threshold:
+        if self._out.summarises and len(triggers) >= self._batch_threshold:
             # One summary for the whole burst, portfolio-wide; advance past all of it
             # together (a transient failure raises out and holds every cursor for a retry).
-            if self._send(render_batch(triggers, self._ui_base_url),
+            if self._send(lambda: self._out.summary(triggers),
                           what=f"summary of {len(triggers)} events"):
                 delivered = len(triggers)
             self._commit_all(pending)
@@ -215,7 +222,7 @@ class NotifierService:
             # permanently-dropped) event so a failure partway never re-sends what went out.
             views = dict(pending)
             for n in triggers:
-                if self._send(render_one(n, self._ui_base_url), what=f"event seq {n.seq}"):
+                if self._send(partial(self._out.event, n), what=f"event seq {n.seq}"):
                     delivered += 1
                 view = views[n.run_id]
                 self._commit(n.run_id, n.seq, view)
@@ -245,11 +252,12 @@ class NotifierService:
         # Open blocks are scoped to the runs currently followed: state is kept for runs that
         # have left the window (so their return resumes rather than re-arms), but the message
         # must show exactly the cut it claims to.
-        text = render_heartbeat(
-            today, self._hb_hour, deltas, self._hb.open_block_ages(now, runs=self._runs),
-            self._ui_base_url, max_run_lines=self._max_run_lines,
+        blocks = self._hb.open_block_ages(now, runs=self._runs)
+        sent = self._send(  # raises on transient -> retry
+            lambda: self._out.heartbeat(today, self._hb_hour, deltas, blocks,
+                                        max_run_lines=self._max_run_lines),
+            what="daily heartbeat",
         )
-        sent = self._send(text, what="daily heartbeat")  # raises on transient -> retry
         # delivered OR permanently dropped: advance the day and reset every run's tally.
         self._hb.roll(today, self._hb_hour, self._heads)
         self._store.save(self._cursors, self._hb)
@@ -258,16 +266,16 @@ class NotifierService:
                  max(d.head for d in deltas))
         return True
 
-    def _send(self, text: str, *, what: str) -> bool:
+    def _send(self, deliver: Callable[[], None], *, what: str) -> bool:
         """Send one message. Returns True if it went out, False if it was permanently
         undeliverable — a poison message (bad chat id, bot blocked, 4xx) is logged and
         dropped either way so it never wedges the channel and silently buries every later
         page. A transient failure (network, 5xx, 429) re-raises to the loop, which holds the
         cursor and retries next tick."""
         try:
-            self._sender.send(text)
+            deliver()
             return True
-        except TelegramError as exc:
+        except SendError as exc:
             if getattr(exc, "permanent", False):
                 log.warning("dropping undeliverable %s (permanent send failure): %s", what, exc)
                 return False
@@ -276,7 +284,7 @@ class NotifierService:
     def run(self, interval: float, stop: Callable[[], bool] = lambda: False) -> None:
         """Poll forever (until `stop()`), sleeping `interval` seconds between ticks. Every
         tick's work — run discovery and the first-sight arming included — is inside the error
-        guard, so the service does not die on a transient Telegram or DB blip (a DB that is
+        guard, so the service does not die on a transient send or DB blip (a DB that is
         down at startup just retries discovery until it answers; nothing is paged until a run
         is armed, so no backlog is ever replayed)."""
         log.info("notifier starting; interval %ss, heartbeat hour %02d:00Z, all active runs",
