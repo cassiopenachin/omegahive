@@ -91,3 +91,42 @@ def test_a_launch_of_an_order_whose_task_is_on_the_database_board_is_refused(blo
                               {"order_path": "projects/p/orders/2026-10-01-t1.md"})
     assert receipt["status"] == "refused" and "already exists" in receipt["message"], receipt
     assert r.calls == []
+
+
+@pytest.fixture
+def in_review(spine, blocked):
+    r, _ = blocked
+    spine(WORKER, "task.unblocked", {})
+    spine(WORKER, "task.result_posted", {"artifact_refs": [{"ref": r.result, "quality": "ok"}]})
+    return r
+
+
+def test_a_close_reads_the_latest_result_from_the_database(spine, in_review):
+    r = in_review
+    newer = "projects/p/reports/t1-newer.md@" + "d" * 40
+    ok = r.ops.execute("close", "op-db5", "cli",
+                       {"run": RUN, "task": "t1", "result_ref": r.result, "verdict": "clean"})
+    assert ok["status"] == "done", ok
+    spine(WORKER, "task.result_posted", {"artifact_refs": [{"ref": newer, "quality": "ok"}]})
+    stale = r.ops.execute("close", "op-db6", "cli",
+                          {"run": RUN, "task": "t1", "result_ref": r.result, "verdict": "clean"})
+    assert stale["status"] == "refused" and newer in stale["message"], stale
+
+
+def test_a_merge_reads_the_reports_pr_from_the_database_and_refuses_a_moved_head(in_review):
+    r = in_review
+    receipt = r.ops.execute("merge", "op-db7", "cli",
+                            {"run": RUN, "task": "t1", "pr": 12, "head_sha": "e" * 40})
+    assert receipt["status"] == "refused" and "head moved" in receipt["message"], receipt
+    assert not any(argv[:3] == ["gh", "pr", "merge"] for argv, _ in r.calls)
+
+
+def test_an_abandon_reads_a_finished_task_from_the_database(spine, in_review):
+    r = in_review
+    spine(Actor(role="instrument", id="operator"), "review.passed", {"ref_result": r.result})
+    spine(HUMAN, "task.status_override", {"status": "done"})
+    receipt = r.ops.execute("abandon", "op-db8", "cli",
+                            {"run": RUN, "task": "t1", "reason": "r"})
+    assert receipt["status"] == "refused", receipt
+    assert receipt["status_before"] == "done"
+    assert r.calls == []
