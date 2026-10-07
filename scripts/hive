@@ -29,6 +29,13 @@ SUB="$1"; shift
 case "$SUB" in
   -h|--help|help) usage ;;
   deployment) exec python3 -I "$PARSER" "$@" ;;
+  ops)
+    # The operation service and its client are Python with the project's dependencies, so
+    # they run through uv in the checkout the policy names: `hive ops serve` is what the
+    # user unit runs, and every other `hive ops` is a client of that service's socket.
+    CODE_ROOT=$(python3 -I "$PARSER" --get code_root) \
+      || die "cannot resolve code_root from the deployment policy (above)"
+    exec uv run --quiet --frozen --project "$CODE_ROOT" omegahive ops "$@" ;;
 esac
 
 # Operator commands only: no path, no dot (the sourced library and the drills carry one),

@@ -29,7 +29,7 @@
         {% for artifact in ctx.pinned_artifacts %}<article class="artifact"><h3>{{ artifact.ref }}</h3>{% if artifact.available %}<pre class="artifact-content">{{ artifact.content }}</pre>{% if artifact.truncated %}<p class="capability-note">Content is truncated to the read limit.</p>{% endif %}{% else %}<p class="unavailable">Report unavailable: {{ artifact.unavailable_reason }}</p>{% endif %}</article>{% endfor %}
       </section>
       <section class="detail-card"><h2>Worker output</h2>
-        <p class="unavailable">Worker output unavailable: {{ ctx.worker_output.unavailable_reason }}</p>
+        {% if ctx.worker_output.available %}<pre class="evidence-text worker-output">{{ ctx.worker_output.lines|join('\n') }}</pre><p class="evidence-ref">Last {{ ctx.worker_output.lines|length }} lines of the worker's window, as of this page.</p>{% else %}<p class="unavailable">Worker output unavailable: {{ ctx.worker_output.unavailable_reason }}</p>{% endif %}
       </section>
     </div>
     <aside class="detail-sidebar">

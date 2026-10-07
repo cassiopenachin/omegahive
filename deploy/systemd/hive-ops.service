@@ -1,0 +1,26 @@
+[Unit]
+Description=OmegaHive operation service (operator operations on a Unix socket)
+
+[Service]
+Type=simple
+# The service reads the board through the port, so it needs a DSN that resolves on this
+# host (127.0.0.1:5432, which the stack publishes). It lives beside the other secrets,
+# 0600; without it every operation is refused at its first board read.
+EnvironmentFile=%h/.config/omegahive/secrets/ops.env
+# uv (~/.local/bin) runs the service; tmux, git, gh, podman, sbx and systemd-run are in
+# /usr/bin on this host. The operator scripts take their deployment facts from the policy.
+Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin
+# $XDG_RUNTIME_DIR/omegahive holds the socket (the policy's default ops_socket). Preserved
+# across restarts: the UI container bind-mounts this directory, and a directory recreated
+# by a restart would leave the container holding the old one.
+RuntimeDirectory=omegahive
+RuntimeDirectoryPreserve=yes
+# `hive` resolves the checkout from the deployment policy, so the unit names no path.
+ExecStart=%h/bin/hive ops serve
+Restart=on-failure
+RestartSec=5
+# Workers never live in this unit: a launch runs in a transient scope of its own
+# (systemd-run --user --scope), so restarting or stopping the service leaves them running.
+
+[Install]
+WantedBy=default.target

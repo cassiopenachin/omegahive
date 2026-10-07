@@ -26,6 +26,7 @@ from .gateway.policy import DESIGN_PARTNER_ACTOR_ID, OPERATOR_ACTOR_ID
 from .metrics import compute
 from .metrics.distribution import aggregate
 from .metrics.promotion import score
+from .ops_cli import ops_app
 from .port import HiveCoordinatorPort, RawOp
 from .report.board import board_to_json, render_board
 from .report.distribution import render_distribution, render_promotion_distribution
@@ -1032,6 +1033,9 @@ def executions_cmd(
             f"{r['execution_id']}  {r['task']}  {r['model']}@{r['harness']} "
             f"({r['billing_market']})  {r['outcome'] or 'in-flight'}"
         )
+
+
+app.add_typer(ops_app, name="ops")
 
 
 if __name__ == "__main__":

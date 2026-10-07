@@ -1,0 +1,2 @@
+Placeholder mounted at /run/omegahive-ops when OMEGAHIVE_OPS_SOCKET_DIR is unset, so compose
+parses on a host with no operation service. The UI then says the service is not mounted.

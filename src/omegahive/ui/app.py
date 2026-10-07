@@ -25,6 +25,7 @@ from ..board.state import Board
 from ..events.envelope import Actor, Event
 from ..metrics import compute
 from ..operator_context import OperatorContextProvider, configured_workspace_hub
+from ..ops_service import OpsClient
 from ..port import PortView
 from ..report.portfolio import active_board, configured_window_days, portfolio_runs
 from ..report.reader import (
@@ -181,6 +182,7 @@ def create_app(
     poll_seconds: float = 1.5,
     base_path: str | None = None,
     workspace_hub: Path | None = None,
+    ops_client: OpsClient | None = None,
 ) -> FastAPI:
     """Create an injectable app: local visual work uses `DemoPort`; production uses Port.
 
@@ -195,6 +197,10 @@ def create_app(
 
     `workspace_hub` is where the task page reads report content; it defaults to
     `OMEGAHIVE_WORKSPACE_HUB`, and unset means the page says the content is unavailable.
+
+    `ops_client` reaches the operation service on the host: the worker's output for the task
+    page and, later, the operator's writes. It defaults to the socket named by
+    `OMEGAHIVE_OPS_SOCKET`; unset means the page says the output is unavailable.
     """
     demo_mode = os.environ.get("OMEGAHIVE_UI_DEMO") == "1"
     real_backend = not demo_mode and port_factory is None
@@ -214,8 +220,13 @@ def create_app(
         base_path if base_path is not None else os.environ.get("OMEGAHIVE_UI_BASE_PATH", "")
     )
 
+    if ops_client is None and os.environ.get("OMEGAHIVE_OPS_SOCKET", "").strip():
+        ops_client = OpsClient(os.environ["OMEGAHIVE_OPS_SOCKET"].strip())
     operator_context = OperatorContextProvider(
-        factory, now, workspace_hub if workspace_hub is not None else configured_workspace_hub()
+        factory,
+        now,
+        workspace_hub if workspace_hub is not None else configured_workspace_hub(),
+        ops_client.tail if ops_client is not None else None,
     )
 
     app = FastAPI(title="OmegaHive", docs_url=None, redoc_url=None, root_path=base_path)

@@ -285,3 +285,22 @@ def test_malformed_or_escaping_refs_are_refused_before_git_runs(hub, ref):
 
     assert artifact["available"] is False
     assert artifact["unavailable_reason"]
+
+
+def test_the_worker_output_is_the_services_tail_when_it_is_mounted():
+    def provider(tail):
+        return OperatorContextProvider(lambda run_id, generation: _ListPort(_closed_task()),
+                                       lambda: NOW, None, tail)
+
+    assert provider(lambda task: ["a", "b"])("r", "t")["worker_output"] == {
+        "available": True, "lines": ["a", "b"], "unavailable_reason": None}
+    no_window = provider(lambda task: None)("r", "t")["worker_output"]
+    assert no_window["available"] is False
+    assert no_window["unavailable_reason"] == "this task has no worker window"
+
+    def down(task):
+        raise RuntimeError("connection refused")
+
+    failed = provider(down)("r", "t")["worker_output"]
+    assert failed["available"] is False
+    assert "did not answer: connection refused" in failed["unavailable_reason"]
