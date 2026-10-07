@@ -491,11 +491,12 @@ fi
 # so their successors are excluded too: the sourced library, which is never run by name;
 # the drills, which are run from the checkout against a scratch envelope; and the one-time
 # bootstrap, which runs once on a new host before there is a ~/bin to link into.
+# `scripts/hive`, the one entry point, is named beside the glob, which does not match it.
 LINK_DIR="${OMEGAHIVE_COMMAND_BIN:-$HOME/bin}"
 LINK_MISSING=""
 LINK_WRONG=""
 LINK_SEEN=0
-for _cmd in scripts/hive-*; do
+for _cmd in scripts/hive scripts/hive-*; do
   _name=$(basename "$_cmd")
   case "$_name" in
     hive-common.sh|*-drill.sh|hive-init-*) continue ;;
@@ -520,6 +521,21 @@ else
        These are symlinks nothing creates automatically, so a new command is unreachable
        until one is made. A runbook line naming it is then false. Fix each:
          ln -s $PWD/scripts/<name> $LINK_DIR/<name>"
+fi
+
+# --- 11c. the deployment policy names this checkout ------------------------------------
+#
+# The policy (~/.config/omegahive/deployment.json) is the one statement of what production
+# is: `hive`, the operator scripts and the operation service all resolve code_root from it.
+# These checks pass or fail THIS working tree, so a policy naming another checkout means
+# the green below certifies code that nothing runs.
+POLICY_ROOT=$(scripts/hive deployment --get code_root 2>&1) || POLICY_ROOT="(invalid: $POLICY_ROOT)"
+if [ "$(readlink -f "$POLICY_ROOT" 2>/dev/null || echo "$POLICY_ROOT")" = "$(pwd -P)" ]; then
+  ok "11c. deployment policy: code_root is this checkout ($POLICY_ROOT)"
+else
+  bad "11c. deployment policy: code_root is '$POLICY_ROOT', but these checks run in $(pwd -P).
+       Production is whatever the policy names. Fix the policy's code_root (or OMEGA_DIR in
+       this shell), or run the checks from the checkout it names. See: scripts/hive deployment"
 fi
 
 # --- 12. the deployed image was built from the source in this working tree --------------

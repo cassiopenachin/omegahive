@@ -185,6 +185,32 @@ else
   echo "hive-answer: appended to $REL and pushed ($ANSWER_SHA)"
 fi
 
+# --- the answer on the spine -------------------------------------------------------------
+# The answer is a commit to the order, so before this it left no event: the worker's later
+# task.unblocked was the only trace. It is reported as the human who answered, against the
+# question it answers (the newest question.asked on the task), so a question asked after it
+# can never be taken as answered. A bare nudge answers nothing and reports nothing.
+#
+# Not fatal: the answer is already on the hub, and refusing here would leave the worker
+# un-nudged over a missing record. The warning names the one command that records it.
+if [ -z "$RESUME_ONLY" ]; then
+  QUESTION_SEQ=$( hive report "$RUN" --json 2>/dev/null | jq -r --arg t "$TASK" '
+    [ .[] | select(.event_type == "question.asked" and .task_id == $t) | .seq ]
+    | max // empty' ) || QUESTION_SEQ=""
+  answer_payload=$(jq -cn --arg r "$REL@$ANSWER_SHA" --arg q "$QUESTION_SEQ" \
+    '{ref:$r, kind:"answer"} + (if $q == "" then {} else {question_seq: ($q | tonumber)} end)')
+  answer_payload=$(decided "$answer_payload")
+  if ! ( emit human "$OPERATOR_ACTOR" task.reported --task "$TASK" --payload "$answer_payload" >/dev/null ); then
+    {
+      echo "hive-answer: WARNING the answer is committed and pushed, but recording it on the spine"
+      echo "  failed (above). The nudge goes ahead. Record it with:"
+      echo "      cd $OMEGA_DIR && ${HIVE_COMPOSE:-podman compose} run --rm -T cli emit --run-id $RUN \\"
+      echo "        --role human --actor $OPERATOR_ACTOR --type task.reported --task $TASK \\"
+      echo "        --payload '$answer_payload'"
+    } >&2
+  fi
+fi
+
 # =====================================================================================
 # The nudge half: tell this task's worker, in its own window, that something changed.
 #

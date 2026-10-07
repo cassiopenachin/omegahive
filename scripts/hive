@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# hive <subcommand> [args...]
+#
+# The one operator entry point. `hive <sub>` runs `<scripts_root>/hive-<sub>`, where
+# scripts_root comes from the deployment policy (environment, then
+# ~/.config/omegahive/deployment.json, then <code_root>/scripts) — so the human, the agents
+# and the operation service run the same scripts from the same checkout. The hyphenated
+# `hive-<sub>` links in ~/bin stay; `hive close` and `hive-close` are the same command.
+#
+# Two subcommands are served here rather than by a script:
+#   hive deployment [--get FIELD | --json]   print the resolved deployment policy
+#   hive ops ...                             the operation service's CLI face (S3 part B)
+
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+PARSER="$HERE/../src/omegahive/deployment.py"
+
+die() { echo "hive: $*" >&2; exit 1; }
+
+usage() {
+  sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  exit 2
+}
+
+[ $# -ge 1 ] || usage
+SUB="$1"; shift
+
+case "$SUB" in
+  -h|--help|help) usage ;;
+  deployment) exec python3 -I "$PARSER" "$@" ;;
+esac
+
+# Operator commands only: no path, no dot (the sourced library and the drills carry one),
+# no capitals. Anything else is a typo or an attempt to reach a file that is not a command.
+[[ "$SUB" =~ ^[a-z][a-z0-9-]*$ ]] || die "'$SUB' is not an operator command name"
+
+SCRIPTS_ROOT=$(python3 -I "$PARSER" --get scripts_root) \
+  || die "cannot resolve scripts_root from the deployment policy (above)"
+TARGET="$SCRIPTS_ROOT/hive-$SUB"
+[ -x "$TARGET" ] || die "no operator command 'hive-$SUB' in $SCRIPTS_ROOT"
+exec "$TARGET" "$@"

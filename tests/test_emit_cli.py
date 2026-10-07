@@ -66,7 +66,8 @@ def test_round_trip_then_idempotent(cli_db):
 
     got = _events("task.reported")
     assert len(got) == 1
-    assert got[0].payload == {"ref": REF, "kind": "result"}
+    assert got[0].payload == {"ref": REF, "kind": "result", "question_seq": None,
+                              "executed_by": None, "decision_ref": None}
 
     # an identical re-invocation (fresh process, basis_seq=0) dedupes to the same event,
     # and the CLI reports the no-op honestly rather than as a fresh write

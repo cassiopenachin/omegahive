@@ -96,7 +96,8 @@ def test_round_trip_and_inert(spine):
 
     reported = _reported(store)
     assert len(reported) == 1
-    assert reported[0].payload == {"ref": GOOD_REF, "kind": "result"}
+    assert reported[0].payload == {"ref": GOOD_REF, "kind": "result", "question_seq": None,
+                                   "executed_by": None, "decision_ref": None}
     assert fold(store.read_run()).tasks["t1"].status == before  # board untouched
 
 

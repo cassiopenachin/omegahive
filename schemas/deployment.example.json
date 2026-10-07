@@ -1,0 +1,24 @@
+{
+  "code_root": "/home/operator/src/SNET/omegahive",
+  "canon_root": "/home/operator/src/SNET",
+  "workspace_hub": "/home/operator/repos/hive-workspace.git",
+  "operator_workspace": "/home/operator/workspaces/hive",
+  "work_root": "/home/operator/work",
+  "tmux_session": "hive",
+  "route_catalog": "/home/operator/.config/omegahive/routes.json",
+  "compose": "podman compose",
+  "env_file": "/home/operator/.config/omegahive/secrets/harness.env",
+  "ops_socket": "/run/user/1000/omegahive/ops.sock",
+  "receipts_dir": "/home/operator/.local/state/omegahive/receipts",
+  "operator_actor": "operator",
+  "authority": {
+    "web_login": "operator@example.com",
+    "slack": {"team": "T0000000000", "channel": "C0000000000", "user": "U0000000000"}
+  },
+  "bounds": {
+    "max_concurrent": 4,
+    "wip_review_max": 3,
+    "operation_timeout_s": 900,
+    "observer_quiet_min": 30
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "close": [
+    {
+      "role": "instrument",
+      "actor": "operator",
+      "type": "review.passed",
+      "task": "t1",
+      "payload": "{\"ref_result\":\"projects/p/reports/t1-result.md@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"review_kind\":\"operator_acceptance\"}"
+    },
+    {
+      "role": "human",
+      "actor": "operator",
+      "type": "task.status_override",
+      "task": "t1",
+      "payload": "{\"status\":\"done\",\"reason\":\"looks right\"}"
+    }
+  ],
+  "abandon": [
+    {
+      "role": "human",
+      "actor": "operator",
+      "type": "task.status_override",
+      "task": "t1",
+      "payload": "{\"status\":\"cancelled\",\"reason\":\"worker died\"}"
+    }
+  ]
+}

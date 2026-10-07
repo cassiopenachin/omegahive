@@ -281,7 +281,9 @@ def emit_cmd(
     run_id: str = typer.Option(..., "--run-id", help="run to emit into (events are run-scoped)"),
     event_type: str = typer.Option(..., "--type", help="event_type, e.g. task.reported"),
     role: str = typer.Option(
-        ..., "--role", help="actor role: worker | human | planner | coordinator | instrument"
+        ...,
+        "--role",
+        help="actor role: worker | human | planner | coordinator | instrument | machinist",
     ),
     actor_id: str = typer.Option(
         ..., "--actor", help=f"actor id (human tier: {OPERATOR_ACTOR_ID!r} | "

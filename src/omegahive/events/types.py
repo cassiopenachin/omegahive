@@ -27,6 +27,10 @@ class TaskCreated(BaseModel):
     required_artifacts: list[str] = []
     # k-of-n join: ready when `ready_when` dependencies are done (None = all — §3).
     ready_when: int | None = None
+    # Additive (salvage plan D4): who executed a human's decision, and which decision.
+    # Set only when the operation service runs the operator script; recorded, never gated.
+    executed_by: str | None = None
+    decision_ref: str | None = None
 
     @field_validator("ready_when")
     @classmethod
@@ -50,6 +54,10 @@ class WorkerRegistered(BaseModel):
     # worker id that has been registered. Emitted at run-seed, planner-authority — the
     # same seeding authority as task.created/dependency.added.
     worker_id: str
+    # Additive (salvage plan D4): who executed a human's decision, and which decision.
+    # Set only when the operation service runs the operator script; recorded, never gated.
+    executed_by: str | None = None
+    decision_ref: str | None = None
 
 
 class PrioritySet(BaseModel):
@@ -74,6 +82,10 @@ class ArtifactRef(BaseModel):
 
 class TaskAssigned(BaseModel):
     worker: str
+    # Additive (salvage plan D4): who executed a human's decision, and which decision.
+    # Set only when the operation service runs the operator script; recorded, never gated.
+    executed_by: str | None = None
+    decision_ref: str | None = None
 
 
 class TaskReassigned(BaseModel):
@@ -82,6 +94,10 @@ class TaskReassigned(BaseModel):
     from_: str = Field(alias="from")
     to: str
     reason: str | None = None
+    # Additive (salvage plan D4): who executed a human's decision, and which decision.
+    # Set only when the operation service runs the operator script; recorded, never gated.
+    executed_by: str | None = None
+    decision_ref: str | None = None
 
 
 class TaskEscalated(BaseModel):
@@ -96,6 +112,8 @@ class TaskStatusOverride(BaseModel):
     reason: str | None = None
     # Additive: the decision this override traces back to (recorded, never gated).
     decision_ref: str | None = None
+    # Additive (salvage plan D4): who executed the human's decision, when not the human.
+    executed_by: str | None = None
 
 
 class NotePosted(BaseModel):
@@ -165,10 +183,19 @@ class TaskReported(BaseModel):
     """An advisory report against a task, emitted by a worker (a session reporting on
     its work) or a human (answer-reports, steering notes). Non-board: it carries no
     state effect, so its `kind` is an advisory label only — nothing folds or gates on
-    it. `actor` and `task_id` travel in the envelope, not the payload."""
+    it. `actor` and `task_id` travel in the envelope, not the payload.
+
+    `kind: answer` is the human's answer to a worker's question (`hive-answer`): `ref` is
+    the order at the commit that carries the answer, and `question_seq` is the spine
+    sequence of the question it answers, so a later question can never inherit it."""
 
     ref: str
-    kind: Literal["progress", "result", "question", "finding", "reflection"]
+    kind: Literal["progress", "result", "question", "finding", "reflection", "answer"]
+    question_seq: int | None = None
+    # Additive (salvage plan D4): who executed a human's decision, and which decision.
+    # Set only when the operation service runs the operator script; recorded, never gated.
+    executed_by: str | None = None
+    decision_ref: str | None = None
 
     @field_validator("ref")
     @classmethod
@@ -191,6 +218,10 @@ ReviewKind = Literal["independent", "operator_acceptance"]
 class ReviewPassed(BaseModel):
     ref_result: str
     review_kind: ReviewKind | None = None
+    # Additive (salvage plan D4): who executed a human's decision, and which decision.
+    # Set only when the operation service runs the operator script; recorded, never gated.
+    executed_by: str | None = None
+    decision_ref: str | None = None
 
 
 class ReviewFailed(BaseModel):
@@ -473,6 +504,10 @@ class ExecutionRouteApproved(BaseModel):
     # no per-order binding file to hold one, and an invented number is worse than none.
     predicted_total_tokens: int | None = Field(default=None, ge=0)
     price_basis: PriceBasis | None = None
+    # Additive (salvage plan D4): who executed a human's decision, and which decision.
+    # Set only when the operation service runs the operator script; recorded, never gated.
+    executed_by: str | None = None
+    decision_ref: str | None = None
 
     @field_validator("execution_id")
     @classmethod

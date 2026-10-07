@@ -228,7 +228,7 @@ def deployment(tmp_path, tmux_isolation):
          'issue_worker_interface "$1" "$2" "$3" "$4" "$5" "$6"',
          "bash", str(run_dir), str(ws_root), str(code_root), CODE_BRANCH, run_id, worker],
         capture_output=True, text=True, cwd=str(REPO), timeout=120,
-        env={**os.environ, "OMEGA_DIR": str(REPO)})
+        env={**os.environ, "OMEGA_DIR": str(REPO), "WS_HUB": str(hub)})
     assert issue.returncode == 0, issue.stdout + issue.stderr
 
     turn_dir = run_dir / "turns" / "001"
@@ -499,12 +499,20 @@ say "PATH_SET=${PATH:+yes}"
 # 2. Classification, reached through the shell
 # =====================================================================================
 
+def seeded_ref(dep: dict) -> str:
+    """A result ref the worker's wrapper accepts: a file that is on the hub at a hub commit."""
+    sha = subprocess.run(["git", "-C", str(dep["hub"]), "rev-parse", "main"],
+                         capture_output=True, text=True, check=True).stdout.strip()
+    return f"projects/{PROJECT}/project.conf@{sha}"
+
+
 def test_a_worker_that_posts_a_result_exits_posted(deployment):
     seed_board(deployment)
     worker_script(deployment, f'''
 "$EMIT" --type task.accepted --task {TASK} >/dev/null 2>&1
 "$EMIT" --type task.result_posted --task {TASK} \\
-  --payload '{{"artifact_refs": [{{"ref": "r.md@{"a" * 40}", "quality": "ok"}}]}}' >/dev/null 2>&1
+  --payload '{{"artifact_refs": [{{"ref": "{seeded_ref(deployment)}", "quality": "ok"}}]}}' \\
+  >/dev/null 2>&1
 ''')
     assert run_turn(deployment).returncode == 0
     payload = finished(deployment)
@@ -587,7 +595,8 @@ def test_a_shutdown_error_after_a_posted_result_keeps_posted_as_the_primary_fact
     worker_script(deployment, f'''
 "$EMIT" --type task.accepted --task {TASK} >/dev/null 2>&1
 "$EMIT" --type task.result_posted --task {TASK} \\
-  --payload '{{"artifact_refs": [{{"ref": "r.md@{"a" * 40}", "quality": "ok"}}]}}' >/dev/null 2>&1
+  --payload '{{"artifact_refs": [{{"ref": "{seeded_ref(deployment)}", "quality": "ok"}}]}}' \\
+  >/dev/null 2>&1
 exit 9
 ''')
     proc = run_turn(deployment)
