@@ -275,8 +275,8 @@ services:
       # Daily-heartbeat hour (UTC, integer). Config, not a secret — so it rides the compose
       # environment here, never notifier.env. Declared in secrets-manifest.yaml (notifier row).
       HEARTBEAT_HOUR_UTC: ${HEARTBEAT_HOUR_UTC:-6}
-      # UI base URL for message deep links: the external origin+prefix the phone already uses
-      # (e.g. https://<host>:8443/omegahive — the same :8443 the UI is served behind). Config,
+      # UI base URL for message deep links: the external origin+prefix of the 8444 front door
+      # (e.g. https://<host>:8444/omegahive), the one port whose pages can also write. Config,
       # not a secret; empty default = links absent, render unchanged. Same pattern as above.
       OMEGAHIVE_UI_BASE_URL: ${OMEGAHIVE_UI_BASE_URL:-}
       # Where messages go: slack (the default; reads SLACK_BOT_TOKEN + SLACK_CHANNEL_ID from
