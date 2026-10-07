@@ -123,3 +123,23 @@ h1, h2, h3, p { margin-top: 0; }
 .run-task.lane-completed { opacity: 0.68; }
 .run-task.priority-high { box-shadow: inset 0 2px 0 var(--amber); }
 @media (max-width: 46rem) { .run-task { grid-template-columns: 1.1rem minmax(0, 1fr); } .run-task .task-id { grid-column: 2; } .run-task-title { grid-column: 2; } }
+
+/* Operations (S3): outcomes are told apart by symbol, word and border style, not colour. */
+.outcome { margin: 0 0 1.2rem; padding: 0.85rem 1rem; border: 2px solid var(--line); border-radius: 0.7rem; background: var(--surface); }
+.outcome-done, .outcome-replayed { border-style: solid; border-color: var(--cyan); }
+.outcome-refused, .outcome-failed, .outcome-forbidden { border-style: dashed; border-color: var(--amber); }
+.outcome-message { white-space: pre-wrap; margin: 0.6rem 0 0; color: #ffe6b7; font-size: 0.82rem; }
+.op-form { display: grid; gap: 0.55rem; margin: 0 0 1rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line); }
+.op-form h3 { margin: 0; font-size: 0.9rem; }
+.op-form label { display: grid; gap: 0.3rem; color: var(--muted); font-size: 0.8rem; }
+.op-form input, .op-form select, .launch-row select { width: 100%; box-sizing: border-box; padding: 0.5rem 0.55rem; color: var(--ink); border: 1px solid #40516a; border-radius: 0.4rem; background: var(--surface-raised); font: inherit; }
+.op-form button, .launch-row button { justify-self: start; padding: 0.5rem 0.9rem; color: var(--canvas); border: 0; border-radius: 0.4rem; background: var(--cyan); font-weight: 650; cursor: pointer; }
+.op-form summary { cursor: pointer; color: var(--muted); }
+.worker-output { max-height: 28rem; overflow: auto; }
+.launch-region { margin-top: 2rem; padding: 1rem 1.2rem; border: 1px solid var(--line); border-radius: 0.8rem; background: var(--surface); }
+.launch-region > header { display: flex; justify-content: space-between; align-items: baseline; }
+.launch-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.6rem 1rem; align-items: end; padding: 0.8rem 0; border-top: 1px solid var(--line); }
+.launch-row form { display: flex; gap: 0.6rem; align-items: end; flex-wrap: wrap; }
+.launch-row label { display: grid; gap: 0.3rem; color: var(--muted); font-size: 0.78rem; min-width: 12rem; }
+.launch-row .blocker, .launch-row .outcome-line { grid-column: 1 / -1; margin: 0; }
+@media (max-width: 640px) { .launch-row { grid-template-columns: 1fr; } }

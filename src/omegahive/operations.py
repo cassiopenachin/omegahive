@@ -32,6 +32,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from . import published
 from .report.reader import PortFactory, read_view
 from .worker_seat import WorkerSeats
 
@@ -48,8 +49,6 @@ ENV_ALLOW = ("PATH", "HOME", "LANG", "USER", "LOGNAME", "XDG_RUNTIME_DIR",
 _ID = re.compile(r"[A-Za-z0-9._-]{1,100}")
 _NAME = re.compile(r"[A-Za-z0-9._-]+")
 _SHA = re.compile(r"[0-9a-f]{40}")
-_ORDER = re.compile(r"projects/([A-Za-z0-9._-]+)/orders/([A-Za-z0-9._-]+)\.md")
-_HARNESS_LINE = re.compile(r"\*\*Harness / model:\*\*\s*([A-Za-z0-9._-]+)")
 
 Runner = Callable[[list[str], Mapping[str, str], int], dict[str, Any]]
 Board = Mapping[str, Mapping[str, Any]]
@@ -201,11 +200,11 @@ class Operations:
 
     def _target(self, operation: str, params: Mapping[str, Any]) -> tuple[str, str]:
         if operation == "launch":
-            match = _ORDER.fullmatch(_text(params, "order_path"))
+            match = published.ORDER_PATH.fullmatch(_text(params, "order_path"))
             if not match:
                 raise Refused("order_path must be projects/<project>/orders/<file>.md")
             project, stem = match.groups()
-            return self._project_conf(project)["RUN_ID"], re.sub(r"^\d{4}-\d{2}-\d{2}-", "", stem)
+            return self._project_conf(project)["RUN_ID"], published.task_of(stem)
         run, task = _text(params, "run"), _text(params, "task")
         if not (_NAME.fullmatch(run) and _NAME.fullmatch(task)):
             raise Refused("run and task must match [A-Za-z0-9._-]+")
@@ -272,9 +271,7 @@ class Operations:
         raise Refused(f"no project.conf names run '{run}'")
 
     def _hub_text(self, spec: str) -> str | None:
-        done = subprocess.run(["git", "-C", self.hub, "show", spec], capture_output=True,  # noqa: S603
-                              text=True, timeout=30, check=False)
-        return done.stdout if done.returncode == 0 else None
+        return published.git_read(self.hub, "show", spec)
 
     def latest_result_ref(self, run: str, task: str) -> str | None:
         posted = [e for e in self._events(run, task) if e.event_type == "task.result_posted"]
@@ -317,18 +314,6 @@ class Operations:
     def routes(self) -> list[str]:
         catalog = json.loads(Path(self.d["route_catalog"]).read_text())
         return [r["name"] for r in catalog.get("routes", []) if r.get("enabled")]
-
-    def published_orders(self) -> dict[str, str]:
-        """Every order on the hub's main, by task id: {task: order path}."""
-        listing = subprocess.run(  # noqa: S603 - fixed executable, fixed arguments
-            ["git", "-C", self.hub, "ls-tree", "-r", "--name-only", "main", "projects"],
-            capture_output=True, text=True, timeout=30, check=False).stdout
-        orders = {}
-        for path in listing.splitlines():
-            match = _ORDER.fullmatch(path)
-            if match:
-                orders[re.sub(r"^\d{4}-\d{2}-\d{2}-", "", match.group(2))] = path
-        return orders
 
     def tail(self, task: str) -> list[str] | None:
         return self.seats.tail(task)
@@ -412,12 +397,10 @@ class Operations:
             raise Refused(f"task '{task}' already exists on run '{run}' "
                           f"({board[task]['status']})")
         route = _text(params, "route", required=False)
-        if not route:
-            match = _HARNESS_LINE.search(text)
-            route = match.group(1) if match else ""
+        route = route or published.order_route(text) or ""
         cap = self.d["bounds"]["max_concurrent"]
         if cap is not None:
-            live = self.seats.live_workers(self.published_orders())
+            live = self.seats.live_workers(published.orders(self.hub))
             if len(live) >= cap:
                 raise Refused(f"{len(live)} workers are live ({', '.join(live)}); "
                               f"the deployment allows {cap} at once")

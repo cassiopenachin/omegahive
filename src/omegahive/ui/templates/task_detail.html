@@ -10,6 +10,7 @@
     <div><h1>{{ task_id }}</h1><p>{% if evidence.title %}{{ evidence.title }} · {% endif %}{{ evidence.status|replace('_', ' ') }}{% if evidence.owner %} · {{ evidence.owner }}{% endif %}</p></div>
     <p class="snapshot-basis">Observed {{ ctx.observation_basis.observed_at }} · event {{ ctx.observation_basis.event_cursor }}</p>
   </header>
+  {% if outcome %}{% include "fragments/outcome.html" %}{% endif %}
   <div class="detail-layout">
     <div class="detail-primary">
       {% if evidence.cancellation.available %}
@@ -33,6 +34,63 @@
       </section>
     </div>
     <aside class="detail-sidebar">
+      <section class="detail-card decide-card"><h2>Decide</h2>
+        {% if not forms.available %}<p class="unavailable">Operations unavailable: {{ forms.reason }}</p>
+        {% else %}
+        {% set op_url = base_path ~ '/run/' ~ run_id ~ '/task/' ~ task_id ~ '/op/' %}
+        {% if forms.answer %}
+        <form class="op-form" method="post" action="{{ op_url }}answer">
+          <input type="hidden" name="operation_id" value="{{ forms.answer.id }}">
+          <input type="hidden" name="question_seq" value="{{ forms.answer.question_seq }}">
+          <label>Answer the question at event {{ forms.answer.question_seq }}
+            <input name="text" required maxlength="2000" autocomplete="off"></label>
+          <p class="capability-note">One line. A long answer is committed under ## Answers and sent with <code>hive-answer --sha</code>.</p>
+          <button type="submit">Answer</button>
+        </form>
+        {% endif %}
+        {% if forms.merge %}
+        <div class="op-form"><h3>Merge</h3>
+          {% for pr in forms.merge.candidates %}
+          <form method="post" action="{{ op_url }}merge">
+            <input type="hidden" name="operation_id" value="{{ pr.id }}">
+            <input type="hidden" name="pr" value="{{ pr.number }}">
+            <input type="hidden" name="head_sha" value="{{ pr.head or '' }}">
+            <p><a href="{{ pr.url }}">PR #{{ pr.number }}</a> · {{ pr.state or 'unread' }} · checks <strong>{{ pr.checks }}</strong>{% if pr.head %} · head <code>{{ pr.head[:10] }}</code>{% endif %}{% if pr.error %}<br><span class="unavailable">{{ pr.error }}</span>{% endif %}</p>
+            {% if pr.head and pr.state == 'OPEN' %}<button type="submit">Squash-merge PR #{{ pr.number }}</button>{% endif %}
+          </form>
+          {% else %}<p class="unavailable">{{ forms.merge.error or 'The latest result report names no PR of this project\'s repository.' }}</p>{% endfor %}
+        </div>
+        {% endif %}
+        {% if forms.close %}
+        <form class="op-form" method="post" action="{{ op_url }}close">
+          <h3>Close</h3>
+          <input type="hidden" name="operation_id" value="{{ forms.close.id }}">
+          <input type="hidden" name="result_ref" value="{{ forms.close.result_ref }}">
+          <p class="evidence-ref">Result {{ forms.close.result_ref }}</p>
+          <label>Verdict
+            <select name="verdict" required>
+              <option value="" selected disabled>Choose</option>
+              <option value="clean">clean</option>
+              <option value="minor rework">minor rework</option>
+              <option value="rework">rework</option>
+            </select></label>
+          <label>Reason <input name="reason" maxlength="500" autocomplete="off"></label>
+          <button type="submit">Close with this verdict</button>
+        </form>
+        {% endif %}
+        {% if forms.abandon %}
+        <details class="op-form"><summary>Abandon this task…</summary>
+          <form method="post" action="{{ op_url }}abandon">
+            <input type="hidden" name="operation_id" value="{{ forms.abandon.id }}">
+            <label>Reason <input name="reason" required maxlength="500" autocomplete="off"></label>
+            <p class="capability-note">Cancelled, for good. A worker whose process has exited has its window cleared first; a running one must be stopped before this.</p>
+            <button type="submit">Abandon</button>
+          </form>
+        </details>
+        {% endif %}
+        {% if not (forms.answer or forms.merge or forms.close or forms.abandon) %}<p class="capability-note">Nothing to decide while the task is {{ evidence.status|replace('_', ' ') }}.</p>{% endif %}
+        {% endif %}
+      </section>
       <section class="detail-card"><h2>Operator acceptance</h2>{% set acceptance = evidence.operator_acceptance %}{% if acceptance.available %}<p><strong>Accepted{% if not acceptance.current %} an earlier result{% endif %}</strong> by {{ acceptance.actor_id }}</p><p class="evidence-ref">{{ acceptance.ref_result }}</p>{% if acceptance.reason %}<p>{{ acceptance.reason }}</p>{% endif %}<p class="evidence-ref">Event {{ acceptance.event_seq }}</p>{% else %}<p class="unavailable">Operator acceptance unavailable: {{ acceptance.unavailable_reason }}</p>{% endif %}</section>
       <section class="detail-card"><h2>Independent review</h2>{% if evidence.independent_review.available %}<ol class="review-rounds">{% for review in evidence.independent_review.rounds %}<li><strong>{{ review.verdict|upper }}</strong> · {{ review.actor_id }}{% if review.reason %}<br><span>{{ review.reason }}</span>{% endif %}<br><small>Result: {{ review.ref_result }}</small></li>{% endfor %}</ol>{% else %}<p class="unavailable">Independent review unavailable: {{ evidence.independent_review.unavailable_reason }}</p>{% endif %}</section>
       {% if evidence.unclassified_reviews %}

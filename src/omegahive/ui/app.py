@@ -1,7 +1,9 @@
-"""FastAPI application for the read-only operator UI.
+"""FastAPI application for the operator UI.
 
-The application only constructs a port client, asks it for snapshots, and renders those
-snapshots. It owns no projection state and has no write endpoint.
+The application constructs a port client, asks it for snapshots, and renders those
+snapshots. It owns no projection state. Its write routes run nothing themselves: they
+forward the form and the request's Tailscale identity to the operation service on the
+host (`ui/operate.py`), which decides and records.
 """
 
 from __future__ import annotations
@@ -19,13 +21,14 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from .. import published
 from ..api import build_api_router, register_error_handlers
 from ..api.service import UnknownRun, UnknownTask
 from ..board.state import Board
 from ..events.envelope import Actor, Event
 from ..metrics import compute
 from ..operator_context import OperatorContextProvider, configured_workspace_hub
-from ..ops_service import OpsClient
+from ..ops_service import OpsClient, OpsUnavailable
 from ..port import PortView
 from ..report.portfolio import active_board, configured_window_days, portfolio_runs
 from ..report.reader import (
@@ -36,6 +39,7 @@ from ..report.reader import (
     database_runs,
 )
 from ..report.reader import read_view as _read
+from . import operate
 from .demo import DemoPort, demo_run_summaries
 from .presenters import (
     actor_ids,
@@ -229,6 +233,10 @@ def create_app(
         ops_client.tail if ops_client is not None else None,
     )
 
+    def forbidden(request: Request, message: str) -> HTMLResponse:
+        return HTMLResponse(f"<!doctype html><title>Not allowed</title><p>{escape(message)}</p>"
+                            f'<p><a href="{escape(str(request.url))}">Back</a></p>', 403)
+
     app = FastAPI(title="OmegaHive", docs_url=None, redoc_url=None, root_path=base_path)
     app.mount("/static", StaticFiles(directory=str(_ROOT / "static")), name="static")
     app.include_router(
@@ -245,6 +253,8 @@ def create_app(
     def snapshot(run_id: str) -> PortView:
         return _read(factory, run_id, None, None)
 
+    hub = workspace_hub if workspace_hub is not None else configured_workspace_hub()
+
     def page_response(
         request: Request,
         page: str,
@@ -252,6 +262,8 @@ def create_app(
         actor: str | None = None,
         event_type: str | None = None,
         show_all: bool = False,
+        launch_outcome: dict | None = None,
+        status_code: int = 200,
     ) -> HTMLResponse:
         view = snapshot(run_id)
         context = _page_context(
@@ -260,7 +272,16 @@ def create_app(
         )
         context["page"] = page
         context["stream_url"] = request.url_for("stream", run_id=run_id)
-        return _TEMPLATES.TemplateResponse(request=request, name=f"{page}.html", context=context)
+        if page == "board":
+            # Published orders with no task on this run's board: the launch rows. Read from
+            # the hub; without one configured the board simply has none to offer.
+            tasks = set((view.board or Board(tasks={})).tasks)
+            rows = published.not_launched(hub, run_id, tasks) if hub is not None else []
+            context["launch"] = operate.launch_rows(ops_client, rows, launch_outcome)
+            context["launch_outcome"] = launch_outcome
+        return _TEMPLATES.TemplateResponse(
+            request=request, name=f"{page}.html", context=context, status_code=status_code
+        )
 
     def portfolio_context(request: Request, show_all: bool) -> dict:
         """Discover the live runs, then read each one's board through the port.
@@ -346,8 +367,9 @@ def create_app(
     ) -> HTMLResponse:
         return page_response(request, "board", run_id, show_all=show_all)
 
-    @app.get("/run/{run_id}/task/{task_id}", response_class=HTMLResponse)
-    def task_page(request: Request, run_id: str, task_id: str) -> HTMLResponse:
+    def task_response(
+        request: Request, run_id: str, task_id: str, outcome: dict | None = None
+    ) -> HTMLResponse:
         try:
             context = operator_context(run_id, task_id)
         except UnknownRun:
@@ -366,8 +388,64 @@ def create_app(
                 "run_id": run_id,
                 "task_id": task_id,
                 "operator_context": context,
+                "forms": operate.task_forms(ops_client, context),
+                "outcome": outcome,
                 "stream_url": None,
             },
+        )
+
+    @app.get("/run/{run_id}/task/{task_id}", response_class=HTMLResponse)
+    def task_page(request: Request, run_id: str, task_id: str) -> HTMLResponse:
+        return task_response(request, run_id, task_id)
+
+    @app.post("/run/{run_id}/task/{task_id}/op/{operation}", response_class=HTMLResponse)
+    async def task_operation(
+        request: Request, run_id: str, task_id: str, operation: str
+    ) -> HTMLResponse:
+        who = operate.login(request)
+        if who is None:
+            return forbidden(request, operate.NO_IDENTITY)
+        if ops_client is None:
+            return HTMLResponse("The operation service is not mounted on this UI.", 503)
+        fields = await operate.form_fields(request)
+        try:
+            body = await asyncio.to_thread(
+                ops_client.operate, operation, fields.get("operation_id", ""),
+                operate.params(operation, run_id, task_id, fields), surface="web", login=who,
+            )
+        except operate.FormError as exc:
+            body = {"status": "refused", "message": str(exc)}
+        except OpsUnavailable as exc:
+            body = {"status": "refused", "message": str(exc)}
+        if body.get("status") == "forbidden":
+            return forbidden(request, f"{body.get('message')}. {operate.NO_IDENTITY}")
+        return await asyncio.to_thread(
+            task_response, request, run_id, task_id, operate.outcome(operation, body)
+        )
+
+    @app.post("/run/{run_id}/launch", response_class=HTMLResponse)
+    async def launch(request: Request, run_id: str) -> HTMLResponse:
+        who = operate.login(request)
+        if who is None:
+            return forbidden(request, operate.NO_IDENTITY)
+        if ops_client is None:
+            return HTMLResponse("The operation service is not mounted on this UI.", 503)
+        fields = await operate.form_fields(request)
+        order = fields.get("order_path", "")
+        try:
+            body = await asyncio.to_thread(
+                ops_client.operate, "launch", fields.get("operation_id", ""),
+                {"order_path": order, "route": fields.get("route", "")},
+                surface="web", login=who,
+            )
+        except OpsUnavailable as exc:
+            body = {"status": "refused", "message": str(exc)}
+        if body.get("status") == "forbidden":
+            return forbidden(request, f"{body.get('message')}. {operate.NO_IDENTITY}")
+        result = {**operate.outcome("launch", body),
+                  "task": published.task_of(order.rsplit("/", 1)[-1].removesuffix(".md"))}
+        return await asyncio.to_thread(
+            page_response, request, "board", run_id, launch_outcome=result
         )
 
     @app.get("/run/{run_id}/events", response_class=HTMLResponse)

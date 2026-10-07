@@ -1,0 +1,9 @@
+{# One operation's outcome. Status is spelled out and marked by a symbol and a border style,
+   never by colour alone. #}
+{% set o = outcome %}
+<section class="outcome outcome-{{ 'replayed' if o.replayed else o.status }}" role="status">
+  <strong>{% if o.replayed %}↺ Already done{% elif o.status == 'done' %}✓ Done{% elif o.status == 'failed' %}✕ Failed{% else %}✕ Refused{% endif %}</strong>
+  · {{ o.operation }}{% if o.task %} {{ o.task }}{% endif %}{% if o.operation_id %} <small>(operation {{ o.operation_id }})</small>{% endif %}
+  {% if o.status != 'done' or o.replayed %}<pre class="outcome-message">{{ o.message }}</pre>{% endif %}
+  {% for note in o.notes %}<p class="capability-note">{{ note }}</p>{% endfor %}
+</section>
