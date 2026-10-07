@@ -12,9 +12,10 @@ commands with `HIVE_ACTOR` (the human), `HIVE_EXECUTED_BY=operation-service` and
 A receipt is one JSON file per operation id under the policy's `receipts_dir`. Nothing
 reads receipts but the replay path and a human: the spine is the record (D5).
 
-Who may ask. The service runs only what a human asked for: from the web, where the UI has
-already checked the Tailscale identity and the service checks it again against the
-policy's `web_login`; or from `hive ops` on this host. Local processes are trusted (D8):
+Who may ask. The service runs only what a human asked for: from the web, where the UI
+refuses a request with no Tailscale identity and forwards the login, and this service is
+the one place that checks it against the policy's `web_login`; or from `hive ops` on this
+host. Local processes are trusted (D8):
 anything already running here could reach this socket, exactly as it can already run the
 scripts this service runs. There is one human, recorded as the policy's `operator_actor`.
 """
