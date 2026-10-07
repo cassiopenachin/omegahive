@@ -12,7 +12,7 @@ Two of the three surfaces below run against the spine alone:
 
 | Surface | Needs the companion workspace? |
 |---|---|
-| The notifier (§2) | No — it reads the spine and posts to Telegram |
+| The notifier (§2) | No — it reads the spine and posts to Slack (or Telegram) |
 | The launch / answer / close loop (§3–§4) | **Yes** — orders, reports and questions are files in it |
 | Metrics and prediction scoring (§5) | **Yes** — it reads orders and writes into the workspace |
 
@@ -37,11 +37,11 @@ export CANON_ROOT=~/src/SNET               # where project code checkouts live; 
 
 ## 2. The notifier: attention pager + daily heartbeat
 
-A small long-running service (`omegahive notify`, the compose `notifier` service) follows the spine's **read path** and sends Telegram messages so the operator doesn't have to poll the board. It is **outbound only** — one POST to `sendMessage`, no `getUpdates`, no webhook, no ack path, no bot commands — so it adds no inbound trust surface. It carries **refs, never file content**; messages are a lossy phone-glance *render* of an event (the audit home is the spine), rendered as HTML with full escaping.
+A small long-running service (`omegahive notify`, the compose `notifier` service) follows the spine's **read path** and posts messages so the operator doesn't have to poll the board. `OMEGAHIVE_NOTIFIER_TRANSPORT` picks where: `slack` (the default) posts to one channel, **one thread per task** — the first message about a task opens the thread, every later event about it is a reply, and the attention events (question, blocked, escalated, a turn that ended with nothing said) also show in the channel while results stay in the thread; `telegram` sends to one chat. It is **outbound only** — one POST to `chat.postMessage` (or `sendMessage`), no Events API, no Socket Mode, no `getUpdates`, no webhook, no reading of the channel, no bot commands — so it adds no inbound trust surface. It carries **refs, never file content** (a question's first line is the one quoted body); messages are a lossy phone-glance *render* of an event (the audit home is the spine), rendered as Slack mrkdwn or Telegram HTML with full escaping.
 
 **One notifier watches every run.** Like the board, it is a portfolio surface: runs are discovered from the spine's own registry through the same active-run cut `omegahive portfolio` applies, so a project waking up or going quiet needs no redeploy. There is deliberately **no run id to configure** — a stale one in a deploy env is how the pager spent a week truthfully reporting an empty acceptance run while the real spine moved, and the fix was to delete the setting rather than guard it.
 
-It pages on four attention events — `task.reported(kind=question)`, `task.blocked`, `task.escalated`, and `task.result_posted` (the result that prompts your close action) — folding a burst in one poll interval into a single summary. Everything else is silence, by design. Every message names its run, and the task id links to **that run's** board:
+It pages on `question.asked` (and the retired `task.reported(kind=question)`), `task.blocked`, `task.escalated`, `task.result_posted` (the result that prompts your close action), `task.status_override` to `cancelled` (an abandon, naming who decided and why), and a worker turn that ended with no task event. Everything else is silence, by design. On Telegram a burst in one poll interval folds into a single summary; on Slack each event is its own reply in its task's thread. Every message names its run; the task id links to the task's page on Slack and to **that run's** board on Telegram:
 
 ```
 ❓ omegahive · sess-notifier-0728 asks on notifier-portfolio: 2026-07-28-cutover-semantics
@@ -70,24 +70,27 @@ The heartbeat makes silence informative: for a long unattended window, a missing
 
 ### 2.1 Setup
 
-Create a bot with [@BotFather](https://t.me/BotFather) (`/newbot`), then put the token and your chat id in a per-service secrets env-file — never in the repo, an image, or a log:
+For Slack, use a Slack app whose bot token has the `chat:write` scope, and invite the bot to the channel (otherwise every post fails with `not_in_channel`, which is logged and skipped). For Telegram, create a bot with [@BotFather](https://t.me/BotFather) (`/newbot`) and set `OMEGAHIVE_NOTIFIER_TRANSPORT=telegram` in `.env`. Either way the credentials go in a per-service secrets env-file — never in the repo, an image, or a log:
 
 ```bash
 scripts/hive-init-secrets       # creates the secrets dir (0700) + seeds the env-files (0600)
 $EDITOR "$OMEGAHIVE_SECRETS_DIR/notifier.env"
-# TELEGRAM_BOT_TOKEN=…   TELEGRAM_CHAT_ID=…
+# SLACK_BOT_TOKEN=xoxb-…   SLACK_CHANNEL_ID=C…        (slack, the default)
+# TELEGRAM_BOT_TOKEN=…     TELEGRAM_CHAT_ID=…         (telegram)
 docker compose up -d notifier   # no run id — it follows every active run
 ```
+
+The notifier refuses to start without the selected transport's pair and says which pair is missing and how to select the other transport. Keeping both pairs filled in makes switching a one-line change in `.env` and a notifier restart. Slack's thread map (task → the parent message's `ts`) is kept in the notifier's state file beside the cursors; it is a cache, so losing it only means the next event about a task opens a new thread.
 
 `hive-init-secrets` creates the directory and seeds a `<service>.env` at 0600 from each committed `<service>.env.example`, never overwriting a file that already exists. The repo ships three: `notifier.env.example`, `gateway.env.example` and `owner.env.example` (`postgres.env` and `harness.env` have no committed example yet and are created by hand). **The two credential files are seeded with every variable commented out**, deliberately: a seeded `gateway.env` that *set* a placeholder would stop the write path falling back to the single-role DSN and break every emit on a host that has not cut over, so this bootstrap is safe to run at any time and the cutover stays an explicit act (README, "Credentials"). `OMEGAHIVE_SECRETS_DIR` defaults to `$HOME/.config/omegahive/secrets` — the canonical location from [the deployment spec](omegahive_deployment_spec.md) §4, and the same default the compose file interpolates, so the pointer and the directory cannot disagree. Set the variable only to move the directory.
 
 `HEARTBEAT_HOUR_UTC` is config, not a secret: it rides the compose environment (`environment: HEARTBEAT_HOUR_UTC=${HEARTBEAT_HOUR_UTC:-6}`), not `notifier.env`. The service carries `restart: unless-stopped`, and its per-run read cursors + heartbeat state persist on the `omegahive-notifier` volume, so a restart resumes without replay or a double heartbeat.
 
-**Do not run `compose config` on the notifier in a shared terminal.** Compose inlines `env_file` contents into the resolved environment, so it prints `TELEGRAM_BOT_TOKEN` in plaintext.
+**Do not run `compose config` on the notifier in a shared terminal.** Compose inlines `env_file` contents into the resolved environment, so it prints the bot tokens in plaintext.
 
 ### 2.2 Deep links (optional)
 
-Set `OMEGAHIVE_UI_BASE_URL` to whatever origin+prefix your own devices use to reach the web UI, and every task id in a message — page or heartbeat open-block — becomes a tap-through link to the board view of **the run that event came from** (`…/run/<run>/board`, assembled from the event itself, never from static config). The board links each task to its own page, `…/run/<run>/task/<task>`, which shows the task's question, blocker, result reports and review history. With the default loopback access that is `http://127.0.0.1:8811/omegahive` (links open on the host, or through an SSH tunnel); with an ingress in front it is that ingress's origin. It is config, not a secret, and rides the compose environment (`OMEGAHIVE_UI_BASE_URL=${OMEGAHIVE_UI_BASE_URL:-}`) beside `HEARTBEAT_HOUR_UTC`, not `notifier.env`. Leave it unset and messages render exactly as before — the link is purely additive.
+Set `OMEGAHIVE_UI_BASE_URL` to whatever origin+prefix your own devices use to reach the web UI, and every task id in a message — page or heartbeat open-block — becomes a tap-through link, assembled from the event itself, never from static config: on Slack to the task's own page, `…/run/<run>/task/<task>`, which shows the task's question, blocker, result reports and review history; on Telegram to the board view of **the run that event came from** (`…/run/<run>/board`), which links each task to its page. With the default loopback access that is `http://127.0.0.1:8811/omegahive` (links open on the host, or through an SSH tunnel); with an ingress in front it is that ingress's origin. It is config, not a secret, and rides the compose environment (`OMEGAHIVE_UI_BASE_URL=${OMEGAHIVE_UI_BASE_URL:-}`) beside `HEARTBEAT_HOUR_UTC`, not `notifier.env`; set it in `.env`, where every service sees it, which is why `secrets-manifest.yaml` declares it in the shared group. Leave it unset and messages render exactly as before — the link is purely additive.
 
 **A link that only resolves on your own devices is a feature, not a limitation.** The UI is never published beyond loopback by anything in this repo, so a deep link works exactly where you have already arranged access and nowhere else. *Deployment #0 practice:* a tailnet arranges that reach, and its base URL is `https://<host>:8443/omegahive`. A tunnel does the same job for one machine. Either way the link's reach is the access you built, which is the posture rather than a gap in it.
 
@@ -186,3 +189,4 @@ Both accept `HIVE_SPINE_JSON=<dump>` in place of the live read, which is how `sc
 ## Revision record
 
 - 2026-08-01 — v1. Created by the README restructure. The notifier (§2), the launch / answer / close loop (§3), `project.conf` (§4), and the metrics/scoring instruments (§5) moved here from `README.md`, which now carries a pointer; that prose is unchanged apart from three deliberate edits — host-specific examples made placeholder-shaped (`ssh <host>`), deployment-#0 arrangements labeled as such, and references to workspace-side protocol files restated as "your workspace's protocol", because this repo ships the bootstrap, not the doctrine. Six passages are **new**, each describing behaviour that already shipped but was documented nowhere: §1's which-surface-needs-the-workspace table and the four `export` lines; the host tooling the loop needs (`git`, `jq`, `tmux`); the compose command baked into an issued emit wrapper; the `compose config` token-leak caution; the `OMEGA_DIR` refusal; and §6.
+- 2026-10-06 — §2: Slack as the default transport, one thread per task, Telegram selectable; `question.asked` and cancellations page.

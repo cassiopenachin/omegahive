@@ -470,41 +470,76 @@ def notify_cmd(
         None, "--days", help=f"active window in days (default {WINDOW_DAYS})"
     ),
 ) -> None:
-    """Follow **every active run** and ping Telegram on each attention event —
-    `task.reported(kind=question)`, `task.blocked`, `task.escalated`, `task.result_posted` —
-    plus one unconditional daily portfolio heartbeat at `HEARTBEAT_HOUR_UTC` (default
-    06:00Z). Outbound only: no inbound webhook, no ack path, no bot commands.
+    """Follow **every active run** and post on each attention event — `question.asked`
+    (and the retired `task.reported(kind=question)`), `task.blocked`, `task.escalated`,
+    `task.result_posted`, `task.status_override(cancelled)` — plus one unconditional daily
+    portfolio heartbeat at `HEARTBEAT_HOUR_UTC` (default 06:00Z). Outbound only: no inbound
+    webhook, no ack path, no bot commands, no reading of the channel.
+
+    `OMEGAHIVE_NOTIFIER_TRANSPORT` picks where messages go: `slack` (the default) posts to
+    one channel, one thread per task, each event its own reply; `telegram` sends to one chat
+    and folds a burst into one summary. Under `slack`, `SLACK_BOT_TOKEN` and
+    `SLACK_CHANNEL_ID` are required and the Telegram variables are not read; under
+    `telegram`, the reverse. A missing pair stops the notifier at startup, naming it.
 
     **There is no run id.** The notifier is a portfolio surface like the board: runs are
     discovered from the spine's own registry through the same active-run cut `hive portfolio`
     applies, so a run entering or leaving the window needs no redeploy — and no run identity
     can drift out of date. Every message names its run and deep-links to that run's board.
 
-    The bot token and chat id come from the environment (`TELEGRAM_BOT_TOKEN`,
-    `TELEGRAM_CHAT_ID`) — the per-service secrets env-file (`notifier.env`, deployment
-    spec §4), never a CLI argument (which would surface the token in the process list).
+    The bot token and destination come from the environment — the per-service secrets
+    env-file (`notifier.env`, deployment spec §4), never a CLI argument (which would
+    surface the token in the process list).
     The token is never logged and never placed in a message. `HEARTBEAT_HOUR_UTC` is config
     (compose environment), not a secret. `OMEGAHIVE_UI_BASE_URL` (also config) is the external
     origin+prefix the operator's phone uses (e.g. https://host:8443/omegahive); when set, the
-    task id in each message deep-links to that run's board view over the tailnet. Unset, the
+    task id in each message deep-links over the tailnet — on Slack to the task's page, on
+    Telegram to the run's board view. Unset, the
     render is unchanged. `OMEGAHIVE_PORTFOLIO_EXCLUDE` / `OMEGAHIVE_ACTIVE_WINDOW_DAYS` tune
     the run cut exactly as they do for the board (the `--exclude` / `--days` flags override).
     """
-    from .notifier import CursorStore, NotifierService, PortSpineReader, TelegramClient
+    from .notifier import (
+        CursorStore,
+        NotifierService,
+        PortSpineReader,
+        SlackClient,
+        SlackTransport,
+        TelegramClient,
+        Transport,
+    )
 
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
 
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
-    if not token or not chat_id:
+    transport = os.environ.get("OMEGAHIVE_NOTIFIER_TRANSPORT", "").strip().lower() or "slack"
+    if transport == "slack":
+        slack_token = os.environ.get("SLACK_BOT_TOKEN", "")
+        slack_channel = os.environ.get("SLACK_CHANNEL_ID", "")
+        if not slack_token or not slack_channel:
+            console.print(
+                "notifier: the transport is slack (the default), so SLACK_BOT_TOKEN and "
+                "SLACK_CHANNEL_ID must be set (notifier.env in the secrets dir); to keep "
+                "Telegram instead, set OMEGAHIVE_NOTIFIER_TRANSPORT=telegram",
+                highlight=False,
+            )
+            raise typer.Exit(code=1)
+    elif transport == "telegram":
+        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+        if not token or not chat_id:
+            console.print(
+                "notifier: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set "
+                "(notifier.env in the secrets dir)"
+            )
+            raise typer.Exit(code=1)
+        api_base = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org")
+    else:
         console.print(
-            "notifier: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set "
-            "(notifier.env in the secrets dir)"
+            f"notifier: OMEGAHIVE_NOTIFIER_TRANSPORT={transport!r} is not one of slack, telegram",
+            highlight=False,
         )
         raise typer.Exit(code=1)
-    api_base = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org")
     try:
         heartbeat_hour = int(os.environ.get("HEARTBEAT_HOUR_UTC", "6"))
     except ValueError:
@@ -527,7 +562,11 @@ def notify_cmd(
         window_days=window_days,
         exclude=globs,
     )
-    sender = TelegramClient(token, chat_id, api_base=api_base)
+    sender: TelegramClient | Transport = (
+        SlackTransport(SlackClient(slack_token, slack_channel), store, ui_base_url)
+        if transport == "slack"
+        else TelegramClient(token, chat_id, api_base=api_base)
+    )
     NotifierService(
         reader, sender, store,
         batch_threshold=batch_threshold, heartbeat_hour=heartbeat_hour,

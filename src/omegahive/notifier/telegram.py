@@ -16,28 +16,16 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
-from typing import Protocol
+
+from .transport import Sender, SendError
+
+__all__ = ["Sender", "TelegramClient", "TelegramError"]
 
 
-class Sender(Protocol):
-    """A one-way message sink. `send` returns on success and raises on failure so the
-    poll loop can decline to advance its cursor and retry the same events next tick."""
-
-    def send(self, text: str) -> None: ...
-
-
-class TelegramError(RuntimeError):
-    """A send failure whose message is already token-scrubbed (safe to log).
-
-    `permanent` distinguishes a failure that retrying the *same* message cannot fix (a 4xx
-    that isn't rate-limiting: bad chat id, bot blocked, message rejected) from a transient
-    one (network error, 5xx, 429). The poll loop skips a permanent failure — with a loud
-    log — so one undeliverable message never wedges the channel and silently drops every
-    later page; a transient one holds the cursor and retries."""
-
-    def __init__(self, message: str, *, permanent: bool = False) -> None:
-        super().__init__(message)
-        self.permanent = permanent
+class TelegramError(SendError):
+    """A Telegram send failure, token-scrubbed. Permanent for a 4xx that isn't
+    rate-limiting (bad chat id, bot blocked, message rejected); transient for a network
+    error, 5xx or 429."""
 
 
 def _is_permanent(status: int) -> bool:

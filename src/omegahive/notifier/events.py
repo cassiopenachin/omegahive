@@ -14,10 +14,17 @@ ends `failed` at the execution level, exhausts its `budget`, or comes back
 which is precisely why somebody has to be told. Pre-cutover `execution.finished` events
 carry no classification at all and stay silent, as they always were.
 
+Two more task triggers, added with the Slack transport: `question.asked`, the way a worker
+asks today (the retired `task.reported(kind=question)` stays for old runs), carrying the
+question's first line, bounded; and `task.status_override` with `status == "cancelled"`
+(`hive-abandon`), carrying the reason, with the deciding actor named as the event's actor.
+Any other override stays silent.
+
 Everything else is silence — the notifier stays deliberately narrow (the temptation to
 notify on everything is how notification channels die). `kind` is read only to gate
-`task.reported`, and `classification` only to gate `execution.finished`; no other branch
-reads payload content, honouring the pre-registered smell test (§4).
+`task.reported`, `classification` only to gate `execution.finished`, and `status` only to gate
+`task.status_override`. A question's text is the one payload body quoted, and only its first
+line, bounded: the full text stays on the task page.
 
 A `Notification` carries only pointers: event type, task id, the actor who emitted it,
 the run (the project), and — depending on the event — a **ref path** (question/result,
@@ -45,7 +52,12 @@ _TRIGGERS: dict[str, tuple[str, str]] = {
     # Glyph is shape-distinct from the other four (⏻ power symbol) rather than colour-
     # coded, like the rest of this table.
     "execution.finished": ("exit", "⏻"),
+    "question.asked": ("question", "❓"),
+    "task.status_override": ("cancelled", "✖"),   # gated on status=cancelled below
 }
+
+# A quoted question is one line, at most this long; the rest is a click away.
+_QUESTION_CHARS = 140
 
 # The exit classifications that need attention, and the only ones. `posted` and `blocked`
 # are excluded because their own task event already notified; a pre-cutover event with no
@@ -64,7 +76,8 @@ class Notification:
     task_id: str | None
     actor_id: str
     ref: str | None          # question/result: the pinned ref (path@sha); None otherwise
-    reason: str | None       # blocked/escalated: the one-line reason; None otherwise
+    reason: str | None       # blocked/escalated/exit/cancelled: the one-line reason;
+                             # question.asked: the question's first line; None otherwise
     extra_refs: int          # result_posted: count of artifact refs beyond the first (else 0)
     seq: int | None
 
@@ -80,6 +93,15 @@ def _result_ref(payload: dict) -> tuple[str | None, int]:
     ref = first.get("ref") if isinstance(first, dict) else None
     ref = ref if isinstance(ref, str) and ref else None
     return ref, max(0, len(refs) - 1)
+
+
+def _first_line(text: object) -> str | None:
+    if not isinstance(text, str):
+        return None
+    line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    if not line:
+        return None
+    return line if len(line) <= _QUESTION_CHARS else line[: _QUESTION_CHARS - 1] + "…"
 
 
 def notification_from(event: Event) -> Notification | None:
@@ -100,6 +122,8 @@ def notification_from(event: Event) -> Notification | None:
         event.event_type == "execution.finished"
         and payload.get("classification") not in ATTENTION_CLASSIFICATIONS
     ):
+        return None
+    if event.event_type == "task.status_override" and payload.get("status") != "cancelled":
         return None
 
     ref: str | None = None
@@ -127,6 +151,11 @@ def notification_from(event: Event) -> Notification | None:
         cls = payload.get("classification")
         why = payload.get("classification_reason")
         reason = f"{cls}: {why}" if isinstance(why, str) and why else str(cls)
+    elif event.event_type == "question.asked":
+        reason = _first_line(payload.get("text"))
+    elif event.event_type == "task.status_override":
+        r = payload.get("reason")
+        reason = r if isinstance(r, str) and r else None
 
     return Notification(
         label=label,
