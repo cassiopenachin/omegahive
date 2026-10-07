@@ -175,9 +175,10 @@ class Operations:
                     view = self.runner(self._pr_view(run, params), env, 60)
                     receipt["commands"].append(view)
                     try:
-                        receipt["merged"] = json.loads(view["stdout"]).get("state") == "MERGED"
+                        state = json.loads(view["stdout"]).get("state")
                     except (json.JSONDecodeError, AttributeError):
-                        receipt["merged"] = None
+                        state = None
+                    receipt["merged"] = state == "MERGED"
                 ok = {0, NUDGE_UNCONFIRMED} if operation == "answer" else {0}
                 failed = [c for c in receipt["commands"] if c["exit_status"] not in ok]
                 if not failed and receipt["commands"] \
@@ -186,6 +187,10 @@ class Operations:
                 receipt["status"] = "failed" if failed else "done"
                 receipt["message"] = (failed[0]["stderr"] or failed[0]["stdout"]).strip() \
                     if failed else "done"
+                if not failed and receipt.get("merged") is False:
+                    receipt["status"] = "failed"
+                    receipt["message"] = (f"gh pr merge exited 0, but GitHub now calls the PR "
+                                          f"{state or 'unreadable'}; it is not merged")
             except Refused as exc:
                 receipt["status"], receipt["message"] = "refused", str(exc)
             receipt["status_after"] = self._board(run).get(task, {}).get("status")

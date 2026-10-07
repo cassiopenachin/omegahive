@@ -117,8 +117,12 @@ def rig(tmp_path):
           "statusCheckRollup": [{"conclusion": "SUCCESS"}, {"state": "SUCCESS"}]}
     seats = FakeSeats()
 
+    lands = {"merge": True}     # whether GitHub reports the PR merged after `gh pr merge`
+
     def runner(argv, env, timeout):
         calls.append((argv, dict(env)))
+        if argv[:3] == ["gh", "pr", "merge"] and lands["merge"]:
+            gh["state"] = "MERGED"
         if argv[:3] == ["gh", "pr", "view"]:
             return {"argv": argv, "exit_status": 0, "timed_out": False,
                     "stdout": json.dumps(gh), "stderr": ""}
@@ -136,8 +140,8 @@ def rig(tmp_path):
         pass
 
     r = Rig()
-    r.ops, r.events, r.calls, r.gh, r.seats, r.result, r.deployment = (
-        ops, events, calls, gh, seats, result, deployment)
+    r.ops, r.events, r.calls, r.gh, r.seats, r.result, r.deployment, r.lands = (
+        ops, events, calls, gh, seats, result, deployment, lands)
     return r
 
 
@@ -260,7 +264,17 @@ def test_a_merge_of_the_named_green_unmoved_pr_runs_and_records_the_outcome(rig)
     assert merges == [["gh", "pr", "merge", "12", "--repo", REPO, "--squash",
                        "--match-head-commit", HEAD]]
     assert argvs(rig)[-1][:3] == ["gh", "pr", "view"]   # what GitHub says afterwards
-    assert receipt["merged"] is False                  # the fake still answers OPEN
+    assert receipt["merged"] is True
+
+
+def test_a_merge_that_github_does_not_report_merged_is_a_failure(rig):
+    # gh's exit status is not the outcome: a PR GitHub still calls OPEN was not merged.
+    post_result(rig)
+    rig.lands["merge"] = False
+    receipt = merge(rig, "op-m5")
+    assert receipt["status"] == "failed", receipt
+    assert receipt["merged"] is False
+    assert "OPEN" in receipt["message"]
 
 
 def test_merge_candidates_are_the_repos_prs_the_report_names(rig):
