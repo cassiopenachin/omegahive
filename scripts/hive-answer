@@ -350,7 +350,8 @@ tmux send-keys -t "$WINDOW_T" -l "$NUDGE" \
 #     successful submit as stuck.
 #
 # It can still be wrong in both directions. What follows from that is the exit code: a nudge
-# this cannot confirm is reported as unconfirmed and exits non-zero, never as delivered.
+# this cannot confirm is reported as unconfirmed and exits 3, never 0 as delivered. It is not
+# 1 either: by now any answer is committed, pushed and recorded, and exit 1 means it is not.
 NEEDLE=$(printf '%s' "${NUDGE: -32}" | tr -s '[:space:]' ' ')
 DELIVERED=""
 for _ in 1 2 3 4 5 6; do
@@ -373,7 +374,7 @@ if [ -z "$DELIVERED" ]; then
     echo "  as 'unconfirmed', not as 'not delivered' — the line may well have been received."
     echo "  $DURABLE"
   } >&2
-  exit 1
+  exit 3
 fi
 
 echo "hive-answer: nudged $HIVE_TMUX_SESSION:$TASK (worker '$OWNER')"

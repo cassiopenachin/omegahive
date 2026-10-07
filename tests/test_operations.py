@@ -16,7 +16,7 @@ import pytest
 
 from omegahive.board import fold
 from omegahive.events.envelope import Actor, Event
-from omegahive.operations import EXECUTED_BY, Operations, Refused
+from omegahive.operations import EXECUTED_BY, NUDGE_NOTE, Operations, Refused
 from omegahive.port import PortView
 
 RUN = "prun"
@@ -166,6 +166,33 @@ def test_an_answer_to_the_latest_question_runs_the_script(rig):
                               {"run": RUN, "task": "t1", "question_seq": 11, "text": "use X"})
     assert receipt["status"] == "done", receipt
     assert argvs(rig) == [["/opt/hive/scripts/hive-answer", "t1", "use X"]]
+
+
+def test_an_answer_whose_nudge_is_unconfirmed_is_done_with_the_warning_as_a_note(rig):
+    runner = rig.ops.runner
+
+    def unconfirmed(argv, env, timeout):
+        result = runner(argv, env, timeout)
+        if argv[0].endswith("hive-answer"):
+            return {**result, "exit_status": 3, "stderr": "could not confirm the nudge\n"}
+        return result
+
+    rig.ops.runner = unconfirmed
+    receipt = rig.ops.execute("answer", "op-a4", "cli",
+                              {"run": RUN, "task": "t1", "question_seq": 11, "text": "use X"})
+    assert receipt["status"] == "done", receipt
+    assert receipt["notes"] == [NUDGE_NOTE]
+
+
+def test_exit_3_from_any_other_script_is_still_a_failure(rig):
+    post_result(rig)
+    runner = rig.ops.runner
+    rig.ops.runner = lambda argv, env, timeout: {**runner(argv, env, timeout),
+                                                 "exit_status": 3, "stderr": "boom"}
+    receipt = rig.ops.execute("close", "op-c9", "cli",
+                              {"run": RUN, "task": "t1", "result_ref": rig.result,
+                               "verdict": "clean"})
+    assert receipt["status"] == "failed", receipt
 
 
 def test_a_multiline_answer_is_refused_and_names_the_long_form(rig):

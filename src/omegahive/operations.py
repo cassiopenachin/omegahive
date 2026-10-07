@@ -40,6 +40,9 @@ EXECUTED_BY = "operation-service"
 VERDICTS = ("clean", "minor rework", "rework")
 ABANDONABLE = {"created", "ready", "assigned", "in_progress", "blocked", "in_review", "reopened"}
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
+NUDGE_UNCONFIRMED = 3  # hive-answer: the answer landed; the nudge was typed, not confirmed
+NUDGE_NOTE = ("answer landed; the nudge to the worker could not be confirmed. Check the "
+              "worker output, and press Enter in its window if the line is still unsent")
 MAX_OUTPUT = 16 * 1024
 # What the scripts may inherit from the service's own environment. Everything else they
 # need comes from the policy's env_file (route credentials) or from the policy itself.
@@ -175,7 +178,11 @@ class Operations:
                         receipt["merged"] = json.loads(view["stdout"]).get("state") == "MERGED"
                     except (json.JSONDecodeError, AttributeError):
                         receipt["merged"] = None
-                failed = [c for c in receipt["commands"] if c["exit_status"] != 0]
+                ok = {0, NUDGE_UNCONFIRMED} if operation == "answer" else {0}
+                failed = [c for c in receipt["commands"] if c["exit_status"] not in ok]
+                if not failed and receipt["commands"] \
+                        and receipt["commands"][-1]["exit_status"] == NUDGE_UNCONFIRMED:
+                    receipt["notes"].append(NUDGE_NOTE)
                 receipt["status"] = "failed" if failed else "done"
                 receipt["message"] = (failed[0]["stderr"] or failed[0]["stdout"]).strip() \
                     if failed else "done"

@@ -252,6 +252,8 @@ def answer_rig(rig, tmp_path):
         "#!/bin/sh\n"
         'case "$1" in\n'
         "  list-windows) echo t1 ;;\n"
+        '  send-keys) [ "$4" = -l ] && [ -n "$FAKE_PANE" ] && printf %s "$5" > "$FAKE_PANE" ;;\n'
+        '  capture-pane) [ -n "$FAKE_PANE" ] && cat "$FAKE_PANE" ;;\n'
         '  display-message) case "$*" in\n'
         "    *pane_current_command*) echo claude ;;\n"
         "    *) echo 0 ;;\n"
@@ -308,6 +310,18 @@ def test_a_failed_record_warns_and_still_nudges(answer_rig):
     assert "recording it on the spine" in proc.stderr
     assert "--type task.reported --task t1" in proc.stderr
     assert "hive-answer: nudged" in proc.stdout
+
+
+def test_an_unconfirmed_nudge_after_a_landed_answer_exits_3_not_1(answer_rig, tmp_path):
+    # The pane still shows the nudge: the harness may not have taken it. The answer is
+    # committed, pushed and recorded, so this is not a failure; exit 3 says "landed, nudge
+    # unconfirmed" and keeps exit 1 for an answer that did not land.
+    proc, emits = answer_rig("hive-answer", "blocked", "t1", "yes",
+                             FAKE_PANE=str(tmp_path / "pane"))
+    assert proc.returncode == 3, proc.stderr
+    assert "could not confirm" in proc.stderr
+    (emit,) = emits
+    assert emit["type"] == "task.reported"
 
 
 # --- A5: a result's refs must exist on the hub before the worker's emit leaves ---
