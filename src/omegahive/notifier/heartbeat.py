@@ -1,7 +1,9 @@
 """The daily-heartbeat accumulator — what the notifier remembers between heartbeats.
 
-The heartbeat is a once-a-day liveness message derived **only** from the notifier's own
-cursor stream and this state (no board fold, no new read scope). One notifier watches the
+The heartbeat is a once-a-day liveness message. Its counts come from the notifier's own
+cursor stream and this state; its open blocks come from each run's board, read when the
+heartbeat goes out (service.py), because only the board knows which tasks are blocked now.
+One notifier watches the
 whole spine, so the state is two layers: a per-run tally (`RunHeartbeat`) folded over that
 run's event stream, and one portfolio wrapper (`PortfolioHeartbeat`) holding the runs plus
 the single send schedule — **one heartbeat total**, not one per run.
@@ -11,9 +13,6 @@ What a run's tally tracks:
     heartbeat). Head delta is analogous — both are "since the previous heartbeat". A
     pre-`worker-turns` state file has no `exit` key and loads with it at zero; `.get`
     everywhere is what makes that additive rather than a migration.
-  - `open_blocks`: `task.blocked` seen without a subsequent `task.unblocked`, per task id,
-    with a first-seen timestamp (the event's wall time if the envelope carries one, else
-    the tick time). Task ids only — no refs, no content, no titles.
   - `head`: the run's spine head recorded at the last heartbeat, for the +N/24h delta.
 
 What the portfolio wrapper adds:
@@ -25,14 +24,15 @@ What the portfolio wrapper adds:
     The heartbeat scopes what it *shows* to the runs currently followed instead.
 
 Serialization is `.get`-based and additive. A **legacy** single-run state file (the
-pre-portfolio notifier's flat `head`/`counts`/`open_blocks`) loads with its schedule kept —
+pre-portfolio notifier's flat `head`/`counts`) loads with its schedule kept —
 so a cutover on a day whose heartbeat already went out does not send a second one — and its
-tally dropped, because the portfolio re-arms every run at its current head (cursor.py).
+tally dropped, because the portfolio re-arms every run at its current head (cursor.py). An
+`open_blocks` map that an older notifier saved is ignored on load and dropped on the next
+save.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -56,25 +56,16 @@ class RunHeartbeat:
 
     head: int | None = None
     counts: dict[str, int] = field(default_factory=_empty_counts)
-    open_blocks: dict[str, str] = field(default_factory=dict)  # task_id -> first-seen ISO
 
     def observe(self, event: Event, now: datetime) -> None:
         """Fold one event into the tally. Called once per event as the read cursor passes
-        it (so a held-cursor retry never double-counts). Non-attention events are ignored
-        except `task.unblocked`, which clears an open block."""
+        it (so a held-cursor retry never double-counts). Non-attention events are ignored."""
         et = event.event_type
         if et == "task.reported":
             if event.payload.get("kind") == "question":
                 self.counts["question"] = self.counts.get("question", 0) + 1
         elif et == "task.blocked":
             self.counts["blocked"] = self.counts.get("blocked", 0) + 1
-            tid = event.task_id or "—"
-            if tid not in self.open_blocks:
-                seen = event.wall_ts if event.wall_ts is not None else now
-                self.open_blocks[tid] = seen.isoformat()
-        elif et == "task.unblocked":
-            if event.task_id is not None:
-                self.open_blocks.pop(event.task_id, None)
         elif et == "task.escalated":
             self.counts["escalated"] = self.counts.get("escalated", 0) + 1
         elif et == "task.result_posted":
@@ -86,8 +77,7 @@ class RunHeartbeat:
                 self.counts["exit"] = self.counts.get("exit", 0) + 1
 
     def roll(self, head: int | None) -> None:
-        """A heartbeat just went out: record this run's current head and reset the tally.
-        Open blocks are NOT reset — a block stays open until its `task.unblocked` arrives."""
+        """A heartbeat just went out: record this run's current head and reset the tally."""
         if head is not None:
             self.head = head
         self.counts = _empty_counts()
@@ -96,26 +86,10 @@ class RunHeartbeat:
         """No attention at all in the window — the shape a stalled run makes."""
         return not any(self.counts.get(k, 0) for k in _COUNT_KEYS)
 
-    def open_block_ages(self, now: datetime) -> list[tuple[str, int]]:
-        """(task_id, age_in_hours) for each open block, oldest first."""
-        out: list[tuple[str, datetime]] = []
-        for tid, seen_iso in self.open_blocks.items():
-            try:
-                seen = datetime.fromisoformat(seen_iso)
-            except ValueError:
-                seen = now
-            # tolerate a naive stored time by assuming it shares 'now's tzinfo.
-            if seen.tzinfo is None and now.tzinfo is not None:
-                seen = seen.replace(tzinfo=now.tzinfo)
-            out.append((tid, seen))
-        out.sort(key=lambda p: p[1])
-        return [(tid, max(0, int((now - seen).total_seconds() // 3600))) for tid, seen in out]
-
     def to_dict(self) -> dict:
         return {
             "head": self.head,
             "counts": dict(self.counts),
-            "open_blocks": dict(self.open_blocks),
         }
 
     @classmethod
@@ -129,11 +103,7 @@ class RunHeartbeat:
                 v = raw.get(k)
                 if isinstance(v, int):
                     counts[k] = v
-        blocks = data.get("open_blocks")
-        open_blocks = (
-            {str(k): str(v) for k, v in blocks.items()} if isinstance(blocks, dict) else {}
-        )
-        return cls(head=data.get("head"), counts=counts, open_blocks=open_blocks)
+        return cls(head=data.get("head"), counts=counts)
 
 
 @dataclass
@@ -155,26 +125,6 @@ class PortfolioHeartbeat:
         self.last_hour = hour
         for run_id, head in heads.items():
             self.for_run(run_id).roll(head)
-
-    def open_block_ages(
-        self, now: datetime, runs: Iterable[str] | None = None
-    ) -> list[tuple[str, str, int]]:
-        """(run_id, task_id, age_in_hours) oldest first, across `runs` (default: all held).
-
-        The caller passes the runs it currently follows: tallies are kept for runs that have
-        left the active window — so their return resumes rather than re-arms — but a message
-        must list exactly the cut it claims, never a block from a run the operator was told
-        is not in view.
-        """
-        keep = None if runs is None else set(runs)
-        out = [
-            (run_id, tid, age)
-            for run_id, hb in self.runs.items()
-            if keep is None or run_id in keep
-            for tid, age in hb.open_block_ages(now)
-        ]
-        out.sort(key=lambda row: (-row[2], row[0], row[1]))
-        return out
 
     def to_dict(self) -> dict:
         return {
