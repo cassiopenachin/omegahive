@@ -168,6 +168,30 @@ def test_abandon_posts_its_reason(hub):
     assert ops.calls[0][2] == {"run": RUN, "task": "t1", "reason": "dead"}
 
 
+def test_resume_posts_its_reason_while_the_worker_has_a_window(hub):
+    ops = FakeOps()
+    c = client(BLOCKED, ops, hub)
+    hidden = form(c.get(f"/run/{RUN}/task/t1").text, f"/run/{RUN}/task/t1/op/resume")
+    assert len(hidden["operation_id"]) == 32
+    c.post(f"/run/{RUN}/task/t1/op/resume", headers=ME,
+           data={**hidden, "reason": "login refreshed"})
+    (operation, _, params, _, _), = ops.calls
+    assert (operation, params) == ("resume", {"run": RUN, "task": "t1",
+                                              "reason": "login refreshed"})
+
+
+def test_resume_is_not_offered_once_a_result_is_in_review(hub):
+    page = client(IN_REVIEW, FakeOps(), hub).get(f"/run/{RUN}/task/t1").text
+    assert "op/resume" not in page
+
+
+def test_resume_is_not_offered_without_a_worker_window(hub):
+    ops = FakeOps()
+    ops.tail = lambda task: None            # type: ignore[method-assign]
+    page = client(BLOCKED, ops, hub).get(f"/run/{RUN}/task/t1").text
+    assert "op/resume" not in page
+
+
 def test_a_refusal_is_shown_verbatim(hub):
     ops = FakeOps()
     ops.reply = {"status": "refused", "message": "task is in_review; this needs blocked"}
@@ -206,6 +230,7 @@ def test_without_the_service_the_page_says_so_and_offers_no_form(hub):
 
 WRITES = [f"/run/{RUN}/task/t1/op/answer", f"/run/{RUN}/task/t1/op/close",
           f"/run/{RUN}/task/t1/op/merge", f"/run/{RUN}/task/t1/op/abandon",
+          f"/run/{RUN}/task/t1/op/resume",
           f"/run/{RUN}/launch"]
 READS = [f"/run/{RUN}/board", f"/run/{RUN}/task/t1", f"/run/{RUN}/events",
          f"/run/{RUN}/metrics"]

@@ -42,8 +42,12 @@ VERDICTS = ("clean", "minor rework", "rework")
 ABANDONABLE = {"created", "ready", "assigned", "in_progress", "blocked", "in_review", "reopened"}
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 NUDGE_UNCONFIRMED = 3  # hive-answer: the answer landed; the nudge was typed, not confirmed
-NUDGE_NOTE = ("answer landed; the nudge to the worker could not be confirmed. Check the "
-              "worker output, and press Enter in its window if the line is still unsent")
+UNCONFIRMED_NOTE = ("the nudge to the worker could not be confirmed. Check the worker output, "
+                    "and press Enter in its window if the line is still unsent")
+NUDGE_NOTE = f"answer landed; {UNCONFIRMED_NOTE}"
+# A worker can be resumed while it is working on the task; not once it has handed in a
+# result (in_review) or the task is over.
+RESUMABLE = {"assigned", "in_progress", "blocked", "reopened"}
 MAX_OUTPUT = 16 * 1024
 # What the scripts may inherit from the service's own environment. Everything else they
 # need comes from the policy's env_file (route credentials) or from the policy itself.
@@ -180,11 +184,13 @@ class Operations:
                     except (json.JSONDecodeError, AttributeError):
                         state = None
                     receipt["merged"] = state == "MERGED"
-                ok = {0, NUDGE_UNCONFIRMED} if operation == "answer" else {0}
+                nudges = operation in ("answer", "resume")
+                ok = {0, NUDGE_UNCONFIRMED} if nudges else {0}
                 failed = [c for c in receipt["commands"] if c["exit_status"] not in ok]
                 if not failed and receipt["commands"] \
                         and receipt["commands"][-1]["exit_status"] == NUDGE_UNCONFIRMED:
-                    receipt["notes"].append(NUDGE_NOTE)
+                    receipt["notes"].append(NUDGE_NOTE if operation == "answer"
+                                            else UNCONFIRMED_NOTE)
                 receipt["status"] = "failed" if failed else "done"
                 receipt["message"] = (failed[0]["stderr"] or failed[0]["stdout"]).strip() \
                     if failed else "done"
@@ -348,6 +354,19 @@ class Operations:
             raise Refused(f"this answer is for question {params.get('question_seq')}, but the "
                           f"task's latest question is {latest}; reload and answer that one")
         return [[self._script("hive-answer"), task, text]]
+
+    def _prepare_resume(self, run: str, task: str, params: Mapping[str, Any], board: Board,
+                   receipt: dict[str, Any]) -> list[list[str]]:
+        """Wake a live worker that stopped at its harness (an expired login, a turn that
+        ended early) with one line saying why. Nothing is appended or emitted."""
+        reason = _text(params, "reason")
+        if "\n" in reason:
+            raise Refused("a resume reason is one line")
+        _require_status(board, task, RESUMABLE)
+        if self.seats.live_workers([task]) != [task]:
+            raise Refused(f"'{task}' has no live worker to resume; a worker whose session "
+                          "exited is a seat to recover, not a process to wake")
+        return [[self._script("hive-answer"), task, "--resume-only", reason]]
 
     def _prepare_close(self, run: str, task: str, params: Mapping[str, Any], board: Board,
                   receipt: dict[str, Any]) -> list[list[str]]:
