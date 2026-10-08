@@ -210,9 +210,15 @@ services:
       # The socket's DIRECTORY, not the socket: the service recreates the socket on every
       # start, and a file bind-mount would keep pointing at the old one. The container's root
       # is this host user under rootless Podman, so the 0600 socket the user created is
-      # reachable with no mode change. :z relabels the directory for SELinux, and a socket
-      # created in it later inherits that label.
+      # reachable with no mode change. SELinux is the other half: see security_opt below.
       - ${OMEGAHIVE_OPS_SOCKET_DIR:-./deploy/no-ops-socket}:/run/omegahive-ops:z
+    # SELinux checks a Unix-socket connect against the LISTENING PROCESS's domain, not only the
+    # socket file's label: container_t may not connect to the operation service, which runs
+    # unconfined as this user, however the file is labelled. So this one container runs
+    # without label separation; it stays rootless, in its own user namespace, with the hub
+    # read-only and its port on loopback. No other service drops it (tests/test_compose_ui.py).
+    security_opt:
+      - label=disable
     ports:
       # host loopback only -> container 8000. This publish IS the default access path
       # (http://127.0.0.1:8811/omegahive, or over an SSH tunnel). Change the host port via

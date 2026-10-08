@@ -201,3 +201,17 @@ def test_every_compose_service_is_declared_exactly_once():
     assert not undeclared, f"compose services with no secrets-manifest.yaml row: {undeclared}"
     unknown = sorted(set(declared) - set(compose["services"]))
     assert not unknown, f"manifest rows naming services that do not exist: {unknown}"
+
+
+def test_every_key_a_compose_service_sets_is_declared_for_it():
+    """The same regression for keys: a variable added to a service's `environment:` block
+    without a manifest line fails here, not as an OVER finding on the host after a deploy."""
+    compose = yaml.safe_load((REPO / "docker-compose.yml").read_text())
+    declared = load_manifest_file(REPO / "secrets-manifest.yaml")
+    missing = {}
+    for name, service in compose["services"].items():
+        env = service.get("environment") or {}
+        keys = {item.split("=", 1)[0] for item in env} if isinstance(env, list) else set(env)
+        if undeclared := sorted(keys - declared[name][1]):
+            missing[name] = undeclared
+    assert not missing, f"compose environment keys with no manifest line: {missing}"

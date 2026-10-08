@@ -8,6 +8,7 @@ The UI container reaches the socket through a bind mount; its root maps to this 
 from __future__ import annotations
 
 import os
+import socket
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -66,17 +67,31 @@ def build_app(ops: Operations) -> FastAPI:
     return app
 
 
+def listen(path: Path) -> socket.socket:
+    """The service's socket, bound and mode 0600: this user, and the container root it maps.
+
+    Bound here rather than by uvicorn's `uds=`, which chmods the socket 0666 after binding.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.unlink(missing_ok=True)
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    previous = os.umask(0o177)
+    try:
+        sock.bind(str(path))
+    finally:
+        os.umask(previous)
+    os.chmod(path, 0o600)
+    return sock
+
+
 def serve() -> None:
     import uvicorn
 
     deployment = resolve(os.environ)
     ops = Operations(deployment, database_port(Actor(role="coordinator",
                                                      id="operation-service")))
-    socket = Path(deployment["ops_socket"])
-    socket.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    socket.unlink(missing_ok=True)
-    os.umask(0o177)   # the socket is created 0600: this user, and the container root it maps
-    uvicorn.run(build_app(ops), uds=str(socket), log_level="info")
+    sock = listen(Path(deployment["ops_socket"]))
+    uvicorn.run(build_app(ops), fd=sock.fileno(), log_level="info")
 
 
 class OpsClient:

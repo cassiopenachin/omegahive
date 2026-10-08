@@ -435,10 +435,11 @@ def test_the_tail_of_an_unknown_task_is_no_window(rig):
 def served(rig, tmp_path):
     import uvicorn
 
-    from omegahive.ops_service import OpsClient, build_app
+    from omegahive.ops_service import OpsClient, build_app, listen
 
     socket = tmp_path / "ops.sock"
-    server = uvicorn.Server(uvicorn.Config(build_app(rig.ops), uds=str(socket),
+    bound = listen(socket)                    # as serve() does: bound here, not by uvicorn
+    server = uvicorn.Server(uvicorn.Config(build_app(rig.ops), fd=bound.fileno(),
                                            log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -448,6 +449,14 @@ def served(rig, tmp_path):
     yield OpsClient(str(socket))
     server.should_exit = True
     thread.join(timeout=10)
+    bound.close()
+
+
+def test_the_socket_stays_0600_while_the_service_serves(served, tmp_path):
+    import stat
+
+    assert served.operate("answer", "op-s0", ANSWER)["status"] == "done"
+    assert stat.S_IMODE((tmp_path / "ops.sock").stat().st_mode) == 0o600
 
 
 def test_an_operation_over_the_socket_returns_its_receipt(served, rig):
