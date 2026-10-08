@@ -79,6 +79,13 @@ def abandon_cmd(operation_id: str = ID, run: str = RUN, task: str = TASK,
     _operate("abandon", operation_id, {"run": run, "task": task, "reason": reason})
 
 
+@ops_app.command("resume")
+def resume_cmd(operation_id: str = ID, run: str = RUN, task: str = TASK,
+               reason: str = typer.Option(..., "--reason")) -> None:
+    """Wake a live worker that stopped at its harness, with one line saying why."""
+    _operate("resume", operation_id, {"run": run, "task": task, "reason": reason})
+
+
 @ops_app.command("launch")
 def launch_cmd(operation_id: str = ID,
                order_path: str = typer.Option(..., "--order", help="projects/<p>/orders/<f>.md"),

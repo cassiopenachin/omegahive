@@ -16,7 +16,13 @@ import pytest
 
 from omegahive.board import fold
 from omegahive.events.envelope import Actor, Event
-from omegahive.operations import EXECUTED_BY, NUDGE_NOTE, Operations, Refused
+from omegahive.operations import (
+    EXECUTED_BY,
+    NUDGE_NOTE,
+    UNCONFIRMED_NOTE,
+    Operations,
+    Refused,
+)
 from omegahive.port import PortView
 
 RUN = "prun"
@@ -204,6 +210,50 @@ def test_a_multiline_answer_is_refused_and_names_the_long_form(rig):
                               {"run": RUN, "task": "t1", "question_seq": 11, "text": "a\nb"})
     assert receipt["status"] == "refused"
     assert "--sha" in receipt["message"]
+
+
+# --- resume ---------------------------------------------------------------------------
+
+def resume(rig, op_id: str, reason: str = "your login was refreshed; continue"):
+    return rig.ops.execute("resume", op_id, "cli", {"run": RUN, "task": "t1", "reason": reason})
+
+
+def test_a_resume_of_a_live_worker_nudges_it_with_the_reason(rig):
+    rig.seats.live.add("t1")
+    receipt = resume(rig, "op-r1")
+    assert receipt["status"] == "done", receipt
+    assert argvs(rig) == [["/opt/hive/scripts/hive-answer", "t1", "--resume-only",
+                           "your login was refreshed; continue"]]
+
+
+def test_a_resume_with_no_live_worker_is_refused(rig):
+    receipt = resume(rig, "op-r2")
+    assert receipt["status"] == "refused" and "no live worker" in receipt["message"]
+    assert rig.calls == []
+
+
+def test_a_resume_of_a_task_in_review_is_refused(rig):
+    rig.seats.live.add("t1")
+    post_result(rig)
+    receipt = resume(rig, "op-r3")
+    assert receipt["status"] == "refused" and "in_review" in receipt["message"]
+    assert rig.calls == []
+
+
+def test_a_resume_reason_is_one_line(rig):
+    rig.seats.live.add("t1")
+    receipt = resume(rig, "op-r4", "a\nb")
+    assert receipt["status"] == "refused" and "one line" in receipt["message"]
+
+
+def test_a_resume_whose_nudge_is_unconfirmed_is_done_with_the_note(rig):
+    rig.seats.live.add("t1")
+    runner = rig.ops.runner
+    rig.ops.runner = lambda argv, env, timeout: {**runner(argv, env, timeout),
+                                                 "exit_status": 3, "stderr": "unconfirmed"}
+    receipt = resume(rig, "op-r5")
+    assert receipt["status"] == "done", receipt
+    assert receipt["notes"] == [UNCONFIRMED_NOTE]
 
 
 # --- close ----------------------------------------------------------------------------

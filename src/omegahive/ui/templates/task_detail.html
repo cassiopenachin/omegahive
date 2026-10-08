@@ -78,6 +78,17 @@
           <button type="submit">Close with this verdict</button>
         </form>
         {% endif %}
+        {% if forms.resume %}
+        <details class="op-form"><summary>Resume the worker…</summary>
+          <form method="post" action="{{ op_url }}resume">
+            <input type="hidden" name="operation_id" value="{{ forms.resume.id }}">
+            <label>Reason <input name="reason" required maxlength="500" autocomplete="off"
+              placeholder="e.g. your login was refreshed; continue"></label>
+            <p class="capability-note">For a worker stopped at its harness (an expired login, a turn that ended early): types one line into its window. Nothing is appended to the order and no event is recorded.</p>
+            <button type="submit">Resume</button>
+          </form>
+        </details>
+        {% endif %}
         {% if forms.abandon %}
         <details class="op-form"><summary>Abandon this task…</summary>
           <form method="post" action="{{ op_url }}abandon">

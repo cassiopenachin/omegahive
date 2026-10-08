@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from fastapi import Request
 
+from ..operations import RESUMABLE
 from ..ops_service import OpsClient, OpsUnavailable
 
 IDENTITY_HEADER = "Tailscale-User-Login"
@@ -22,7 +23,7 @@ NO_IDENTITY = (
     "supplies. This request arrived without one, through 8443 or directly, so nothing was "
     "done. Open this page on port 8444 and submit it there."
 )
-TASK_OPERATIONS = ("answer", "close", "merge", "abandon")
+TASK_OPERATIONS = ("answer", "close", "merge", "abandon", "resume")
 ABANDONABLE = {"created", "ready", "assigned", "in_progress", "blocked", "in_review", "reopened"}
 
 
@@ -58,7 +59,7 @@ def params(operation: str, run: str, task: str, fields: dict[str, str]) -> dict[
                 "verdict": fields.get("verdict", ""), "reason": fields.get("reason", "")}
     if operation == "merge":
         return {**base, "pr": _int(fields, "pr"), "head_sha": fields.get("head_sha", "")}
-    if operation == "abandon":
+    if operation in ("abandon", "resume"):
         return {**base, "reason": fields.get("reason", "")}
     raise FormError(f"unknown operation '{operation}'")
 
@@ -95,6 +96,8 @@ def task_forms(client: OpsClient | None, ctx: dict[str, Any]) -> dict[str, Any]:
             merge = {"candidates": [], "error": str(exc)}
         forms["merge"] = {**merge, "candidates": [{**c, "id": uuid4().hex}
                                                    for c in merge["candidates"]]}
+    if status in RESUMABLE and ctx["worker_output"]["available"]:
+        forms["resume"] = {"id": uuid4().hex}
     if status in ABANDONABLE:
         forms["abandon"] = {"id": uuid4().hex}
     return forms
