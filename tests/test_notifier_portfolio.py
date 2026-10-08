@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 
+from omegahive.board import fold
 from omegahive.notifier import (
     CursorStore,
     NotifierService,
@@ -45,6 +46,7 @@ from test_notifier import (  # the single-run suite's fixtures, reused verbatim
     GOOD_REF,
     FakeSender,
     RaisingSender,
+    _blocked_task,
     _ev,
     _fixed,
 )
@@ -77,9 +79,9 @@ class MultiRunReader:
         events = self._by_run.get(run_id, [])
         head = (events[-1].seq or 0) if events else 0
         gen = self._gen(run_id)
-        if cursor is None:
+        if cursor is None:   # a full read carries the board, as the port's does
             return PortView(cursor=head, generation=gen,
-                            events=list(events), board=None, changed=bool(events))
+                            events=list(events), board=fold(events), changed=bool(events))
         if head <= cursor:
             return PortView(cursor=cursor, generation=gen,
                             events=[], board=None, changed=False)
@@ -284,20 +286,13 @@ def test_heartbeat_caps_run_lines_and_states_the_overflow():
 
 
 def test_heartbeat_open_blocks_span_runs_each_linked_to_its_own_board():
-    now = datetime(2026, 7, 14, 6, 0, tzinfo=UTC)
-    hb = PortfolioHeartbeat()
-    hb.for_run("omegahive").open_blocks = {
-        "port-sha": datetime(2026, 7, 13, 4, 0, tzinfo=UTC).isoformat()   # 26h
-    }
-    hb.for_run("plnbench").open_blocks = {
-        "slice": datetime(2026, 7, 14, 3, 0, tzinfo=UTC).isoformat()      # 3h
-    }
     counts = {"question": 0, "blocked": 1, "escalated": 0, "result": 0}
     deltas = [RunDelta("omegahive", 10, 1, 0, counts), RunDelta("plnbench", 5, 1, 0, counts)]
-    text = render_heartbeat("2026-07-14", 6, deltas, hb.open_block_ages(now), BASE)
+    ages = [("omegahive", "port-sha", 26), ("plnbench", "slice", 3)]
+    text = render_heartbeat("2026-07-14", 6, deltas, ages, BASE)
     assert f'<a href="{BASE}/run/omegahive/board">port-sha</a> (omegahive, 26h)' in text
     assert f'<a href="{BASE}/run/plnbench/board">slice</a> (plnbench, 3h)' in text
-    assert text.index("port-sha") < text.index("slice")   # oldest first, across runs
+    assert text.index("port-sha") < text.index("slice")
 
 
 def test_heartbeat_open_blocks_overflow_is_stated():
@@ -413,15 +408,14 @@ def test_a_dormant_runs_first_question_on_waking_is_paged(tmp_path):
 
 
 def test_a_departed_runs_open_blocks_leave_the_heartbeat_with_it(tmp_path):
-    """State is kept for a departed run, but the message must show exactly the cut it
-    claims — a block from a run the operator was told is out of view would be a lie."""
+    """The message shows exactly the cut it claims — a block from a run the operator was
+    told is out of view would be a lie."""
     store = CursorStore(tmp_path / "cursor.json")
     _armed(store, "omegahive", "sandbox")
     reader = MultiRunReader(
         {
             "omegahive": [_ev(1, "task.accepted", {}, run_id="omegahive")],
-            "sandbox": [_ev(2, "task.blocked", {"reason": "stuck"}, task_id="sand-t1",
-                            run_id="sandbox")],
+            "sandbox": _blocked_task("sand-t1", 2, run="sandbox"),
         },
         runs=["omegahive", "sandbox"],
     )
@@ -435,8 +429,6 @@ def test_a_departed_runs_open_blocks_leave_the_heartbeat_with_it(tmp_path):
     svc._hb.last_date = None                       # let a second heartbeat out
     svc.maybe_heartbeat()
     assert "sand-t1" not in sender.sent[-1] and "open blocks: none" in sender.sent[-1]
-    # ...but the tally is still held, ready to resume when it comes back
-    assert "sand-t1" in store.load_heartbeat().for_run("sandbox").open_blocks
 
 
 def test_a_restore_rebaselines_only_the_restored_run(tmp_path):

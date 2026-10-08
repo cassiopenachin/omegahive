@@ -249,10 +249,9 @@ class NotifierService:
         if not deltas:
             return False  # nothing read yet (DB down at startup) — no heads to report
 
-        # Open blocks are scoped to the runs currently followed: state is kept for runs that
-        # have left the window (so their return resumes rather than re-arms), but the message
-        # must show exactly the cut it claims to.
-        blocks = self._hb.open_block_ages(now, runs=self._runs)
+        # Open blocks come from the boards of the runs currently followed, so the message
+        # shows exactly the cut it claims and only what is blocked now.
+        blocks = self._open_blocks(now)
         sent = self._send(  # raises on transient -> retry
             lambda: self._out.heartbeat(today, self._hb_hour, deltas, blocks,
                                         max_run_lines=self._max_run_lines),
@@ -305,6 +304,28 @@ class NotifierService:
             time.sleep(interval)
 
     # --- internals ---------------------------------------------------------
+
+    def _open_blocks(self, now: datetime) -> list[tuple[str, str, int]]:
+        """(run_id, task_id, age_in_hours) for every task the board says is blocked now,
+        across the runs currently followed, oldest first. Read from each run's board when the
+        heartbeat goes out, so a task that left `blocked` by any path (an unblock, a
+        reassignment, a close) is never listed. The age runs from the task's last
+        `task.blocked`; one with no wall time ages from now."""
+        out: list[tuple[str, str, int]] = []
+        for run_id in self._runs:
+            view = self._reader.read(run_id, None, None)
+            if view.board is None:
+                continue
+            blocked = {tid for tid, task in view.board.tasks.items() if task.status == "blocked"}
+            since: dict[str, datetime] = {}
+            for event in view.events:
+                if event.event_type == "task.blocked" and event.task_id in blocked:
+                    since[event.task_id] = event.wall_ts or now
+            for tid in blocked:
+                hours = int((now - since.get(tid, now)).total_seconds() // 3600)
+                out.append((run_id, tid, max(0, hours)))
+        out.sort(key=lambda row: (-row[2], row[0], row[1]))
+        return out
 
     def _deltas(self) -> list[RunDelta]:
         """One heartbeat row per followed run with a known head, in portfolio order."""

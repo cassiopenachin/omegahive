@@ -22,6 +22,7 @@ against the test DB (confirming the `instrument` reader actually sees the full s
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import urllib.error
@@ -31,6 +32,7 @@ from uuid import uuid4
 
 import pytest
 
+from omegahive.board import fold
 from omegahive.clock import LogicalClock
 from omegahive.events.envelope import Actor, Event
 from omegahive.events.log import EventLog
@@ -111,9 +113,9 @@ class FakeReader:
              generation: int | None = None) -> PortView:
         events = self._by_run.get(run_id, [])
         head = (events[-1].seq or 0) if events else 0
-        if cursor is None:
+        if cursor is None:   # a full read carries the board, as the port's does
             return PortView(cursor=head, generation=self._generation,
-                            events=list(events), board=None, changed=bool(events))
+                            events=list(events), board=fold(events), changed=bool(events))
         if head <= cursor:
             return PortView(cursor=cursor, generation=self._generation,
                             events=[], board=None, changed=False)
@@ -671,7 +673,7 @@ def _hb_service(events, store, *, now, sender=None, hour=6, threshold=99):
 
 def _hb_state(**kw) -> PortfolioHeartbeat:
     """A portfolio heartbeat state holding one run's tally — the single-run shape."""
-    run_kw = {k: kw.pop(k) for k in ("head", "counts", "open_blocks") if k in kw}
+    run_kw = {k: kw.pop(k) for k in ("head", "counts") if k in kw}
     return PortfolioHeartbeat(runs={RUN: RunHeartbeat(**run_kw)}, **kw)
 
 
@@ -768,27 +770,65 @@ def test_heartbeat_counts_reflect_observed_attention(tmp_path):
     )
 
 
-def test_open_blocks_track_clear_and_survive_restart(tmp_path):
+def _blocked_task(task: str, seq: int, *, wall: datetime | None = None,
+                  run: str = RUN) -> list[Event]:
+    """A task that really is blocked on the board: created, assigned, accepted, blocked."""
+    worker = f"w-{task}"
+    return [
+        _ev(seq, "task.created", {"title": task, "task_type": "task"}, task_id=task,
+            role="human", actor_id="operator", run_id=run),
+        _ev(seq + 1, "worker.registered", {"worker_id": worker}, task_id=None,
+            role="human", actor_id="operator", run_id=run),
+        _ev(seq + 2, "task.assigned", {"worker": worker}, task_id=task,
+            role="coordinator", actor_id="operator", run_id=run),
+        _ev(seq + 3, "task.accepted", {}, task_id=task, actor_id=worker, run_id=run),
+        _ev(seq + 4, "task.blocked", {"reason": "needs baseline"}, task_id=task,
+            actor_id=worker, wall_ts=wall, run_id=run),
+    ]
+
+
+def test_open_blocks_are_the_boards_blocked_tasks(tmp_path):
+    """Open blocks are read from the board when the heartbeat goes out, aged from the task's
+    last task.blocked. A task that left `blocked` by any path is not listed — including one
+    that was reassigned and closed without ever emitting task.unblocked."""
     store = CursorStore(tmp_path / "cursor.json")
     _arm(store)
     wall = datetime(2026, 7, 13, 4, 0, tzinfo=UTC)  # 26h before _AT6
     events = [
-        _ev(1, "task.blocked", {"reason": "needs baseline"}, task_id="port-sha", wall_ts=wall),
-        _ev(2, "task.accepted", {}, task_id="other"),
+        *_blocked_task("port-sha", 1, wall=wall),
+        *_blocked_task("seam", 10),
+        _ev(20, "task.reassigned", {"from": "w-seam", "to": "w-seam-2"}, task_id="seam",
+            role="coordinator", actor_id="operator"),
+        _ev(21, "task.accepted", {}, task_id="seam", actor_id="w-seam-2"),
+        _result(22, [RESULT_REF], task_id="seam", actor_id="w-seam-2"),
+        _ev(23, "review.passed", {"ref_result": RESULT_REF}, task_id="seam",
+            role="instrument", actor_id="operator"),
+        _ev(24, "task.status_override", {"status": "done"}, task_id="seam",
+            role="human", actor_id="operator"),
     ]
     svc, sender = _hb_service(events, store, now=_fixed(_AT6))
-    svc.poll_once()  # observes the block (and pages it)
-    # persisted -> survives restart
-    assert "port-sha" in store.load_heartbeat().for_run(RUN).open_blocks
+    svc.poll_once()
     svc.maybe_heartbeat()
     assert "open blocks: <code>port-sha</code> (omegahive, 26h)" in sender.sent[-1]
+    assert "seam" not in sender.sent[-1]
 
-    # a fresh process reads the block from the file, then an unblock clears it
-    events2 = events + [_ev(3, "task.unblocked", {}, task_id="port-sha")]
-    svc2, _ = _hb_service(events2, store, now=_fixed(_AT6))
-    assert "port-sha" in svc2._hb.for_run(RUN).open_blocks   # loaded across the restart
-    svc2.poll_once()
-    assert "port-sha" not in store.load_heartbeat().for_run(RUN).open_blocks
+
+def test_a_saved_open_block_list_from_an_older_notifier_is_ignored(tmp_path):
+    """The notifier used to keep its own list of open blocks in its state file. A task that
+    list still holds but the board has closed is not reported."""
+    path = tmp_path / "cursor.json"
+    path.write_text(json.dumps({
+        "runs": {RUN: {"cursor": 0, "generation": None}},
+        "heartbeat": {"runs": {RUN: {"head": 0, "open_blocks": {
+            "long-done": "2026-06-01T00:00:00+00:00"}}}},
+    }))
+    store = CursorStore(path)
+    svc, sender = _hb_service([_ev(1, "task.accepted", {}, task_id="x")], store,
+                              now=_fixed(_AT6))
+    svc.poll_once()
+    svc.maybe_heartbeat()
+    assert "long-done" not in sender.sent[-1] and "open blocks: none" in sender.sent[-1]
+    assert "open_blocks" not in path.read_text()
 
 
 def test_heartbeat_send_failure_leaves_event_cursor_untouched(tmp_path):
@@ -825,21 +865,13 @@ def test_heartbeat_retries_after_transient_failure(tmp_path):
     assert store.load_heartbeat().last_date == "2026-07-14"
 
 
-def test_render_heartbeat_lists_open_blocks_oldest_first():
-    now = datetime(2026, 7, 14, 6, 0, tzinfo=UTC)
-    hb = PortfolioHeartbeat()
-    run = hb.for_run(RUN)
-    run.head = 1000
-    run.counts = {"question": 1, "blocked": 2, "escalated": 0, "result": 1}
-    run.open_blocks = {
-        "recent": datetime(2026, 7, 14, 3, 0, tzinfo=UTC).isoformat(),  # 3h
-        "old": datetime(2026, 7, 13, 4, 0, tzinfo=UTC).isoformat(),      # 26h
-    }
-    deltas = [RunDelta(RUN, 1042, 42, 0, run.counts)]
-    text = render_heartbeat("2026-07-14", 6, deltas, hb.open_block_ages(now))
+def test_render_heartbeat_lists_open_blocks_in_the_order_given():
+    counts = {"question": 1, "blocked": 2, "escalated": 0, "result": 1}
+    deltas = [RunDelta(RUN, 1042, 42, 0, counts)]
+    text = render_heartbeat("2026-07-14", 6, deltas, [(RUN, "old", 26), (RUN, "recent", 3)])
     assert "spine head 1042 · 1 run" in text
     assert "omegahive +42/24h · ❓1 ⛔2 ⬆0 📄1" in text
-    assert text.index("old") < text.index("recent")   # oldest first
+    assert text.index("old") < text.index("recent")
     assert "(omegahive, 26h)" in text and "(omegahive, 3h)" in text
 
 
