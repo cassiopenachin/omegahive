@@ -6,9 +6,10 @@ from the request; the hub path is a deployment fact from the environment. It acc
 no ref, path, pane or process from a client: every ref it reads is one the task's own
 events already carry.
 
-Evidence the page cannot see yet is reported as unavailable with its reason, never as
-an empty value: the worker's pane needs the host operation socket, and independent
-reviews are files on the host, not spine events.
+Evidence the page cannot see is reported as unavailable with its reason, never as an
+empty value: the worker's output comes from the operation service over its socket, which
+a deployment may not have mounted, and independent reviews are files on the host, not
+spine events.
 """
 
 from __future__ import annotations
@@ -32,8 +33,8 @@ _FULL_SHA = re.compile(r"[0-9a-f]{40}")
 _GIT_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C"}
 
 WORKER_OUTPUT_UNAVAILABLE = (
-    "the worker's pane is read through the host operation socket, which is not "
-    "installed yet (salvage step S3)"
+    "the worker's output is read through the operation service's socket, which this "
+    "deployment has not mounted (OMEGAHIVE_OPS_SOCKET)"
 )
 INDEPENDENT_REVIEW_UNAVAILABLE = (
     "independent reviews are recorded as files in the run's reviews directory on the "
@@ -81,10 +82,12 @@ class OperatorContextProvider:
         port_factory: PortFactory,
         now_factory: Callable[[], datetime],
         workspace_hub: Path | None,
+        tail: Callable[[str], list[str] | None] | None = None,
     ) -> None:
         self._port_factory = port_factory
         self._now_factory = now_factory
         self._hub = workspace_hub
+        self._tail = tail
 
     def __call__(self, run_id: str, task_id: str) -> dict[str, object]:
         now = self._now_factory()
@@ -197,8 +200,20 @@ class OperatorContextProvider:
             },
             "operation_history": self._operation_history(events),
             "pinned_artifacts": artifacts,
-            "worker_output": _unavailable(WORKER_OUTPUT_UNAVAILABLE, lines=[]),
+            "worker_output": self._worker_output(task_id),
         }
+
+    def _worker_output(self, task_id: str) -> dict[str, object]:
+        """The tail of the worker's output, from the operation service when it is mounted."""
+        if self._tail is None:
+            return _unavailable(WORKER_OUTPUT_UNAVAILABLE, lines=[])
+        try:
+            lines = self._tail(task_id)
+        except Exception as exc:  # noqa: BLE001 - any failure to reach it is the same fact
+            return _unavailable(f"the operation service did not answer: {exc}", lines=[])
+        if lines is None:
+            return _unavailable("this task has no worker window", lines=[])
+        return _available(lines=lines)
 
     @staticmethod
     def _question_ref(events: list[Any], asking: Any | None) -> str | None:

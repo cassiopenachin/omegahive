@@ -75,7 +75,7 @@ AFFECTED=$(printf '%s' "$BOARD" | jq -r --arg t "$TASK" \
   '.[] | select((.depends_on // []) | index($t))
    | select((.status | IN("done", "failed", "cancelled") | not) and (.pruned != true))
    | .task' | sort)
-payload=$(jq -cn --arg s cancelled --arg r "$REASON" '{status:$s, reason:$r}')
+payload=$(decided "$(jq -cn --arg s cancelled --arg r "$REASON" '{status:$s, reason:$r}')")
 emit human "$OPERATOR_ACTOR" task.status_override --task "$TASK" --payload "$payload" >/dev/null
 
 echo "hive-abandon: task=$TASK status=cancelled reason=$REASON"

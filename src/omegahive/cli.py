@@ -26,6 +26,7 @@ from .gateway.policy import DESIGN_PARTNER_ACTOR_ID, OPERATOR_ACTOR_ID
 from .metrics import compute
 from .metrics.distribution import aggregate
 from .metrics.promotion import score
+from .ops_cli import ops_app
 from .port import HiveCoordinatorPort, RawOp
 from .report.board import board_to_json, render_board
 from .report.distribution import render_distribution, render_promotion_distribution
@@ -281,7 +282,9 @@ def emit_cmd(
     run_id: str = typer.Option(..., "--run-id", help="run to emit into (events are run-scoped)"),
     event_type: str = typer.Option(..., "--type", help="event_type, e.g. task.reported"),
     role: str = typer.Option(
-        ..., "--role", help="actor role: worker | human | planner | coordinator | instrument"
+        ...,
+        "--role",
+        help="actor role: worker | human | planner | coordinator | instrument | machinist",
     ),
     actor_id: str = typer.Option(
         ..., "--actor", help=f"actor id (human tier: {OPERATOR_ACTOR_ID!r} | "
@@ -1030,6 +1033,9 @@ def executions_cmd(
             f"{r['execution_id']}  {r['task']}  {r['model']}@{r['harness']} "
             f"({r['billing_market']})  {r['outcome'] or 'in-flight'}"
         )
+
+
+app.add_typer(ops_app, name="ops")
 
 
 if __name__ == "__main__":

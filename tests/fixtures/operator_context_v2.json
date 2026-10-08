@@ -224,6 +224,6 @@
   "worker_output": {
     "available": false,
     "lines": [],
-    "unavailable_reason": "the worker's pane is read through the host operation socket, which is not installed yet (salvage step S3)"
+    "unavailable_reason": "the worker's output is read through the operation service's socket, which this deployment has not mounted (OMEGAHIVE_OPS_SOCKET)"
   }
 }

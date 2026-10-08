@@ -25,8 +25,27 @@
 
 set -euo pipefail
 
+# --- the deployment policy (salvage plan D3) ------------------------------------
+# One operator-owned file states what this deployment is; the parser beside this checkout
+# validates it and prints the values the shell reads here, one NAME<TAB>VALUE per line.
+# Each fills a variable only if the environment left it unset, so precedence stays env,
+# then the policy, then the defaults below. No file, no parser call: the defaults stand,
+# exactly as before the policy existed. An invalid file refuses every operator command
+# and names the field, rather than letting half of the deployment fall back to defaults.
+_HIVE_POLICY="${OMEGAHIVE_DEPLOYMENT:-$HOME/.config/omegahive/deployment.json}"
+if [ -f "$_HIVE_POLICY" ]; then
+  _hive_parser="$(dirname "${BASH_SOURCE[0]}")/../src/omegahive/deployment.py"
+  _hive_policy_values=$(python3 -I "$_hive_parser" --policy "$_HIVE_POLICY" --shell) \
+    || { echo "hive: the deployment policy $_HIVE_POLICY is invalid (above); nothing was run" >&2; exit 1; }
+  while IFS=$'\t' read -r _hive_name _hive_value; do
+    [ -n "$_hive_name" ] || continue
+    [ -n "${!_hive_name:-}" ] || printf -v "$_hive_name" '%s' "$_hive_value"
+  done <<<"$_hive_policy_values"
+  unset _hive_parser _hive_policy_values _hive_name _hive_value
+fi
+
 # --- deployment layer (env-overridable host facts; NOT project identity) -------
-: "${OMEGA_DIR:=$HOME/src/SNET/omegahive}"        # canonical STACK dir: compose + emits + deploys run here (ONE shared spine for every run)
+: "${OMEGA_DIR:=$HOME/src/SNET/omegahive}"       # canonical STACK dir: compose + emits + deploys run here (ONE shared spine for every run)
 : "${CANON_ROOT:=$HOME/src/SNET}"                  # host root of canonical code checkouts (CANON_ROOT/<repo>); resolve_canon_code derives CANON_CODE from it
 : "${WS_HUB:=$HOME/repos/hive-workspace.git}"      # local workspace hub (clone source, push target)
 : "${OPS_WS:=$HOME/workspaces/hive}"               # operator's workspace clone: order files, project confs, answers
@@ -77,6 +96,28 @@ RUN=""
 OPERATOR_ACTOR="operator"
 
 die() { echo "hive: $*" >&2; exit 1; }
+
+# Who decided, and who executed (salvage plan D4). The operation service runs these
+# scripts for a human who decided on the web; it names that human in HIVE_ACTOR, itself
+# in HIVE_EXECUTED_BY and the operation in HIVE_DECISION_REF. Only the actor ID changes:
+# every emit keeps its role. Unset or empty, the scripts emit exactly what they always did.
+if [ -n "${HIVE_ACTOR:-}" ]; then
+  [[ "$HIVE_ACTOR" =~ ^[A-Za-z0-9._@-]+$ ]] \
+    || die "unsafe HIVE_ACTOR '$HIVE_ACTOR' (allowed: A-Za-z0-9._@-)"
+  OPERATOR_ACTOR="$HIVE_ACTOR"
+fi
+
+# A human-originated payload, plus `executed_by` and `decision_ref` when they are set.
+# With neither set it is printed back byte for byte, so the CLI's payloads never change.
+decided() {  # decided <payload-json>  -> prints the payload
+  if [ -z "${HIVE_EXECUTED_BY:-}" ] && [ -z "${HIVE_DECISION_REF:-}" ]; then
+    printf '%s\n' "$1"
+    return 0
+  fi
+  jq -c --arg e "${HIVE_EXECUTED_BY:-}" --arg d "${HIVE_DECISION_REF:-}" \
+    '. + (if $e == "" then {} else {executed_by: $e} end)
+       + (if $d == "" then {} else {decision_ref: $d} end)' <<<"$1"
+}
 
 # The one failure HIVE_CLI_CMD reliably causes, named rather than left to a traceback.
 #
@@ -301,6 +342,52 @@ issue_worker_interface() {
 # in; pass only --type/--task/--payload. Never emit as another actor.
 set -euo pipefail
 COMPOSE="\${OMEGAHIVE_COMPOSE:-$HIVE_COMPOSE}"
+WS_HUB="$WS_HUB"
+WRAP
+  # The result-ref check (S0 finding 9; salvage plan D6's layer). A quoted heredoc, so the
+  # generator interpolates nothing into it: the one value it needs is WS_HUB above.
+  cat >> "$WRAPPER" <<'WRAPCHECK'
+# A posted result must point at something that exists: every artifact ref's commit on the
+# workspace hub, and its path at that commit. Checked here, before the emit, because this is
+# the one place that can reach the hub on every route: the host runs this file directly,
+# and a sandbox mounts the hub at the same absolute path. Bash and git only; a VM need not
+# have jq. Where the hub is not reachable, nothing is refused and the worker is told so.
+check_result_refs() {
+  local type="" payload="" prev="" arg
+  for arg in "$@"; do
+    case "$prev" in --type) type="$arg" ;; --payload) payload="$arg" ;; esac
+    case "$arg" in --type=*) type="${arg#--type=}" ;; --payload=*) payload="${arg#--payload=}" ;; esac
+    prev="$arg"
+  done
+  [ "$type" = "task.result_posted" ] || return 0
+  if [ ! -d "$WS_HUB" ]; then
+    echo "wrapper: the workspace hub $WS_HUB is not reachable here; result refs not checked" >&2
+    return 0
+  fi
+  local re='"ref"[[:space:]]*:[[:space:]]*"([^"]*)"' rest="$payload" ref path sha
+  while [[ $rest =~ $re ]]; do
+    ref="${BASH_REMATCH[1]}"
+    rest="${rest#*"${BASH_REMATCH[0]}"}"
+    path="${ref%@*}"; sha="${ref##*@}"
+    if [ "$path" = "$ref" ] || [ -z "$path" ] || ! [[ $sha =~ ^[0-9a-f]{7,40}$ ]]; then
+      echo "wrapper: refused task.result_posted: ref '$ref' is not <path>@<commit sha>" >&2
+      exit 1
+    fi
+    if ! git -C "$WS_HUB" cat-file -e "$sha^{commit}" 2>/dev/null; then
+      echo "wrapper: refused task.result_posted: commit $sha (ref '$ref') is not on the hub." >&2
+      echo "  Publish it first (../run/hive publish workspace), then post the result again." >&2
+      exit 1
+    fi
+    if ! git -C "$WS_HUB" cat-file -e "$sha:$path" 2>/dev/null; then
+      echo "wrapper: refused task.result_posted: path '$path' does not exist at commit $sha" >&2
+      echo "  on the hub (ref '$ref'). Name the file as committed at that commit." >&2
+      exit 1
+    fi
+  done
+}
+check_result_refs "$@"
+WRAPCHECK
+  cat >> "$WRAPPER" <<WRAP
 # \`cd\` rather than \`env -C\`: -C is GNU coreutils >= 8.28 and does not exist on
 # macOS or the BSDs, so every wrapper issued to a non-GNU host failed at first use.
 # A subshell-free cd is exactly equivalent and portable everywhere.

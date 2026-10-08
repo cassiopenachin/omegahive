@@ -61,6 +61,12 @@ EMIT_AUTHORITY: dict[str, set[str]] = {
         # invoked; no coordinator or instrument role may author it.
         "execution.route_approved",
     },
+    # The machinist's standing authority (salvage plan D7), and nothing a human decides.
+    # task.assigned: the mechanics of a launch a human requested, and a retried launch.
+    # note.posted: summaries and proposals. Never task.status_override (D12: an abandon
+    # is always a human decision), never execution.route_approved (signing for spend is
+    # the human's), never task.reassigned (D10: --reassign stays a human act).
+    "machinist": {"task.assigned", "note.posted"},
     # the gateway records its own refusals (§5); never emitted by an agent.
     "gateway": {"gateway.rejected"},
 }

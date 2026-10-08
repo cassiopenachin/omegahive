@@ -194,6 +194,10 @@ services:
       # Where the task page reads report content: empty (the page says "not configured")
       # unless the host names its workspace hub in OMEGAHIVE_WORKSPACE_HUB_DIR.
       - OMEGAHIVE_WORKSPACE_HUB=${OMEGAHIVE_WORKSPACE_HUB_DIR:+/workspace-hub}
+      # The operation service's socket (hive-ops.service): the worker output on the task page
+      # and every write from the web. Empty (the page says "not mounted") unless the host
+      # names the socket's directory in OMEGAHIVE_OPS_SOCKET_DIR.
+      - OMEGAHIVE_OPS_SOCKET=${OMEGAHIVE_OPS_SOCKET_DIR:+/run/omegahive-ops/ops.sock}
     volumes:
       # Listing `volumes:` here replaces the anchor's list, so its basis volume is repeated.
       - omegahive-basis:/var/lib/omegahive
@@ -203,6 +207,12 @@ services:
       # does not undo that (`restorecon -R <dir>` does). Unset, an empty placeholder
       # directory is mounted so compose still parses on a host without a hub.
       - ${OMEGAHIVE_WORKSPACE_HUB_DIR:-./deploy/no-workspace-hub}:/workspace-hub:ro,z
+      # The socket's DIRECTORY, not the socket: the service recreates the socket on every
+      # start, and a file bind-mount would keep pointing at the old one. The container's root
+      # is this host user under rootless Podman, so the 0600 socket the user created is
+      # reachable with no mode change. :z relabels the directory for SELinux, and a socket
+      # created in it later inherits that label.
+      - ${OMEGAHIVE_OPS_SOCKET_DIR:-./deploy/no-ops-socket}:/run/omegahive-ops:z
     ports:
       # host loopback only -> container 8000. This publish IS the default access path
       # (http://127.0.0.1:8811/omegahive, or over an SSH tunnel). Change the host port via
@@ -265,8 +275,8 @@ services:
       # Daily-heartbeat hour (UTC, integer). Config, not a secret — so it rides the compose
       # environment here, never notifier.env. Declared in secrets-manifest.yaml (notifier row).
       HEARTBEAT_HOUR_UTC: ${HEARTBEAT_HOUR_UTC:-6}
-      # UI base URL for message deep links: the external origin+prefix the phone already uses
-      # (e.g. https://<host>:8443/omegahive — the same :8443 the UI is served behind). Config,
+      # UI base URL for message deep links: the external origin+prefix of the 8444 front door
+      # (e.g. https://<host>:8444/omegahive), the one port whose pages can also write. Config,
       # not a secret; empty default = links absent, render unchanged. Same pattern as above.
       OMEGAHIVE_UI_BASE_URL: ${OMEGAHIVE_UI_BASE_URL:-}
       # Where messages go: slack (the default; reads SLACK_BOT_TOKEN + SLACK_CHANNEL_ID from

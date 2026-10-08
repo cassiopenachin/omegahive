@@ -1912,7 +1912,7 @@ route_payload=$(jq -cn \
                adapter: $adapter},
     model_identity_evidence: "declared", usage_evidence: "unavailable"}')
 emit human "$OPERATOR_ACTOR" execution.route_approved --task "$TASK" \
-  --payload "$route_payload" >/dev/null
+  --payload "$(decided "$route_payload")" >/dev/null
 echo "  route:  $MODEL @ $R_HARNESS ($R_MARKET, pool $R_POOL, $ROUTE_SOURCE)"
 echo "  exec:   $EXEC_ID"
 
@@ -1925,21 +1925,21 @@ if [ -n "$REASSIGN_FROM" ]; then
   # Registered BEFORE reassigned: `_g_reassigned` checks the target against the roster, and
   # the roster is populated only by worker.registered. Neither task.created nor task.assigned
   # belongs here — the task exists and is owned; what changes is who owns it.
-  emit human "$OPERATOR_ACTOR" worker.registered --payload "$registered_payload" >/dev/null
-  emit coordinator "$OPERATOR_ACTOR" task.reassigned --task "$TASK" --payload "$reassigned_payload" >/dev/null
+  emit human "$OPERATOR_ACTOR" worker.registered --payload "$(decided "$registered_payload")" >/dev/null
+  emit coordinator "$OPERATOR_ACTOR" task.reassigned --task "$TASK" --payload "$(decided "$reassigned_payload")" >/dev/null
   echo "  reassigned: $REASSIGN_FROM -> $WORKER (attempt $ATTEMPT; no task.created, no task.assigned)"
 elif [ -n "$ADOPT" ]; then
-  emit human "$OPERATOR_ACTOR" worker.registered              --payload "$registered_payload" >/dev/null
-  emit coordinator "$OPERATOR_ACTOR" task.assigned --task "$TASK" --payload "$assigned_payload" >/dev/null
+  emit human "$OPERATOR_ACTOR" worker.registered              --payload "$(decided "$registered_payload")" >/dev/null
+  emit coordinator "$OPERATOR_ACTOR" task.assigned --task "$TASK" --payload "$(decided "$assigned_payload")" >/dev/null
   echo "  adopted: existing ready task -> worker.registered + task.assigned (no task.created)"
   echo "  caveat: acceptance stays the seeded task.created pin, which may be STALE against $REL@$SHA at HEAD;"
   echo "          the worker reads the order at HEAD (WORKER.md), so this is protocol-consistent — just be aware."
 else
   created_payload=$(jq -cn --arg t "$TITLE" --arg ty "$TASK_TYPE" --arg a "$ACCEPTANCE" \
     '{title:$t, task_type:$ty, acceptance:$a}')
-  emit human "$OPERATOR_ACTOR" task.created     --task "$TASK" --payload "$created_payload"    >/dev/null
-  emit human "$OPERATOR_ACTOR" worker.registered              --payload "$registered_payload" >/dev/null
-  emit coordinator "$OPERATOR_ACTOR" task.assigned --task "$TASK" --payload "$assigned_payload" >/dev/null
+  emit human "$OPERATOR_ACTOR" task.created     --task "$TASK" --payload "$(decided "$created_payload")"    >/dev/null
+  emit human "$OPERATOR_ACTOR" worker.registered              --payload "$(decided "$registered_payload")" >/dev/null
+  emit coordinator "$OPERATOR_ACTOR" task.assigned --task "$TASK" --payload "$(decided "$assigned_payload")" >/dev/null
   echo "  seeded: task.created + worker.registered + task.assigned"
 fi
 

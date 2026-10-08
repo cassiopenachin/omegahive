@@ -1,5 +1,31 @@
 {% extends "base.html" %}
 {% block content %}
+  {% if launch_outcome %}{% with outcome=launch_outcome %}{% include "fragments/outcome.html" %}{% endwith %}{% endif %}
   {% include "fragments/board.html" %}
+  {% if launch %}
+  <section class="launch-region" aria-labelledby="launch-heading">
+    <header><h2 id="launch-heading">Published, not launched</h2><span>{{ launch.rows|length }}</span></header>
+    {% if not launch.available %}<p class="unavailable">Launching unavailable: {{ launch.reason }}</p>{% endif %}
+    {% for row in launch.rows %}
+    <article class="launch-row">
+      <div><span class="task-id">{{ row.task }}</span> {{ row.title }}<br><small class="evidence-ref">{{ row.path }}</small></div>
+      {% if launch.available %}
+      <form method="post" action="{{ base_path }}/run/{{ run_id }}/launch">
+        <input type="hidden" name="operation_id" value="{{ row.id }}">
+        <input type="hidden" name="order_path" value="{{ row.path }}">
+        <label>Route
+          <select name="route" required>
+            {% if not row.default %}<option value="" selected disabled>Pick a route</option>{% endif %}
+            {% for route in launch.routes %}<option value="{{ route }}" {% if route == row.default %}selected{% endif %}>{{ route }}</option>{% endfor %}
+          </select></label>
+        <button type="submit">Launch</button>
+      </form>
+      {% endif %}
+      {% if row.route_note %}<p class="blocker">{{ row.route_note }}</p>{% endif %}
+      {% if row.outcome %}<p class="outcome-line"><strong>{% if row.outcome.status == 'done' %}✓{% else %}✕{% endif %} {{ row.outcome.status }}:</strong> {{ row.outcome.message }}</p>{% endif %}
+    </article>
+    {% else %}<p class="empty-state">Every published order for this run has a task.</p>{% endfor %}
+  </section>
+  {% endif %}
   {% include "fragments/ticker.html" %}
 {% endblock %}

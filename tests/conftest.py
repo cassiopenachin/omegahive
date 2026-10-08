@@ -22,6 +22,11 @@ from omegahive.events.envelope import Actor, Event
 from omegahive.events.log import EventLog
 from omegahive.gateway import Gateway, Policy
 
+# The operator's deployment policy (~/.config/omegahive/deployment.json) must never reach a
+# test: every script rig inherits this environment, and hive-common.sh would source the
+# live file's paths. Tests that exercise the policy point this at their own file.
+os.environ["OMEGAHIVE_DEPLOYMENT"] = "/nonexistent/omegahive-test-deployment.json"
+
 # (database name, ephemeral) for this session — set by pytest_sessionstart.
 _SCRATCH: tuple[str, bool] | None = None
 
