@@ -135,6 +135,9 @@ h1, h2, h3, p { margin-top: 0; }
 .op-form input, .op-form select, .launch-row select { width: 100%; box-sizing: border-box; padding: 0.5rem 0.55rem; color: var(--ink); border: 1px solid #40516a; border-radius: 0.4rem; background: var(--surface-raised); font: inherit; }
 .op-form button, .launch-row button { justify-self: start; padding: 0.5rem 0.9rem; color: var(--canvas); border: 0; border-radius: 0.4rem; background: var(--cyan); font-weight: 650; cursor: pointer; }
 .op-form summary { cursor: pointer; color: var(--muted); }
+.op-pending { margin: 0; color: var(--muted); font-style: italic; }
+.op-pending::before { content: "⏳ "; font-style: normal; }
+button:disabled { opacity: 0.55; cursor: progress; }
 .worker-output { max-height: 28rem; overflow: auto; }
 .launch-region { margin-top: 2rem; padding: 1rem 1.2rem; border: 1px solid var(--line); border-radius: 0.8rem; background: var(--surface); }
 .launch-region > header { display: flex; justify-content: space-between; align-items: baseline; }

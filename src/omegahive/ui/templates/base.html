@@ -6,6 +6,7 @@
     <title>{% block title %}{{ page|title }} · OmegaHive{% endblock %}</title>
     <link rel="stylesheet" href="{{ request.url_for('static', path='ui.css') }}">
     <script defer src="{{ request.url_for('static', path='live.js') }}"></script>
+    <script defer src="{{ request.url_for('static', path='ops.js') }}"></script>
   </head>
   <body{% if stream_url %} data-stream-url="{{ stream_url }}?page={{ page }}{% if run_id %}&cursor={{ cursor }}&generation={{ generation if generation is not none else '' }}{% endif %}{% if selected_actor %}&actor={{ selected_actor }}{% endif %}{% if selected_type %}&type={{ selected_type }}{% endif %}{% if show_all %}&all=1{% endif %}"{% endif %}>
     <header class="site-header">

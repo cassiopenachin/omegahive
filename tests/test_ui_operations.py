@@ -280,3 +280,29 @@ def test_a_launch_posts_the_order_and_route_and_a_refusal_shows_in_its_row(hub):
     assert params == {"order_path": "projects/p/orders/2026-10-02-fresh.md", "route": "codex-sol"}
     row = r.text.split("Published, not launched", 1)[1].split("2026-10-02-fresh.md", 1)[1]
     assert "refusing to launch &#39;fresh&#39; — 3 in review" in row.split("</article>", 1)[0]
+
+
+# --- a pressed button says so ------------------------------------------------------------
+
+def _post_forms(page: str) -> list[str]:
+    return [block.split(">", 1)[0] for block in page.split('<form ')[1:]
+            if 'method="post"' in block.split(">", 1)[0]]
+
+
+def test_every_operation_form_says_what_it_is_doing_once_pressed(hub):
+    c = client(IN_REVIEW, FakeOps(), hub)
+    pages = [c.get(f"/run/{RUN}/task/t1").text,
+             client(BLOCKED, FakeOps(), hub).get(f"/run/{RUN}/task/t1").text,
+             c.get(f"/run/{RUN}/board").text]
+    tags = [tag for page in pages for tag in _post_forms(page)]
+    assert len(tags) >= 6                           # answer, close, merge, resume, abandon, launch
+    assert all('data-pending="' in tag for tag in tags), tags
+    launch = next(tag for tag in tags if tag.endswith('/launch"') or '/launch" ' in tag)
+    assert "minutes" in launch                      # a sandboxed launch is slow; say so
+    assert all("/static/ops.js" in page for page in pages)
+
+
+def test_the_pending_script_is_served(hub):
+    r = client(BLOCKED, FakeOps(), hub).get("/static/ops.js")
+    assert r.status_code == 200
+    assert "dataset.pending" in r.text and "pageshow" in r.text   # reset on a Back restore
