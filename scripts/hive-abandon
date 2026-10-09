@@ -40,9 +40,9 @@ done
 ff_ops_workspace
 
 if [ -z "$PROJECT" ]; then
-  REL=$( (find_order "$TASK") 2>&1 ) \
-    || die "${REL#hive: }
-  If the task's order was removed, name its project: hive-abandon $TASK --reason <text> --project <name>"
+  # find_order has said why on stderr; add the way out.
+  REL=$(find_order "$TASK") \
+    || die "if the task's order was removed, name its project: hive-abandon $TASK --reason <text> --project <name>"
   PROJECT=$(project_from_order "$REL")
 fi
 [[ "$PROJECT" =~ ^[A-Za-z0-9._-]+$ ]] || die "unsafe project name '$PROJECT'"
