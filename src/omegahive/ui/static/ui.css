@@ -144,5 +144,5 @@ button:disabled { opacity: 0.55; cursor: progress; }
 .launch-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.6rem 1rem; align-items: end; padding: 0.8rem 0; border-top: 1px solid var(--line); }
 .launch-row form { display: flex; gap: 0.6rem; align-items: end; flex-wrap: wrap; }
 .launch-row label { display: grid; gap: 0.3rem; color: var(--muted); font-size: 0.78rem; min-width: 12rem; }
-.launch-row .blocker, .launch-row .outcome-line { grid-column: 1 / -1; margin: 0; }
+.launch-row .blocker, .launch-row .outcome-line, .launch-row .op-pending { grid-column: 1 / -1; margin: 0; }
 @media (max-width: 640px) { .launch-row { grid-template-columns: 1fr; } }
