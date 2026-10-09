@@ -9,6 +9,7 @@ host (`ui/operate.py`), which decides and records.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
@@ -55,6 +56,12 @@ _ROOT = Path(__file__).parent
 _TEMPLATES = Jinja2Templates(directory=str(_ROOT / "templates"))
 _TEMPLATES.env.globals["event_payload"] = event_payload
 _TEMPLATES.env.globals["event_sentence"] = event_sentence
+# A content hash on each static link, so a deploy that changes a file changes its URL and a
+# browser's cached copy cannot outlive it.
+_TEMPLATES.env.globals["static_v"] = {
+    path.name: hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+    for path in (_ROOT / "static").iterdir() if path.is_file()
+}
 _UI_ACTOR = Actor(role="coordinator", id="ui-read")
 
 
