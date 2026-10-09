@@ -1707,7 +1707,7 @@ SBXENV
   # as the loop runs, so every fresh sandbox waited out sbx's 60-second limit (measured
   # 2026-10-09: 60.4s with the list backgrounded, 0.37s with the braces).
   : "${SPINE_TUNNEL_LOG:=/tmp/spine-tunnel.log}"
-  SPINE_TUNNEL_CMD="pgrep -x socat >/dev/null || { nohup sh -c 'while true; do socat TCP-LISTEN:5432,fork,reuseaddr,bind=127.0.0.1 PROXY:gateway.docker.internal:$SPINE_HOST:$SPINE_PORT,proxyport=3128; sleep 1; done' >$SPINE_TUNNEL_LOG 2>&1 </dev/null & }"
+  SPINE_TUNNEL_CMD="pgrep -x socat >/dev/null || { nohup sh -c 'while true; do socat TCP-LISTEN:5432,fork,reuseaddr,bind=127.0.0.1 PROXY:gateway.docker.internal:$SPINE_HOST:$SPINE_PORT,proxyport=3128; sleep 1; done' >'$SPINE_TUNNEL_LOG' 2>&1 </dev/null & }"
   sbx exec -d "$SANDBOX" bash -lc "$SPINE_TUNNEL_CMD" >/dev/null 2>&1 || true
   # The return code above is deliberately ignored: `sbx exec -d` reports failure while
   # having launched (omp-arm runner, 2026-08-24). What is trusted is the tunnel ANSWERING,
