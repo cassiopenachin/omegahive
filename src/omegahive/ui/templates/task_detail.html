@@ -39,7 +39,7 @@
         {% else %}
         {% set op_url = base_path ~ '/run/' ~ run_id ~ '/task/' ~ task_id ~ '/op/' %}
         {% if forms.answer %}
-        <form class="op-form" method="post" action="{{ op_url }}answer">
+        <form class="op-form" method="post" data-pending="Running… the page updates when it finishes." action="{{ op_url }}answer">
           <input type="hidden" name="operation_id" value="{{ forms.answer.id }}">
           <input type="hidden" name="question_seq" value="{{ forms.answer.question_seq }}">
           <label>Answer the question at event {{ forms.answer.question_seq }}
@@ -51,7 +51,7 @@
         {% if forms.merge %}
         <div class="op-form"><h3>Merge</h3>
           {% for pr in forms.merge.candidates %}
-          <form method="post" action="{{ op_url }}merge">
+          <form method="post" data-pending="Running… the page updates when it finishes." action="{{ op_url }}merge">
             <input type="hidden" name="operation_id" value="{{ pr.id }}">
             <input type="hidden" name="pr" value="{{ pr.number }}">
             <input type="hidden" name="head_sha" value="{{ pr.head or '' }}">
@@ -62,7 +62,7 @@
         </div>
         {% endif %}
         {% if forms.close %}
-        <form class="op-form" method="post" action="{{ op_url }}close">
+        <form class="op-form" method="post" data-pending="Running… the page updates when it finishes." action="{{ op_url }}close">
           <h3>Close</h3>
           <input type="hidden" name="operation_id" value="{{ forms.close.id }}">
           <input type="hidden" name="result_ref" value="{{ forms.close.result_ref }}">
@@ -80,7 +80,7 @@
         {% endif %}
         {% if forms.resume %}
         <details class="op-form"><summary>Resume the worker…</summary>
-          <form method="post" action="{{ op_url }}resume">
+          <form method="post" data-pending="Running… the page updates when it finishes." action="{{ op_url }}resume">
             <input type="hidden" name="operation_id" value="{{ forms.resume.id }}">
             <label>Reason <input name="reason" required maxlength="500" autocomplete="off"
               placeholder="e.g. your login was refreshed; continue"></label>
@@ -91,7 +91,7 @@
         {% endif %}
         {% if forms.abandon %}
         <details class="op-form"><summary>Abandon this task…</summary>
-          <form method="post" action="{{ op_url }}abandon">
+          <form method="post" data-pending="Running… the page updates when it finishes." action="{{ op_url }}abandon">
             <input type="hidden" name="operation_id" value="{{ forms.abandon.id }}">
             <label>Reason <input name="reason" required maxlength="500" autocomplete="off"></label>
             <p class="capability-note">Cancelled, for good. A worker whose process has exited has its window cleared first; a running one must be stopped before this.</p>

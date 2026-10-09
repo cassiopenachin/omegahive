@@ -10,7 +10,7 @@
     <article class="launch-row">
       <div><span class="task-id">{{ row.task }}</span> {{ row.title }}<br><small class="evidence-ref">{{ row.path }}</small></div>
       {% if launch.available %}
-      <form method="post" action="{{ base_path }}/run/{{ run_id }}/launch">
+      <form method="post" data-pending="Launching… a sandboxed launch can take a couple of minutes; the page updates when it finishes." action="{{ base_path }}/run/{{ run_id }}/launch">
         <input type="hidden" name="operation_id" value="{{ row.id }}">
         <input type="hidden" name="order_path" value="{{ row.path }}">
         <label>Route
