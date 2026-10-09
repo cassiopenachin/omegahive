@@ -331,3 +331,9 @@ def test_a_launch_rows_pending_line_sits_beside_its_form_not_inside_it():
     css = (ui_app._ROOT / "static" / "ui.css").read_text()
     assert 'form.closest(".launch-row")) form.after(line); else form.append(line)' in js
     assert ".launch-row .op-pending" in css
+
+
+def test_the_close_form_offers_no_score(hub):
+    page = client(IN_REVIEW, FakeOps(), hub).get(f"/run/{RUN}/task/t1").text
+    close = page.split('/op/close"', 1)[1].split("</form>", 1)[0]
+    assert '<option value="no score">' in close

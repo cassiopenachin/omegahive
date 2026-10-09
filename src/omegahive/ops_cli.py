@@ -57,9 +57,12 @@ def answer_cmd(operation_id: str = ID, run: str = RUN, task: str = TASK,
 @ops_app.command("close")
 def close_cmd(operation_id: str = ID, run: str = RUN, task: str = TASK,
               result_ref: str = typer.Option(..., "--result-ref"),
-              verdict: str = typer.Option(..., "--verdict"),
+              verdict: str = typer.Option(
+                  ..., "--verdict",
+                  help="clean, minor rework or rework; 'no score' closes unscored and "
+                       "needs --reason"),
               reason: str = typer.Option("", "--reason")) -> None:
-    """Close the task's latest result with a review verdict (scored)."""
+    """Close the task's latest result with a review verdict, or unscored with 'no score'."""
     _operate("close", operation_id, {"run": run, "task": task, "result_ref": result_ref,
                                      "verdict": verdict, "reason": reason})
 
