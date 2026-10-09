@@ -489,3 +489,15 @@ def test_a_malformed_reviewer_route_name_refuses_at_load():
             route(),
             **{"defaults": {"worker": "fake-subscription", "reviewer_route": "no spaces"}},
         ))
+
+
+def test_the_published_schema_puts_the_slug_rule_on_the_array_items():
+    """Editors validate against the schema's array branch; a pattern beside `anyOf` is
+    invisible to tooling that resolves the branch."""
+    import json as _json
+    from pathlib import Path as _Path
+    schema = _json.loads((_Path(__file__).resolve().parents[1] / "schemas"
+                          / "route-catalog.v2.json").read_text())
+    pin = schema["$defs"]["RouteEntry"]["properties"]["provider_pin"]
+    array = next(b for b in pin["anyOf"] if b.get("type") == "array")
+    assert array["items"]["pattern"].startswith("^[a-z0-9]")

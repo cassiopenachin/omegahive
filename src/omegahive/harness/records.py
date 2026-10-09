@@ -32,7 +32,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -380,8 +380,7 @@ class RouteEntry(BaseModel):
     # caps and data terms from one turn to the next (a MiMo worker on 2026-10-09 was served
     # by GMICloud, not Xiaomi). The first-party provider is the default choice; a route
     # pinned elsewhere says why in `note`.
-    provider_pin: list[str] | None = Field(
-        default=None, json_schema_extra={"items": {"pattern": _PROVIDER_SLUG_SHAPE.pattern}})
+    provider_pin: list[Annotated[str, Field(pattern=_PROVIDER_SLUG_SHAPE.pattern)]] | None = None
     note: str | None = None
 
     @field_validator("name")

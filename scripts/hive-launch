@@ -74,8 +74,8 @@ usage: hive-launch <order-file> [--route <name>] [--model <id>] [--worker <id>]
   --model <id>       run this launch on a model other than the route's default. The
                      route is the SHAPE (harness, sandbox, credential pool); the model
                      is a value inside it, and the one that is recorded is the one that
-                     actually ran. For an OpenRouter route the provider pin travels
-                     inside this string: <model>@preset/<slug>.
+                     actually ran. No @preset suffix on a pinned route: the route's
+                     provider_pin is the one pin.
   --check            no-model preflight: resolve the route, print the identity, the
                      argv, the inherited environment NAMES and the installed harness
                      version, and STOP. No clone, no spine write, no token spent.
@@ -236,8 +236,10 @@ CODE_BRANCH="worker/$TASK"                # the publication branch, fixed by the
 # 256), so an order that needs long thinking belongs on a claude or codex route, which has
 # no such ceiling. A tunable for a model whose hard cap is lower.
 : "${HIVE_OPENCODE_OUTPUT_LIMIT:=32000}"
-# Compaction is an OpenRouter call like any other, so it is pinned like any route is: to
-# the compaction model's first-party provider, fallbacks off.
+# Compaction (and opencode's small model, which is the same model) is an OpenRouter call
+# like any other, so it is pinned like any route is: to the compaction model's first-party
+# provider, fallbacks off. The two change TOGETHER: a compaction model this provider does not
+# serve fails every title call at once and the first compaction at ~250K tokens.
 : "${HIVE_OPENCODE_COMPACTION_PIN:=openai}"
 
 # --- what the WORKER is told to type, as against where the files live -----------------
@@ -414,7 +416,10 @@ R_REVIEWER=$(route_field reviewer)
 R_EFFORT=$(route_field reasoning_effort)
 # The OpenRouter provider pin (comma-joined, in order): optional in the catalog's shape,
 # and required on every OpenRouter route below.
-R_PIN=$(printf '%s' "$ROUTE" | jq -r '(.provider_pin // []) | join(",")')
+R_PIN=$(printf '%s' "$ROUTE" | jq -r '.provider_pin
+  | if . == null then ""
+    elif type == "array" and length > 0 and all(.[]; type == "string" and test("\\A[^,\\s]+\\z"))
+    then join(",") else "!malformed" end')
 EXECUTABLE=$(printf '%s' "$ROUTE" | jq -r '.runner.executable // ""')
 # Every field the spine's execution identity requires, checked before anything is created.
 # The identity block may not be synthesized or defaulted (events/types.py), so a route
@@ -764,11 +769,58 @@ $(printf '%s\n' "$ids" | grep -iF -- "$near" | head -5 | sed 's/^/    near match
 # provider that will serve it, above, by one unauthenticated GET — and the catalog still
 # holds no list.
 #
-# For a provider-pinned OpenRouter route the pin travels INSIDE the model string as an
-# operator-owned preset (`<model>@preset/<slug>`), so this one value carries both which model
-# and which silicon serves it (taskbench/openrouter.py); the preflight strips the preset and
-# checks the id.
+# Which silicon serves an OpenRouter route is the route's `provider_pin`, checked below. A
+# `<model>@preset/<slug>` suffix is still stripped by the model probe for a one-off --model on
+# an unpinned route, but a pinned route refuses one.
 MODEL="${MODEL_ARG:-$R_MODEL}"
+
+# The provider pin: the route model's rules, twinned here because this script never calls
+# `load_catalog`. Checked before anything reaches the network: these are catalog facts.
+case "$R_PIN" in
+  "!malformed") die "route '$ROUTE_NAME' has a provider_pin that is not a non-empty list of
+  provider slugs. Fix it in $HIVE_ROUTE_CATALOG. Nothing was created or emitted." ;;
+esac
+if [ "$R_PROVIDER" = "openrouter" ] && [ -z "$R_PIN" ]; then
+  die "route '$ROUTE_NAME' is an OpenRouter route and states no provider_pin. Unpinned,
+  OpenRouter serves it from whichever upstream answers, with that upstream's quantization,
+  output cap and data terms. Name the providers in $HIVE_ROUTE_CATALOG, first-party first
+  (for example \"provider_pin\": [\"xiaomi/fp8\"]). Nothing was created or emitted."
+fi
+if [ -n "$R_PIN" ]; then
+  printf '%s\n' "$R_PIN" | tr ',' '\n' \
+    | grep -qvE '^[a-z0-9][a-z0-9.-]*(/[a-z0-9][a-z0-9.-]*)?$' \
+    && die "route '$ROUTE_NAME' has a provider_pin entry that is not an OpenRouter provider
+  slug ('$R_PIN'). Fix it in $HIVE_ROUTE_CATALOG. Nothing was created or emitted."
+  [ "$R_HARNESS" = "opencode" ] || die "route '$ROUTE_NAME' states a provider_pin, but its
+  harness is '$R_HARNESS' and this build can only apply a provider pin through opencode's
+  generated config. Nothing was created or emitted."
+fi
+# The compaction pin applies where compaction is a separate OpenRouter model: never on
+# another endpoint, which may refuse an unknown `provider` field, and not when compaction
+# runs on the worker's own model, which carries the route's pin already.
+COMPACTION_PIN=""
+if [ "$R_PROVIDER" = "openrouter" ] && [ "$HIVE_OPENCODE_COMPACTION_MODEL" != "$MODEL" ]; then
+  COMPACTION_PIN="$HIVE_OPENCODE_COMPACTION_PIN"
+  printf '%s\n' "$COMPACTION_PIN" | tr ',' '\n' \
+    | grep -qvE '^[a-z0-9][a-z0-9.-]*(/[a-z0-9][a-z0-9.-]*)?$' \
+    && die "HIVE_OPENCODE_COMPACTION_PIN '$COMPACTION_PIN' is not a list of OpenRouter provider
+  slugs. Nothing was created or emitted."
+fi
+# A pin has one home. The catalog refuses a preset in a route's model, and a launch-time
+# --model may not add one to a pinned route: the request would carry two pins, and which
+# one OpenRouter honours would be its decision rather than this deployment's.
+case "$R_MODEL" in
+  *@preset/*) die "route '$ROUTE_NAME' names its model with a preset ('$R_MODEL'). A route's
+  provider pin lives in provider_pin; drop the @preset suffix in $HIVE_ROUTE_CATALOG.
+  Nothing was created or emitted." ;;
+esac
+if [ -n "$R_PIN" ]; then
+  case "$MODEL" in
+    *@preset/*) die "--model '$MODEL' carries a preset, and route '$ROUTE_NAME' already pins its
+  provider ($R_PIN). Two pins would leave OpenRouter to choose between them. Name the model
+  without @preset. Nothing was created or emitted." ;;
+  esac
+fi
 
 # The name a sandboxed route re-attaches by, derived from the task so that a recovery
 # re-attaches the worker's own VM instead of creating a second one. Underscores are legal in
@@ -820,24 +872,6 @@ if [ -n "$R_EFFORT" ]; then
   through opencode's generated config. Left as it is the field would read as in force and
   do nothing. Put the setting in runner.args where this harness reads it, or drop it.
   Nothing was created or emitted."
-fi
-
-# The provider pin: the route model's rules, twinned here because this script never
-# calls `load_catalog`.
-if [ "$R_PROVIDER" = "openrouter" ] && [ -z "$R_PIN" ]; then
-  die "route '$ROUTE_NAME' is an OpenRouter route and states no provider_pin. Unpinned,
-  OpenRouter serves it from whichever upstream answers, with that upstream's quantization,
-  output cap and data terms. Name the providers in $HIVE_ROUTE_CATALOG, first-party first
-  (for example \"provider_pin\": [\"xiaomi/fp8\"]). Nothing was created or emitted."
-fi
-if [ -n "$R_PIN" ]; then
-  printf '%s' "$R_PIN" | tr ',' '\n' \
-    | grep -qvE '^[a-z0-9][a-z0-9.-]*(/[a-z0-9][a-z0-9.-]*)?$' \
-    && die "route '$ROUTE_NAME' has a provider_pin entry that is not an OpenRouter provider
-  slug ('$R_PIN'). Fix it in $HIVE_ROUTE_CATALOG. Nothing was created or emitted."
-  [ "$R_HARNESS" = "opencode" ] || die "route '$ROUTE_NAME' states a provider_pin, but its
-  harness is '$R_HARNESS' and this build can only apply a provider pin through opencode's
-  generated config. Nothing was created or emitted."
 fi
 
 if [ "$R_HARNESS" = "opencode" ]; then
@@ -928,7 +962,8 @@ if [ -n "$CHECK_ONLY" ]; then
   if [ "$R_HARNESS" = "opencode" ]; then
     echo "  opencode:   context limit $HIVE_OPENCODE_CONTEXT_LIMIT, compaction on $HIVE_OPENCODE_COMPACTION_MODEL"
     [ -z "$R_EFFORT" ] || echo "              reasoning effort $R_EFFORT (a route fact)"
-    [ -z "$R_PIN" ] || echo "              provider pin $R_PIN (no fallbacks); compaction pin $HIVE_OPENCODE_COMPACTION_PIN"
+    [ -z "$R_PIN" ] || echo "              provider pin $R_PIN (no fallbacks)"
+    [ -z "$COMPACTION_PIN" ] || echo "              compaction and small model pinned to $COMPACTION_PIN"
   fi
   # `require_declared_env` already ran above, so reaching this line means every declared name
   # is set. Saying so is the point: a preflight that stays silent about the thing that broke
@@ -1479,7 +1514,7 @@ if [ "$EXECUTABLE" = "sbx" ]; then
     SBX_OPENCODE_CFG="$TASK_ROOT/opencode.json"
     issue_opencode_config "$TASK_ROOT" "$ENDPOINT_URL" "$OPENCODE_KEY_NAME" "$MODEL" \
       "$HIVE_OPENCODE_CONTEXT_LIMIT" "$HIVE_OPENCODE_COMPACTION_MODEL" "$R_EFFORT" \
-      "$HIVE_OPENCODE_OUTPUT_LIMIT" "$R_PIN" "$HIVE_OPENCODE_COMPACTION_PIN"
+      "$HIVE_OPENCODE_OUTPUT_LIMIT" "$R_PIN" "$COMPACTION_PIN"
     echo "  opencode: $SBX_OPENCODE_CFG (context limit $HIVE_OPENCODE_CONTEXT_LIMIT, compaction on $HIVE_OPENCODE_COMPACTION_MODEL)"
   fi
 

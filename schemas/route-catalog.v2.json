@@ -194,6 +194,7 @@
           "anyOf": [
             {
               "items": {
+                "pattern": "^[a-z0-9][a-z0-9.-]*(/[a-z0-9][a-z0-9.-]*)?$",
                 "type": "string"
               },
               "type": "array"
@@ -203,9 +204,6 @@
             }
           ],
           "default": null,
-          "items": {
-            "pattern": "^[a-z0-9][a-z0-9.-]*(/[a-z0-9][a-z0-9.-]*)?$"
-          },
           "title": "Provider Pin"
         },
         "note": {

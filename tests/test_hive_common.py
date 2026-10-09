@@ -662,6 +662,46 @@ def test_the_compaction_model_is_pinned_too(tmp_path):
     assert entry["options"] == {"provider": {"order": ["openai"], "allow_fallbacks": False}}
 
 
+@pytest.mark.parametrize("pin, expected", [
+    (None, ""),
+    (["xiaomi/fp8"], "xiaomi/fp8"),
+    (["baseten/fp8", "deepinfra/fp8"], "baseten/fp8,deepinfra/fp8"),
+    ([], "!malformed"),
+    ([None], "!malformed"),
+    ("xiaomi", "!malformed"),
+    (["xiaomi\n"], "!malformed"),
+    (["a,b"], "!malformed"),
+])
+def test_the_launcher_reads_a_provider_pin_as_the_route_model_would(pin, expected):
+    """jq flattening a malformed pin into something that passes would split the two
+    validators: the shell reads the field with the launcher's own expression, here."""
+    src = _launch_source()
+    start = src.index("R_PIN=$(")
+    expr = src[start:src.index("')", start) + 2]
+    route = {} if pin is None else {"provider_pin": pin}
+    out = subprocess.run(["bash", "-c", f'ROUTE="$1"; {expr}; printf "%s" "$R_PIN"', "_",
+                          json.dumps(route)], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == expected
+
+
+def test_one_pin_at_launch_too():
+    """The catalog refuses a preset in a route's model; the launcher refuses one there and on a
+    --model that would add a second pin to a pinned route, before any network call."""
+    src = _launch_source()
+    probe = src.index('require_model_served "$ENDPOINT_URL" "$MODEL"')
+    for phrase in ("names its model with a preset", "carries a preset, and route",
+                   "states no provider_pin", "is not a non-empty list"):
+        assert src.index(phrase) < probe, f"refusal is not before the network probe: {phrase!r}"
+
+
+def test_the_compaction_pin_is_only_sent_to_openrouter_on_a_separate_model():
+    src = _launch_source()
+    block = src.split('COMPACTION_PIN=""', 1)[1].split("\nfi\n", 1)[0]
+    assert '[ "$R_PROVIDER" = "openrouter" ]' in block
+    assert '"$HIVE_OPENCODE_COMPACTION_MODEL" != "$MODEL"' in block
+
+
 def test_opencodes_small_model_is_the_pinned_compaction_model(tmp_path):
     """Left unset, opencode sends its title requests to a built-in default small model
     through OpenRouter, unpinned (observed at the wire on 2026-10-09:
