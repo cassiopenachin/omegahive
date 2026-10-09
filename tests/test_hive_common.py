@@ -665,6 +665,18 @@ def test_the_compaction_model_is_pinned_too(tmp_path):
     assert entry["options"] == {"provider": {"order": ["openai"], "allow_fallbacks": False}}
 
 
+def test_opencodes_small_model_is_the_pinned_compaction_model(tmp_path):
+    """Left unset, opencode sends its title requests to a built-in default small model
+    through OpenRouter, unpinned (observed at the wire on 2026-10-09:
+    google/gemini-nano-banana-2.1 with no provider field). Naming the compaction model
+    keeps every OpenRouter call on a model and provider this deployment chose."""
+    r = _issue_opencode_config(tmp_path, model="xiaomi/mimo-v2.6-pro", pin="xiaomi/fp8",
+                               compaction="openai/gpt-6-luna", compaction_pin="openai")
+    assert r.returncode == 0, r.stdout + r.stderr
+    cfg = json.loads((tmp_path / "opencode.json").read_text())
+    assert cfg["small_model"] == "openrouter/openai/gpt-6-luna"
+
+
 def test_the_launcher_states_the_turn_ceiling_and_pins_compaction():
     """opencode clamps limit.output at 32,000 whatever it is given, and on OpenRouter the
     reasoning counts against it: 16,000 cut a MiMo turn off mid-reasoning (2026-10-09)."""

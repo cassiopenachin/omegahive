@@ -1179,7 +1179,11 @@ issue_opencode_config() {
       }
     }
     + (if $compaction == "" then {}
-       else { agent: { compaction: { model: "openrouter/\($compaction)" } } } end)
+       else { agent: { compaction: { model: "openrouter/\($compaction)" } },
+              # Titles and other small calls: unset, opencode picks a built-in default
+              # model and calls it through OpenRouter unpinned (seen at the wire,
+              # 2026-10-09), so it gets the pinned compaction model instead.
+              small_model: "openrouter/\($compaction)" } end)
   ' > "$CFG" || die "could not write opencode's configuration to $CFG"
 
   # The plugin is written verbatim, with nothing interpolated into it. Everything it needs
