@@ -220,9 +220,13 @@ CODE_BRANCH="worker/$TASK"                # the publication branch, fixed by the
 : "${HIVE_OPENCODE_CONTEXT_LIMIT:=250000}"
 # Compaction is the one artifact that must survive the rewrite, so it is not written by
 # the cheap model under test. Summarising a transcript is far easier than the work that
-# produced it, and this fires once or twice per order, so the cost is noise. Addressed
-# through the route's OWN provider block, so it costs one credential and no second route.
-: "${HIVE_OPENCODE_COMPACTION_MODEL:=anthropic/claude-sonnet-5}"
+# produced it, and this fires once or twice per order. It bills the route's API key, so it
+# is a capable model at a small-model price: GPT 6 Luna lists at $0.10/M input on
+# OpenRouter (2026-10-09), a few cents for a 250K-token compaction where Sonnet 5.5 costs
+# about $0.50. No OpenRouter route runs Luna as its worker; one that did should override
+# this. Addressed through the route's OWN provider block, so it costs one credential and
+# no second route, and require_model_served checks the id at launch.
+: "${HIVE_OPENCODE_COMPACTION_MODEL:=openai/gpt-6-luna}"
 # The per-response output cap. It is here for the same reason the two above are — it is not
 # a fact about any one route — but it earns far less argument than they do: 16K is above
 # what a worker writes in one turn and below every cap the catalogued models enforce. It is
