@@ -1527,7 +1527,7 @@ SBXENV
     # operator's call rather than this script's: a sandbox that already exists holds a
     # previous worker's state. Its tunnel and CLI are re-established below, because a VM
     # with the right name is not the same thing as a working worker.
-    echo "  sandbox: $SANDBOX (exists — re-attaching; 'sbx rm $SANDBOX' first for a clean VM)"
+    echo "  sandbox: $SANDBOX (exists — re-attaching; 'sbx rm $SANDBOX' first for a clean VM)  [${SECONDS}s]"
     # The credential name the regenerated config interpolates must actually be set in THIS
     # VM. It cannot be re-applied after create — `--env-file` is a create-time argument —
     # so it is verified instead of assumed, exactly as the Claude credential posture is a
@@ -1600,7 +1600,7 @@ SBXENV
   repository; a checkout missing it cannot build this sandbox. Nothing was created or emitted."
       SBX_KIT_ARG=(--kit "$SBX_KIT")
     fi
-    echo "  sandbox: creating $SANDBOX (agent $SBX_AGENT${SBX_KIT:+ via kit $SBX_KIT}, billing $R_MARKET)"
+    echo "  sandbox: creating $SANDBOX (agent $SBX_AGENT${SBX_KIT:+ via kit $SBX_KIT}, billing $R_MARKET)  [${SECONDS}s]"
     sbx create --quiet --name "$SANDBOX" --env-file "$SBX_ENV_FILE" \
       ${SBX_KIT_ARG+"${SBX_KIT_ARG[@]}"} \
       ${SBX_CREATE_ENV+"${SBX_CREATE_ENV[@]}"} \
@@ -1626,7 +1626,7 @@ SBXENV
     sbx cp "$AGY_TOKEN" "$SANDBOX:/home/agent/.gemini/antigravity-cli/antigravity-oauth-token" \
       >/dev/null 2>&1 \
       || die "could not copy the Antigravity login into '$SANDBOX'."
-    echo "  sandbox: antigravity login installed"
+    echo "  sandbox: antigravity login installed  [${SECONDS}s]"
   fi
 
   if [ -n "$SBX_REVIEW_TOKEN" ]; then
@@ -1651,7 +1651,7 @@ SBXENV
   but it holds the operator's Claude login. Credential injection is fixed at create time, so
   this VM would run its Claude traffic on the proxy's API key while the spine fact says
   subscription. Remove it and launch again:  sbx rm $SANDBOX"
-    echo "  sandbox: reviewer token in the VM environment (proxy injection off, apiKeyHelper cleared)"
+    echo "  sandbox: reviewer token in the VM environment (proxy injection off, apiKeyHelper cleared)  [${SECONDS}s]"
   fi
 
   # --- the spine tunnel, established on BOTH paths ---------------------------------------
@@ -1686,7 +1686,7 @@ SBXENV
     sbx policy allow network --sandbox "$SANDBOX" "$host" >/dev/null 2>&1 \
       || die "could not allow the provider endpoint '$host' for sandbox '$SANDBOX'; the
   harness would be refused by the sandbox's egress policy on its first call."
-    echo "  sandbox: provider endpoint allowed ($host, from the route)"
+    echo "  sandbox: provider endpoint allowed ($host, from the route)  [${SECONDS}s]"
   done < <(printf '%s\n' "$ENV_PAIRS" | sed -n 's/^[^=]*=\(https\{0,1\}:\/\/.*\)$/\1/p')
 
   # `pgrep -x socat`, matching the EXECUTABLE name and not the command line: `pgrep -f` on the
@@ -1705,7 +1705,7 @@ SBXENV
   # which is checked here rather than assumed — a Postgres SSLRequest, whose reply proves
   # the proxy tunnelled it AND that a real server is on the far side. A TCP handshake would
   # prove neither, which is exactly how this seam was mis-measured the first time.
-  echo "  sandbox: opening the spine tunnel to $SPINE_ADDR"
+  echo "  sandbox: opening the spine tunnel to $SPINE_ADDR  [${SECONDS}s]"
   if ! sbx exec "$SANDBOX" python3 -c "
 import socket, sys, time
 for attempt in range(20):
@@ -1771,7 +1771,7 @@ PYEOF' >/dev/null 2>&1 \
         || die "could not clone the CLI source from $OMEGA_DIR to $CLI_SRC; the worker would
   have no emit path."
     fi
-    echo "  sandbox: installing the governed CLI (uv tool install, from $CLI_SRC)"
+    echo "  sandbox: installing the governed CLI (uv tool install, from $CLI_SRC)  [${SECONDS}s]"
     sbx exec "$SANDBOX" bash -lc "uv tool install --quiet '$CLI_SRC'" \
       || die "could not install the omegahive CLI inside '$SANDBOX'. The worker would have no
   emit path. Inspect it with:  sbx exec $SANDBOX bash -l"
@@ -1792,7 +1792,7 @@ PYEOF' >/dev/null 2>&1 \
   # predates this is repaired.
   if [ -n "$CRED_FOR_REVIEWER" ] \
      && ! sbx exec "$SANDBOX" bash -lc 'command -v claude >/dev/null' >/dev/null 2>&1; then
-    echo "  sandbox: installing the reviewer's harness (npm i -g @anthropic-ai/claude-code)"
+    echo "  sandbox: installing the reviewer's harness (npm i -g @anthropic-ai/claude-code)  [${SECONDS}s]"
     sbx exec "$SANDBOX" bash -lc 'npm install -g --silent @anthropic-ai/claude-code' \
       || die "route '$ROUTE_NAME' names the in-VM reviewer 'opus-in-sandbox', and '$SANDBOX'
   has no 'claude' to run it with — nor could one be installed. The worker would do the whole
@@ -1827,7 +1827,7 @@ PYEOF' >/dev/null 2>&1 \
        echo \"\$r \$a\"" 2>/dev/null) \
       || FORGE_OUT=""
     case "${FORGE_OUT//[$'\r\n']/}" in
-      "0 0")  echo "  sandbox: forge reachable and authenticated ($PUSH_REPO)" ;;
+      "0 0")  echo "  sandbox: forge reachable and authenticated ($PUSH_REPO)  [${SECONDS}s]" ;;
       "0 9")  echo "  sandbox: WARNING no gh inside '$SANDBOX', so the credential could not be
            tested; the forge answers, but publication is UNVERIFIED" >&2 ;;
       '')     echo "  sandbox: WARNING could not run the forge check inside '$SANDBOX'; publication is UNVERIFIED" >&2 ;;
@@ -2094,4 +2094,6 @@ tmux_keep_window "$HIVE_TMUX_SESSION" "$TASK"
 # Report where it actually landed (-P), not where we assumed: the index is tmux's
 # to choose, so the launcher reads it back rather than predicting it.
 echo "  window: $PANE  '$TASK'  (attach: tmux attach -t $HIVE_TMUX_SESSION)"
-echo "hive-launch: done."
+# [Ns] on the sandbox lines and here is seconds since this launch started (bash SECONDS): the
+# gap between two lines is the step between them, and the receipt keeps the whole output.
+echo "hive-launch: done.  [${SECONDS}s]"
