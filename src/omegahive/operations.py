@@ -283,10 +283,15 @@ class Operations:
         return load_env_file(str(path))
 
     def _conf_for_run(self, run: str) -> dict[str, str]:
+        return load_env_file(str(self._conf_path_for_run(run)))
+
+    def _project_for_run(self, run: str) -> str:
+        return self._conf_path_for_run(run).parent.name
+
+    def _conf_path_for_run(self, run: str) -> Path:
         for path in sorted(Path(self.d["operator_workspace"]).glob("projects/*/project.conf")):
-            conf = load_env_file(str(path))
-            if conf.get("RUN_ID") == run:
-                return conf
+            if load_env_file(str(path)).get("RUN_ID") == run:
+                return path
         raise Refused(f"no project.conf names run '{run}'")
 
     def _hub_text(self, spec: str) -> str | None:
@@ -417,7 +422,9 @@ class Operations:
             raise Refused(f"'{task}' still has a running worker in its window; stop it first")
         if seat == "cleared":
             receipt["notes"].append("seat cleared: the worker's process had exited")
-        return [[self._script("hive-abandon"), task, "--reason", reason]]
+        # The project comes from the run, not the order: a task can outlive its order file.
+        return [[self._script("hive-abandon"), task, "--reason", reason,
+                 "--project", self._project_for_run(run)]]
 
     def _prepare_launch(self, run: str, task: str, params: Mapping[str, Any], board: Board,
                   receipt: dict[str, Any]) -> list[list[str]]:

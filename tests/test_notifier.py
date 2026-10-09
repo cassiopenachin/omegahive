@@ -813,6 +813,23 @@ def test_open_blocks_are_the_boards_blocked_tasks(tmp_path):
     assert "seam" not in sender.sent[-1]
 
 
+def test_a_pruned_blocked_task_is_not_an_open_block(tmp_path):
+    """The task page files a pruned task under abandoned; the heartbeat agrees."""
+    store = CursorStore(tmp_path / "cursor.json")
+    _arm(store)
+    events = [
+        *_blocked_task("kept", 1),
+        *_blocked_task("dropped", 10),
+        _ev(20, "task.pruned", {"reason": "superseded"}, task_id="dropped",
+            role="coordinator", actor_id="operator"),
+    ]
+    svc, sender = _hb_service(events, store, now=_fixed(_AT6))
+    svc.poll_once()
+    svc.maybe_heartbeat()
+    assert "<code>kept</code>" in sender.sent[-1]
+    assert "dropped" not in sender.sent[-1]
+
+
 def test_a_saved_open_block_list_from_an_older_notifier_is_ignored(tmp_path):
     """The notifier used to keep its own list of open blocks in its state file. A task that
     list still holds but the board has closed is not reported."""

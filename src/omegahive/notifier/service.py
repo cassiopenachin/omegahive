@@ -306,7 +306,7 @@ class NotifierService:
     # --- internals ---------------------------------------------------------
 
     def _open_blocks(self, now: datetime) -> list[tuple[str, str, int]]:
-        """(run_id, task_id, age_in_hours) for every task the board says is blocked now,
+        """(run_id, task_id, age_in_hours) for every unpruned task the board says is blocked now,
         across the runs currently followed, oldest first. Read from each run's board when the
         heartbeat goes out, so a task that left `blocked` by any path (an unblock, a
         reassignment, a close) is never listed. The age runs from the task's last
@@ -316,7 +316,9 @@ class NotifierService:
             view = self._reader.read(run_id, None, None)
             if view.board is None:
                 continue
-            blocked = {tid for tid, task in view.board.tasks.items() if task.status == "blocked"}
+            # A pruned task is off the plan: the task page files it under abandoned.
+            blocked = {tid for tid, task in view.board.tasks.items()
+                       if task.status == "blocked" and not task.pruned}
             since: dict[str, datetime] = {}
             for event in view.events:
                 if event.event_type == "task.blocked" and event.task_id in blocked:
