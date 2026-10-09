@@ -39,6 +39,7 @@ from .worker_seat import WorkerSeats
 
 EXECUTED_BY = "operation-service"
 VERDICTS = ("clean", "minor rework", "rework")
+NO_SCORE = "no score"  # a smoke or disposable order: hive-close --no-score, with a reason
 ABANDONABLE = {"created", "ready", "assigned", "in_progress", "blocked", "in_review", "reopened"}
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 NUDGE_UNCONFIRMED = 3  # hive-answer: the answer landed; the nudge was typed, not confirmed
@@ -376,14 +377,17 @@ class Operations:
     def _prepare_close(self, run: str, task: str, params: Mapping[str, Any], board: Board,
                   receipt: dict[str, Any]) -> list[list[str]]:
         verdict = _text(params, "verdict")
-        if verdict not in VERDICTS:
-            raise Refused(f"verdict must be one of {', '.join(VERDICTS)}")
+        if verdict not in (*VERDICTS, NO_SCORE):
+            raise Refused(f"verdict must be one of {', '.join((*VERDICTS, NO_SCORE))}")
         _require_status(board, task, {"in_review"})
         latest = self.latest_result_ref(run, task)
         if params.get("result_ref") != latest:
             raise Refused(f"this close is for result {params.get('result_ref')}, but the "
                           f"latest posted result is {latest}; reload and read that one")
-        reason = _text(params, "reason", required=False)
+        # Skipping the score says why; a scored close's reason is optional.
+        reason = _text(params, "reason", required=verdict == NO_SCORE)
+        if verdict == NO_SCORE:
+            return [[self._script("hive-close"), task, "--no-score", "--reason", reason]]
         return [[self._script("hive-close"), task, "--review", verdict,
                  *(["--reason", reason] if reason else [])]]
 

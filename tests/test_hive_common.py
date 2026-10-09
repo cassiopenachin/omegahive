@@ -1621,3 +1621,42 @@ def test_the_wrapper_tests_are_hermetic_against_an_ambient_review_environment(tm
     )
     assert r.returncode == 0, r.stderr
     assert "VERDICT" in r.stdout
+
+
+# --- the spine tunnel starts and lets its caller go -------------------------------------
+
+def test_the_spine_tunnel_command_returns_at_once_and_leaves_the_forwarder_running(tmp_path):
+    """`sbx exec` waits until the command's stdout and stderr close. A trailing `&` on
+    `pgrep … || nohup … >log &` backgrounds the whole list, and that subshell holds the
+    caller's streams for as long as the restart loop runs: every fresh sandbox waited out
+    sbx's 60-second limit. Run here under plain bash with captured output, which waits the
+    same way, against a stand-in socat that never exits.
+    """
+    import signal
+    import time
+
+    launch = (REPO / "scripts" / "hive-launch").read_text()
+    line = next(ln for ln in launch.splitlines() if ln.lstrip().startswith("SPINE_TUNNEL_CMD="))
+    shims = tmp_path / "bin"
+    shims.mkdir()
+    started = tmp_path / "socat-started"
+    (shims / "pgrep").write_text("#!/bin/sh\nexit 1\n")       # no forwarder yet
+    (shims / "socat").write_text(f'#!/bin/sh\ntouch "{started}"\nexec sleep 30\n')
+    for shim in shims.iterdir():
+        shim.chmod(0o755)
+    script = (f'SPINE_HOST=10.0.0.1; SPINE_PORT=5433; SPINE_TUNNEL_LOG="{tmp_path}/tunnel.log"\n'
+              f'{line.strip()}\nexec bash -c "$SPINE_TUNNEL_CMD"')
+    env = {**os.environ, "PATH": f"{shims}:{os.environ['PATH']}"}
+    began = time.monotonic()
+    proc = subprocess.Popen(["bash", "-c", script], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, env=env, start_new_session=True)
+    try:
+        proc.communicate(timeout=10)
+        elapsed = time.monotonic() - began
+        deadline = time.monotonic() + 5
+        while not started.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert elapsed < 3, f"the tunnel command held its caller for {elapsed:.1f}s"
+        assert started.exists(), "the forwarder was never started"
+    finally:
+        os.killpg(proc.pid, signal.SIGKILL)
