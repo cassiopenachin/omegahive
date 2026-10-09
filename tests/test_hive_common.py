@@ -482,16 +482,15 @@ def _issue_opencode_config(
     effort: str = "",
     output: str = "32000",
     pin: str = "",
-    reasoning_max: str = "",
     compaction_pin: str = "",
 ) -> subprocess.CompletedProcess[str]:
     """Run the SHIPPED generator, never a copy of it."""
     return subprocess.run(
         ["bash", "-c",
          f'set -euo pipefail; source "{COMMON}"; '
-         'issue_opencode_config "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}"',
+         'issue_opencode_config "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}"',
          "bash", str(task_root), endpoint, key_name, model, limit, compaction, effort,
-         output, pin, reasoning_max, compaction_pin],
+         output, pin, compaction_pin],
         capture_output=True, text=True, cwd=REPO, timeout=60,
     )
 
@@ -627,19 +626,17 @@ def test_an_unstated_effort_leaves_the_model_default_alone(tmp_path):
     assert "options" not in entry
 
 
-def test_a_provider_pin_and_a_reasoning_budget_reach_the_model_entry(tmp_path):
-    """Both travel the way `reasoningEffort` does: `options` on the model entry, which the
-    openai-compatible provider forwards into the request body. The pin is OpenRouter's
-    `provider` object with fallbacks off, so an unavailable provider fails the request
-    rather than quietly serving it from another upstream."""
-    r = _issue_opencode_config(tmp_path, model="xiaomi/mimo-v2.6-pro", pin="xiaomi/fp8",
-                               reasoning_max="12000")
+def test_a_provider_pin_reaches_the_model_entry(tmp_path):
+    """It travels the way `reasoningEffort` does: `options` on the model entry, which the
+    openai-compatible provider forwards into the request body (seen at the wire on
+    2026-10-09). It is OpenRouter's `provider` object with fallbacks off, so an unavailable
+    provider fails the request rather than quietly serving it from another upstream."""
+    r = _issue_opencode_config(tmp_path, model="xiaomi/mimo-v2.6-pro", pin="xiaomi/fp8")
     assert r.returncode == 0, r.stdout + r.stderr
     cfg = json.loads((tmp_path / "opencode.json").read_text())
     entry = cfg["provider"]["openrouter"]["models"]["xiaomi/mimo-v2.6-pro"]
     assert entry["options"] == {
         "provider": {"order": ["xiaomi/fp8"], "allow_fallbacks": False},
-        "reasoning": {"max_tokens": 12000},
     }
     assert entry["limit"]["output"] == 32000
 
@@ -687,11 +684,11 @@ def test_the_launcher_states_the_turn_ceiling_and_pins_compaction():
 
 def test_the_pin_rules_are_enforced_in_the_shell_above_the_check_exit():
     """`hive-launch` never calls `load_catalog`, so every rule the route model enforces on
-    the pin and the budget has a shell twin, reachable from `--check`."""
+    the pin has a shell twin, reachable from `--check`."""
     src = _launch_source()
     preflight = src[:src.index('if [ -n "$CHECK_ONLY" ]; then')]
     for phrase in ("states no provider_pin", "can only apply a provider pin",
-                   "leaves no room to answer", "states both reasoning_effort"):
+                   "is not an OpenRouter provider"):
         assert phrase in preflight, f"no shell-side refusal: {phrase!r}"
 
 

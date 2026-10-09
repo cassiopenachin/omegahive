@@ -386,33 +386,10 @@ def test_a_pin_on_a_harness_that_cannot_apply_it_refuses():
     assert "opencode" in str(exc.value)
 
 
-def test_a_reasoning_budget_loads_below_the_turn_ceiling():
-    cat = load_catalog(catalog_bytes(route(**OR, model="xiaomi/mimo-v2.6-pro",
-                                           reasoning_max_tokens=12000)))
-    assert cat.routes[0].reasoning_max_tokens == 12000
-
-
-@pytest.mark.parametrize("budget", [0, -1, 32000, 40000])
-def test_a_reasoning_budget_that_leaves_no_room_to_answer_refuses(budget):
-    """opencode clamps a turn's output at 32,000 tokens and reasoning counts against it,
-    so a budget at or above that ceiling is the defect it exists to prevent."""
-    with pytest.raises(RefusalError):
-        load_catalog(catalog_bytes(route(**OR, model="xiaomi/mimo-v2.6-pro",
-                                         reasoning_max_tokens=budget)))
-
-
-def test_a_reasoning_budget_and_an_effort_together_refuse():
-    """OpenRouter takes one or the other; stating both leaves which applies to the provider."""
-    with pytest.raises(RefusalError):
-        load_catalog(catalog_bytes(route(**OR, model="z-ai/glm-5.3", reasoning_effort="high",
-                                         reasoning_max_tokens=12000)))
-
-
-def test_the_pin_and_the_budget_are_outside_the_runner_fingerprint():
+def test_the_pin_is_outside_the_runner_fingerprint():
     a = load_catalog(catalog_bytes(route(**OR, model="xiaomi/mimo-v2.6-pro"))).routes[0]
     b = load_catalog(catalog_bytes(route(**{**OR, "provider_pin": ["novita/fp8"]},
-                                         model="xiaomi/mimo-v2.6-pro",
-                                         reasoning_max_tokens=12000))).routes[0]
+                                         model="xiaomi/mimo-v2.6-pro"))).routes[0]
     assert a.runner.fingerprint() == b.runner.fingerprint()
 
 

@@ -126,18 +126,16 @@ def test_the_json_form_carries_the_reviewer_default_flag():
     assert out[0]["is_reviewer_default"] is True
 
 
-def test_an_opencode_route_states_its_pin_its_reasoning_budget_and_its_turn_ceiling():
+def test_an_opencode_route_states_its_pin_and_its_turn_ceiling():
     """An order writer choosing a route for a long-thinking order needs to see that an
     opencode turn ends at 32,000 tokens, reasoning included, where a claude or codex route
     has no such bound; and which provider actually serves the model."""
     text = routes_to_text(rows(
         route(name="or-mimo", provider="openrouter", harness="opencode",
-              provider_pin=["xiaomi/fp8"], model="xiaomi/mimo-v2.6-pro",
-              reasoning_max_tokens=12000),
+              provider_pin=["xiaomi/fp8"], model="xiaomi/mimo-v2.6-pro"),
         route(name="plain"),
     ))
     mimo = text.split("or-mimo", 1)[1].split("plain", 1)[0]
     assert "provider pin: xiaomi/fp8 (no fallbacks)" in mimo
-    assert "reasoning budget: 12000 tokens" in mimo
     assert "turn ceiling: 32000 output tokens, reasoning included" in mimo
     assert "turn ceiling" not in text.split("plain", 1)[1]

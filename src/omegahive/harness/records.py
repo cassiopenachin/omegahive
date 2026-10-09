@@ -84,8 +84,8 @@ _OPENROUTER_MODEL_SHAPE = re.compile(r"~?[^/\s@]+/[^/\s@]+\Z")
 _PROVIDER_SLUG_SHAPE = re.compile(r"^[a-z0-9][a-z0-9.-]*(/[a-z0-9][a-z0-9.-]*)?$")
 
 # opencode clamps a turn's output at this many tokens whatever its config says, and on
-# OpenRouter a turn's reasoning counts against the same budget. A reasoning budget must
-# therefore stay below it, or the model can spend the whole turn thinking and say nothing.
+# OpenRouter a turn's reasoning counts against the same budget, so a model can spend a
+# whole turn thinking and end it with no answer. Printed by `hive routes` for order writers.
 OPENCODE_TURN_CEILING = 32000
 
 # A reasoning-effort level, as a SHAPE rather than an allowlist, for the same reason model
@@ -382,10 +382,6 @@ class RouteEntry(BaseModel):
     # pinned elsewhere says why in `note`.
     provider_pin: list[str] | None = Field(
         default=None, json_schema_extra={"items": {"pattern": _PROVIDER_SLUG_SHAPE.pattern}})
-    # How many tokens of a turn the model may spend reasoning, sent as OpenRouter's
-    # `reasoning.max_tokens`. Below OPENCODE_TURN_CEILING, so a turn keeps room to answer.
-    # Absent means the provider's default. Not with `reasoning_effort`: OpenRouter takes one.
-    reasoning_max_tokens: int | None = None
     note: str | None = None
 
     @field_validator("name")
@@ -423,12 +419,12 @@ class RouteEntry(BaseModel):
                 f"reasoning_effort {self.reasoning_effort!r} must be a single lowercase "
                 "token (for example 'high'), or absent to accept the model's own default"
             )
-        self._check_pin_and_budget()
+        self._check_pin()
         return self
 
-    def _check_pin_and_budget(self) -> None:
-        """The provider pin and the reasoning budget, the same rules `hive-launch` applies
-        in shell (it never calls this)."""
+    def _check_pin(self) -> None:
+        """The provider pin, the same rules `hive-launch` applies in shell (it never calls
+        this)."""
         if self.provider == "openrouter" and not self.provider_pin:
             raise ValueError(
                 f"route {self.name!r} is an OpenRouter route and states no provider_pin. "
@@ -443,25 +439,12 @@ class RouteEntry(BaseModel):
                     f"provider_pin {self.provider_pin!r} must list OpenRouter provider slugs, "
                     "lowercase, optionally with a variant tag (for example 'baseten/fp8')"
                 )
-        if (self.provider_pin is not None or self.reasoning_max_tokens is not None) \
-                and self.harness != "opencode":
+        if self.provider_pin is not None and self.harness != "opencode":
             raise ValueError(
-                f"route {self.name!r} states a provider_pin or reasoning_max_tokens on harness "
-                f"{self.harness!r}; they reach the request only through opencode's generated "
-                "config, so here they would read as in force and do nothing"
+                f"route {self.name!r} states a provider_pin on harness {self.harness!r}; it "
+                "reaches the request only through opencode's generated config, so here it "
+                "would read as in force and do nothing"
             )
-        if self.reasoning_max_tokens is not None:
-            if not 0 < self.reasoning_max_tokens < OPENCODE_TURN_CEILING:
-                raise ValueError(
-                    f"reasoning_max_tokens {self.reasoning_max_tokens} must be above 0 and "
-                    f"below {OPENCODE_TURN_CEILING}, opencode's turn ceiling, which the "
-                    "reasoning counts against; at or above it a turn can end with no answer"
-                )
-            if self.reasoning_effort is not None:
-                raise ValueError(
-                    f"route {self.name!r} states both reasoning_effort and "
-                    "reasoning_max_tokens; OpenRouter takes one, so state one"
-                )
 
     def identity(self) -> ExecutionIdentity:
         """The normalized identity block that goes on every lifecycle fact."""

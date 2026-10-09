@@ -81,7 +81,6 @@ def _row(route: RouteEntry, *, default: bool, present: bool | None,
         "reviewer": route.reviewer,
         "reasoning_effort": route.reasoning_effort,
         "provider_pin": list(route.provider_pin) if route.provider_pin else None,
-        "reasoning_max_tokens": route.reasoning_max_tokens,
         # opencode's own clamp on a turn's output, reasoning included; None where the
         # harness has no such bound this deployment knows of.
         "turn_ceiling": OPENCODE_TURN_CEILING if route.harness == "opencode" else None,
@@ -238,8 +237,6 @@ def routes_to_text(rows: list[dict[str, Any]]) -> str:
             out.append(f"      reasoning effort: {r['reasoning_effort']}")
         if r["provider_pin"]:
             out.append(f"      provider pin: {', '.join(r['provider_pin'])} (no fallbacks)")
-        if r["reasoning_max_tokens"]:
-            out.append(f"      reasoning budget: {r['reasoning_max_tokens']} tokens")
         # For an order writer choosing a route for a long-thinking order: an opencode turn
         # ends here however long the model wanted to think.
         if r["turn_ceiling"]:

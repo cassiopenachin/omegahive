@@ -208,18 +208,6 @@
           },
           "title": "Provider Pin"
         },
-        "reasoning_max_tokens": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Reasoning Max Tokens"
-        },
         "note": {
           "anyOf": [
             {

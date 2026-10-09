@@ -231,9 +231,10 @@ CODE_BRANCH="worker/$TASK"                # the publication branch, fixed by the
 # counts against it too, so it bounds thinking plus answer together: at 16,000 a MiMo turn
 # spent all of it reasoning and ended with `finish_reason: length` and no answer
 # (2026-10-09). opencode clamps `limit.output` at 32,000 whatever it is given, so that is the
-# ceiling and the default. A route bounds its reasoning below it with
-# `reasoning_max_tokens`; an order that needs longer thinking belongs on a claude or codex
-# route, which has no such bound. A tunable for a model whose hard cap is lower.
+# ceiling and the default. OpenRouter's `reasoning.max_tokens` would bound the thinking below
+# it, but Xiaomi ignores it (measured 2026-10-09: 741 reasoning tokens against a budget of
+# 256), so an order that needs long thinking belongs on a claude or codex route, which has
+# no such ceiling. A tunable for a model whose hard cap is lower.
 : "${HIVE_OPENCODE_OUTPUT_LIMIT:=32000}"
 # Compaction is an OpenRouter call like any other, so it is pinned like any route is: to
 # the compaction model's first-party provider, fallbacks off.
@@ -411,10 +412,9 @@ R_REVIEWER=$(route_field reviewer)
 # a harness that can say so. Absence means the model's own default, which is a different
 # statement from any level this could have named and stays distinguishable from one.
 R_EFFORT=$(route_field reasoning_effort)
-# The OpenRouter provider pin (comma-joined, in order) and the reasoning budget. Both
-# optional in the catalog's shape, and the pin required on every OpenRouter route below.
+# The OpenRouter provider pin (comma-joined, in order): optional in the catalog's shape,
+# and required on every OpenRouter route below.
 R_PIN=$(printf '%s' "$ROUTE" | jq -r '(.provider_pin // []) | join(",")')
-R_REASONING_MAX=$(route_field reasoning_max_tokens)
 EXECUTABLE=$(printf '%s' "$ROUTE" | jq -r '.runner.executable // ""')
 # Every field the spine's execution identity requires, checked before anything is created.
 # The identity block may not be synthesized or defaulted (events/types.py), so a route
@@ -822,8 +822,8 @@ if [ -n "$R_EFFORT" ]; then
   Nothing was created or emitted."
 fi
 
-# The provider pin and the reasoning budget: the route model's rules, twinned here
-# because this script never calls `load_catalog`.
+# The provider pin: the route model's rules, twinned here because this script never
+# calls `load_catalog`.
 if [ "$R_PROVIDER" = "openrouter" ] && [ -z "$R_PIN" ]; then
   die "route '$ROUTE_NAME' is an OpenRouter route and states no provider_pin. Unpinned,
   OpenRouter serves it from whichever upstream answers, with that upstream's quantization,
@@ -838,22 +838,6 @@ if [ -n "$R_PIN" ]; then
   [ "$R_HARNESS" = "opencode" ] || die "route '$ROUTE_NAME' states a provider_pin, but its
   harness is '$R_HARNESS' and this build can only apply a provider pin through opencode's
   generated config. Nothing was created or emitted."
-fi
-if [ -n "$R_REASONING_MAX" ]; then
-  case "$R_REASONING_MAX" in
-    *[!0-9]*) die "route '$ROUTE_NAME' states reasoning_max_tokens '$R_REASONING_MAX', which
-  is not a whole number. Nothing was created or emitted." ;;
-  esac
-  [ "$R_HARNESS" = "opencode" ] || die "route '$ROUTE_NAME' states reasoning_max_tokens, but
-  its harness is '$R_HARNESS' and this build can only apply that through opencode's
-  generated config. Nothing was created or emitted."
-  [ -z "$R_EFFORT" ] || die "route '$ROUTE_NAME' states both reasoning_effort and
-  reasoning_max_tokens; OpenRouter takes one. Nothing was created or emitted."
-  if [ "$R_REASONING_MAX" -le 0 ] || [ "$R_REASONING_MAX" -ge "$HIVE_OPENCODE_OUTPUT_LIMIT" ]; then
-    die "route '$ROUTE_NAME' states reasoning_max_tokens $R_REASONING_MAX, which leaves no room to answer
-  under this launch's turn cap of $HIVE_OPENCODE_OUTPUT_LIMIT output tokens (reasoning counts
-  against it). State a budget below it. Nothing was created or emitted."
-  fi
 fi
 
 if [ "$R_HARNESS" = "opencode" ]; then
@@ -945,7 +929,6 @@ if [ -n "$CHECK_ONLY" ]; then
     echo "  opencode:   context limit $HIVE_OPENCODE_CONTEXT_LIMIT, compaction on $HIVE_OPENCODE_COMPACTION_MODEL"
     [ -z "$R_EFFORT" ] || echo "              reasoning effort $R_EFFORT (a route fact)"
     [ -z "$R_PIN" ] || echo "              provider pin $R_PIN (no fallbacks); compaction pin $HIVE_OPENCODE_COMPACTION_PIN"
-    [ -z "$R_REASONING_MAX" ] || echo "              reasoning budget $R_REASONING_MAX of $HIVE_OPENCODE_OUTPUT_LIMIT output tokens"
   fi
   # `require_declared_env` already ran above, so reaching this line means every declared name
   # is set. Saying so is the point: a preflight that stays silent about the thing that broke
@@ -1496,7 +1479,7 @@ if [ "$EXECUTABLE" = "sbx" ]; then
     SBX_OPENCODE_CFG="$TASK_ROOT/opencode.json"
     issue_opencode_config "$TASK_ROOT" "$ENDPOINT_URL" "$OPENCODE_KEY_NAME" "$MODEL" \
       "$HIVE_OPENCODE_CONTEXT_LIMIT" "$HIVE_OPENCODE_COMPACTION_MODEL" "$R_EFFORT" \
-      "$HIVE_OPENCODE_OUTPUT_LIMIT" "$R_PIN" "$R_REASONING_MAX" "$HIVE_OPENCODE_COMPACTION_PIN"
+      "$HIVE_OPENCODE_OUTPUT_LIMIT" "$R_PIN" "$HIVE_OPENCODE_COMPACTION_PIN"
     echo "  opencode: $SBX_OPENCODE_CFG (context limit $HIVE_OPENCODE_CONTEXT_LIMIT, compaction on $HIVE_OPENCODE_COMPACTION_MODEL)"
   fi
 
