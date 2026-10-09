@@ -36,7 +36,12 @@ from collections.abc import Mapping
 from typing import Any
 
 from omegahive.harness.adapters import get_adapter
-from omegahive.harness.records import RefusalError, RouteEntry, load_catalog
+from omegahive.harness.records import (
+    OPENCODE_TURN_CEILING,
+    RefusalError,
+    RouteEntry,
+    load_catalog,
+)
 
 
 def _row(route: RouteEntry, *, default: bool, present: bool | None,
@@ -75,6 +80,10 @@ def _row(route: RouteEntry, *, default: bool, present: bool | None,
         "provider_env": dict(sorted(route.runner.env.items())),
         "reviewer": route.reviewer,
         "reasoning_effort": route.reasoning_effort,
+        "provider_pin": list(route.provider_pin) if route.provider_pin else None,
+        # opencode's own clamp on a turn's output, reasoning included; None where the
+        # harness has no such bound this deployment knows of.
+        "turn_ceiling": OPENCODE_TURN_CEILING if route.harness == "opencode" else None,
         "runner_fingerprint": route.runner.fingerprint(),
         # Resolved through the adapter, not guessed: `codex exec resume` refuses several
         # options `codex exec` accepts, so "can this route be resumed" is a property of
@@ -226,6 +235,13 @@ def routes_to_text(rows: list[dict[str, Any]]) -> str:
         # that IS a decision into a line the operator learns to skip.
         if r["reasoning_effort"]:
             out.append(f"      reasoning effort: {r['reasoning_effort']}")
+        if r["provider_pin"]:
+            out.append(f"      provider pin: {', '.join(r['provider_pin'])} (no fallbacks)")
+        # For an order writer choosing a route for a long-thinking order: an opencode turn
+        # ends here however long the model wanted to think.
+        if r["turn_ceiling"]:
+            out.append(f"      turn ceiling: {r['turn_ceiling']} output tokens, "
+                       "reasoning included")
         out.append(f"      fingerprint: {r['runner_fingerprint']}")
         if r["reason"]:
             out.append(f"    reason: {r['reason']}")

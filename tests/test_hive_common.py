@@ -480,13 +480,17 @@ def _issue_opencode_config(
     limit: str = "250000",
     compaction: str = "anthropic/claude-sonnet-5",
     effort: str = "",
+    output: str = "32000",
+    pin: str = "",
+    compaction_pin: str = "",
 ) -> subprocess.CompletedProcess[str]:
     """Run the SHIPPED generator, never a copy of it."""
     return subprocess.run(
         ["bash", "-c",
          f'set -euo pipefail; source "{COMMON}"; '
-         'issue_opencode_config "$1" "$2" "$3" "$4" "$5" "$6" "$7"',
-         "bash", str(task_root), endpoint, key_name, model, limit, compaction, effort],
+         'issue_opencode_config "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}"',
+         "bash", str(task_root), endpoint, key_name, model, limit, compaction, effort,
+         output, pin, compaction_pin],
         capture_output=True, text=True, cwd=REPO, timeout=60,
     )
 
@@ -620,6 +624,112 @@ def test_an_unstated_effort_leaves_the_model_default_alone(tmp_path):
     cfg = json.loads((tmp_path / "opencode.json").read_text())
     entry = cfg["provider"]["openrouter"]["models"]["deepseek/deepseek-v4-flash-0731"]
     assert "options" not in entry
+
+
+def test_a_provider_pin_reaches_the_model_entry(tmp_path):
+    """It travels the way `reasoningEffort` does: `options` on the model entry, which the
+    openai-compatible provider forwards into the request body (seen at the wire on
+    2026-10-09). It is OpenRouter's `provider` object with fallbacks off, so an unavailable
+    provider fails the request rather than quietly serving it from another upstream."""
+    r = _issue_opencode_config(tmp_path, model="xiaomi/mimo-v2.6-pro", pin="xiaomi/fp8")
+    assert r.returncode == 0, r.stdout + r.stderr
+    cfg = json.loads((tmp_path / "opencode.json").read_text())
+    entry = cfg["provider"]["openrouter"]["models"]["xiaomi/mimo-v2.6-pro"]
+    assert entry["options"] == {
+        "provider": {"order": ["xiaomi/fp8"], "allow_fallbacks": False},
+    }
+    assert entry["limit"]["output"] == 32000
+
+
+def test_a_pin_in_order_keeps_its_order_beside_an_effort(tmp_path):
+    r = _issue_opencode_config(tmp_path, model="deepseek/deepseek-v4.1-flash", effort="high",
+                               pin="baseten/fp8,deepinfra/fp8")
+    assert r.returncode == 0, r.stdout + r.stderr
+    cfg = json.loads((tmp_path / "opencode.json").read_text())
+    options = cfg["provider"]["openrouter"]["models"]["deepseek/deepseek-v4.1-flash"]["options"]
+    assert options == {"reasoningEffort": "high",
+                       "provider": {"order": ["baseten/fp8", "deepinfra/fp8"],
+                                    "allow_fallbacks": False}}
+
+
+def test_the_compaction_model_is_pinned_too(tmp_path):
+    """Compaction is an OpenRouter call like any other, so it is pinned like any other."""
+    r = _issue_opencode_config(tmp_path, model="xiaomi/mimo-v2.6-pro", pin="xiaomi/fp8",
+                               compaction="openai/gpt-6-luna", compaction_pin="openai")
+    assert r.returncode == 0, r.stdout + r.stderr
+    cfg = json.loads((tmp_path / "opencode.json").read_text())
+    entry = cfg["provider"]["openrouter"]["models"]["openai/gpt-6-luna"]
+    assert entry["options"] == {"provider": {"order": ["openai"], "allow_fallbacks": False}}
+
+
+@pytest.mark.parametrize("pin, expected", [
+    (None, ""),
+    (["xiaomi/fp8"], "xiaomi/fp8"),
+    (["baseten/fp8", "deepinfra/fp8"], "baseten/fp8,deepinfra/fp8"),
+    ([], "!malformed"),
+    ([None], "!malformed"),
+    ("xiaomi", "!malformed"),
+    (["xiaomi\n"], "!malformed"),
+    (["a,b"], "!malformed"),
+])
+def test_the_launcher_reads_a_provider_pin_as_the_route_model_would(pin, expected):
+    """jq flattening a malformed pin into something that passes would split the two
+    validators: the shell reads the field with the launcher's own expression, here."""
+    src = _launch_source()
+    start = src.index("R_PIN=$(")
+    expr = src[start:src.index("')", start) + 2]
+    route = {} if pin is None else {"provider_pin": pin}
+    out = subprocess.run(["bash", "-c", f'ROUTE="$1"; {expr}; printf "%s" "$R_PIN"', "_",
+                          json.dumps(route)], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == expected
+
+
+def test_one_pin_at_launch_too():
+    """The catalog refuses a preset in a route's model; the launcher refuses one there and on a
+    --model that would add a second pin to a pinned route, before any network call."""
+    src = _launch_source()
+    probe = src.index('require_model_served "$ENDPOINT_URL" "$MODEL"')
+    for phrase in ("names its model with a preset", "carries a preset, and route",
+                   "states no provider_pin", "is not a non-empty list"):
+        assert src.index(phrase) < probe, f"refusal is not before the network probe: {phrase!r}"
+
+
+def test_the_compaction_pin_is_only_sent_to_openrouter_on_a_separate_model():
+    src = _launch_source()
+    block = src.split('COMPACTION_PIN=""', 1)[1].split("\nfi\n", 1)[0]
+    assert '[ "$R_PROVIDER" = "openrouter" ]' in block
+    assert '"$HIVE_OPENCODE_COMPACTION_MODEL" != "$MODEL"' in block
+
+
+def test_opencodes_small_model_is_the_pinned_compaction_model(tmp_path):
+    """Left unset, opencode sends its title requests to a built-in default small model
+    through OpenRouter, unpinned (observed at the wire on 2026-10-09:
+    google/gemini-nano-banana-2.1 with no provider field). Naming the compaction model
+    keeps every OpenRouter call on a model and provider this deployment chose."""
+    r = _issue_opencode_config(tmp_path, model="xiaomi/mimo-v2.6-pro", pin="xiaomi/fp8",
+                               compaction="openai/gpt-6-luna", compaction_pin="openai")
+    assert r.returncode == 0, r.stdout + r.stderr
+    cfg = json.loads((tmp_path / "opencode.json").read_text())
+    assert cfg["small_model"] == "openrouter/openai/gpt-6-luna"
+
+
+def test_the_launcher_states_the_turn_ceiling_and_pins_compaction():
+    """opencode clamps limit.output at 32,000 whatever it is given, and on OpenRouter the
+    reasoning counts against it: 16,000 cut a MiMo turn off mid-reasoning (2026-10-09)."""
+    src = _launch_source()
+    assert ': "${HIVE_OPENCODE_OUTPUT_LIMIT:=32000}"' in src
+    assert ': "${HIVE_OPENCODE_COMPACTION_PIN:=openai}"' in src
+
+
+def test_the_pin_rules_are_enforced_in_the_shell_above_the_check_exit():
+    """`hive-launch` never calls `load_catalog`, so every rule the route model enforces on
+    the pin has a shell twin, reachable from `--check`."""
+    src = _launch_source()
+    preflight = src[:src.index('if [ -n "$CHECK_ONLY" ]; then')]
+    for phrase in ("states no provider_pin", "can only apply a provider pin",
+                   "is not an OpenRouter provider"):
+        assert phrase in preflight, f"no shell-side refusal: {phrase!r}"
 
 
 def test_the_generated_plugin_actually_parses(tmp_path):

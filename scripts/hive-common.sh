@@ -1118,8 +1118,10 @@ REVIEWBODY
 issue_opencode_config() {
   # issue_opencode_config <task-root> <endpoint> <key-env-name> <model> <context-limit>
   #                       <compaction-model> [<reasoning-effort>] [<output-limit>]
+  #                       [<provider-pin,comma,separated>]
+  #                       [<compaction-provider-pin,comma,separated>]
   local TASK_ROOT="$1" ENDPOINT="$2" KEY_NAME="$3" MODEL="$4" LIMIT="$5" COMPACTION="$6"
-  local EFFORT="${7:-}" OUTPUT="${8:-16000}"
+  local EFFORT="${7:-}" OUTPUT="${8:-32000}" PIN="${9:-}" COMPACTION_PIN="${10:-}"
   local CFG="$TASK_ROOT/opencode.json" PLUGIN="$TASK_ROOT/hive-compaction.js"
 
   # The compaction model is addressed through the SAME provider block as the worker's, so
@@ -1129,7 +1131,13 @@ issue_opencode_config() {
   jq -n \
     --arg endpoint "$ENDPOINT" --arg key "$KEY_NAME" --arg model "$MODEL" \
     --arg compaction "$COMPACTION" --argjson limit "$LIMIT" --arg effort "$EFFORT" \
-    --argjson output "$OUTPUT" '
+    --argjson output "$OUTPUT" --arg pin "$PIN" \
+    --arg compaction_pin "$COMPACTION_PIN" '
+    # OpenRouter provider routing: these providers only, in this order, fallbacks off,
+    # so an unavailable provider fails the request rather than another upstream serving it.
+    def pinned($csv):
+      if $csv == "" then {}
+      else { provider: { order: ($csv | split(",")), allow_fallbacks: false } } end;
     {
       "$schema": "https://opencode.ai/config.json",
       plugin: ["./hive-compaction.js"],
@@ -1145,10 +1153,19 @@ issue_opencode_config() {
                 # `reasoningEffort: "high"` arrived at OpenRouter as `reasoning_effort`.
                 # Omitted entirely when the route states none, so the model default
                 # stays a different thing from any level this could have named.
-                + (if $effort == "" then {} else { options: { reasoningEffort: $effort } } end)
+                # The provider pin rides the same path, as the `provider` field of the
+                # OpenRouter request.
+                + ( ( (if $effort == "" then {} else { reasoningEffort: $effort } end)
+                      + pinned($pin)
+                    ) as $o
+                    | if $o == {} then {} else { options: $o } end )
               ) }
             + (if $compaction == "" or $compaction == $model then {}
-               else { ($compaction): { reasoning: true } } end)
+               else { ($compaction): (
+                 { reasoning: true }
+                 + (pinned($compaction_pin) as $o
+                    | if $o == {} then {} else { options: $o } end)
+               ) } end)
           )
         }
       },
@@ -1159,7 +1176,11 @@ issue_opencode_config() {
       }
     }
     + (if $compaction == "" then {}
-       else { agent: { compaction: { model: "openrouter/\($compaction)" } } } end)
+       else { agent: { compaction: { model: "openrouter/\($compaction)" } },
+              # Titles and other small calls: unset, opencode picks a built-in default
+              # model and calls it through OpenRouter unpinned (seen at the wire,
+              # 2026-10-09), so it gets the pinned compaction model instead.
+              small_model: "openrouter/\($compaction)" } end)
   ' > "$CFG" || die "could not write opencode's configuration to $CFG"
 
   # The plugin is written verbatim, with nothing interpolated into it. Everything it needs

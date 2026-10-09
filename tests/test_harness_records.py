@@ -26,6 +26,9 @@ from omegahive.harness.records import (
     resolve_route,
 )
 
+# An OpenRouter route as the catalog now requires one: opencode, with a stated pin.
+OR = {"provider": "openrouter", "harness": "opencode", "provider_pin": ["xiaomi/fp8"]}
+
 
 def raw(doc) -> bytes:
     return json.dumps(doc).encode("utf-8")
@@ -318,13 +321,13 @@ def test_an_openrouter_model_must_name_a_vendor_and_a_slug():
     launch that discovers this should be the one that never happened."""
     with pytest.raises(RefusalError) as exc:
         load_catalog(catalog_bytes(
-            route(provider="openrouter", model="deepseek-v4-flash-0731")))
+            route(**OR, model="deepseek-v4-flash-0731")))
     assert exc.value.code == "CATALOG_MALFORMED"
 
 
 def test_an_openrouter_model_with_its_vendor_loads():
     cat = load_catalog(catalog_bytes(
-        route(provider="openrouter", model="deepseek/deepseek-v4-flash-0731")))
+        route(**OR, model="deepseek/deepseek-v4-flash-0731")))
     assert cat.routes[0].model == "deepseek/deepseek-v4-flash-0731"
 
 
@@ -334,30 +337,60 @@ def test_a_non_openrouter_model_may_be_a_bare_token():
     assert load_catalog(catalog_bytes(route(model="m"))).routes[0].model == "m"
 
 
-def test_an_openrouter_model_may_carry_a_preset_pin():
-    """The same `@preset/<slug>` suffix a taskbench study pins its upstream with — a route
-    can pin an approved-provider preset instead of trusting OpenRouter's own default
-    routing across whatever upstream answers first."""
-    model = "deepseek/deepseek-v4.1-flash@preset/omegahive-deepseek-v4-1-flash"
-    cat = load_catalog(catalog_bytes(route(provider="openrouter", model=model)))
-    assert cat.routes[0].model == model
-
-
-def test_a_preset_pin_still_needs_its_vendor():
-    """A preset suffix does not exempt the model from naming a vendor first."""
+def test_a_catalogued_model_carries_no_preset():
+    """A provider pin has one home, the route's `provider_pin`, which the catalog shows
+    and the request carries. A preset is edited on OpenRouter's website, invisible here,
+    and was the second way to say the same thing."""
     with pytest.raises(RefusalError) as exc:
         load_catalog(catalog_bytes(route(
-            provider="openrouter",
-            model="deepseek-v4.1-flash@preset/omegahive-deepseek-v4-1-flash")))
+            **OR, model="deepseek/deepseek-v4.1-flash@preset/omegahive-deepseek-v4-1-flash")))
     assert exc.value.code == "CATALOG_MALFORMED"
 
 
-def test_a_model_with_two_preset_suffixes_refuses():
-    """One pin, not a chain of them: a second `@preset/` is not a shape this rule accepts."""
-    with pytest.raises(RefusalError):
+# --- every OpenRouter route pins its provider -----------------------------------------
+#
+# Unpinned, OpenRouter serves a request from whichever upstream answers, and the same
+# model id then means different quantizations, output caps and data terms from one turn to
+# the next: a MiMo worker on 2026-10-09 was served by GMICloud, not Xiaomi.
+
+def test_an_openrouter_route_without_a_provider_pin_refuses():
+    with pytest.raises(RefusalError) as exc:
         load_catalog(catalog_bytes(route(
-            provider="openrouter",
-            model="deepseek/deepseek-v4.1-flash@preset/a@preset/b")))
+            provider="openrouter", harness="opencode", model="xiaomi/mimo-v2.6-pro")))
+    assert exc.value.code == "CATALOG_MALFORMED"
+    assert "provider_pin" in str(exc.value)
+
+
+def test_a_pinned_openrouter_route_loads_with_its_pin_in_order():
+    cat = load_catalog(catalog_bytes(route(
+        **{**OR, "provider_pin": ["baseten/fp8", "deepinfra/fp8"]},
+        model="deepseek/deepseek-v4.1-flash")))
+    assert cat.routes[0].provider_pin == ["baseten/fp8", "deepinfra/fp8"]
+
+
+@pytest.mark.parametrize("pin", [[], ["Xiaomi"], ["xiaomi fp8"], ["a/b/c"], [""]])
+def test_a_malformed_provider_pin_refuses(pin):
+    """OpenRouter names providers by lowercase slug, optionally with a variant tag
+    (`baseten/fp8`). Anything else would be sent and silently match nothing."""
+    with pytest.raises(RefusalError):
+        load_catalog(catalog_bytes(route(**{**OR, "provider_pin": pin},
+                                         model="xiaomi/mimo-v2.6-pro")))
+
+
+def test_a_pin_on_a_harness_that_cannot_apply_it_refuses():
+    """The pin reaches the request only through opencode's generated config. Anywhere else
+    it would print as though in force and do nothing."""
+    with pytest.raises(RefusalError) as exc:
+        load_catalog(catalog_bytes(route(**{**OR, "harness": "claude-code"},
+                                         model="xiaomi/mimo-v2.6-pro")))
+    assert "opencode" in str(exc.value)
+
+
+def test_the_pin_is_outside_the_runner_fingerprint():
+    a = load_catalog(catalog_bytes(route(**OR, model="xiaomi/mimo-v2.6-pro"))).routes[0]
+    b = load_catalog(catalog_bytes(route(**{**OR, "provider_pin": ["novita/fp8"]},
+                                         model="xiaomi/mimo-v2.6-pro"))).routes[0]
+    assert a.runner.fingerprint() == b.runner.fingerprint()
 
 
 def test_a_reasoning_effort_is_optional_and_absence_is_absence():
@@ -456,3 +489,15 @@ def test_a_malformed_reviewer_route_name_refuses_at_load():
             route(),
             **{"defaults": {"worker": "fake-subscription", "reviewer_route": "no spaces"}},
         ))
+
+
+def test_the_published_schema_puts_the_slug_rule_on_the_array_items():
+    """Editors validate against the schema's array branch; a pattern beside `anyOf` is
+    invisible to tooling that resolves the branch."""
+    import json as _json
+    from pathlib import Path as _Path
+    schema = _json.loads((_Path(__file__).resolve().parents[1] / "schemas"
+                          / "route-catalog.v2.json").read_text())
+    pin = schema["$defs"]["RouteEntry"]["properties"]["provider_pin"]
+    array = next(b for b in pin["anyOf"] if b.get("type") == "array")
+    assert array["items"]["pattern"].startswith("^[a-z0-9]")

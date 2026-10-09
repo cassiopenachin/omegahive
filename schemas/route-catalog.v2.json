@@ -190,6 +190,22 @@
           "pattern": "^[a-z]+$",
           "title": "Reasoning Effort"
         },
+        "provider_pin": {
+          "anyOf": [
+            {
+              "items": {
+                "pattern": "^[a-z0-9][a-z0-9.-]*(/[a-z0-9][a-z0-9.-]*)?$",
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Pin"
+        },
         "note": {
           "anyOf": [
             {

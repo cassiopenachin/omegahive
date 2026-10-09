@@ -1582,7 +1582,7 @@ def test_an_unset_rename_source_refuses_and_names_the_host_variable(deployment):
 def test_a_model_the_endpoint_does_not_serve_writes_no_board_event(deployment):
     """Acceptance 2. The provider answers, and does not list the id."""
     dep = deployment
-    set_catalog(dep, route(provider="openrouter", model="deepseek/deepseek-v4-flash-latest",
+    set_catalog(dep, route(provider="fixture-gateway", model="deepseek/deepseek-v4-flash-latest",
                            runner=runner(env={"ANTHROPIC_BASE_URL": "https://openrouter.invalid/api"})))
     order_rel = order_for(dep, "bad-model")
     before = len(events(dep))
@@ -1606,7 +1606,7 @@ def test_a_model_the_endpoint_does_serve_proceeds(deployment):
     """The positive control. Without it the assertion above passes for a launcher that
     refuses everything."""
     dep = deployment
-    set_catalog(dep, route(provider="openrouter", model="deepseek/deepseek-v4-flash-0731",
+    set_catalog(dep, route(provider="fixture-gateway", model="deepseek/deepseek-v4-flash-0731",
                            runner=runner(env={"ANTHROPIC_BASE_URL": "https://openrouter.invalid/api"})))
     order_rel = order_for(dep, "good-model")
 
@@ -1629,7 +1629,7 @@ def test_an_endpoint_that_cannot_answer_warns_and_launches(deployment, mode):
     loud, on stderr, and not fatal.
     """
     dep = deployment
-    set_catalog(dep, route(provider="openrouter", model="deepseek/deepseek-v4-flash-0731",
+    set_catalog(dep, route(provider="fixture-gateway", model="deepseek/deepseek-v4-flash-0731",
                            runner=runner(env={"ANTHROPIC_BASE_URL": "https://openrouter.invalid/api"})))
     order_rel = order_for(dep, f"probe-{mode}")
 
@@ -1863,7 +1863,7 @@ def test_a_base_url_that_already_carries_v1_is_not_doubled(deployment):
     an outage — so the probe would warn and pass EVERY id on the most conventional base
     URL shape there is. The example catalog ships one."""
     dep = deployment
-    set_catalog(dep, route(provider="openrouter", model="vendor/absent-model",
+    set_catalog(dep, route(provider="fixture-gateway", model="vendor/absent-model",
                            runner=runner(env={"ANTHROPIC_BASE_URL": "https://provider.invalid/v1"})))
     order_rel = order_for(dep, "double-v1")
     bin_dir = stub_tmux(dep)
