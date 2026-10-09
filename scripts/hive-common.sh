@@ -1118,8 +1118,11 @@ REVIEWBODY
 issue_opencode_config() {
   # issue_opencode_config <task-root> <endpoint> <key-env-name> <model> <context-limit>
   #                       <compaction-model> [<reasoning-effort>] [<output-limit>]
+  #                       [<provider-pin,comma,separated>] [<reasoning-max-tokens>]
+  #                       [<compaction-provider-pin,comma,separated>]
   local TASK_ROOT="$1" ENDPOINT="$2" KEY_NAME="$3" MODEL="$4" LIMIT="$5" COMPACTION="$6"
-  local EFFORT="${7:-}" OUTPUT="${8:-16000}"
+  local EFFORT="${7:-}" OUTPUT="${8:-32000}" PIN="${9:-}" REASONING_MAX="${10:-}"
+  local COMPACTION_PIN="${11:-}"
   local CFG="$TASK_ROOT/opencode.json" PLUGIN="$TASK_ROOT/hive-compaction.js"
 
   # The compaction model is addressed through the SAME provider block as the worker's, so
@@ -1129,7 +1132,13 @@ issue_opencode_config() {
   jq -n \
     --arg endpoint "$ENDPOINT" --arg key "$KEY_NAME" --arg model "$MODEL" \
     --arg compaction "$COMPACTION" --argjson limit "$LIMIT" --arg effort "$EFFORT" \
-    --argjson output "$OUTPUT" '
+    --argjson output "$OUTPUT" --arg pin "$PIN" --arg reasoning_max "$REASONING_MAX" \
+    --arg compaction_pin "$COMPACTION_PIN" '
+    # OpenRouter provider routing: these providers only, in this order, fallbacks off,
+    # so an unavailable provider fails the request rather than another upstream serving it.
+    def pinned($csv):
+      if $csv == "" then {}
+      else { provider: { order: ($csv | split(",")), allow_fallbacks: false } } end;
     {
       "$schema": "https://opencode.ai/config.json",
       plugin: ["./hive-compaction.js"],
@@ -1145,10 +1154,21 @@ issue_opencode_config() {
                 # `reasoningEffort: "high"` arrived at OpenRouter as `reasoning_effort`.
                 # Omitted entirely when the route states none, so the model default
                 # stays a different thing from any level this could have named.
-                + (if $effort == "" then {} else { options: { reasoningEffort: $effort } } end)
+                # The provider pin and the reasoning budget ride the same path, as
+                # the `provider` and `reasoning` fields of the OpenRouter request.
+                + ( ( (if $effort == "" then {} else { reasoningEffort: $effort } end)
+                      + pinned($pin)
+                      + (if $reasoning_max == "" then {}
+                         else { reasoning: { max_tokens: ($reasoning_max | tonumber) } } end)
+                    ) as $o
+                    | if $o == {} then {} else { options: $o } end )
               ) }
             + (if $compaction == "" or $compaction == $model then {}
-               else { ($compaction): { reasoning: true } } end)
+               else { ($compaction): (
+                 { reasoning: true }
+                 + (pinned($compaction_pin) as $o
+                    | if $o == {} then {} else { options: $o } end)
+               ) } end)
           )
         }
       },

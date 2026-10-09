@@ -82,10 +82,10 @@ def test_a_stated_reasoning_effort_is_printed_and_an_absent_one_is_not():
     "unstated" on every other route would make the one line that matters skippable.
     """
     text = routes_to_text(rows(
-        route(name="or-glm", provider="openrouter", model="z-ai/glm-5.3",
-              reasoning_effort="high"),
-        route(name="or-ds", provider="openrouter",
-              model="deepseek/deepseek-v4-flash-0731"),
+        route(name="or-glm", provider="openrouter", harness="opencode",
+              provider_pin=["z-ai/fp8"], model="z-ai/glm-5.3", reasoning_effort="high"),
+        route(name="or-ds", provider="openrouter", harness="opencode",
+              provider_pin=["baseten/fp8"], model="deepseek/deepseek-v4-flash-0731"),
     ))
     assert "reasoning effort: high" in text
     assert text.count("reasoning effort") == 1
@@ -124,3 +124,20 @@ def test_the_json_form_carries_the_reviewer_default_flag():
                                  "reviewer_route": "fake-subscription"}},
     )))
     assert out[0]["is_reviewer_default"] is True
+
+
+def test_an_opencode_route_states_its_pin_its_reasoning_budget_and_its_turn_ceiling():
+    """An order writer choosing a route for a long-thinking order needs to see that an
+    opencode turn ends at 32,000 tokens, reasoning included, where a claude or codex route
+    has no such bound; and which provider actually serves the model."""
+    text = routes_to_text(rows(
+        route(name="or-mimo", provider="openrouter", harness="opencode",
+              provider_pin=["xiaomi/fp8"], model="xiaomi/mimo-v2.6-pro",
+              reasoning_max_tokens=12000),
+        route(name="plain"),
+    ))
+    mimo = text.split("or-mimo", 1)[1].split("plain", 1)[0]
+    assert "provider pin: xiaomi/fp8 (no fallbacks)" in mimo
+    assert "reasoning budget: 12000 tokens" in mimo
+    assert "turn ceiling: 32000 output tokens, reasoning included" in mimo
+    assert "turn ceiling" not in text.split("plain", 1)[1]

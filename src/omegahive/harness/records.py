@@ -73,11 +73,20 @@ _ENDPOINT_SHAPE = re.compile(r"^https?://[^\s\x00]+$")
 # 2026-08-28 and was misread as a provider outage.
 _MODEL_SHAPE = re.compile(r"\S+\Z")
 
-# `vendor/slug`, optionally followed by `@preset/<preset-slug>` — the same suffix
-# OpenRouter's own preset endpoints take (`taskbench.openrouter.PresetPin.request_string`),
-# so a route can pin an approved-provider preset the same way a taskbench study does, rather
-# than trusting OpenRouter's own default routing across whatever upstream answers first.
-_OPENROUTER_MODEL_SHAPE = re.compile(r"~?[^/\s@]+/[^/\s@]+(?:@preset/[^/\s@]+)?\Z")
+# `vendor/slug`. No `@preset/<slug>` suffix: a route's provider pin lives in its own field,
+# `provider_pin`, which the catalog shows and the request carries, rather than in a preset
+# edited on OpenRouter's website and invisible here. (`hive-launch --model` still accepts a
+# preset for a one-off launch, as a taskbench study pins its upstream.)
+_OPENROUTER_MODEL_SHAPE = re.compile(r"~?[^/\s@]+/[^/\s@]+\Z")
+
+# One OpenRouter provider, as its `provider.order` takes it: a lowercase slug, optionally
+# with a variant tag (`xiaomi/fp8`, `baseten/fp8`). Anchored `^...$` for the published schema.
+_PROVIDER_SLUG_SHAPE = re.compile(r"^[a-z0-9][a-z0-9.-]*(/[a-z0-9][a-z0-9.-]*)?$")
+
+# opencode clamps a turn's output at this many tokens whatever its config says, and on
+# OpenRouter a turn's reasoning counts against the same budget. A reasoning budget must
+# therefore stay below it, or the model can spend the whole turn thinking and say nothing.
+OPENCODE_TURN_CEILING = 32000
 
 # A reasoning-effort level, as a SHAPE rather than an allowlist, for the same reason model
 # ids are: providers name their effort levels and Hive does not. `opencode` validates this
@@ -365,6 +374,18 @@ class RouteEntry(BaseModel):
     # from one.
     reasoning_effort: str | None = Field(
         default=None, json_schema_extra={"pattern": _EFFORT_SHAPE.pattern})
+    # Which OpenRouter providers may serve this route, in order, with fallbacks off.
+    # Required on every OpenRouter route: unpinned, OpenRouter serves a request from
+    # whichever upstream answers, so one model id means different quantizations, output
+    # caps and data terms from one turn to the next (a MiMo worker on 2026-10-09 was served
+    # by GMICloud, not Xiaomi). The first-party provider is the default choice; a route
+    # pinned elsewhere says why in `note`.
+    provider_pin: list[str] | None = Field(
+        default=None, json_schema_extra={"items": {"pattern": _PROVIDER_SLUG_SHAPE.pattern}})
+    # How many tokens of a turn the model may spend reasoning, sent as OpenRouter's
+    # `reasoning.max_tokens`. Below OPENCODE_TURN_CEILING, so a turn keeps room to answer.
+    # Absent means the provider's default. Not with `reasoning_effort`: OpenRouter takes one.
+    reasoning_max_tokens: int | None = None
     note: str | None = None
 
     @field_validator("name")
@@ -402,7 +423,45 @@ class RouteEntry(BaseModel):
                 f"reasoning_effort {self.reasoning_effort!r} must be a single lowercase "
                 "token (for example 'high'), or absent to accept the model's own default"
             )
+        self._check_pin_and_budget()
         return self
+
+    def _check_pin_and_budget(self) -> None:
+        """The provider pin and the reasoning budget, the same rules `hive-launch` applies
+        in shell (it never calls this)."""
+        if self.provider == "openrouter" and not self.provider_pin:
+            raise ValueError(
+                f"route {self.name!r} is an OpenRouter route and states no provider_pin. "
+                "Name the providers that may serve it, first-party first (for example "
+                "[\"xiaomi/fp8\"]); unpinned, OpenRouter serves it from whichever upstream "
+                "answers"
+            )
+        if self.provider_pin is not None:
+            bad = [p for p in self.provider_pin if not _PROVIDER_SLUG_SHAPE.fullmatch(p)]
+            if not self.provider_pin or bad:
+                raise ValueError(
+                    f"provider_pin {self.provider_pin!r} must list OpenRouter provider slugs, "
+                    "lowercase, optionally with a variant tag (for example 'baseten/fp8')"
+                )
+        if (self.provider_pin is not None or self.reasoning_max_tokens is not None) \
+                and self.harness != "opencode":
+            raise ValueError(
+                f"route {self.name!r} states a provider_pin or reasoning_max_tokens on harness "
+                f"{self.harness!r}; they reach the request only through opencode's generated "
+                "config, so here they would read as in force and do nothing"
+            )
+        if self.reasoning_max_tokens is not None:
+            if not 0 < self.reasoning_max_tokens < OPENCODE_TURN_CEILING:
+                raise ValueError(
+                    f"reasoning_max_tokens {self.reasoning_max_tokens} must be above 0 and "
+                    f"below {OPENCODE_TURN_CEILING}, opencode's turn ceiling, which the "
+                    "reasoning counts against; at or above it a turn can end with no answer"
+                )
+            if self.reasoning_effort is not None:
+                raise ValueError(
+                    f"route {self.name!r} states both reasoning_effort and "
+                    "reasoning_max_tokens; OpenRouter takes one, so state one"
+                )
 
     def identity(self) -> ExecutionIdentity:
         """The normalized identity block that goes on every lifecycle fact."""
