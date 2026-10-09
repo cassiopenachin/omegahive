@@ -4,9 +4,9 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}{{ page|title }} · OmegaHive{% endblock %}</title>
-    <link rel="stylesheet" href="{{ request.url_for('static', path='ui.css') }}">
-    <script defer src="{{ request.url_for('static', path='live.js') }}"></script>
-    <script defer src="{{ request.url_for('static', path='ops.js') }}"></script>
+    <link rel="stylesheet" href="{{ request.url_for('static', path='ui.css') }}?v={{ static_v['ui.css'] }}">
+    <script defer src="{{ request.url_for('static', path='live.js') }}?v={{ static_v['live.js'] }}"></script>
+    <script defer src="{{ request.url_for('static', path='ops.js') }}?v={{ static_v['ops.js'] }}"></script>
   </head>
   <body{% if stream_url %} data-stream-url="{{ stream_url }}?page={{ page }}{% if run_id %}&cursor={{ cursor }}&generation={{ generation if generation is not none else '' }}{% endif %}{% if selected_actor %}&actor={{ selected_actor }}{% endif %}{% if selected_type %}&type={{ selected_type }}{% endif %}{% if show_all %}&all=1{% endif %}"{% endif %}>
     <header class="site-header">

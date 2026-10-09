@@ -278,6 +278,25 @@ def test_a_close_of_the_latest_result_runs_the_scored_close(rig):
                            "--reason", "fine"]]
 
 
+def test_a_close_with_no_score_runs_the_unscored_close_with_its_reason(rig):
+    post_result(rig)
+    receipt = rig.ops.execute("close", "op-c3", "cli", {
+        "run": RUN, "task": "t1", "result_ref": rig.result, "verdict": "no score",
+        "reason": "smoke order"})
+    assert receipt["status"] == "done", receipt
+    assert argvs(rig) == [["/opt/hive/scripts/hive-close", "t1", "--no-score",
+                           "--reason", "smoke order"]]
+
+
+def test_a_close_with_no_score_needs_a_reason(rig):
+    post_result(rig)
+    receipt = rig.ops.execute("close", "op-c4", "cli", {
+        "run": RUN, "task": "t1", "result_ref": rig.result, "verdict": "no score",
+        "reason": ""})
+    assert receipt["status"] == "refused" and "reason" in receipt["message"], receipt
+    assert argvs(rig) == []
+
+
 # --- merge ----------------------------------------------------------------------------
 
 def merge(rig, op_id: str, pr: int = 12, head: str = HEAD):

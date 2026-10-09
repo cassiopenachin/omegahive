@@ -306,3 +306,34 @@ def test_the_pending_script_is_served(hub):
     r = client(BLOCKED, FakeOps(), hub).get("/static/ops.js")
     assert r.status_code == 200
     assert "dataset.pending" in r.text and "pageshow" in r.text   # reset on a Back restore
+
+
+def test_static_links_carry_a_content_version_so_a_deploy_is_not_hidden_by_the_cache(hub):
+    import hashlib
+    import re
+
+    from omegahive.ui import app as ui_app
+
+    page = client(BLOCKED, FakeOps(), hub).get(f"/run/{RUN}/board").text
+    for name in ("ui.css", "live.js", "ops.js"):
+        body = (ui_app._ROOT / "static" / name).read_bytes()
+        version = hashlib.sha256(body).hexdigest()[:12]
+        assert re.search(rf"/static/{re.escape(name)}\?v={version}\"", page), name
+
+
+def test_a_launch_rows_pending_line_sits_beside_its_form_not_inside_it():
+    # Inside the launch row's auto-width form, a long line widened the form's column and
+    # squeezed the order's title; beside the form it spans the row like the outcome line.
+    # The task page's forms are full width, so there it stays inside, above the divider.
+    from omegahive.ui import app as ui_app
+
+    js = (ui_app._ROOT / "static" / "ops.js").read_text()
+    css = (ui_app._ROOT / "static" / "ui.css").read_text()
+    assert 'form.closest(".launch-row")) form.after(line); else form.append(line)' in js
+    assert ".launch-row .op-pending" in css
+
+
+def test_the_close_form_offers_no_score(hub):
+    page = client(IN_REVIEW, FakeOps(), hub).get(f"/run/{RUN}/task/t1").text
+    close = page.split('/op/close"', 1)[1].split("</form>", 1)[0]
+    assert '<option value="no score">' in close
