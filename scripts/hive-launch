@@ -1156,7 +1156,7 @@ case "$PRED_VERDICT" in
   absent|declared-unpredicted|full) : ;;   # nothing to say — a clean launch
 esac
 
-echo "hive-launch: task=$TASK worker=$WORKER  project=$PROJECT${ADOPT:+  (adopting existing ready task)}${REASSIGN_FROM:+  (REASSIGN from $REASSIGN_FROM)}"
+echo "hive-launch: task=$TASK worker=$WORKER  project=$PROJECT${ADOPT:+  (adopting existing ready task)}${REASSIGN_FROM:+  (REASSIGN from $REASSIGN_FROM)}  [${SECONDS}s]"
 echo "  order:  $REL@$SHA"
 echo "  run:    $RUN"
 
@@ -1199,14 +1199,14 @@ if [ -n "$FORGE_NEEDS_HTTPS" ]; then
     ssh://git@*)  PUSH_REPO="https://${CODE_REPO#ssh://git@}" ;;
   esac
   [ "$PUSH_REPO" = "$CODE_REPO" ] \
-    || echo "  forge:  $CODE_REPO -> $PUSH_REPO (HTTPS: this harness runs sandboxed and SSH cannot work there)"
+    || echo "  forge:  $CODE_REPO -> $PUSH_REPO (HTTPS: this harness runs sandboxed and SSH cannot work there)  [${SECONDS}s]"
 fi
 git -C "$CODE_ROOT" remote set-url origin "$PUSH_REPO"
 # The publication branch is created here, so the worker starts on it and the plan's
 # fixed `code_branch` is a branch that exists rather than one the worker must remember
 # to make. A publication never asks the worker which branch it meant.
 git -C "$CODE_ROOT" checkout --quiet -b "$CODE_BRANCH"
-echo "  clones: $WS_ROOT  +  $CODE_ROOT (origin -> $PUSH_REPO, branch $CODE_BRANCH)"
+echo "  clones: $WS_ROOT  +  $CODE_ROOT (origin -> $PUSH_REPO, branch $CODE_BRANCH)  [${SECONDS}s]"
 
 # --- the worker's run-local interface -------------------------------------------------
 # Issued by hive-common.sh so the tooling drill exercises the very wrappers a launch
@@ -1228,8 +1228,8 @@ issue_worker_interface "$RUN_DIR" "$WS_ROOT" "$CODE_ROOT" "$CODE_BRANCH" "$RUN" 
 if [ "$EXECUTABLE" != "sbx" ]; then
   register_workspace_trust "$R_HARNESS" "$WS_ROOT"
 fi
-echo "  emit:   $WRAPPER"
-echo "  bridge: $BRIDGE  (sync workspace | publish workspace | publish code)"
+echo "  emit:   $WRAPPER  [${SECONDS}s]"
+echo "  bridge: $BRIDGE  (sync workspace | publish workspace | publish code)  [${SECONDS}s]"
 # Which reviewer a launch issued is now a per-route fact, so it belongs in the launch
 # record rather than only in the worker's prompt: an operator reading back a session needs
 # to be able to see whether an in-VM reviewer existed for it.
@@ -1238,9 +1238,9 @@ if [ -f "$RUN_DIR/review" ]; then
   # route that had a wrapper, which was true while only the in-VM Claude reviewer got one.
   # A codex-plugin route now gets one too, and it runs codex on the Codex account -- so an
   # operator reading the session back was told the wrong reviewer and the wrong account.
-  echo "  review: $RUN_DIR/review  (${R_REVIEWER:-unstated}, this route's routing stripped)"
+  echo "  review: $RUN_DIR/review  (${R_REVIEWER:-unstated}, this route's routing stripped)  [${SECONDS}s]"
 else
-  echo "  review: ${R_REVIEWER:-unstated} (no in-VM command; the worker reaches its reviewer itself)"
+  echo "  review: ${R_REVIEWER:-unstated} (no in-VM command; the worker reaches its reviewer itself)  [${SECONDS}s]"
 fi
 
 # --- the sandbox, when the route names one ---------------------------------------------
@@ -1453,7 +1453,7 @@ if [ "$EXECUTABLE" = "sbx" ]; then
     issue_opencode_config "$TASK_ROOT" "$ENDPOINT_URL" "$OPENCODE_KEY_NAME" "$MODEL" \
       "$HIVE_OPENCODE_CONTEXT_LIMIT" "$HIVE_OPENCODE_COMPACTION_MODEL" "$R_EFFORT" \
       "$HIVE_OPENCODE_OUTPUT_LIMIT"
-    echo "  opencode: $SBX_OPENCODE_CFG (context limit $HIVE_OPENCODE_CONTEXT_LIMIT, compaction on $HIVE_OPENCODE_COMPACTION_MODEL)"
+    echo "  opencode: $SBX_OPENCODE_CFG (context limit $HIVE_OPENCODE_CONTEXT_LIMIT, compaction on $HIVE_OPENCODE_COMPACTION_MODEL)  [${SECONDS}s]"
   fi
 
   # The VM's environment file. Written on BOTH paths, because the facts in it come from the
@@ -1922,8 +1922,8 @@ route_payload=$(jq -cn \
     model_identity_evidence: "declared", usage_evidence: "unavailable"}')
 emit human "$OPERATOR_ACTOR" execution.route_approved --task "$TASK" \
   --payload "$(decided "$route_payload")" >/dev/null
-echo "  route:  $MODEL @ $R_HARNESS ($R_MARKET, pool $R_POOL, $ROUTE_SOURCE)"
-echo "  exec:   $EXEC_ID"
+echo "  route:  $MODEL @ $R_HARNESS ($R_MARKET, pool $R_POOL, $ROUTE_SOURCE)  [${SECONDS}s]"
+echo "  exec:   $EXEC_ID  [${SECONDS}s]"
 
 # Two seeding modes. Create: task.created -> ready, then register + assign.
 # Adopt: the task is ALREADY `ready` (unowned) from its seeded task.created —
@@ -1936,11 +1936,11 @@ if [ -n "$REASSIGN_FROM" ]; then
   # belongs here — the task exists and is owned; what changes is who owns it.
   emit human "$OPERATOR_ACTOR" worker.registered --payload "$(decided "$registered_payload")" >/dev/null
   emit coordinator "$OPERATOR_ACTOR" task.reassigned --task "$TASK" --payload "$(decided "$reassigned_payload")" >/dev/null
-  echo "  reassigned: $REASSIGN_FROM -> $WORKER (attempt $ATTEMPT; no task.created, no task.assigned)"
+  echo "  reassigned: $REASSIGN_FROM -> $WORKER (attempt $ATTEMPT; no task.created, no task.assigned)  [${SECONDS}s]"
 elif [ -n "$ADOPT" ]; then
   emit human "$OPERATOR_ACTOR" worker.registered              --payload "$(decided "$registered_payload")" >/dev/null
   emit coordinator "$OPERATOR_ACTOR" task.assigned --task "$TASK" --payload "$(decided "$assigned_payload")" >/dev/null
-  echo "  adopted: existing ready task -> worker.registered + task.assigned (no task.created)"
+  echo "  adopted: existing ready task -> worker.registered + task.assigned (no task.created)  [${SECONDS}s]"
   echo "  caveat: acceptance stays the seeded task.created pin, which may be STALE against $REL@$SHA at HEAD;"
   echo "          the worker reads the order at HEAD (WORKER.md), so this is protocol-consistent — just be aware."
 else
@@ -1949,7 +1949,7 @@ else
   emit human "$OPERATOR_ACTOR" task.created     --task "$TASK" --payload "$(decided "$created_payload")"    >/dev/null
   emit human "$OPERATOR_ACTOR" worker.registered              --payload "$(decided "$registered_payload")" >/dev/null
   emit coordinator "$OPERATOR_ACTOR" task.assigned --task "$TASK" --payload "$(decided "$assigned_payload")" >/dev/null
-  echo "  seeded: task.created + worker.registered + task.assigned"
+  echo "  seeded: task.created + worker.registered + task.assigned  [${SECONDS}s]"
 fi
 
 
@@ -1969,7 +1969,7 @@ fi
 # instead of a screen to scrape.
 KICKOFF_FILE="$TASK_ROOT/kickoff.txt"
 printf '%s' "$KICKOFF" > "$KICKOFF_FILE" 2>/dev/null || KICKOFF_FILE=""
-[ -z "$KICKOFF_FILE" ] || echo "  kickoff: $KICKOFF_FILE"
+[ -z "$KICKOFF_FILE" ] || echo "  kickoff: $KICKOFF_FILE  [${SECONDS}s]"
 
 half_launch_recovery() {  # half_launch_recovery <what-failed>
   local kf="$KICKOFF_FILE"
@@ -2102,7 +2102,7 @@ fi
 tmux_keep_window "$HIVE_TMUX_SESSION" "$TASK"
 # Report where it actually landed (-P), not where we assumed: the index is tmux's
 # to choose, so the launcher reads it back rather than predicting it.
-echo "  window: $PANE  '$TASK'  (attach: tmux attach -t $HIVE_TMUX_SESSION)"
-# [Ns] on the sandbox lines and here is seconds since this launch started (bash SECONDS): the
-# gap between two lines is the step between them, and the receipt keeps the whole output.
+echo "  window: $PANE  '$TASK'  (attach: tmux attach -t $HIVE_TMUX_SESSION)  [${SECONDS}s]"
+# [Ns] on each progress line and here is seconds since this launch started (bash SECONDS):
+# the gap between two lines is the step between them, and the receipt keeps the output.
 echo "hive-launch: done.  [${SECONDS}s]"
