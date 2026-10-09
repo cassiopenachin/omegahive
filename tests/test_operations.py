@@ -359,7 +359,8 @@ def test_an_abandon_of_a_dead_worker_clears_its_seat_then_abandons(rig):
     assert receipt["status"] == "done", receipt
     assert rig.seats.cleared == ["t1"]
     assert "seat cleared" in receipt["notes"][0]
-    assert argvs(rig) == [["/opt/hive/scripts/hive-abandon", "t1", "--reason", "died"]]
+    assert argvs(rig) == [["/opt/hive/scripts/hive-abandon", "t1", "--reason", "died",
+                           "--project", "p"]]
 
 
 # --- launch ---------------------------------------------------------------------------

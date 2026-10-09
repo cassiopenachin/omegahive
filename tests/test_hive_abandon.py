@@ -175,3 +175,39 @@ def test_an_unverifiable_window_check_refuses_with_nothing_emitted(rig):
     assert proc.returncode != 0
     assert "Permission denied" in proc.stderr
     assert calls() == []
+
+
+def _drop_order(run):
+    git = ["git", "-C", str(run.ws), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "rm", "-q", "projects/p/orders/2026-01-01-t1.md"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "drop the order"], check=True)
+    subprocess.run([*git, "push", "-q"], check=True, capture_output=True)
+
+
+def test_a_named_project_abandons_a_task_whose_order_is_gone(rig):
+    # Old tasks outlive their orders (a workspace prune deletes them); abandoning needs only
+    # the project, and the operation service knows it from the run.
+    run, calls = rig
+    _drop_order(run)
+    proc = run("t1", "--reason", "order pruned", "--project", "p")
+    assert proc.returncode == 0, proc.stderr
+    emitted, harvested, metrics = calls()
+    assert "task.status_override" in emitted and '"status":"cancelled"' in emitted
+    assert harvested == "usage t1 --project p"
+    assert metrics == "metrics p"
+
+
+def test_without_a_project_a_task_whose_order_is_gone_is_refused_and_names_the_flag(rig):
+    run, calls = rig
+    _drop_order(run)
+    proc = run("t1", "--reason", "order pruned")
+    assert proc.returncode != 0
+    assert "--project" in proc.stderr
+    assert calls() == []
+
+
+def test_an_unknown_project_is_refused_with_nothing_emitted(rig):
+    run, calls = rig
+    proc = run("t1", "--reason", "stop", "--project", "nope")
+    assert proc.returncode != 0
+    assert calls() == []

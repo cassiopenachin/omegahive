@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# hive-abandon <task> --reason <text>
+# hive-abandon <task> --reason <text> [--project <name>]
+#
+# The project is found from the order that derived the task. A task can outlive its order
+# (a workspace prune deletes old ones), so --project names it directly instead; the
+# operation service always passes it, from the run.
 #
 # Human-only, task-scoped terminalization. This never cascades to dependents,
 # reassigns work, or discards the task's result/review/attempt evidence.
@@ -11,15 +15,17 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 source "$SCRIPT_DIR/hive-common.sh"
 
 usage() {
-  echo "usage: hive-abandon <task> --reason <text>" >&2
+  echo "usage: hive-abandon <task> --reason <text> [--project <name>]" >&2
   exit 2
 }
 
 TASK=""
 REASON=""
+PROJECT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --reason) shift; [ $# -gt 0 ] || usage; REASON="$1" ;;
+    --project) shift; [ $# -gt 0 ] || usage; PROJECT="$1" ;;
     -h|--help) usage ;;
     -*) usage ;;
     *) [ -z "$TASK" ] || usage; TASK="$1" ;;
@@ -33,8 +39,13 @@ done
 # refresh commits from it (ff_ops_workspace says why). Refuses with nothing emitted.
 ff_ops_workspace
 
-REL=$(find_order "$TASK")
-PROJECT=$(project_from_order "$REL")
+if [ -z "$PROJECT" ]; then
+  REL=$( (find_order "$TASK") 2>&1 ) \
+    || die "${REL#hive: }
+  If the task's order was removed, name its project: hive-abandon $TASK --reason <text> --project <name>"
+  PROJECT=$(project_from_order "$REL")
+fi
+[[ "$PROJECT" =~ ^[A-Za-z0-9._-]+$ ]] || die "unsafe project name '$PROJECT'"
 load_project_conf "$PROJECT"
 
 BOARD=$(board_json)
