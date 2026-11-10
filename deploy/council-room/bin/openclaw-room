@@ -1,0 +1,18 @@
+#!/bin/sh
+# Run the council room's own OpenClaw CLI against the room's state and config, never the
+# caller's. Installed to ~/.local/share/omegahive/council-room/bin/ (deploy/council-room/README.md).
+#
+# `env -i` rather than a list of unsets: the room must not see API keys, Slack tokens or
+# anything else a builder or operator shell happens to carry, and an allowlist is the only
+# form that stays right when a new variable appears. The service unit applies the same
+# rule with UnsetEnvironment= and its own Environment= lines.
+set -eu
+room="${HOME}/.local/share/omegahive/council-room"
+exec env -i \
+    HOME="${HOME}" USER="${USER:-$(id -un)}" LANG="${LANG:-C.UTF-8}" TERM="${TERM:-dumb}" \
+    XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
+    PATH="${room}/runtime/node/bin:/usr/local/bin:/usr/bin:/bin" \
+    OPENCLAW_STATE_DIR="${room}/state" \
+    OPENCLAW_CONFIG_PATH="${HOME}/.config/omegahive/council-room/openclaw.json" \
+    OPENCLAW_NO_AUTO_UPDATE=1 \
+    "${room}/runtime/node/bin/node" "${room}/runtime/openclaw/node_modules/openclaw/openclaw.mjs" "$@"

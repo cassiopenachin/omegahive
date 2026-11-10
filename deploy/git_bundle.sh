@@ -16,6 +16,7 @@
 #   OMEGAHIVE_BACKUP_DIR destination directory     (default ~/omegahive-backups)
 #   OMEGAHIVE_BACKUP_KEEP bundles to retain        (default 14)
 #   HIVE_ROUTE_CATALOG   route catalog to snapshot (default ~/.config/omegahive/routes.json)
+#   OMEGAHIVE_ARCHIVE_SOURCES colon-separated absolute paths to archive (default none)
 #
 # OMEGAHIVE_HUB_REPO must be the WS_HUB this host's workspace actually uses —
 # scripts/hive-init-workspace prints that path when it creates the hub. A mismatch fails
@@ -99,3 +100,64 @@ else
         fi
     done
 fi
+
+# --- files no bundle can see ------------------------------------------------------------
+#
+# The council room keeps uncommitted drafts in a shared workspace clone and its own
+# configuration in a private directory. The bundle above holds neither: a draft exists only
+# in the clone's working tree until a seat commits it, and the room config is deliberately
+# not in Git. Each directory or file named in OMEGAHIVE_ARCHIVE_SOURCES goes into one archive
+# per run, in the same directory and on the same retention as the bundles. Unset or empty means
+# no archive, so a host that names nothing behaves exactly as before.
+#
+# Name a file rather than its directory when the directory also holds secrets: the room's
+# config directory keeps its tokens beside openclaw.json, and they stay out of backups.
+#
+# A named path that is missing fails the run, after the bundle has been written: the
+# path was added because its contents mattered, and an archive of the rest would
+# report success while losing it.
+sources="${OMEGAHIVE_ARCHIVE_SOURCES:-}"
+if [ -z "${sources}" ]; then
+    echo "no archive sources; skipping filesystem archive"
+    exit 0
+fi
+
+# One `-C parent base` pair per source, so the archive holds each path by its own name.
+set --
+old_ifs=${IFS}
+IFS=:
+for src in ${sources}; do
+    IFS=${old_ifs}
+    if [ ! -e "${src}" ]; then
+        echo "archive source not found: ${src}" >&2
+        exit 1
+    fi
+    set -- "$@" -C "$(dirname "${src}")" "$(basename "${src}")"
+done
+IFS=${old_ifs}
+
+aout="${dir}/files-${ts}.tar.gz"
+# umask, as for the catalog: room config may hold credentials, and the archive must never
+# exist world-readable, even briefly. GNU tar exits 1 when a file changed while it was read
+# (a seat editing a draft at 03:15); the archive is still complete and is kept, with a note.
+# Any other status is a failed archive, removed so a later restore never finds it.
+status=0
+( umask 077; tar -czf "${aout}" "$@" ) || status=$?
+if [ "${status}" -gt 1 ]; then
+    rm -f "${aout}"
+    echo "filesystem archive failed (tar exit ${status})" >&2
+    exit 1
+fi
+[ "${status}" -eq 0 ] || echo "note: a file changed while it was archived; archive kept"
+tar -tzf "${aout}" >/dev/null
+echo "filesystem archive written: ${aout}"
+
+n=0
+# shellcheck disable=SC2012  # names are this script's own `files-<ISO stamp>.tar.gz`
+for f in $(ls -1 "${dir}"/files-*.tar.gz 2>/dev/null | sort -r); do
+    n=$((n + 1))
+    if [ "${n}" -gt "${keep}" ]; then
+        rm -f "${f}"
+        echo "pruned old filesystem archive: ${f}"
+    fi
+done

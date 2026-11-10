@@ -1,0 +1,164 @@
+{
+  "gateway": {
+    "mode": "local",
+    "port": 18795,
+    "bind": "loopback",
+    "auth": {
+      "mode": "token",
+      "token": {
+        "source": "file",
+        "provider": "room",
+        "id": "/gateway/token"
+      }
+    },
+    "tailscale": {
+      "mode": "off"
+    }
+  },
+  "secrets": {
+    "providers": {
+      "room": {
+        "source": "file",
+        "path": "~/.config/omegahive/council-room/secrets.json",
+        "mode": "json"
+      }
+    }
+  },
+  "env": {
+    "shellEnv": {
+      "enabled": false
+    }
+  },
+  "plugins": {
+    "allow": [
+      "slack",
+      "codex"
+    ],
+    "entries": {
+      "slack": {
+        "enabled": true
+      },
+      "codex": {
+        "enabled": true,
+        "config": {
+          "sessionCatalog": {
+            "enabled": false
+          },
+          "appServer": {
+            "clearEnv": [
+              "OPENAI_API_KEY",
+              "CODEX_API_KEY",
+              "ANTHROPIC_API_KEY"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "heartbeat": {
+        "every": "0m"
+      },
+      "skipBootstrap": true,
+      "models": {
+        "openai/gpt-6-astra": {}
+      }
+    },
+    "entries": {
+      "astra": {
+        "name": "Astra",
+        "workspace": "~/.local/share/omegahive/council-room/state/agents/astra/workspace",
+        "cwd": "~/workspaces/hive-council",
+        "model": {
+          "primary": "openai/gpt-6-astra",
+          "fallbacks": []
+        },
+        "thinkingDefault": "high",
+        "models": {
+          "openai/gpt-6-astra": {
+            "agentRuntime": {
+              "id": "codex"
+            }
+          }
+        },
+        "tools": {
+          "deny": [
+            "cron",
+            "gateway",
+            "nodes"
+          ]
+        }
+      }
+    }
+  },
+  "bindings": [
+    {
+      "agentId": "astra",
+      "match": {
+        "channel": "slack",
+        "teamId": "T0C27J451JQ"
+      }
+    }
+  ],
+  "channels": {
+    "slack": {
+      "enabled": true,
+      "mode": "socket",
+      "botToken": {
+        "source": "file",
+        "provider": "room",
+        "id": "/slack/botToken"
+      },
+      "appToken": {
+        "source": "file",
+        "provider": "room",
+        "id": "/slack/appToken"
+      },
+      "dmPolicy": "disabled",
+      "groupPolicy": "allowlist",
+      "allowFrom": [
+        "U0C2206GLEA"
+      ],
+      "allowBots": false,
+      "joinIntro": false,
+      "replyToMode": "all",
+      "historyLimit": 50,
+      "thread": {
+        "initialHistoryLimit": 50
+      },
+      "channels": {
+        "C0CGP5HA34Z": {
+          "enabled": true,
+          "requireMention": false,
+          "replyToMode": "all",
+          "users": [
+            "U0C2206GLEA"
+          ],
+          "allowBots": false,
+          "systemPrompt": "You are the Astra council seat. Before acting, read your seat brief at /home/cassio/workspaces/hive-council/projects/omegahive/council/astra.md (laptop: /Users/cassio/src/SNET/hive-council/projects/omegahive/council/astra.md) and follow it."
+        },
+        "C0CG5SZGH3R": {
+          "enabled": true,
+          "requireMention": false,
+          "replyToMode": "all",
+          "users": [
+            "U0C2206GLEA"
+          ],
+          "allowBots": false,
+          "systemPrompt": "You are the Astra council seat. Before acting, read your seat brief at /home/cassio/workspaces/hive-council/projects/omegahive/council/astra.md (laptop: /Users/cassio/src/SNET/hive-council/projects/omegahive/council/astra.md) and follow it."
+        },
+        "C0CHFKHH89W": {
+          "enabled": true,
+          "requireMention": false,
+          "replyToMode": "all",
+          "users": [
+            "U0C2206GLEA"
+          ],
+          "allowBots": false,
+          "systemPrompt": "You are the Astra council seat. Before acting, read your seat brief at /home/cassio/workspaces/hive-council/projects/omegahive/council/astra.md (laptop: /Users/cassio/src/SNET/hive-council/projects/omegahive/council/astra.md) and follow it."
+        }
+      }
+    }
+  }
+}
