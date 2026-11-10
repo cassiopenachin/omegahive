@@ -52,6 +52,14 @@
             ]
           }
         }
+      },
+      "memory-core": {
+        "enabled": true,
+        "config": {
+          "dreaming": {
+            "enabled": false
+          }
+        }
       }
     }
   },
