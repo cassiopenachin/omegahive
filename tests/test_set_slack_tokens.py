@@ -12,7 +12,8 @@ import json
 import subprocess
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parent.parent / "deploy" / "council-room" / "bin" / "set-slack-tokens"
+REPO = Path(__file__).resolve().parent.parent
+SCRIPT = REPO / "deploy" / "council-room" / "bin" / "set-slack-tokens"
 
 
 def _secrets(home: Path) -> Path:

@@ -146,7 +146,8 @@ def test_a_file_that_changed_while_archived_fails_the_run(tmp_path):
     # Creation writes a real archive and then reports "file changed" (exit 1); listing works.
     (fake / "tar").write_text(
         '#!/bin/sh\n'
-        'case "$1" in -czf) /usr/bin/tar "$@"; echo "tar: file changed as we read it" >&2; exit 1 ;; esac\n'
+        'case "$1" in -czf) /usr/bin/tar "$@";'
+        ' echo "tar: file changed as we read it" >&2; exit 1 ;; esac\n'
         'exec /usr/bin/tar "$@"\n')
     (fake / "tar").chmod(0o755)
     out = _run(tmp_path, hub, str(clone), check=False, path=f"{fake}:/usr/bin:/bin")
