@@ -154,7 +154,12 @@ elif [ "${status}" -ne 0 ]; then
     echo "filesystem archive failed (tar exit ${status})" >&2
     exit 1
 fi
-tar -tzf "${aout}" >/dev/null
+# A created archive that cannot be listed is as bad as a failed creation: discard it too.
+if ! tar -tzf "${aout}" >/dev/null; then
+    rm -f "${aout}"
+    echo "filesystem archive discarded: it failed its listing check" >&2
+    exit 1
+fi
 echo "filesystem archive written: ${aout}"
 
 n=0

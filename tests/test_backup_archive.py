@@ -137,6 +137,24 @@ def test_a_file_that_changed_while_archived_fails_the_run(tmp_path):
     assert list((tmp_path / "backups").glob("*.bundle")), "the bundle is still written"
 
 
+def test_an_archive_that_fails_its_listing_is_discarded(tmp_path):
+    """Creation can succeed and the archive still be unreadable. The listing check after it
+    must discard such an archive, like a failed creation, so a restore never finds it."""
+    hub = _hub(tmp_path)
+    clone = _clone_with_draft(tmp_path, hub)
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    (fake / "tar").write_text(
+        '#!/bin/sh\n'
+        'case "$1" in -tzf) echo "tar: unexpected end of file" >&2; exit 2 ;; esac\n'
+        'exec /usr/bin/tar "$@"\n')
+    (fake / "tar").chmod(0o755)
+    out = _run(tmp_path, hub, str(clone), check=False, path=f"{fake}:/usr/bin:/bin")
+    assert out.returncode != 0
+    assert "failed its listing check" in out.stderr
+    assert _archives(tmp_path) == []
+
+
 def test_archives_rotate_on_the_bundle_retention(tmp_path):
     hub = _hub(tmp_path)
     clone = _clone_with_draft(tmp_path, hub)
