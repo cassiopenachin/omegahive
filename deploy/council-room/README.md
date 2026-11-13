@@ -34,7 +34,10 @@ The gateway listens on loopback port 18795, using token auth with Tailscale off.
    - `install -m 0600 openclaw.json ~/.config/omegahive/council-room/`.
    - Create `secrets.json` (0600) as `{"gateway":{"token":"<64 hex from openssl rand -hex 32>"},"slack":{"botToken":"","appToken":""}}`. The file provider refuses a group- or world-readable file, and one with more than one hard link.
 6. **Plugins:** `$R/bin/openclaw-room plugins install @openclaw/slack@2026.11.3 --pin`, then the same for `@openclaw/codex@2026.11.3`. Install records are kept in the state database, not in the config.
-7. **Clone:** `git clone ~/repos/hive-workspace.git ~/workspaces/hive-council`. Put the seat brief at `projects/omegahive/council/astra.md` if the published workspace does not have it yet.
+7. **Clone:**
+   - `git clone ~/repos/hive-workspace.git ~/workspaces/hive-council`.
+   - Add `._*` and `.DS_Store` to the clone's `.git/info/exclude`. A save from the laptop mount writes macOS metadata files next to the edited file, and those must never be committed.
+   - Put the seat brief at `projects/omegahive/council/astra.md` if the published workspace does not have it yet.
 8. **Unit:** `install -m 0644 systemd/omegahive-council.service ~/.config/systemd/user/`, then `systemctl --user daemon-reload`.
 9. Check with `$R/bin/openclaw-room config validate`.
 
