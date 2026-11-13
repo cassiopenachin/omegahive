@@ -80,6 +80,25 @@ def test_an_uncommitted_draft_and_a_config_file_are_archived_private(tmp_path):
     assert "council-clone/draft.md" in names
     assert "room-config/openclaw.json" in names
     assert list((tmp_path / "backups").glob("*.bundle")), "the bundle is still written"
+    # The archive is written under a hidden partial name and renamed only once verified, so
+    # an interrupted run never leaves a file that looks like a finished archive.
+    assert not list((tmp_path / "backups").glob(".*partial*"))
+
+
+def test_an_interrupted_archive_never_carries_the_final_name(tmp_path):
+    hub = _hub(tmp_path)
+    clone = _clone_with_draft(tmp_path, hub)
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    # Creation records the file name it was given, then dies as if killed mid-write.
+    (fake / "tar").write_text(
+        '#!/bin/sh\n'
+        'case "$1" in -czf) echo "$2" > "$HOME/tar-target"; exit 143 ;; esac\n'
+        'exec /usr/bin/tar "$@"\n')
+    (fake / "tar").chmod(0o755)
+    _run(tmp_path, hub, str(clone), check=False, path=f"{fake}:/usr/bin:/bin")
+    target = Path((tmp_path / "tar-target").read_text().strip())
+    assert not target.name.startswith("files-"), target.name
 
 
 def test_a_single_file_source_leaves_its_secret_siblings_out(tmp_path):

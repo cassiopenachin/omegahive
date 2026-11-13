@@ -137,29 +137,33 @@ done
 IFS=${old_ifs}
 
 aout="${dir}/files-${ts}.tar.gz"
+# The archive is written under a hidden partial name and renamed only once tar has exited 0
+# and the archive lists back, so nothing that looks like a finished archive is ever bad: not
+# after a tar error, nor after a run killed mid-write (a partial never matches files-*).
+part="${dir}/.files-${ts}.tar.gz.partial"
 # umask, as for the catalog: room config may hold credentials, and the archive must never
-# exist world-readable, even briefly. Any non-zero tar status discards the archive, so a
-# later restore never finds a bad one. That includes 1: GNU tar exits 1 when a file changed
-# while it was read (a seat editing a draft at 03:15), and that file's copy may then be
-# inconsistent. The run fails loudly instead; earlier archives remain, and tomorrow's run
-# tries again.
+# exist world-readable, even briefly. Any non-zero tar status discards the partial. That
+# includes 1: GNU tar exits 1 when a file changed while it was read (a seat editing a draft
+# at 03:15), and that file's copy may then be inconsistent. The run fails loudly instead;
+# earlier archives remain, and tomorrow's run tries again.
 status=0
-( umask 077; tar -czf "${aout}" "$@" ) || status=$?
+( umask 077; tar -czf "${part}" "$@" ) || status=$?
 if [ "${status}" -eq 1 ]; then
-    rm -f "${aout}"
+    rm -f "${part}"
     echo "filesystem archive discarded: a file changed while it was archived (tar exit 1)" >&2
     exit 1
 elif [ "${status}" -ne 0 ]; then
-    rm -f "${aout}"
+    rm -f "${part}"
     echo "filesystem archive failed (tar exit ${status})" >&2
     exit 1
 fi
 # A created archive that cannot be listed is as bad as a failed creation: discard it too.
-if ! tar -tzf "${aout}" >/dev/null; then
-    rm -f "${aout}"
+if ! tar -tzf "${part}" >/dev/null; then
+    rm -f "${part}"
     echo "filesystem archive discarded: it failed its listing check" >&2
     exit 1
 fi
+mv -f "${part}" "${aout}"
 echo "filesystem archive written: ${aout}"
 
 n=0
