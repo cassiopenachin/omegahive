@@ -1,24 +1,28 @@
 #!/bin/sh
 # Store the council room's Slack tokens in its private secrets file, typed at a hidden
 # prompt. The operator runs this in their own terminal; the tokens never pass through
-# Slack, a chat transcript, a command line or the environment. The gateway token already
-# in the file is kept. Installed to ~/.local/share/omegahive/council-room/bin/.
+# Slack, a chat transcript, a command line or the environment: they reach jq on its
+# standard input. The gateway token already in the file is kept. Installed to
+# ~/.local/share/omegahive/council-room/bin/.
 set -eu
 secrets="${HOME}/.config/omegahive/council-room/secrets.json"
 [ -f "${secrets}" ] || { echo "missing ${secrets}; install the room first" >&2; exit 1; }
 
+# Echo is hidden only on a terminal; piped input (the tests) has none to hide.
+quiet() { if [ -t 0 ]; then stty "$1"; fi; }
+
 ask() {
     printf '%s: ' "$1" >&2
-    stty -echo
+    quiet -echo
     IFS= read -r value
-    stty echo
+    quiet echo
     printf '\n' >&2
     case "${value}" in
         "$2"*) printf '%s' "${value}" ;;
         *) echo "that does not start with $2; nothing was written" >&2; exit 1 ;;
     esac
 }
-trap 'stty echo 2>/dev/null || true' EXIT
+trap 'quiet echo 2>/dev/null || true' EXIT
 
 bot=$(ask "Bot User OAuth Token (xoxb-...)" "xoxb-")
 app=$(ask "App-Level Token with connections:write (xapp-...)" "xapp-")
@@ -26,9 +30,11 @@ app=$(ask "App-Level Token with connections:write (xapp-...)" "xapp-")
 # A new private file replaces the old one: the file provider refuses hardlinked or
 # group/world-readable secrets, and jq writing in place would briefly truncate it.
 tmp=$(mktemp "${secrets}.XXXXXX")
-trap 'rm -f "${tmp}"; stty echo 2>/dev/null || true' EXIT
+trap 'rm -f "${tmp}"; quiet echo 2>/dev/null || true' EXIT
 chmod 600 "${tmp}"
-SLACK_BOT="${bot}" SLACK_APP="${app}" \
-    jq '.slack.botToken = env.SLACK_BOT | .slack.appToken = env.SLACK_APP' "${secrets}" > "${tmp}"
+printf '%s\n%s\n' "${bot}" "${app}" \
+    | jq -R -n --slurpfile s "${secrets}" \
+        '[inputs] as [$bot, $app] | $s[0] | .slack.botToken = $bot | .slack.appToken = $app' \
+    > "${tmp}"
 mv -f "${tmp}" "${secrets}"
 echo "stored; lengths: bot $(printf '%s' "${bot}" | wc -c), app $(printf '%s' "${app}" | wc -c)"

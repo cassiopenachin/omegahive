@@ -138,17 +138,22 @@ IFS=${old_ifs}
 
 aout="${dir}/files-${ts}.tar.gz"
 # umask, as for the catalog: room config may hold credentials, and the archive must never
-# exist world-readable, even briefly. GNU tar exits 1 when a file changed while it was read
-# (a seat editing a draft at 03:15); the archive is still complete and is kept, with a note.
-# Any other status is a failed archive, removed so a later restore never finds it.
+# exist world-readable, even briefly. Any non-zero tar status discards the archive, so a
+# later restore never finds a bad one. That includes 1: GNU tar exits 1 when a file changed
+# while it was read (a seat editing a draft at 03:15), and that file's copy may then be
+# inconsistent. The run fails loudly instead; earlier archives remain, and tomorrow's run
+# tries again.
 status=0
 ( umask 077; tar -czf "${aout}" "$@" ) || status=$?
-if [ "${status}" -gt 1 ]; then
+if [ "${status}" -eq 1 ]; then
+    rm -f "${aout}"
+    echo "filesystem archive discarded: a file changed while it was archived (tar exit 1)" >&2
+    exit 1
+elif [ "${status}" -ne 0 ]; then
     rm -f "${aout}"
     echo "filesystem archive failed (tar exit ${status})" >&2
     exit 1
 fi
-[ "${status}" -eq 0 ] || echo "note: a file changed while it was archived; archive kept"
 tar -tzf "${aout}" >/dev/null
 echo "filesystem archive written: ${aout}"
 

@@ -37,8 +37,8 @@ def _hub(tmp_path: Path) -> Path:
 
 
 def _run(tmp_path: Path, hub: Path, sources: str | None, keep: int = 14,
-         check: bool = True) -> subprocess.CompletedProcess[str]:
-    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path),
+         check: bool = True, path: str = "/usr/bin:/bin") -> subprocess.CompletedProcess[str]:
+    env = {"PATH": path, "HOME": str(tmp_path),
            "OMEGAHIVE_HUB_REPO": str(hub),
            "OMEGAHIVE_BACKUP_DIR": str(tmp_path / "backups"),
            "OMEGAHIVE_BACKUP_KEEP": str(keep),
@@ -114,6 +114,27 @@ def test_a_missing_source_fails_loudly_after_the_bundle(tmp_path):
     assert "archive source not found" in out.stderr
     assert list((tmp_path / "backups").glob("*.bundle")), "the bundle runs before the archive"
     assert _archives(tmp_path) == []
+
+
+def test_a_file_that_changed_while_archived_fails_the_run(tmp_path):
+    """GNU tar exits 1 when a file changed while it was read: that file's copy in the archive
+    may be inconsistent. A draft edited at the wrong moment must not be reported as backed up,
+    so the archive is discarded and the run fails; earlier archives remain."""
+    hub = _hub(tmp_path)
+    clone = _clone_with_draft(tmp_path, hub)
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    # Creation writes a real archive and then reports "file changed" (exit 1); listing works.
+    (fake / "tar").write_text(
+        '#!/bin/sh\n'
+        'case "$1" in -czf) /usr/bin/tar "$@"; echo "tar: file changed as we read it" >&2; exit 1 ;; esac\n'
+        'exec /usr/bin/tar "$@"\n')
+    (fake / "tar").chmod(0o755)
+    out = _run(tmp_path, hub, str(clone), check=False, path=f"{fake}:/usr/bin:/bin")
+    assert out.returncode != 0
+    assert "changed while it was archived" in out.stderr
+    assert _archives(tmp_path) == []
+    assert list((tmp_path / "backups").glob("*.bundle")), "the bundle is still written"
 
 
 def test_archives_rotate_on_the_bundle_retention(tmp_path):
