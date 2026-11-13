@@ -86,6 +86,15 @@ journalctl --user -u omegahive-council.service -f
 
 Enable and start only this unit. Lingering is on, so the gateway starts at boot without a login.
 
+## Add a project channel
+
+A project channel is named after its directory: `#<name>` is about `projects/<name>/` in the council clone, as the seat brief states. `#hive-council` covers the whole hive. The gateway answers only in channels listed in its config.
+
+1. Cassio creates `#<name>` in Slack and runs `/invite @Astra` there.
+2. Look up the channel ID with Astra's bot token, read from `secrets.json` and sent as a header on standard input (`curl -H @-`), never on the command line. Use `conversations.list?types=public_channel,private_channel`, and check that `is_member` is true.
+3. Copy an existing entry under `channels.slack.channels` to the new ID, in both `openclaw.json` (repo) and `~/.config/omegahive/council-room/openclaw.json`. Write the installed copy through a new 0600 file and `mv`, and keep OpenClaw's `meta` block.
+4. Run `$R/bin/openclaw-room config validate`, then `systemctl --user restart omegahive-council.service`. Commit the repo copy.
+
 ## Roll back
 
 ```
