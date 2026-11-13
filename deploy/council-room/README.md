@@ -86,6 +86,29 @@ journalctl --user -u omegahive-council.service -f
 
 Enable and start only this unit. Lingering is on, so the gateway starts at boot without a login.
 
+## Laptop mount
+
+Cassio edits the council clone from the laptop (macOS 27, Apple Silicon) through sshfs on FUSE-T. FUSE-T needs no kernel extension, so there is no Recovery-mode security change and no reboot. The `.pkg` asks for the admin password once. `<beastie>` is Beastie's tailnet host name, the one the laptop already uses for SSH.
+
+Install once:
+
+```
+brew install macos-fuse-t/homebrew-cask/fuse-t
+brew install macos-fuse-t/homebrew-cask/sshfs-fuse-t
+mkdir -p /Users/cassio/src/SNET/hive-council
+```
+
+Mount (repeat after a laptop restart or a Beastie reboot; nothing mounts at boot):
+
+```
+sshfs <beastie>:/home/cassio/workspaces/hive-council /Users/cassio/src/SNET/hive-council \
+  -o volname=hive-council,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3
+```
+
+Unmount with `umount /Users/cassio/src/SNET/hive-council`, or `diskutil unmount force` on the same path if it is busy. If a terminal gets "Operation not permitted" inside the mount, allow it under System Settings → Privacy & Security → Files and Folders → Network Volumes.
+
+A file at `/home/cassio/workspaces/hive-council/<path>` on Beastie is `/Users/cassio/src/SNET/hive-council/<path>` on the laptop: the same bytes, with no copy or sync in between.
+
 ## Add a project channel
 
 A project channel is named after its directory: `#<name>` is about `projects/<name>/` in the council clone, as the seat brief states. `#hive-council` covers the whole hive. The gateway answers only in channels listed in its config.
