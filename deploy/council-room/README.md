@@ -182,13 +182,14 @@ A project channel is named after its directory: `#<name>` is about `projects/<na
 
 **Fable only (the normal seat rollback).** This leaves the room running as the Astra-only room:
 
-1. Remove Fable's auth profile while the `fable` agent is still configured: `$R/bin/openclaw-room models auth logout --agent fable anthropic:fable`. A Claude token profile that failed its trial is removed the same way; it is never kept as a fallback.
-2. Install the saved Astra-only config, `~/.config/omegahive/council-room/openclaw.json.pre-m1.2`, through a new 0600 file and `mv`.
-3. Restart the unit.
+1. Stop the room: `systemctl --user stop omegahive-council.service`. Like `paste-token`, `models auth logout` refuses to run while the gateway owns the state directory.
+2. Remove Fable's auth profile while the `fable` agent is still configured: `$R/bin/openclaw-room models auth logout --agent fable anthropic:fable`. A Claude token profile that failed its trial is removed the same way; it is never kept as a fallback.
+3. Install the saved Astra-only config, `~/.config/omegahive/council-room/openclaw.json.pre-m1.2`, through a new 0600 file and `mv`.
+4. Start the room.
 
 Astra's Slack account, channels and login are unchanged throughout. Keep Fable's Slack app, its tokens in `secrets.json`, its state directory, the drafts in the council clone and the acceptance reports in the workspace. Do not delete channels.
 
-`openclaw.json.pre-m1.2` exists only on a room that was upgraded in place, and it lacks any channel added since. In either case, replace step 2 by editing the current config: delete `agents.entries.fable`, Fable's binding and `channels.slack.accounts.fable`, make Astra the author in every channel (`requireMention: false`, `ignoreOtherMentions: true`). Write it through a new 0600 file and `mv`, then restart.
+`openclaw.json.pre-m1.2` exists only on a room that was upgraded in place, and it lacks any channel added since. In either case, replace step 3 by editing the current config: delete `agents.entries.fable`, Fable's binding and `channels.slack.accounts.fable`, make Astra the author in every channel (`requireMention: false`, `ignoreOtherMentions: true`). Write it through a new 0600 file and `mv`, then start the room.
 
 **The whole room:**
 
