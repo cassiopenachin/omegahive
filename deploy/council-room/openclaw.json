@@ -293,5 +293,13 @@
         }
       }
     }
+  },
+  "auth": {
+    "profiles": {
+      "anthropic:fable": {
+        "provider": "anthropic",
+        "mode": "token"
+      }
+    }
   }
 }

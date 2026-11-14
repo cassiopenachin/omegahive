@@ -65,7 +65,9 @@ Tokens never pass through Slack, chat, a command line, the environment or a repo
   - To check it, run `models auth list --agent astra`. It must show `openai:astra [openai/oauth]` and no API-key profile.
 - **Claude setup token (Fable):** this step needs the installed config to include the `fable` agent.
   1. On any machine signed in to Claude Code with the Claude subscription, run `claude setup-token`. It prints a long-lived `sk-ant-oat01-…` token.
-  2. On Beastie, run `$R/bin/openclaw-room models auth paste-token --provider anthropic --agent fable --profile-id anthropic:fable` and paste the token at its prompt.
+  2. On Beastie, stop the room (`systemctl --user stop omegahive-council.service`): `paste-token` refuses to run while the gateway owns the state directory.
+  3. Run `$R/bin/openclaw-room models auth paste-token --provider anthropic --agent fable --profile-id anthropic:fable` and paste the token at its prompt. It adds `auth.profiles."anthropic:fable"` (`mode: token`, no secret) to the installed config and leaves an `openclaw.json.bak` copy of the previous one.
+  4. Start the room again.
   - The token lives only in Fable's agent auth store. Other Claude logins on the host, including `~/.claude`, are untouched.
   - To check it, run `models auth list --agent fable`. It must show `anthropic:fable` as a token profile and no API-key profile.
   - The token expires and can be revoked. If Fable starts failing with 401s, create a new token and paste it again.
@@ -139,8 +141,8 @@ Enable and start only this unit. Lingering is on, so the gateway starts at boot 
 1. Save the running config: `cp -p ~/.config/omegahive/council-room/openclaw.json ~/.config/omegahive/council-room/openclaw.json.pre-m1.2`. Seat rollback restores this file.
 2. Install the repo's `openclaw.json` with the installed copy's `meta` block, through a new 0600 file and `mv`.
 3. Run `$R/bin/openclaw-room config validate`.
-4. Store Fable's setup token, as described under Credentials.
-5. Run `systemctl --user restart omegahive-council.service`, then check `$R/bin/openclaw-room agents list --bindings` and `models status --agent fable`.
+4. Store Fable's setup token, as described under Credentials; the room is down from the stop to the start, about a minute.
+5. Check `$R/bin/openclaw-room agents list --bindings` and `models status --agent fable`.
 
 ## Laptop mount
 
