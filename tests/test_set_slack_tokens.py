@@ -58,7 +58,7 @@ def test_a_mistyped_token_writes_nothing(tmp_path):
 
 def test_a_second_seat_gets_its_own_tokens_and_the_first_seat_keeps_its(tmp_path):
     # Each seat is its own Slack app. Fable's tokens sit beside Astra's, which stay at the
-    # paths the room has used since M1.1, so adding a seat never touches the first one.
+    # paths the single-seat room used, so adding a seat never touches the first one.
     f = _secrets(tmp_path)
     assert _run(tmp_path, "xoxb-astra\nxapp-astra\n").returncode == 0
     out = _run(tmp_path, "xoxb-fable\nxapp-fable\n", "fable")

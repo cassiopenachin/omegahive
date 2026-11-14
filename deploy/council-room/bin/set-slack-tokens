@@ -7,7 +7,7 @@
 #
 # Usage: set-slack-tokens [astra|fable]   (default astra)
 # Each seat is its own Slack app. Astra's tokens stay at .slack.botToken/.slack.appToken,
-# where the room has read them since M1.1; another seat's go under .slack.<seat>, so
+# the paths the single-seat room used; another seat's go under .slack.<seat>, so
 # storing one seat's tokens never touches another's.
 set -eu
 seat="${1:-astra}"

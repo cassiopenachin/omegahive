@@ -38,7 +38,7 @@ The gateway listens on loopback port 18795, using token auth with Tailscale off.
 4. **OpenClaw:** run `npm install --prefix $R/runtime/openclaw openclaw@2026.11.3` with the room's Node first on `PATH` and with `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and `CODEX_API_KEY` unset.
 5. **Config and secrets:**
    - `install -m 0600 openclaw.json ~/.config/omegahive/council-room/`.
-   - Create `secrets.json` (0600) as `{"gateway":{"token":"<64 hex from openssl rand -hex 32>"},"slack":{"botToken":"","appToken":""}}`. The file provider refuses a group- or world-readable file, and one with more than one hard link.
+   - Create `secrets.json` (0600) as `{"gateway":{"token":"<64 hex from openssl rand -hex 32>"},"slack":{"botToken":"","appToken":"","fable":{"botToken":"","appToken":""}}}`. The empty Slack fields are placeholders for `set-slack-tokens` (Credentials); the config refers to all four. The file provider refuses a group- or world-readable file, and one with more than one hard link.
 6. **Plugins:** `$R/bin/openclaw-room plugins install @openclaw/slack@2026.11.3 --pin`, then the same for `@openclaw/codex@2026.11.3`. Install records are kept in the state database, not in the config. The Anthropic provider is bundled with OpenClaw; the config enables it.
 7. **Clone:**
    - `git clone ~/repos/hive-workspace.git ~/workspaces/hive-council`.
@@ -66,7 +66,7 @@ Tokens never pass through Slack, chat, a command line, the environment or a repo
 - **Claude setup token (Fable):** this step needs the installed config to include the `fable` agent.
   1. On any machine signed in to Claude Code with the Claude subscription, run `claude setup-token`. It prints a long-lived `sk-ant-oat01-…` token.
   2. On Beastie, stop the room (`systemctl --user stop omegahive-council.service`): `paste-token` refuses to run while the gateway owns the state directory.
-  3. Run `$R/bin/openclaw-room models auth paste-token --provider anthropic --agent fable --profile-id anthropic:fable` and paste the token at its prompt. It adds `auth.profiles."anthropic:fable"` (`mode: token`, no secret) to the installed config and leaves an `openclaw.json.bak` copy of the previous one.
+  3. Run `$R/bin/openclaw-room models auth paste-token --provider anthropic --agent fable --profile-id anthropic:fable` and paste the token at its prompt. It records `auth.profiles."anthropic:fable"` (`mode: token`, no secret) in the installed config, which the repo copy already carries, and leaves an `openclaw.json.bak` copy of the previous file. Delete the `.bak` once the room runs; seat rollback never uses it.
   4. Start the room again.
   - The token lives only in Fable's agent auth store. Other Claude logins on the host, including `~/.claude`, are untouched.
   - To check it, run `models auth list --agent fable`. It must show `anthropic:fable` as a token profile and no API-key profile.
@@ -136,13 +136,14 @@ journalctl --user -u omegahive-council.service -f
 
 Enable and start only this unit. Lingering is on, so the gateway starts at boot without a login.
 
-**Adding the second seat to a running room.** Fable's Slack tokens must already be stored with `set-slack-tokens fable`.
+**Adding the second seat to a running room.** Fable's Slack tokens must already be stored with `set-slack-tokens fable`. The room stays stopped from step 2 to step 6, about a minute: a running gateway would bring Fable's Slack account up as soon as the config lands, and Fable would answer `#agi-maze-poc` without a model credential.
 
 1. Save the running config: `cp -p ~/.config/omegahive/council-room/openclaw.json ~/.config/omegahive/council-room/openclaw.json.pre-m1.2`. Seat rollback restores this file.
-2. Install the repo's `openclaw.json` with the installed copy's `meta` block, through a new 0600 file and `mv`.
-3. Run `$R/bin/openclaw-room config validate`.
-4. Store Fable's setup token, as described under Credentials; the room is down from the stop to the start, about a minute.
-5. Check `$R/bin/openclaw-room agents list --bindings` and `models status --agent fable`.
+2. Stop the room: `systemctl --user stop omegahive-council.service`.
+3. Install the repo's `openclaw.json` with the installed copy's `meta` block, through a new 0600 file and `mv`.
+4. Run `$R/bin/openclaw-room config validate`.
+5. Store Fable's setup token: Credentials, steps 1 and 3.
+6. Start the room, then check `$R/bin/openclaw-room agents list --bindings` and `models status --agent fable`.
 
 ## Laptop mount
 
@@ -181,11 +182,13 @@ A project channel is named after its directory: `#<name>` is about `projects/<na
 
 **Fable only (the normal seat rollback).** This leaves the room running as the Astra-only room:
 
-1. Remove Fable's auth profile while the `fable` agent is still configured: `$R/bin/openclaw-room models auth logout --agent fable anthropic:fable`. A failed route-A profile is removed the same way; it is never kept as a fallback.
+1. Remove Fable's auth profile while the `fable` agent is still configured: `$R/bin/openclaw-room models auth logout --agent fable anthropic:fable`. A Claude token profile that failed its trial is removed the same way; it is never kept as a fallback.
 2. Install the saved Astra-only config, `~/.config/omegahive/council-room/openclaw.json.pre-m1.2`, through a new 0600 file and `mv`.
 3. Restart the unit.
 
-Astra's Slack account, channels and login are unchanged throughout. Keep Fable's Slack app, its tokens in `secrets.json`, its state directory, the drafts and the evidence. Do not delete channels.
+Astra's Slack account, channels and login are unchanged throughout. Keep Fable's Slack app, its tokens in `secrets.json`, its state directory, the drafts in the council clone and the acceptance reports in the workspace. Do not delete channels.
+
+`openclaw.json.pre-m1.2` exists only on a room that was upgraded in place, and it lacks any channel added since. In either case, replace step 2 by editing the current config: delete `agents.entries.fable`, Fable's binding and `channels.slack.accounts.fable`, make Astra the author in every channel (`requireMention: false`, `ignoreOtherMentions: true`). Write it through a new 0600 file and `mv`, then restart.
 
 **The whole room:**
 
