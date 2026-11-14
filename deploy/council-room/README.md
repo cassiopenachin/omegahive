@@ -62,14 +62,14 @@ Tokens never pass through Slack, chat, a command line, the environment or a repo
 - **ChatGPT login:** run `$R/bin/openclaw-room models auth login --provider openai --method device-code --agent astra --profile-id openai:astra`.
   - This is a fresh device-code login, owned by OpenClaw and stored in Astra's agent auth store.
   - `~/.codex` is untouched, and the two logins share no refresh token.
-  - To check it, run `models auth list --agent astra`. It must show `openai:astra [openai/oauth]` and no API-key profile.
+  - To check it while the room runs, run `models status --agent astra`. Its `openai` line must read `profiles=1 (1 oauth, 0 token, 0 api-key)` and name `openai:astra`. (`models auth list --agent astra` shows the same, but only with the room stopped.)
 - **Claude setup token (Fable):** this step needs the installed config to include the `fable` agent.
   1. On any machine signed in to Claude Code with the Claude subscription, run `claude setup-token`. It prints a long-lived `sk-ant-oat01-…` token.
   2. On Beastie, stop the room (`systemctl --user stop omegahive-council.service`): `paste-token` refuses to run while the gateway owns the state directory.
   3. Run `$R/bin/openclaw-room models auth paste-token --provider anthropic --agent fable --profile-id anthropic:fable` and paste the token at its prompt. It records `auth.profiles."anthropic:fable"` (`mode: token`, no secret) in the installed config, which the repo copy already carries, and leaves an `openclaw.json.bak` copy of the previous file. Delete the `.bak` once the room runs; seat rollback never uses it.
   4. Start the room again.
   - The token lives only in Fable's agent auth store. Other Claude logins on the host, including `~/.claude`, are untouched.
-  - To check it, run `models auth list --agent fable`. It must show `anthropic:fable` as a token profile and no API-key profile.
+  - To check it before step 4, run `models auth list --agent fable`: it must show `anthropic:fable` as a token profile and no API-key profile. With the room running, use `models status --agent fable`: `anthropic` must count `0 oauth, 1 token, 0 api-key`.
   - The token expires and can be revoked. If Fable starts failing with 401s, create a new token and paste it again.
 
 ## API keys stay out
