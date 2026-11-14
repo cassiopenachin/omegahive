@@ -121,6 +121,8 @@ These rules are meant to be tuned as the room is used. Each behaviour has one ke
 | A seat that spoke in a thread is not woken by later unaddressed messages | `channels.slack.implicitMentions` | all three flags `false` |
 | Runaway bot exchanges stop | `channels.slack.botLoopProtection` | 8 messages per 600 s, then 600 s cooldown |
 
+**Mention only the seat whose turn it is.** A real mention wakes a seat and obliges it to answer: OpenClaw requires a reply to an explicit mention in a channel and overrides a model's silent `NO_REPLY` with a fallback message. To start an exchange such as "Astra drafts, Fable reviews", mention Astra and write Fable's name as plain text; Astra's review request wakes Fable. State the task, not the protocol: the seat briefs already carry the mention rules, and protocol written into a kickoff gets echoed back between the seats. Each seat marks a message that woke it with 🫡 (its brief); the 👀 on the same message is OpenClaw's receipt, added before the model runs.
+
 To change who authors a channel, swap that channel's `requireMention` and `ignoreOtherMentions` between the two accounts, then update the tables in both seat briefs. Mention rules, sender lists and bot admission apply to new messages without reconnecting Slack. Adding or removing a channel or an account restarts the Slack connection inside the running gateway. Edit both config copies, as under "Add a project channel", run `config validate`, and commit the repo copy.
 
 ## Activate
