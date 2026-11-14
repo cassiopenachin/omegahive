@@ -26,8 +26,8 @@ def _secrets(home: Path) -> Path:
     return f
 
 
-def _run(home: Path, typed: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["sh", str(SCRIPT)], input=typed, capture_output=True, text=True,
+def _run(home: Path, typed: str, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["sh", str(SCRIPT), *args], input=typed, capture_output=True, text=True,
                           timeout=30, env={"PATH": "/usr/bin:/bin", "HOME": str(home)})
 
 
@@ -53,4 +53,27 @@ def test_a_mistyped_token_writes_nothing(tmp_path):
     out = _run(tmp_path, "xoxp-wrong\nxapp-app-value\n")
     assert out.returncode != 0
     assert "nothing was written" in out.stderr
+    assert f.read_bytes() == before
+
+
+def test_a_second_seat_gets_its_own_tokens_and_the_first_seat_keeps_its(tmp_path):
+    # Each seat is its own Slack app. Fable's tokens sit beside Astra's, which stay at the
+    # paths the single-seat room used, so adding a seat never touches the first one.
+    f = _secrets(tmp_path)
+    assert _run(tmp_path, "xoxb-astra\nxapp-astra\n").returncode == 0
+    out = _run(tmp_path, "xoxb-fable\nxapp-fable\n", "fable")
+    assert out.returncode == 0, out.stderr
+    data = json.loads(f.read_text())
+    assert data["slack"] == {"botToken": "xoxb-astra", "appToken": "xapp-astra",
+                             "fable": {"botToken": "xoxb-fable", "appToken": "xapp-fable"}}
+    assert data["gateway"] == {"token": "g" * 64}
+    assert oct(f.stat().st_mode)[-3:] == "600"
+
+
+def test_an_unknown_seat_writes_nothing(tmp_path):
+    f = _secrets(tmp_path)
+    before = f.read_bytes()
+    out = _run(tmp_path, "xoxb-x\nxapp-x\n", "sol")
+    assert out.returncode != 0
+    assert "unknown seat" in out.stderr
     assert f.read_bytes() == before

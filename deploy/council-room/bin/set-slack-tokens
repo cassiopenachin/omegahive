@@ -4,7 +4,18 @@
 # Slack, a chat transcript, a command line or the environment: they reach jq on its
 # standard input. The gateway token already in the file is kept. Installed to
 # ~/.local/share/omegahive/council-room/bin/.
+#
+# Usage: set-slack-tokens [astra|fable]   (default astra)
+# Each seat is its own Slack app. Astra's tokens stay at .slack.botToken/.slack.appToken,
+# the paths the single-seat room used; another seat's go under .slack.<seat>, so
+# storing one seat's tokens never touches another's.
 set -eu
+seat="${1:-astra}"
+case "${seat}" in
+    astra) path='.slack' ;;
+    fable) path='.slack.fable' ;;
+    *) echo "unknown seat: ${seat} (expected astra or fable); nothing was written" >&2; exit 1 ;;
+esac
 secrets="${HOME}/.config/omegahive/council-room/secrets.json"
 [ -f "${secrets}" ] || { echo "missing ${secrets}; install the room first" >&2; exit 1; }
 
@@ -34,7 +45,7 @@ trap 'rm -f "${tmp}"; quiet echo 2>/dev/null || true' EXIT
 chmod 600 "${tmp}"
 printf '%s\n%s\n' "${bot}" "${app}" \
     | jq -R -n --slurpfile s "${secrets}" \
-        '[inputs] as [$bot, $app] | $s[0] | .slack.botToken = $bot | .slack.appToken = $app' \
+        "[inputs] as [\$bot, \$app] | \$s[0] | ${path}.botToken = \$bot | ${path}.appToken = \$app" \
     > "${tmp}"
 mv -f "${tmp}" "${secrets}"
-echo "stored; lengths: bot $(printf '%s' "${bot}" | wc -c), app $(printf '%s' "${app}" | wc -c)"
+echo "stored for ${seat}; lengths: bot $(printf '%s' "${bot}" | wc -c), app $(printf '%s' "${app}" | wc -c)"

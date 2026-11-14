@@ -32,7 +32,8 @@
   "plugins": {
     "allow": [
       "slack",
-      "codex"
+      "codex",
+      "anthropic"
     ],
     "entries": {
       "slack": {
@@ -60,17 +61,22 @@
             "enabled": false
           }
         }
+      },
+      "anthropic": {
+        "enabled": true
       }
     }
   },
   "agents": {
+    "ownership": "explicit",
     "defaults": {
       "heartbeat": {
         "every": "0m"
       },
       "skipBootstrap": true,
       "models": {
-        "openai/gpt-6-astra": {}
+        "openai/gpt-6-astra": {},
+        "anthropic/claude-fable-5-2": {}
       }
     },
     "entries": {
@@ -97,6 +103,24 @@
             "nodes"
           ]
         }
+      },
+      "fable": {
+        "name": "Fable",
+        "workspace": "~/.local/share/omegahive/council-room/state/agents/fable/workspace",
+        "cwd": "~/workspaces/hive-council",
+        "model": {
+          "primary": "anthropic/claude-fable-5-2",
+          "fallbacks": []
+        },
+        "thinkingDefault": "high",
+        "utilityModel": "",
+        "tools": {
+          "deny": [
+            "cron",
+            "gateway",
+            "nodes"
+          ]
+        }
       }
     }
   },
@@ -105,7 +129,16 @@
       "agentId": "astra",
       "match": {
         "channel": "slack",
-        "teamId": "T0C27J451JQ"
+        "teamId": "T0C27J451JQ",
+        "accountId": "astra"
+      }
+    },
+    {
+      "agentId": "fable",
+      "match": {
+        "channel": "slack",
+        "teamId": "T0C27J451JQ",
+        "accountId": "fable"
       }
     }
   ],
@@ -113,59 +146,159 @@
     "slack": {
       "enabled": true,
       "mode": "socket",
-      "botToken": {
-        "source": "file",
-        "provider": "room",
-        "id": "/slack/botToken"
-      },
-      "appToken": {
-        "source": "file",
-        "provider": "room",
-        "id": "/slack/appToken"
-      },
       "dmPolicy": "disabled",
       "groupPolicy": "allowlist",
       "allowFrom": [
         "U0C2206GLEA"
       ],
-      "allowBots": false,
       "joinIntro": false,
       "replyToMode": "all",
       "historyLimit": 50,
       "thread": {
         "initialHistoryLimit": 50
       },
-      "channels": {
-        "C0CGP5HA34Z": {
-          "enabled": true,
-          "requireMention": false,
-          "replyToMode": "all",
-          "users": [
-            "U0C2206GLEA"
-          ],
-          "allowBots": false,
-          "systemPrompt": "You are the Astra council seat. Before acting, read your seat brief at /home/cassio/workspaces/hive-council/projects/omegahive/council/astra.md (laptop: /Users/cassio/src/SNET/hive-council/projects/omegahive/council/astra.md) and follow it."
+      "allowBots": "mentions",
+      "implicitMentions": {
+        "replyToBot": false,
+        "quotedBot": false,
+        "threadParticipation": false
+      },
+      "botLoopProtection": {
+        "maxEventsPerWindow": 8,
+        "windowSeconds": 600,
+        "cooldownSeconds": 600
+      },
+      "accounts": {
+        "astra": {
+          "name": "Astra",
+          "botToken": {
+            "source": "file",
+            "provider": "room",
+            "id": "/slack/botToken"
+          },
+          "appToken": {
+            "source": "file",
+            "provider": "room",
+            "id": "/slack/appToken"
+          },
+          "channels": {
+            "C0CGP5HA34Z": {
+              "enabled": true,
+              "requireMention": true,
+              "allowBots": "mentions",
+              "replyToMode": "all",
+              "users": [
+                "U0C2206GLEA",
+                "U0CJGLKQFG8"
+              ],
+              "systemPrompt": "You are the Astra council seat. Before acting, read your seat brief at /home/cassio/workspaces/hive-council/projects/omegahive/council/astra.md (laptop: /Users/cassio/src/SNET/hive-council/projects/omegahive/council/astra.md) and follow it."
+            },
+            "C0CG5SZGH3R": {
+              "enabled": true,
+              "requireMention": false,
+              "ignoreOtherMentions": true,
+              "allowBots": "mentions",
+              "replyToMode": "all",
+              "users": [
+                "U0C2206GLEA",
+                "U0CJGLKQFG8"
+              ],
+              "systemPrompt": "You are the Astra council seat. Before acting, read your seat brief at /home/cassio/workspaces/hive-council/projects/omegahive/council/astra.md (laptop: /Users/cassio/src/SNET/hive-council/projects/omegahive/council/astra.md) and follow it."
+            },
+            "C0CHG32UGUT": {
+              "enabled": true,
+              "requireMention": false,
+              "ignoreOtherMentions": true,
+              "allowBots": "mentions",
+              "replyToMode": "all",
+              "users": [
+                "U0C2206GLEA",
+                "U0CJGLKQFG8"
+              ],
+              "systemPrompt": "You are the Astra council seat. Before acting, read your seat brief at /home/cassio/workspaces/hive-council/projects/omegahive/council/astra.md (laptop: /Users/cassio/src/SNET/hive-council/projects/omegahive/council/astra.md) and follow it."
+            },
+            "C0CHFKHH89W": {
+              "enabled": true,
+              "requireMention": false,
+              "ignoreOtherMentions": true,
+              "allowBots": "mentions",
+              "replyToMode": "all",
+              "users": [
+                "U0C2206GLEA",
+                "U0CJGLKQFG8"
+              ],
+              "systemPrompt": "You are the Astra council seat. Before acting, read your seat brief at /home/cassio/workspaces/hive-council/projects/omegahive/council/astra.md (laptop: /Users/cassio/src/SNET/hive-council/projects/omegahive/council/astra.md) and follow it."
+            }
+          }
         },
-        "C0CG5SZGH3R": {
-          "enabled": true,
-          "requireMention": false,
-          "replyToMode": "all",
-          "users": [
-            "U0C2206GLEA"
-          ],
-          "allowBots": false,
-          "systemPrompt": "You are the Astra council seat. Before acting, read your seat brief at /home/cassio/workspaces/hive-council/projects/omegahive/council/astra.md (laptop: /Users/cassio/src/SNET/hive-council/projects/omegahive/council/astra.md) and follow it."
-        },
-        "C0CHFKHH89W": {
-          "enabled": true,
-          "requireMention": false,
-          "replyToMode": "all",
-          "users": [
-            "U0C2206GLEA"
-          ],
-          "allowBots": false,
-          "systemPrompt": "You are the Astra council seat. Before acting, read your seat brief at /home/cassio/workspaces/hive-council/projects/omegahive/council/astra.md (laptop: /Users/cassio/src/SNET/hive-council/projects/omegahive/council/astra.md) and follow it."
+        "fable": {
+          "name": "Fable",
+          "botToken": {
+            "source": "file",
+            "provider": "room",
+            "id": "/slack/fable/botToken"
+          },
+          "appToken": {
+            "source": "file",
+            "provider": "room",
+            "id": "/slack/fable/appToken"
+          },
+          "channels": {
+            "C0CGP5HA34Z": {
+              "enabled": true,
+              "requireMention": false,
+              "ignoreOtherMentions": true,
+              "allowBots": "mentions",
+              "replyToMode": "all",
+              "users": [
+                "U0C2206GLEA",
+                "U0CGK1J7S5C"
+              ],
+              "systemPrompt": "You are the Fable council seat. Before acting, read your seat brief at /home/cassio/workspaces/hive-council/projects/omegahive/council/fable.md (laptop: /Users/cassio/src/SNET/hive-council/projects/omegahive/council/fable.md) and follow it."
+            },
+            "C0CG5SZGH3R": {
+              "enabled": true,
+              "requireMention": true,
+              "allowBots": "mentions",
+              "replyToMode": "all",
+              "users": [
+                "U0C2206GLEA",
+                "U0CGK1J7S5C"
+              ],
+              "systemPrompt": "You are the Fable council seat. Before acting, read your seat brief at /home/cassio/workspaces/hive-council/projects/omegahive/council/fable.md (laptop: /Users/cassio/src/SNET/hive-council/projects/omegahive/council/fable.md) and follow it."
+            },
+            "C0CHG32UGUT": {
+              "enabled": true,
+              "requireMention": true,
+              "allowBots": "mentions",
+              "replyToMode": "all",
+              "users": [
+                "U0C2206GLEA",
+                "U0CGK1J7S5C"
+              ],
+              "systemPrompt": "You are the Fable council seat. Before acting, read your seat brief at /home/cassio/workspaces/hive-council/projects/omegahive/council/fable.md (laptop: /Users/cassio/src/SNET/hive-council/projects/omegahive/council/fable.md) and follow it."
+            },
+            "C0CHFKHH89W": {
+              "enabled": true,
+              "requireMention": true,
+              "allowBots": "mentions",
+              "replyToMode": "all",
+              "users": [
+                "U0C2206GLEA",
+                "U0CGK1J7S5C"
+              ],
+              "systemPrompt": "You are the Fable council seat. Before acting, read your seat brief at /home/cassio/workspaces/hive-council/projects/omegahive/council/fable.md (laptop: /Users/cassio/src/SNET/hive-council/projects/omegahive/council/fable.md) and follow it."
+            }
+          }
         }
+      }
+    }
+  },
+  "auth": {
+    "profiles": {
+      "anthropic:fable": {
+        "provider": "anthropic",
+        "mode": "token"
       }
     }
   }

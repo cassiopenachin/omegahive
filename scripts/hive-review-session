@@ -14,8 +14,8 @@
 # because nothing told the reviewer what the step was for or what had been answered.
 #
 # Run it from the repository under review, on the session's branch. <session-dir> holds the
-# contract, the issued command and reviews/ (the rounds, and dispositions.md, which the
-# session writes after each round). The default reviewer is Sol through `codex exec`; a
+# contract and reviews/ (the rounds, and dispositions.md, which the session writes after
+# each round). The default reviewer is Sol through `codex exec`; a
 # session outside a sandbox may choose claude-cli instead.
 
 set -euo pipefail
@@ -73,7 +73,13 @@ CONTRACT="$DIR/review-contract.md"
   printf '%s\n' "$SECTIONS"
   review_contract_body
 } > "$CONTRACT"
-issue_review_command "$DIR/review" "$REVIEWER" "$CONTRACT"
+# The issued review command is scaffolding, not a session record: <session-dir> is usually
+# an evidence directory that gets published, so the command is written to a temporary
+# directory and removed when the round ends. It re-executes itself while it runs, so it is
+# run, not exec'd, and the directory goes on exit.
+REVIEW_TMP=$(mktemp -d "${TMPDIR:-/tmp}/hive-review-session.XXXXXX")
+trap 'rm -rf "$REVIEW_TMP"' EXIT
+issue_review_command "$REVIEW_TMP/review" "$REVIEWER" "$CONTRACT"
 
 {
   echo "hive-review-session: $(basename "$DIR"), reviewer $REVIEWER, rounds in $DIR/reviews"
@@ -84,4 +90,4 @@ issue_review_command "$DIR/review" "$REVIEWER" "$CONTRACT"
 } >&2
 
 HIVE_REVIEW_DIR="$DIR/reviews" HIVE_REVIEW_CONTRACT="$CONTRACT" \
-  exec "$DIR/review" ${PROMPT[@]+"${PROMPT[@]}"}
+  "$REVIEW_TMP/review" ${PROMPT[@]+"${PROMPT[@]}"}
