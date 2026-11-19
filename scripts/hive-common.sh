@@ -641,7 +641,7 @@ issue_review_command() {  # issue_review_command <path> <reviewer> <contract-pat
       # drifts silently with an unrelated file. `HIVE_REVIEW_MODEL` is the same escape hatch
       # the Claude reviewers already accept.
       review_posture=''
-      review_cmd='codex exec -s read-only -m "${HIVE_REVIEW_MODEL:-gpt-6-sol}" -'
+      review_cmd='codex exec -s read-only -m "${HIVE_REVIEW_MODEL:-gpt-6.2-sol}" -'
       # Plain words only: this text is written into the issued script inside double quotes,
       # so any shell syntax in it would run there, not be read by the reviewer.
       review_scope='Review the diff of the current branch against its merge-base with main (git merge-base HEAD main, then git diff from that commit); read anything in the repository you need, and change nothing. Your final message is the review, and its first non-empty line is the VERDICT line.'
