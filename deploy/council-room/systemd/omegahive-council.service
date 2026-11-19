@@ -1,5 +1,5 @@
 [Unit]
-Description=OmegaHive council room (OpenClaw gateway; Astra seat on Slack)
+Description=OmegaHive council room (OpenClaw gateway; Astra and Fable seats on Slack)
 Documentation=file://%h/src/SNET/omegahive/deploy/council-room/README.md
 After=network-online.target
 Wants=network-online.target
@@ -11,7 +11,7 @@ StartLimitIntervalSec=300
 # OpenClaw under the runtime root, mutable state beside them, config and secrets private.
 WorkingDirectory=%h/.local/share/omegahive/council-room
 # The user manager's environment is inherited; these names must never reach the gateway or
-# the seat it spawns. An empty Environment= would reset only this unit's own list, so the
+# the seats it runs. An empty Environment= would reset only this unit's own list, so the
 # removal is explicit. The running processes are checked by name in /proc/<pid>/environ.
 UnsetEnvironment=OPENAI_API_KEY ANTHROPIC_API_KEY CODEX_API_KEY
 Environment=PATH=%h/.local/share/omegahive/council-room/runtime/node/bin:/usr/local/bin:/usr/bin:/bin

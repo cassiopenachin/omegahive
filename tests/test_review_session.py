@@ -67,7 +67,9 @@ def rig(tmp_path):
     scope.write_text(SCOPE)
     session = tmp_path / "session"
     env = {k: v for k, v in os.environ.items() if not k.startswith("HIVE_REVIEW_")}
-    env.update(PATH=f"{bin_dir}:{os.environ['PATH']}", HOME=str(home))
+    tmp = tmp_path / "tmp"
+    tmp.mkdir()
+    env.update(PATH=f"{bin_dir}:{os.environ['PATH']}", HOME=str(home), TMPDIR=str(tmp))
 
     def run(*args, scope_file=scope):
         return subprocess.run(["bash", str(SESSION), str(session), str(scope_file), *args],
@@ -93,6 +95,18 @@ def test_the_session_contract_is_the_step_plus_the_shared_verdict_rules(rig):
     first = prompt(1)
     assert first.startswith(contract.rstrip("\n")[:40])
     assert "review this step" in first
+
+
+def test_the_issued_review_command_never_lands_in_the_session_dir(rig):
+    # The session dir is usually an evidence directory that gets published; the generated
+    # review script is scaffolding. It runs from a temporary directory that is removed
+    # when the round ends.
+    run, _, session, tmp_path = rig
+    r = run("r")
+    assert r.returncode == 0, r.stderr
+    assert sorted(p.name for p in session.iterdir()) == ["review-contract.md", "reviews"]
+    assert not any((session / "reviews").rglob("review")), "no executable under reviews/"
+    assert not any((tmp_path / "tmp").iterdir()), "the temporary directory is removed"
 
 
 def test_session_rounds_are_counted_and_carry_the_dispositions(rig):
