@@ -1378,6 +1378,38 @@ def test_an_uncounted_review_survives_a_reviewer_that_does_not_read_stdin(tmp_pa
     assert "VERDICT: PASS" in r.stdout
 
 
+@pytest.mark.parametrize("counted", [True, False], ids=["counted", "uncounted"])
+def test_a_review_launched_with_an_open_socket_on_stdin_still_starts(tmp_path, counted):
+    """Workers launch this from Claude Code's Bash tool. A command there that contains a
+    heredoc gets a Unix socket the harness holds open for the whole session as stdin: not
+    a terminal, so "append stdin unless it is a tty" ran `cat` on it, which never saw
+    end-of-file. The reviewer, waiting for the end of its prompt, never started; one review
+    sat for over an hour with no output."""
+    import socket
+
+    run_dir, repo, bin_dir, home = _issue_review_wrapper(tmp_path)
+    fake = bin_dir / "claude"
+    fake.write_text('#!/bin/sh\ncat >/dev/null\necho "VERDICT: PASS"\n')   # reads to EOF
+    fake.chmod(0o755)
+    if counted:
+        review_dir = tmp_path / "reviews"
+    else:
+        review_dir = tmp_path / "not-a-dir"
+        review_dir.write_text("I am a file\n")
+    ours, theirs = socket.socketpair()
+    try:
+        r = subprocess.run(
+            [str(run_dir / "review"), "review this"],
+            stdin=theirs, capture_output=True, text=True, cwd=str(repo), timeout=30,
+            env={**_review_env(bin_dir, home), "HIVE_REVIEW_DIR": str(review_dir)},
+        )
+    finally:
+        ours.close()
+        theirs.close()
+    assert r.returncode == 0, r.stderr
+    assert "VERDICT: PASS" in r.stdout
+
+
 # --- the reviewer's own credential ------------------------------------------------------
 #
 # Until 2026-09-15 the review ran on a COPY of the operator's `~/.claude/.credentials.json`,
