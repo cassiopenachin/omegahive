@@ -904,7 +904,7 @@ if [ -z "$CANONICAL" ]; then
   { cat "$PREAMBLE"
     [ -z "${HIVE_REVIEW_SCOPE:-}" ] || printf '%s\n\n' "$HIVE_REVIEW_SCOPE"
     [ "$#" -eq 0 ] || printf '%s\n\n' "$*"
-    [ -t 0 ] || cat
+    if [ -p /dev/stdin ] || [ -f /dev/stdin ]; then cat; fi
   } | "${HIVE_REVIEW_CMD[@]}" "${HIVE_REVIEW_POSTURE[@]}"
   UNCOUNTED_PIPE=("${PIPESTATUS[@]}")
   set -e
@@ -937,11 +937,19 @@ trap 'rm -f "$PREAMBLE" "$PARTIAL" "$PARTIAL_ERR"' EXIT
 # The worker cannot race it into the same window: it is blocked on this pipe for the whole
 # of it. That is what makes an mtime window an exact answer here rather than a heuristic.
 REVIEW_T0=$(date +%s)
+# Extra context is read from stdin only when stdin is a pipe or a file, which is how a
+# caller hands one over. Anything else is not input meant for the reviewer. Claude Code's
+# Bash tool runs a command with stdin from /dev/null, EXCEPT when the command contains a
+# heredoc: then stdin is a socket the harness holds open for the whole session. A worker
+# that writes its prompt with `cat > p <<'E'` and runs this in the same call got `cat` on
+# that socket, which never sees end-of-file, so the reviewer waited forever for the end
+# of its prompt (2026-11-24, over an hour with no output).
+# The uncounted path above applies the same test.
 set +e
 { cat "$PREAMBLE"
   [ -z "${HIVE_REVIEW_SCOPE:-}" ] || printf '%s\n\n' "$HIVE_REVIEW_SCOPE"
   [ "$#" -eq 0 ] || printf '%s\n\n' "$*"
-  [ -t 0 ] || cat
+  if [ -p /dev/stdin ] || [ -f /dev/stdin ]; then cat; fi
 } \
   | "${HIVE_REVIEW_CMD[@]}" "${HIVE_REVIEW_POSTURE[@]}" 2> >(tee "$PARTIAL_ERR" >&2) \
   | tee "$PARTIAL"
